@@ -3222,6 +3222,7 @@ name = "sankhya-olap"
 version = "0.1.0"
 dependencies = [
  "arrow",
+ "arrow-array",
  "datafusion",
  "sankhya-datagen",
  "sankhya-error",
