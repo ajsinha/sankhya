@@ -36,6 +36,10 @@ const DUP_ALLOWLIST: &[&str] = &[
     "rand_chacha",
     // toml's own datetime type, internal to manifest parsing in tooling.
     "toml_datetime", "toml_parser", "toml_writer", "serde_spanned",
+    // Pulled at two versions through the query engine's expression features. Both are
+    // internal hashing and bignum utilities; neither appears in any SANKHYA signature,
+    // so neither can cause the type incompatibility this gate exists to prevent.
+    "ahash", "num-bigint",
 ];
 
 /// Domain nouns that must not appear in core crates. The general-purpose claim is

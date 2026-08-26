@@ -23,7 +23,13 @@ arrow-schema  = { version = "=59.2.0" }
 arrow-ipc     = { version = "=59.2.0" }
 parquet       = { version = "=59.2.0", default-features = false, features = ["arrow", "async"] }
 object_store  = { version = "=0.13.2" }
-datafusion    = { version = "=55.0.0", default-features = false, features = ["parquet"] }
+# Features are chosen deliberately rather than inherited. Excluded on purpose:
+# `compression` (the object-store layer owns codec choice) and `recursive_protection`
+# (revisited when a SQL surface exists and unbounded recursion becomes reachable).
+datafusion    = { version = "=55.0.0", default-features = false, features = [
+    "parquet", "sql", "unicode_expressions", "datetime_expressions",
+    "string_expressions", "math_expressions", "regex_expressions",
+] }
 delta_kernel  = { version = "=0.27.1", default-features = false, features = ["arrow-59"] }
 
 tokio         = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time", "fs", "process", "io-util", "net"] }
