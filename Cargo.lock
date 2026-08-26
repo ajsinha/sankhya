@@ -617,6 +617,11 @@ version = "0.1.0"
 [[package]]
 name = "sankhya-cdc-model"
 version = "0.1.0"
+dependencies = [
+ "proptest",
+ "sankhya-types",
+ "serde",
+]
 
 [[package]]
 name = "sankhya-cdc-pg"
