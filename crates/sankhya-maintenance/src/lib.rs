@@ -31,6 +31,7 @@
 mod compaction;
 mod driver;
 mod execute;
+mod orphans;
 mod schedule;
 
 pub use compaction::{
@@ -41,4 +42,5 @@ pub use driver::{
     PendingCompaction, TickPlan, TickReport, CHECKPOINT_INTERVAL,
 };
 pub use execute::{retire_inputs, run_compaction, RetentionPolicy, RetirementOutcome};
+pub use orphans::{plan_orphan_cleanup, sweep, FileOnDisk, OrphanPlan, OrphanPolicy, OrphanReport};
 pub use schedule::{schedule, Class, Deferral, Job, Schedule, Scheduled, SystemState};

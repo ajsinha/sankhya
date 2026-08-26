@@ -38,8 +38,12 @@ are its own stated exit criteria:
 Smaller items inside the work breakdown that are also absent: delete resolution into
 plan-time row selections, file ordering by statistics for early termination, bloom
 filters, per-column encoding chosen from measured statistics, quantile sketches, the
-footer and byte-range and decoded-batch and result caches, leader election, and orphan
-cleanup.
+footer and byte-range and decoded-batch caches, and leader election.
+
+The *result* cache does not exist either — but its **key** does, because what makes a
+result-cache key correct is a security property and the right time to fix it is before
+anything is caching. A key that omits the entitlement set does not return a stale answer;
+it returns someone else's, correctly and quickly.
 
 ---
 
@@ -91,6 +95,8 @@ cleanup.
 | A skipped file never hides a matching row | Property-tested over arbitrary values and predicates, and again over *merged* statistics — compaction merges rather than recomputes, so a merge that narrowed a bound would produce a defect appearing only after maintenance ran |
 | Distinct-value counts are estimated well enough to order a join | Within 5% from 10 to 100,000 distinct values, exact under merge, and reproducible across processes — a per-process hash seed would make two nodes disagree about a plan and the disagreement would look like an optimizer bug |
 | An approximate function cannot answer an exact question by accident | Rejected at planning time, including inside a subquery or a `HAVING` clause; a permissive session still gets a watermark naming what it used |
+| A cache key cannot omit what the answer depended on | The entitlement set and the policy version are constructor arguments, not fields — a field can be left at its default, an argument has to be passed. Keys are byte-identical across processes, pinned so a change to the hash is deliberate |
+| An interrupted compaction's leftovers are reclaimed, and nothing else is | Age is the only thing separating an orphan from a file mid-commit, so the threshold is a week by default; a file any retained snapshot reaches is kept however old, and the log is not a candidate at all |
 | A cold reader starts from a checkpoint, and any reader may ignore one | **10×** at fifty thousand commits; the kernel reads a checkpoint this system wrote by hand, and is proven to *use* it rather than tolerate it — the commits it covers are deleted and the table still resolves |
 | A warm process pays for what changed, not for the whole history | Table file sets are cached and resumed; the cache cannot go stale because it never trusts its own version, and asking costs one filesystem probe rather than a directory listing |
 | Log replay scales linearly with a table's history | Guarded by measuring the *ratio* between two sizes rather than a clock, so it means the same on any machine — and proven to fail on the quadratic implementation it replaced |
@@ -100,7 +106,7 @@ cleanup.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 86 specific defects applied one at a time; all 86 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 95 specific defects applied one at a time; all 95 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
 
 ---
 
