@@ -32,7 +32,7 @@ are its own stated exit criteria:
 | Cancellation demonstrated within its bound, including inside user code | **Half.** Deadlines and cancellation exist and are demonstrated inside a real query, bounded at one batch. There is no sandboxed user code to propagate into yet |
 | A hostile aggregation under a constrained memory limit is rejected rather than terminating the process | **Met.** An aggregation that cannot reduce anything is refused under a one-megabyte pool, by name — and the process runs the same query to completion afterwards. Repeated five times, so a refusal that leaked its reservation would show up. Spill isolation onto a separate filesystem is still not built |
 | Plan snapshots stable; the SQL-semantics corpus green | **Not started** |
-| Cross-engine semantic differences enumerated in a tested list | **Not started** |
+| Cross-engine semantic differences enumerated in a tested list | **Met, and it found three ways the analytical tier returns a wrong number.** Fifteen cases run against both engines; agreements are pinned too, so a *new* divergence fails the test rather than being discovered later. See below |
 | Compaction holds file counts within policy under continuous ingest | **Met.** Forty ticks of capture with maintenance sweeping every third one; the live count never passes the urgent threshold and no row is lost. The fixture asserts it actually created a backlog, or it would prove nothing |
 
 Smaller items inside the work breakdown that are also absent: delete resolution into
@@ -44,6 +44,44 @@ The *result* cache does not exist either — but its **key** does, because what 
 result-cache key correct is a security property and the right time to fix it is before
 anything is caching. A key that omits the entitlement set does not return a stale answer;
 it returns someone else's, correctly and quickly.
+
+---
+
+## Where the two engines disagree
+
+SANKHYA presents one copy of the data through two engines, and the same question asked of
+each is supposed to get the same answer. Mostly it does — which is what makes the
+exceptions dangerous, because nobody checks a figure that has agreed a thousand times.
+
+Fifteen cases are now run against both, with the agreements pinned as well as the
+differences. Three of the differences produce a **wrong number rather than an error**:
+
+| | Transactional tier | Analytical tier |
+|---|---|---|
+| Summing past a 64-bit integer | `9223372036854775808` | **`-9223372036854775808`** |
+| Multiplying past a 64-bit integer | refuses | **`0`** |
+| Summing decimals past 38 digits | `100000000000000000000000000000000000000` | **`99999999999999997748809823456034029569`** |
+
+The third is the one that matters most. Fixed-point decimal was chosen *because* money
+must be exact, and on overflow the analytical tier returns something close to the right
+answer instead of refusing. Close is the wrong kind of wrong.
+
+Three further differences change a figure's precision or ordering without making it
+wrong: `avg` of integers is arbitrary-precision on one side and a 64-bit float on the
+other; division to a repeating fraction gives twenty significant digits against sixteen;
+and text orders by the database's collation on one side and by bytes on the other, so any
+paged or ranked result over text is in a different order in the two tiers.
+
+**A mitigation exists and is partial.** The statistics catalogue can predict, before a
+query runs, whether summing a column *can* overflow — bounds and row count give an upper
+bound on the total. It errs toward "might", because a false alarm costs a refused query
+and a missed one costs a wrong number nobody notices.
+
+Its limit is worth stating plainly: bounds are held as 64-bit integers, so a decimal
+column exceeding about nineteen digits has no representable bound and the check answers
+"unknown". The columns most likely to overflow a 38-digit decimal are exactly the ones it
+cannot reason about. Widening the bound type to 128 bits would close that, and has not
+been done. Nothing yet consults the check.
 
 ---
 
@@ -110,7 +148,7 @@ it returns someone else's, correctly and quickly.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 107 specific defects applied one at a time; all 107 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 111 specific defects applied one at a time; all 111 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
 
 ---
 

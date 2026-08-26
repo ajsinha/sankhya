@@ -749,6 +749,30 @@ CATALOGUE = [
      "    if in_use > limits.warn_bytes {\n        return Pressure::Warning {",
      "sankhya-governor"),
 
+    ("overflow: treat an absent bound as safe",
+     "crates/sankhya-stats/src/overflow.rs",
+     "    let (Some(Bound::Int(min)), Some(Bound::Int(max))) = (&stats.min, &stats.max) else {\n        return SumRisk::Unknown;\n    };\n\n    // The widest the total can be in either direction. Both ends matter: a column of\n    // large negatives overflows just as readily as one of large positives.",
+     "    let (Some(Bound::Int(min)), Some(Bound::Int(max))) = (&stats.min, &stats.max) else {\n        return SumRisk::Safe;\n    };\n",
+     "sankhya-stats"),
+
+    ("overflow: check only the maximum, ignoring large negatives",
+     "crates/sankhya-stats/src/overflow.rs",
+     "    let widest = i128::from(*min)\n        .saturating_mul(rows)\n        .abs()\n        .max(i128::from(*max).saturating_mul(rows).abs());\n\n    if widest <= i128::from(i64::MAX) {",
+     "    let widest = i128::from(*max).saturating_mul(rows).abs();\n    let _ = min;\n\n    if widest <= i128::from(i64::MAX) {",
+     "sankhya-stats"),
+
+    ("overflow: count nulls as values when estimating",
+     "crates/sankhya-stats/src/overflow.rs",
+     "    let rows = i128::from(stats.rows.saturating_sub(stats.nulls));\n    if rows == 0 {\n        return SumRisk::Safe;\n    }\n\n    let (Some(Bound::Int(min)), Some(Bound::Int(max))) = (&stats.min, &stats.max) else {\n        return SumRisk::Unknown;\n    };\n\n    // The widest",
+     "    let rows = i128::from(stats.rows);\n    if rows == 0 {\n        return SumRisk::Safe;\n    }\n\n    let (Some(Bound::Int(min)), Some(Bound::Int(max))) = (&stats.min, &stats.max) else {\n        return SumRisk::Unknown;\n    };\n\n    // The widest",
+     "sankhya-stats"),
+
+    ("overflow: report an unrepresentable precision as safe",
+     "crates/sankhya-stats/src/overflow.rs",
+     "    let Some(limit) = ten_to(digits) else {\n        return SumRisk::Possible { widest_total: None };\n    };",
+     "    let Some(limit) = ten_to(digits) else {\n        return SumRisk::Safe;\n    };",
+     "sankhya-stats"),
+
     ("readpath: read every offered tier rather than the selected ones",
      "crates/sankhya-readpath/src/lib.rs",
      "    for tier in &splice.tiers {",

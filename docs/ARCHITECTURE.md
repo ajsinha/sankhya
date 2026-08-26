@@ -671,6 +671,51 @@ Spill files live on a **separate filesystem from the database's write-ahead log*
 
 Every query carries an end-to-end deadline propagated into execution and into sandboxed user code, and cancellation takes effect within a bounded time — tested, including for queries inside graph traversal and inside user functions.
 
+### 8.5.1 Where the two engines disagree, and the one that is dangerous
+
+The system presents one copy of the data through two engines, so the same question asked
+of the transactional tier and of the analytical tier is expected to get the same answer.
+It usually does. That is what makes the exceptions dangerous: nobody re-checks a figure
+that has agreed a thousand times.
+
+The differences are enumerated in a test that runs both engines and pins the agreements
+as well as the divergences — a list of differences is only trustworthy if somebody
+checked the rest, and without the agreements pinned a *new* divergence is a discovery
+later rather than a failure now.
+
+**Three of them return a wrong number rather than an error.**
+
+| | Transactional | Analytical |
+|---|---|---|
+| Summing past a 64-bit integer | exact, widened accumulator | **wraps to a large negative** |
+| Multiplying past a 64-bit integer | refuses | **returns zero** |
+| Summing decimals past 38 digits | exact | **loses exactness** |
+
+The third contradicts a stated principle. Fixed-point decimal is used *because* money must
+be exact, and on overflow the analytical tier returns a number close to the right one
+instead of refusing. An error is recoverable; a plausible wrong number in a report is not.
+
+> **This is a real limitation of the current design, not a note about an edge case.** The
+> tier that exists to answer questions about money can answer one wrongly, silently, and
+> the tier of record would have refused the same question.
+
+**The mitigation is predictive rather than detective**, because detection is not on offer:
+by the time the wrong number exists it is already in a result set. The statistics
+catalogue bounds the total from the column's range and row count, and reports whether an
+overflow is *possible*. It deliberately errs toward "possible" — a false alarm costs a
+refused query, a missed one costs a wrong figure nobody notices.
+
+Its limit is that bounds are held as 64-bit integers, so a decimal column beyond about
+nineteen digits has no representable bound and the check answers "unknown". The columns
+most able to overflow a 38-digit decimal are exactly the ones it cannot reason about.
+Widening the bound type closes it.
+
+Three further differences change precision or ordering without making a figure wrong:
+`avg` over integers is arbitrary-precision against a 64-bit float; division to a repeating
+fraction gives twenty significant digits against sixteen; and text orders by the
+database's collation against byte order, so a paged or ranked result over text appears in
+a different order in the two tiers.
+
 ### 8.6 The two silently-disabling defaults
 
 Two settings in the stack have defaults that switch off the mechanism they belong to. Both cost nothing to set correctly and both cost roughly an order of magnitude at query time if left alone. They are recorded here as an architectural concern rather than a tuning note, because neither produces any symptom other than being slow.
