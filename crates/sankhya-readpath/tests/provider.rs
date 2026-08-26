@@ -8,7 +8,7 @@
 use arrow_array::{Int64Array, RecordBatch, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
 use datafusion::prelude::SessionContext;
-use sankhya_readpath::{resolve, ReadError};
+use sankhya_readpath::{resolve, resolve_cached, ReadError};
 use sankhya_table::{write_parquet, WriterConfig};
 use sankhya_table_delta::{commit, create, Action, AddFile, Metadata};
 use sankhya_table_memory::{ArrivalBuffer, MemoryBudget};
@@ -442,4 +442,102 @@ async fn measure_planning_cost_against_file_count() {
             listing_best.as_secs_f64() / provider_best.as_secs_f64()
         );
     }
+}
+
+#[tokio::test]
+async fn a_cached_resolve_answers_identically_to_an_uncached_one() {
+    // The cache is a performance decision and must never be a correctness one, so the
+    // two paths are compared directly rather than each checked against expectations.
+    use sankhya_table_delta::LogCache;
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    publish(dir.path(), 10, 100);
+    let cache = LogCache::new();
+
+    for target in [100u64, 550, 1_000] {
+        let plain = resolve(
+            schema(),
+            dir.path(),
+            Some(LsnRange::up_to(Lsn::new(1_000))),
+            None,
+            Lsn::new(target),
+        )
+        .expect("resolving");
+
+        let cached = resolve_cached(
+            schema(),
+            dir.path(),
+            Some(LsnRange::up_to(Lsn::new(1_000))),
+            None,
+            Lsn::new(target),
+            &cache,
+        )
+        .expect("resolving");
+
+        assert_eq!(plain.declared_rows(), cached.declared_rows());
+        assert_eq!(plain.splice().tier_names(), cached.splice().tier_names());
+        assert_eq!(
+            measure(Arc::new(plain), AGGREGATE).await,
+            measure(Arc::new(cached), AGGREGATE).await,
+            "the cached plan answered differently at target {target}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_cached_resolve_sees_a_commit_made_after_it_warmed() {
+    // A cache that misses a commit serves a file set missing rows, and nothing about the
+    // result says so.
+    use sankhya_table_delta::LogCache;
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    publish(dir.path(), 4, 100);
+    let cache = LogCache::new();
+
+    let before = resolve_cached(
+        schema(),
+        dir.path(),
+        Some(LsnRange::up_to(Lsn::new(400))),
+        None,
+        Lsn::new(400),
+        &cache,
+    )
+    .expect("resolving");
+    assert_eq!(before.declared_rows(), 400);
+
+    // Another file, committed after the cache warmed.
+    let report = write_parquet(
+        dir.path(),
+        "part-0004.parquet",
+        &rows(400, 500),
+        Lsn::new(500),
+        WriterConfig::default(),
+    )
+    .expect("publishing");
+    sankhya_table_delta::commit(
+        dir.path(),
+        2,
+        &[Action::Add(AddFile::with_rows(
+            "part-0004.parquet",
+            report.bytes,
+            0,
+            100,
+        ))],
+    )
+    .expect("committing");
+
+    let after = resolve_cached(
+        schema(),
+        dir.path(),
+        Some(LsnRange::up_to(Lsn::new(500))),
+        None,
+        Lsn::new(500),
+        &cache,
+    )
+    .expect("resolving");
+
+    assert_eq!(after.declared_rows(), 500, "the cache missed a commit");
+    let (count, sum) = measure(Arc::new(after), AGGREGATE).await;
+    assert_eq!(count, 500);
+    assert_eq!(sum, triangular(500));
 }

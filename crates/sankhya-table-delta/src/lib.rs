@@ -36,13 +36,15 @@
 
 #![doc(html_root_url = "https://docs.rs/sankhya-table-delta")]
 
+mod cache;
 mod log;
 mod schema;
 mod stats;
 
+pub use cache::{LogCache, Outcome};
 pub use log::{
-    commit, create, live_files, read_actions, Action, AddFile, CommitError, Format, LiveSet,
-    Metadata, RemoveFile, Version,
+    advance, commit, commits, create, live_files, newest_after, read_actions, read_actions_after,
+    Action, AddFile, CommitError, Format, LiveSet, Metadata, RemoveFile, Replay, Version,
 };
 pub use schema::{schema_string, UnsupportedType};
 pub use stats::{decode_bound, encode_bound, from_column_stats, to_column_stats, FileStatistics};

@@ -251,6 +251,11 @@ pub enum CommitError {
     Io(String),
     /// A log line could not be parsed, which means the log is not what this crate wrote.
     Malformed { version: Version, detail: String },
+    /// The version would leave a gap in the log.
+    NonContiguous {
+        attempted: Version,
+        expected: Version,
+    },
 }
 
 impl fmt::Display for CommitError {
@@ -265,6 +270,16 @@ impl fmt::Display for CommitError {
             Self::Malformed { version, detail } => {
                 write!(f, "log version {version} is malformed: {detail}")
             }
+            Self::NonContiguous {
+                attempted,
+                expected,
+            } => write!(
+                f,
+                "committing version {attempted} would leave a gap; the next version is \
+                 {expected}. A gap makes it impossible to tell whether a log has more \
+                 commits without listing all of them, and a reader that probes forward \
+                 would stop at the gap and silently serve an incomplete file set"
+            ),
         }
     }
 }
@@ -305,6 +320,18 @@ pub fn commit(
         return Err(CommitError::VersionTaken(version));
     }
 
+    // Versions must be contiguous. The protocol requires it, and this system depends on
+    // it for something specific: a reader that knows the state at version *n* can find
+    // out whether anything is newer by asking whether *n+1* exists — one probe instead of
+    // listing a directory that grows without bound. A gap would make that probe stop
+    // early and silently serve a file set missing everything past the gap.
+    if version > 0 && !commit_path(table_root, version - 1).exists() {
+        return Err(CommitError::NonContiguous {
+            attempted: version,
+            expected: previous_version(table_root).map_or(0, |v| v + 1),
+        });
+    }
+
     let mut body = String::new();
     for action in actions {
         let line = serde_json::to_string(action)
@@ -330,18 +357,21 @@ pub fn commit(
     Ok(version)
 }
 
-/// Every action in the log, in version order.
+/// The commit files present, in version order.
+///
+/// Separated from reading them because listing is cheap and reading is not: a caller
+/// that only needs to know whether anything has changed can stop here.
 ///
 /// # Errors
 ///
-/// Returns an error if a commit cannot be read or a line cannot be parsed.
-pub fn read_actions(table_root: &Path) -> Result<Vec<(Version, Action)>, CommitError> {
+/// Returns an error if the log directory cannot be listed.
+pub fn commits(table_root: &Path) -> Result<Vec<(Version, PathBuf)>, CommitError> {
     let dir = log_dir(table_root);
     if !dir.exists() {
         return Ok(Vec::new());
     }
 
-    let mut commits: Vec<(Version, PathBuf)> = Vec::new();
+    let mut out: Vec<(Version, PathBuf)> = Vec::new();
     for entry in std::fs::read_dir(&dir)
         .map_err(|e| CommitError::Io(format!("listing {}: {e}", dir.display())))?
     {
@@ -353,12 +383,82 @@ pub fn read_actions(table_root: &Path) -> Result<Vec<(Version, Action)>, CommitE
         let Ok(version) = stem.parse::<Version>() else {
             continue;
         };
-        commits.push((version, entry.path()));
+        out.push((version, entry.path()));
     }
-    commits.sort_by_key(|(v, _)| *v);
+    out.sort_by_key(|(v, _)| *v);
+    Ok(out)
+}
+
+/// The highest version present, found without listing the whole directory.
+///
+/// Probes forward from `after`, relying on versions being contiguous — which [`commit`]
+/// enforces. This is what keeps a cached reader's cost proportional to what has changed
+/// rather than to the table's whole history.
+///
+/// # Errors
+///
+/// Never returns an error; the signature matches its neighbours so a caller can treat
+/// them uniformly.
+#[must_use]
+pub fn newest_after(table_root: &Path, after: Option<Version>) -> Option<Version> {
+    let mut probe = after.map_or(0, |v| v + 1);
+    if !commit_path(table_root, probe).exists() {
+        return after.filter(|v| commit_path(table_root, *v).exists());
+    }
+    while commit_path(table_root, probe + 1).exists() {
+        probe += 1;
+    }
+    Some(probe)
+}
+
+fn previous_version(table_root: &Path) -> Option<Version> {
+    // The probe rather than a listing: it is cheaper, and it does not depend on the
+    // order the filesystem hands back directory entries.
+    newest_after(table_root, None)
+}
+
+/// Every action in the log, in version order.
+///
+/// # Errors
+///
+/// Returns an error if a commit cannot be read or a line cannot be parsed.
+pub fn read_actions(table_root: &Path) -> Result<Vec<(Version, Action)>, CommitError> {
+    read_actions_after(table_root, None)
+}
+
+/// Every action in commits strictly after `after`, in version order.
+///
+/// `None` means from the beginning. This is what makes an incremental replay possible:
+/// a caller holding the state as of version *n* need only read what came after it.
+///
+/// # Errors
+///
+/// Returns an error if a commit cannot be read or a line cannot be parsed.
+pub fn read_actions_after(
+    table_root: &Path,
+    after: Option<Version>,
+) -> Result<Vec<(Version, Action)>, CommitError> {
+    // Walked forward rather than listed. Listing costs one directory read proportional
+    // to the table's whole history, which for a caller resuming after a single commit
+    // dwarfs the work it came to do — 18 ms of listing to read one 200-byte file, at
+    // fifty thousand commits.
+    //
+    // Sound because versions are contiguous, which `commit` enforces. A gap would stop
+    // this walk early and silently return an incomplete set of actions, which is exactly
+    // why that rule is enforced rather than assumed.
+    let mut to_read: Vec<(Version, PathBuf)> = Vec::new();
+    let mut version = after.map_or(0, |v| v + 1);
+    loop {
+        let path = commit_path(table_root, version);
+        if !path.exists() {
+            break;
+        }
+        to_read.push((version, path));
+        version += 1;
+    }
 
     let mut out = Vec::new();
-    for (version, path) in commits {
+    for (version, path) in to_read {
         let text = std::fs::read_to_string(&path)
             .map_err(|e| CommitError::Io(format!("reading {}: {e}", path.display())))?;
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
@@ -405,54 +505,105 @@ impl LiveSet {
 ///
 /// Returns an error if the log cannot be read or is malformed.
 pub fn live_files(table_root: &Path) -> Result<LiveSet, CommitError> {
-    let actions = read_actions(table_root)?;
-    if actions.is_empty() {
-        return Ok(LiveSet::default());
+    advance(table_root, &LiveSet::default())
+}
+
+/// The live set as of the newest commit, starting from a known earlier one.
+///
+/// Reads only the commits after `base.version`, so a caller that already knows the state
+/// at version *n* pays for what has happened since rather than for the whole history.
+/// Passing a default `base` is a full replay.
+///
+/// # Errors
+///
+/// Returns an error if the log cannot be read or is malformed.
+pub fn advance(table_root: &Path, base: &LiveSet) -> Result<LiveSet, CommitError> {
+    let mut replay = Replay::from(base.clone());
+    replay.advance(table_root)?;
+    Ok(replay.into_live_set())
+}
+
+/// A replay that can be resumed without rebuilding its index.
+///
+/// The index is the whole reason this type exists. Rebuilding it from a file list costs
+/// one pass over every live file, which for a caller resuming after a single new commit
+/// is the same shape of waste the resumption was meant to avoid — it trades "linear in
+/// the history" for "linear in the table", which is better and still not right.
+#[derive(Clone, Debug, Default)]
+pub struct Replay {
+    files: Vec<Option<AddFile>>,
+    position: HashMap<String, usize>,
+    version: Option<Version>,
+}
+
+impl From<LiveSet> for Replay {
+    fn from(live: LiveSet) -> Self {
+        let position = live
+            .files
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (f.path.clone(), i))
+            .collect();
+        Self {
+            files: live.files.into_iter().map(Some).collect(),
+            position,
+            version: live.version,
+        }
+    }
+}
+
+impl Replay {
+    /// The version this replay reflects.
+    #[must_use]
+    pub const fn version(&self) -> Option<Version> {
+        self.version
     }
 
-    // Positions are held in an index rather than found by scanning.
-    //
-    // The obvious implementation searches the accumulated list for each add and removes
-    // by filtering, which is quadratic in the number of commits. That is invisible at
-    // the scale of a test and ruinous at the scale of a table: measured at 0.3 ms for a
-    // hundred commits, 82 ms for ten thousand, and 1.96 s for fifty thousand — which a
-    // table committing every ten seconds reaches inside a week, after which every query
-    // pays two seconds before it starts.
-    //
-    // Order is still insertion order, because a reader consumes files in the order the
-    // table declared them.
-    let mut files: Vec<Option<AddFile>> = Vec::new();
-    let mut position: HashMap<String, usize> = HashMap::new();
-    let mut version = None;
-
-    for (v, action) in actions {
-        version = Some(v);
-        match action {
-            Action::Add(add) => match position.get(&add.path) {
-                // An add of a path already present replaces it rather than duplicating
-                // it. Duplicating would double-count every row in the file.
-                Some(index) => files[*index] = Some(add),
-                None => {
-                    position.insert(add.path.clone(), files.len());
-                    files.push(Some(add));
+    /// Read and apply every commit newer than this replay.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the log cannot be read or is malformed.
+    pub fn advance(&mut self, table_root: &Path) -> Result<usize, CommitError> {
+        let actions = read_actions_after(table_root, self.version)?;
+        let count = actions.len();
+        for (version, action) in actions {
+            self.version = Some(version);
+            match action {
+                Action::Add(add) => match self.position.get(&add.path) {
+                    Some(index) => self.files[*index] = Some(add),
+                    None => {
+                        self.position.insert(add.path.clone(), self.files.len());
+                        self.files.push(Some(add));
+                    }
+                },
+                Action::Remove(remove) => {
+                    if let Some(index) = self.position.remove(&remove.path) {
+                        self.files[index] = None;
+                    }
                 }
-            },
-            Action::Remove(remove) => {
-                // Tombstoned in place rather than removed, so every other file keeps its
-                // index. Compacting the vector here would invalidate the index and put
-                // the scan straight back.
-                if let Some(index) = position.remove(&remove.path) {
-                    files[index] = None;
-                }
+                Action::Protocol { .. } | Action::Metadata(_) => {}
             }
-            Action::Protocol { .. } | Action::Metadata(_) => {}
+        }
+        Ok(count)
+    }
+
+    /// The live set as it now stands.
+    #[must_use]
+    pub fn live_set(&self) -> LiveSet {
+        LiveSet {
+            files: self.files.iter().flatten().cloned().collect(),
+            version: self.version,
         }
     }
 
-    Ok(LiveSet {
-        files: files.into_iter().flatten().collect(),
-        version,
-    })
+    #[must_use]
+    fn into_live_set(self) -> LiveSet {
+        LiveSet {
+            files: self.files.into_iter().flatten().collect(),
+            version: self.version,
+        }
+    }
 }
 
 /// The actions that create a table.

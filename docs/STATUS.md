@@ -64,6 +64,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | A skipped file never hides a matching row | Property-tested over arbitrary values and predicates, and again over *merged* statistics — compaction merges rather than recomputes, so a merge that narrowed a bound would produce a defect appearing only after maintenance ran |
 | Distinct-value counts are estimated well enough to order a join | Within 5% from 10 to 100,000 distinct values, exact under merge, and reproducible across processes — a per-process hash seed would make two nodes disagree about a plan and the disagreement would look like an optimizer bug |
 | An approximate function cannot answer an exact question by accident | Rejected at planning time, including inside a subquery or a `HAVING` clause; a permissive session still gets a watermark naming what it used |
+| A warm process pays for what changed, not for the whole history | Table file sets are cached and resumed; the cache cannot go stale because it never trusts its own version, and asking costs one filesystem probe rather than a directory listing |
 | Log replay scales linearly with a table's history | Guarded by measuring the *ratio* between two sizes rather than a clock, so it means the same on any machine — and proven to fail on the quadratic implementation it replaced |
 | A file is prunable from the moment it is published | Capture computes statistics from the batch it just encoded — the same data, already in memory — so a file does not wait for maintenance to become skippable |
 | Statistics survive a restart and other engines can read them | Bounds and null counts are written into the table log itself, so a fresh process prunes exactly as a warm one does — and the kernel reads a log carrying them |
@@ -71,7 +72,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 67 specific defects applied one at a time; all 67 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 71 specific defects applied one at a time; all 71 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
 
 ---
 
@@ -100,11 +101,10 @@ Stated plainly, because a status document that omits this is marketing.
 - **The cardinality sketch is not persisted.** The protocol has nowhere to put it, so a
   column read back from the log reports zero distinct values. Nothing currently reads
   that figure, but it is a trap for whatever does first.
-- **No log checkpoints and no metadata cache.** Every plan replays the table log from the
-  first commit. That is now linear rather than quadratic, but linear in a table's whole
-  history is still unbounded: 117 ms at fifty thousand commits, and dominated by opening
-  fifty thousand files rather than by anything a better algorithm could fix. Checkpoints
-  are what that needs.
+- **No log checkpoints.** A *cold* process still replays the whole log: 140 ms at fifty
+  thousand commits, dominated by opening one file per commit rather than by anything an
+  algorithm can fix. A warm process pays 1.2 ms, so this is a startup cost rather than a
+  per-query one — but it is the last unbounded thing on the read path.
 - **No merge strategy beyond union.** Latest-version-per-key, which mutable tables need,
   is not implemented; the provider unions its tiers.
 - **Exact order statistics buffer their input.** Selection is linear rather than
@@ -316,6 +316,35 @@ of separate commits and passed against the very implementation it was written to
 the quadratic term is per action, not per commit, so file I/O buried it. Concentrating
 the actions into ten commits separates them: 16.1× for four times the files against about
 4× for the fixed version.
+
+### Caching a table's file set
+
+The same table, replanned by a long-running process.
+
+| Commits | Cold replay | Cache, unchanged | Cache, one new commit |
+|---|---|---|---|
+| 1,000 | 1.66 ms | 23 µs | 43 µs |
+| 10,000 | 22.1 ms | 224 µs | 371 µs |
+| 50,000 | 140 ms | **1.20 ms** | **1.88 ms** |
+
+**117× on an unchanged table, 75× after a commit**, and both are now proportional to what
+changed rather than to the table's history. The residual 1.2 ms is copying fifty thousand
+file entries into the answer, which is what the caller asked for.
+
+Two things had to change to get there, and each was worth about an order of magnitude:
+
+- **Asking is a probe, not a listing.** Versions are contiguous — enforced at commit
+  rather than assumed — so a reader that knows the state at version *n* asks whether
+  *n+1* exists. Listing instead made every lookup proportional to the whole history, which
+  is the cost the cache existed to remove.
+- **The index is kept, not rebuilt.** Resuming from a bare file list rebuilds the position
+  index over every live file, swapping *linear in the history* for *linear in the table* —
+  better, and still not right.
+
+The cache cannot go stale, and that is structural rather than careful: it never trusts its
+own version, there is no invalidation, no expiry and no notification to miss. A table
+dropped and recreated at the same path is detected and replayed from the beginning, rather
+than resumed from a base describing files that no longer exist.
 
 ### Computing statistics at compaction
 

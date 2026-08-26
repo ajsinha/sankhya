@@ -47,7 +47,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::scalar::ScalarValue;
 use sankhya_plan::{plan_splice, Splice, TierRef};
 use sankhya_stats::{can_skip, ColumnStats, Predicate};
-use sankhya_table_delta::live_files;
+use sankhya_table_delta::{live_files, LogCache};
 use sankhya_table_memory::ArrivalBuffer;
 use sankhya_types::{Lsn, LsnRange};
 use std::collections::BTreeMap;
@@ -393,6 +393,52 @@ pub fn resolve(
     arrival: Option<&ArrivalBuffer>,
     target: Lsn,
 ) -> Result<SankhyaTable, ReadError> {
+    resolve_with(
+        schema,
+        table_root,
+        published_coverage,
+        arrival,
+        target,
+        None,
+    )
+}
+
+/// The same, reusing a cache of table file sets across query plans.
+///
+/// A long-running process replans the same table constantly, and without a cache each
+/// plan replays the table's whole history to learn about the handful of commits since
+/// the last one. The cache cannot go stale — see [`LogCache`] — so passing one is a
+/// performance decision and never a correctness one.
+///
+/// # Errors
+///
+/// The same conditions as [`resolve`].
+pub fn resolve_cached(
+    schema: SchemaRef,
+    table_root: &std::path::Path,
+    published_coverage: Option<LsnRange>,
+    arrival: Option<&ArrivalBuffer>,
+    target: Lsn,
+    cache: &LogCache,
+) -> Result<SankhyaTable, ReadError> {
+    resolve_with(
+        schema,
+        table_root,
+        published_coverage,
+        arrival,
+        target,
+        Some(cache),
+    )
+}
+
+fn resolve_with(
+    schema: SchemaRef,
+    table_root: &std::path::Path,
+    published_coverage: Option<LsnRange>,
+    arrival: Option<&ArrivalBuffer>,
+    target: Lsn,
+    cache: Option<&LogCache>,
+) -> Result<SankhyaTable, ReadError> {
     let mut offered: Vec<TierRef> = Vec::new();
     if let Some(coverage) = published_coverage {
         offered.push(TierRef::new("published", coverage));
@@ -422,7 +468,10 @@ pub fn resolve(
     for tier in &splice.tiers {
         match tier.name {
             "published" => {
-                let live = live_files(table_root)?;
+                let live = match cache {
+                    Some(cache) => cache.live_files(table_root)?.0,
+                    None => live_files(table_root)?,
+                };
                 for file in &live.files {
                     // A file whose row count the log does not carry cannot be planned
                     // against. Treating the absence as zero would tell the optimizer the

@@ -44,7 +44,7 @@ mod predicate;
 mod provider;
 
 pub use predicate::extract;
-pub use provider::{resolve, LoggedFile, SankhyaTable};
+pub use provider::{resolve, resolve_cached, LoggedFile, SankhyaTable};
 
 /// Published files for one table, and what they cover.
 #[derive(Clone, PartialEq, Eq, Debug)]

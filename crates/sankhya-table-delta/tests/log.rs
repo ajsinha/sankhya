@@ -4,7 +4,7 @@
 //! thing standing between a correct file set and one that double-counts.
 
 use sankhya_table_delta::{
-    commit, create, live_files, Action, AddFile, CommitError, Metadata, RemoveFile,
+    commit, commits, create, live_files, Action, AddFile, CommitError, Metadata, RemoveFile,
 };
 
 const SCHEMA: &str = r#"{"type":"struct","fields":[]}"#;
@@ -30,18 +30,57 @@ fn a_table_with_no_commits_has_no_files_and_no_version() {
 }
 
 #[test]
-fn commits_replay_in_version_order_not_write_order() {
-    // Written out of order on purpose. The protocol's zero-padded twenty-digit naming
-    // exists so lexical order is version order; a replay that trusted directory order
-    // would be at the mercy of the filesystem.
+fn commits_replay_in_version_order_not_directory_order() {
+    // The commit files are created in reverse, so anything that trusted the order the
+    // filesystem hands them back would see the removal before the add and report both
+    // files live.
+    //
+    // Written directly rather than through `commit`, which now refuses to leave a gap —
+    // a rule that exists for a different reason and would make this sequence
+    // unconstructible. The property being tested is the replay's, not the writer's.
     let dir = root();
-    commit(dir.path(), 2, &[remove("a.parquet")]).expect("commit 2");
-    commit(dir.path(), 0, &create(Metadata::new("t", SCHEMA, 0))).expect("commit 0");
-    commit(dir.path(), 1, &[add("a.parquet"), add("b.parquet")]).expect("commit 1");
+    let log = dir.path().join("_delta_log");
+    std::fs::create_dir_all(&log).expect("creating the log directory");
+
+    let write = |version: u64, actions: &[Action]| {
+        let body: String = actions
+            .iter()
+            .map(|a| format!("{}\n", serde_json::to_string(a).expect("encoding")))
+            .collect();
+        std::fs::write(log.join(format!("{version:020}.json")), body).expect("writing");
+    };
+
+    write(2, &[remove("a.parquet")]);
+    write(1, &[add("a.parquet"), add("b.parquet")]);
+    write(0, &create(Metadata::new("t", SCHEMA, 0)));
 
     let live = live_files(dir.path()).expect("reading");
     assert_eq!(live.paths(), vec!["b.parquet"]);
     assert_eq!(live.version, Some(2));
+}
+
+#[test]
+fn a_commit_that_would_leave_a_gap_is_refused() {
+    // Contiguity is not tidiness. A reader that knows the state at version n finds out
+    // whether anything is newer by asking whether n+1 exists -- one probe, rather than
+    // listing a directory that grows without bound. A gap makes that probe stop early
+    // and silently serve a file set missing everything past it.
+    let dir = root();
+    commit(dir.path(), 0, &create(Metadata::new("t", SCHEMA, 0))).expect("commit 0");
+
+    let err = commit(dir.path(), 5, &[add("a.parquet")]).expect_err("a gap must be refused");
+    assert!(matches!(
+        err,
+        CommitError::NonContiguous {
+            attempted: 5,
+            expected: 1
+        }
+    ));
+    assert!(format!("{err}").contains("incomplete file set"));
+
+    // The next version is accepted.
+    commit(dir.path(), 1, &[add("a.parquet")]).expect("commit 1");
+    assert_eq!(live_files(dir.path()).expect("reading").version, Some(1));
 }
 
 #[test]
@@ -235,4 +274,50 @@ fn replay_scales_linearly_with_the_number_of_files() {
         "replay grew {ratio:.1}x for 4x the files ({small:?} then {large:?}); linear \
          growth is about 4x and quadratic about 16x"
     );
+}
+
+#[test]
+fn commits_are_listed_in_version_order() {
+    // `commits` promises version order, and a caller relying on it has no way to tell
+    // that the filesystem handed the entries back in some other order. Created in
+    // reverse so a listing that simply forwarded directory order would fail here.
+    //
+    // Written directly rather than through `commit`, which refuses to leave a gap — a
+    // rule with a different purpose that would make this sequence unconstructible.
+    let dir = root();
+    let log = dir.path().join("_delta_log");
+    std::fs::create_dir_all(&log).expect("creating the log directory");
+
+    for version in [7u64, 2, 5, 0, 9, 1] {
+        std::fs::write(log.join(format!("{version:020}.json")), "").expect("writing");
+    }
+
+    let listed: Vec<u64> = commits(dir.path())
+        .expect("listing")
+        .into_iter()
+        .map(|(v, _)| v)
+        .collect();
+
+    assert_eq!(listed, vec![0, 1, 2, 5, 7, 9]);
+}
+
+#[test]
+fn a_file_that_is_not_a_commit_is_ignored() {
+    // Checkpoints, temporary files and anything else a future protocol version leaves in
+    // the log directory must not be mistaken for a commit.
+    let dir = root();
+    commit(dir.path(), 0, &create(Metadata::new("t", SCHEMA, 0))).expect("commit 0");
+
+    let log = dir.path().join("_delta_log");
+    std::fs::write(log.join("_last_checkpoint"), "{}").expect("writing");
+    std::fs::write(log.join("00000000000000000000.checkpoint.parquet"), "").expect("writing");
+    std::fs::write(log.join("notes.txt"), "").expect("writing");
+
+    let listed: Vec<u64> = commits(dir.path())
+        .expect("listing")
+        .into_iter()
+        .map(|(v, _)| v)
+        .collect();
+    assert_eq!(listed, vec![0]);
+    assert_eq!(live_files(dir.path()).expect("reading").version, Some(0));
 }

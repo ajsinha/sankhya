@@ -199,13 +199,13 @@ CATALOGUE = [
 
     ("log: let an add of an existing path duplicate it",
      "crates/sankhya-table-delta/src/log.rs",
-     "                if let Some(existing) = files.iter_mut().find(|f| f.path == add.path) {\n                    *existing = add;\n                } else {\n                    files.push(add);\n                }",
-     "                files.push(add);",
+     "                Action::Add(add) => match self.position.get(&add.path) {\n                    Some(index) => self.files[*index] = Some(add),\n                    None => {\n                        self.position.insert(add.path.clone(), self.files.len());\n                        self.files.push(Some(add));\n                    }\n                },",
+     "                Action::Add(add) => {\n                    self.position.insert(add.path.clone(), self.files.len());\n                    self.files.push(Some(add));\n                }",
      "sankhya-table-delta"),
 
-    ("log: replay commits in directory order rather than version order",
+    ("log: list commits in directory order rather than version order",
      "crates/sankhya-table-delta/src/log.rs",
-     "    commits.sort_by_key(|(v, _)| *v);",
+     "    out.sort_by_key(|(v, _)| *v);",
      "",
      "sankhya-table-delta"),
 
@@ -304,10 +304,10 @@ CATALOGUE = [
      "TableProviderFilterPushDown::Exact; filters.len()",
      "sankhya-readpath"),
 
-    ("provider: fall back to the whole live set when the log will not replay",
+    ("provider: treat an unreadable log as an empty table",
      "crates/sankhya-readpath/src/provider.rs",
-     "                let live = live_files(table_root)?;",
-     "                let live = live_files(table_root).unwrap_or_default();",
+     "                    None => live_files(table_root)?,",
+     "                    None => live_files(table_root).unwrap_or_default(),",
      "sankhya-readpath"),
 
     ("quantile: place an unorderable value instead of refusing",
@@ -469,8 +469,32 @@ CATALOGUE = [
 
     ("log: replay by scanning the file list instead of indexing it",
      "crates/sankhya-table-delta/src/log.rs",
-     "            Action::Add(add) => match position.get(&add.path) {\n                // An add of a path already present replaces it rather than duplicating\n                // it. Duplicating would double-count every row in the file.\n                Some(index) => files[*index] = Some(add),\n                None => {\n                    position.insert(add.path.clone(), files.len());\n                    files.push(Some(add));\n                }\n            },",
-     "            Action::Add(add) => {\n                let _ = &position;\n                if let Some(existing) = files.iter_mut().flatten().find(|f| f.path == add.path) {\n                    *existing = add;\n                } else {\n                    files.push(Some(add));\n                }\n            }",
+     "                Action::Add(add) => match self.position.get(&add.path) {\n                    Some(index) => self.files[*index] = Some(add),\n                    None => {\n                        self.position.insert(add.path.clone(), self.files.len());\n                        self.files.push(Some(add));\n                    }\n                },",
+     "                Action::Add(add) => {\n                    if let Some(existing) =\n                        self.files.iter_mut().flatten().find(|f| f.path == add.path)\n                    {\n                        *existing = add;\n                    } else {\n                        self.files.push(Some(add));\n                    }\n                }",
+     "sankhya-table-delta"),
+
+    ("cache: trust the cached version instead of asking the log",
+     "crates/sankhya-table-delta/src/cache.rs",
+     "        let newest = newest_after(table_root, cached.flatten());",
+     "        let newest = cached.flatten();",
+     "sankhya-table-delta"),
+
+    ("cache: resume from a stale base after the table was rebuilt",
+     "crates/sankhya-table-delta/src/cache.rs",
+     "        if rebuilt {\n            entries.remove(table_root);\n        }",
+     "",
+     "sankhya-table-delta"),
+
+    ("log: allow a commit that leaves a gap",
+     "crates/sankhya-table-delta/src/log.rs",
+     "    if version > 0 && !commit_path(table_root, version - 1).exists() {",
+     "    if false {",
+     "sankhya-table-delta"),
+
+    ("log: stop walking commits at the first gap without noticing",
+     "crates/sankhya-table-delta/src/log.rs",
+     "    let mut version = after.map_or(0, |v| v + 1);",
+     "    let mut version = after.map_or(1, |v| v + 2);",
      "sankhya-table-delta"),
 
     ("readpath: read every offered tier rather than the selected ones",
