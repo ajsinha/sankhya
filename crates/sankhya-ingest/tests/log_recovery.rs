@@ -92,9 +92,19 @@ fn table_root(dir: &std::path::Path) -> std::path::PathBuf {
     dir.join("public").join("readings")
 }
 
+/// Feed the stream, publishing at every transaction boundary.
+///
+/// Publishing only once at the end would produce a single file per run, and a fixture
+/// with one file cannot distinguish resuming from the highest committed sequence from
+/// resuming from the lowest — they are the same number. Continuous capture publishes on
+/// a cadence, so several files per run is the realistic shape as well as the
+/// discriminating one.
 fn run(p: &mut Pipeline, messages: &[Message]) {
     for message in messages {
         p.accept(message).expect("accepting");
+        if matches!(message, Message::Commit { .. }) {
+            p.publish(true).expect("publishing");
+        }
     }
     p.publish(true).expect("publishing");
 }
