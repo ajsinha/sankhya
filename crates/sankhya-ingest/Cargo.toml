@@ -20,6 +20,7 @@ sankhya-schema    = { path = "../sankhya-schema" }
 sankhya-cdc-model = { path = "../sankhya-cdc-model" }
 sankhya-cdc-apply = { path = "../sankhya-cdc-apply" }
 sankhya-table     = { path = "../sankhya-table" }
+sankhya-plan      = { path = "../sankhya-plan" }
 
 [dev-dependencies]
 tempfile   = { workspace = true }

@@ -2500,6 +2500,7 @@ dependencies = [
  "sankhya-cdc-apply",
  "sankhya-cdc-model",
  "sankhya-error",
+ "sankhya-plan",
  "sankhya-schema",
  "sankhya-table",
  "sankhya-types",

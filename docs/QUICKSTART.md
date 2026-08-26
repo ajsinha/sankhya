@@ -85,7 +85,7 @@ Everything here runs without a database. The interesting parts:
 | `sankhya-cdc-model` | The wire decoder never panics on arbitrary input, and decodes a stream captured from a real server |
 | `sankhya-cdc-apply` | A transaction is never split across batches, however events interleave |
 | `sankhya-schema` | Every type round-trips exactly or is refused with a reason; naming collisions are refused rather than disambiguated; all ten tables onboard from the live stream alone |
-| `sankhya-plan` | A query is answered from tiers covering its span **exactly once** — neither double-counting nor losing rows |
+| `sankhya-plan` | A query is answered from tiers covering its span **exactly once**; a session never reads from before a write it has already seen |
 | `sankhya-table` | Text values become typed Arrow; an unparseable value is an error, never a null |
 | `sankhya-ingest` | Several tables capture independently from one interleaved stream, with no rows lost or leaked between them |
 | `sankhya-datagen` | The generator is reproducible, which is what makes reconciliation meaningful |

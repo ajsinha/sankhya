@@ -13,7 +13,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | Milestone | Planned | State |
 |---|---|---|
 | **M0** Foundations, spikes, walking skeleton | 10–12 ew | **Complete**, merged to `main` |
-| **M1** Zero-configuration sync and read-your-own-writes | 14–18 ew | **Substantially complete** — sync works; read-your-own-writes not started |
+| **M1** Zero-configuration sync and read-your-own-writes | 14–18 ew | **Complete** |
 | **M2** Ingest correctness and durability | 24–28 ew | Partly — batching invariants and reconciliation-by-test exist; slot lifecycle, backfill and the escalation ladder do not |
 | **M3** Query engine and storage performance | 28–34 ew | A vertical slice only |
 | **M4**–**M8** | — | Not started |
@@ -36,6 +36,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | Captured data becomes queryable Parquet | Exact decimal sum matches the source |
 | Several tables capture independently from one interleaved stream | 4 tables, each reconciling against the source |
 | Capture holds up at scale | 1,000,000 rows across all 10 tables at ~285k rows/s, every table reconciling |
+| A session sees its own write analytically | Wrote, capture caught up in 6 ms, the query returned the row |
 
 ---
 
@@ -52,9 +53,10 @@ Stated plainly, because a status document that omits this is marketing.
   and **none of the source-safety escalation ladder** — which is the single most
   important operational safeguard in the design.
 - **No backfill.** Only changes occurring after a slot exists are captured.
-- **No read-your-own-writes**, no session tokens, no read modes.
 - **No arrival buffer.** The tiered read path is planned and property-tested but has
-  only one tier to plan over.
+  only one tier to plan over, so read-your-own-writes currently waits for publication
+  rather than for an in-memory tier. The waiting *contract* is right; the tier that
+  would make the wait shorter does not exist yet.
 - **No catalog, no table provider, no compaction, no maintenance.**
 - **No graph engine, no API surfaces, no multi-tenancy, no security.**
 

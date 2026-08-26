@@ -28,6 +28,10 @@
 
 #![doc(html_root_url = "https://docs.rs/sankhya-plan")]
 
+mod session;
 mod splice;
 
+pub use session::{
+    FreshnessError, ReadMode, SessionToken, Visibility, evaluate_visibility, wait_exhausted,
+};
 pub use splice::{Splice, SpliceError, TierRef, is_exact_cover, plan_splice};
