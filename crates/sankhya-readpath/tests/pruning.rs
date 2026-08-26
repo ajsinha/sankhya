@@ -338,3 +338,151 @@ async fn measure_what_pruning_saves() {
         );
     }
 }
+
+#[tokio::test]
+async fn the_optimizer_is_given_the_catalogue_rather_than_a_guess() {
+    // Distinct-value counts are what an optimizer needs to order a join, and neither the
+    // file format nor the table log carries them. Without these it plans on a guess --
+    // usually "distinct equals rows", which makes every column look like a key and every
+    // join order look equally good.
+    use datafusion::catalog::TableProvider;
+    use datafusion::common::stats::Precision;
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let (_, provider) = table(dir.path());
+
+    let stats = provider.statistics().expect("statistics");
+    let index = schema().index_of("amount").expect("the amount column");
+    let amount = &stats.column_statistics[index];
+
+    // Bounds, exactly, from the catalogue.
+    assert_eq!(
+        amount.min_value,
+        Precision::Exact(datafusion::scalar::ScalarValue::Int64(Some(1)))
+    );
+    assert_eq!(
+        amount.max_value,
+        Precision::Exact(datafusion::scalar::ScalarValue::Int64(Some(1_000)))
+    );
+    assert_eq!(amount.null_count, Precision::Exact(0));
+
+    // A cardinality, and marked inexact. The sketch is accurate to a few percent, which
+    // is right for choosing a join order and wrong for concluding a column is unique --
+    // and an optimizer told a cardinality is exact may act on the latter.
+    let Precision::Inexact(distinct) = amount.distinct_count else {
+        panic!(
+            "no cardinality reached the optimizer: {:?}",
+            amount.distinct_count
+        );
+    };
+    assert!(
+        (900..=1_100).contains(&distinct),
+        "a thousand distinct values estimated as {distinct}"
+    );
+}
+
+#[tokio::test]
+async fn a_column_the_catalogue_does_not_cover_is_reported_unknown() {
+    // Merging only the files that happen to have statistics would produce bounds
+    // describing part of the table while claiming to describe all of it -- and an
+    // optimizer given a bound that excludes real values plans as though those rows do
+    // not exist.
+    use datafusion::catalog::TableProvider;
+    use datafusion::common::stats::Precision;
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let (files, _) = table(dir.path());
+
+    // One file loses its statistics, as an unrecognised type or an interrupted
+    // compaction would leave it.
+    let mut partial = files;
+    partial[3] = LoggedFile::new(partial[3].path.clone(), partial[3].size, partial[3].rows);
+
+    let coverage = LsnRange::up_to(Lsn::new(1_000));
+    let splice = plan_splice(&[TierRef::new("published", coverage)], Lsn::new(1_000))
+        .expect("a single tier");
+    let provider = SankhyaTable::new(schema(), partial, Vec::new(), Lsn::new(1_000), splice, true);
+
+    let stats = provider.statistics().expect("statistics");
+    let index = schema().index_of("amount").expect("the amount column");
+    assert_eq!(stats.column_statistics[index].min_value, Precision::Absent);
+    assert_eq!(stats.column_statistics[index].max_value, Precision::Absent);
+
+    // The row count still comes from the log, which every file has.
+    assert_eq!(stats.num_rows, Precision::Exact(1_000));
+}
+
+#[tokio::test]
+async fn a_bound_the_optimizer_cannot_represent_exactly_is_withheld() {
+    // An approximate bound handed to an optimizer is worse than none: it will be trusted,
+    // and the plan chosen from it is chosen confidently on a wrong number. An infinity
+    // and a byte string that is not text both have no exact representation, so both are
+    // reported absent rather than coerced into something close.
+    use datafusion::catalog::TableProvider;
+    use datafusion::common::stats::Precision;
+    use sankhya_stats::ColumnStats;
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let (files, _) = table(dir.path());
+
+    let mut with_infinity = files;
+    for file in &mut with_infinity {
+        let mut catalogue = BTreeMap::new();
+        catalogue.insert(
+            "amount".to_string(),
+            ColumnStats {
+                rows: file.rows,
+                nulls: 0,
+                min: Some(Bound::Float(f64::NEG_INFINITY)),
+                max: Some(Bound::Float(f64::INFINITY)),
+                ..ColumnStats::default()
+            },
+        );
+        *file = LoggedFile::new(file.path.clone(), file.size, file.rows).with_stats(catalogue);
+    }
+
+    let coverage = LsnRange::up_to(Lsn::new(1_000));
+    let splice = plan_splice(&[TierRef::new("published", coverage)], Lsn::new(1_000))
+        .expect("a single tier");
+    let provider = SankhyaTable::new(
+        schema(),
+        with_infinity,
+        Vec::new(),
+        Lsn::new(1_000),
+        splice,
+        true,
+    );
+
+    let stats = provider.statistics().expect("statistics");
+    let index = schema().index_of("amount").expect("the amount column");
+    assert_eq!(stats.column_statistics[index].min_value, Precision::Absent);
+    assert_eq!(stats.column_statistics[index].max_value, Precision::Absent);
+
+    // A finite float, by contrast, goes through.
+    let mut finite = (0..1u64)
+        .map(|_| {
+            let mut catalogue = BTreeMap::new();
+            catalogue.insert(
+                "amount".to_string(),
+                ColumnStats {
+                    rows: 10,
+                    nulls: 0,
+                    min: Some(Bound::Float(1.5)),
+                    max: Some(Bound::Float(9.5)),
+                    ..ColumnStats::default()
+                },
+            );
+            LoggedFile::new("x.parquet".to_string(), 1, 10).with_stats(catalogue)
+        })
+        .collect::<Vec<_>>();
+    finite.truncate(1);
+
+    let splice = plan_splice(&[TierRef::new("published", coverage)], Lsn::new(1_000))
+        .expect("a single tier");
+    let provider = SankhyaTable::new(schema(), finite, Vec::new(), Lsn::new(1_000), splice, true);
+    let stats = provider.statistics().expect("statistics");
+    assert_eq!(
+        stats.column_statistics[index].min_value,
+        Precision::Exact(datafusion::scalar::ScalarValue::Float64(Some(1.5)))
+    );
+}

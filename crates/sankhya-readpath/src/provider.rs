@@ -46,7 +46,7 @@ use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::scalar::ScalarValue;
 use sankhya_plan::{plan_splice, Splice, TierRef};
-use sankhya_stats::{can_skip, ColumnStats, Predicate};
+use sankhya_stats::{can_skip, Bound, ColumnStats, Predicate};
 use sankhya_table_delta::{live_files, LogCache};
 use sankhya_table_memory::ArrivalBuffer;
 use sankhya_types::{Lsn, LsnRange};
@@ -273,6 +273,102 @@ fn exact(value: u64) -> datafusion::common::stats::Precision<usize> {
     datafusion::common::stats::Precision::Exact(usize::try_from(value).unwrap_or(usize::MAX))
 }
 
+/// A bound as the engine's optimizer wants it.
+///
+/// Returns `Absent` for anything that cannot be represented exactly. An approximate bound
+/// handed to an optimizer is worse than none: it will be trusted, and the resulting plan
+/// is chosen confidently on a wrong number.
+fn scalar_of(bound: Option<&Bound>) -> datafusion::common::stats::Precision<ScalarValue> {
+    use datafusion::common::stats::Precision;
+    match bound {
+        Some(Bound::Int(v)) => Precision::Exact(ScalarValue::Int64(Some(*v))),
+        Some(Bound::Float(v)) if v.is_finite() => Precision::Exact(ScalarValue::Float64(Some(*v))),
+        Some(Bound::Bytes(v)) => match std::str::from_utf8(v) {
+            Ok(text) => Precision::Exact(ScalarValue::Utf8(Some(text.to_string()))),
+            Err(_) => Precision::Absent,
+        },
+        _ => Precision::Absent,
+    }
+}
+
+/// Per-column statistics for the whole table, merged across its live files.
+///
+/// # Why this is worth the merge
+///
+/// Distinct-value counts are what an optimizer needs to order a join, and neither the
+/// file format nor the table log carries them — so without this the engine plans a join
+/// on a guess. The guess is usually "the same as the row count", which makes every column
+/// look like a key and every join order look equally good.
+///
+/// # Why every field is exact or absent
+///
+/// The counts merge exactly, the bounds merge exactly, and the distinct sketch merges
+/// exactly in the sense that matters: merging gives the same registers as sketching the
+/// union. The *estimate* it produces is approximate, which is why it is reported as
+/// inexact — an optimizer told a cardinality is exact may use it to decide a join is a
+/// key lookup, and being wrong about that is a different plan rather than a slower one.
+fn column_statistics(
+    schema: &SchemaRef,
+    files: &[LoggedFile],
+) -> Vec<datafusion::common::ColumnStatistics> {
+    use datafusion::common::stats::Precision;
+    use datafusion::common::ColumnStatistics;
+
+    schema
+        .fields()
+        .iter()
+        .map(|field| {
+            let mut merged: Option<ColumnStats> = None;
+            for file in files {
+                let Some(stats) = file.stats.get(field.name()) else {
+                    // A file with nothing recorded makes the whole column unknown. Merging
+                    // only the files that happen to have statistics would produce bounds
+                    // that describe part of the table and claim to describe all of it.
+                    return ColumnStatistics::new_unknown();
+                };
+                match merged.as_mut() {
+                    None => merged = Some(stats.clone()),
+                    Some(into) => {
+                        if into.merge(stats).is_err() {
+                            return ColumnStatistics::new_unknown();
+                        }
+                    }
+                }
+            }
+
+            let Some(stats) = merged else {
+                return ColumnStatistics::new_unknown();
+            };
+
+            let distinct = stats.distinct_estimate();
+            // The average width the catalogue recorded, times the rows it covers. Absent
+            // where nothing was recorded rather than estimated from the type, since a
+            // fixed-width guess for a string column is wrong by whatever the data is.
+            let byte_size = if stats.total_width == 0 {
+                Precision::Absent
+            } else {
+                Precision::Inexact(usize::try_from(stats.total_width).unwrap_or(usize::MAX))
+            };
+
+            ColumnStatistics {
+                byte_size,
+                null_count: exact(stats.nulls),
+                max_value: scalar_of(stats.max.as_ref()),
+                min_value: scalar_of(stats.min.as_ref()),
+                sum_value: Precision::Absent,
+                // Inexact on purpose. The sketch is accurate to a few percent, which is
+                // right for choosing a join order and wrong for concluding a column is
+                // unique.
+                distinct_count: if distinct == 0 {
+                    Precision::Absent
+                } else {
+                    Precision::Inexact(usize::try_from(distinct).unwrap_or(usize::MAX))
+                },
+            }
+        })
+        .collect()
+}
+
 #[async_trait::async_trait]
 impl TableProvider for SankhyaTable {
     fn schema(&self) -> SchemaRef {
@@ -298,7 +394,7 @@ impl TableProvider for SankhyaTable {
         Some(Statistics {
             num_rows,
             total_byte_size: datafusion::common::stats::Precision::Absent,
-            column_statistics: Statistics::unknown_column(&self.schema),
+            column_statistics: column_statistics(&self.schema, &self.published),
         })
     }
 

@@ -797,6 +797,24 @@ CATALOGUE = [
      "        .enumerate()\n        .map(|(i, column)| {\n            if i == 0 {\n                arrow::compute::take(column, &indices, None)\n            } else {\n                Ok(Arc::clone(column))\n            }\n        })",
      "sankhya-maintenance"),
 
+    ("optimizer: report a cardinality estimate as exact",
+     "crates/sankhya-readpath/src/provider.rs",
+     "                    Precision::Inexact(usize::try_from(distinct).unwrap_or(usize::MAX))",
+     "                    Precision::Exact(usize::try_from(distinct).unwrap_or(usize::MAX))",
+     "sankhya-readpath"),
+
+    ("optimizer: describe part of a table as though it were all of it",
+     "crates/sankhya-readpath/src/provider.rs",
+     "                let Some(stats) = file.stats.get(field.name()) else {\n                    // A file with nothing recorded makes the whole column unknown. Merging\n                    // only the files that happen to have statistics would produce bounds\n                    // that describe part of the table and claim to describe all of it.\n                    return ColumnStatistics::new_unknown();\n                };",
+     "                let Some(stats) = file.stats.get(field.name()) else {\n                    continue;\n                };",
+     "sankhya-readpath"),
+
+    ("optimizer: hand it a bound it cannot represent exactly",
+     "crates/sankhya-readpath/src/provider.rs",
+     "        Some(Bound::Float(v)) if v.is_finite() => Precision::Exact(ScalarValue::Float64(Some(*v))),",
+     "        Some(Bound::Float(v)) => Precision::Exact(ScalarValue::Float64(Some(*v))),",
+     "sankhya-readpath"),
+
     ("readpath: read every offered tier rather than the selected ones",
      "crates/sankhya-readpath/src/lib.rs",
      "    for tier in &splice.tiers {",

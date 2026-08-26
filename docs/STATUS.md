@@ -203,6 +203,7 @@ been done. Nothing yet consults the check.
 
 | Capability | Evidence |
 |---|---|
+| The optimizer plans on the catalogue rather than a guess | Bounds, null counts and cardinality reach it from SANKHYA's own statistics — cardinality marked *inexact*, because an optimizer told a count is exact may conclude a column is unique, and being wrong about that is a different plan rather than a slower one |
 | A settled partition is written in the order it declares | Compaction sorts, which is what turns row-group bounds into an index — **7.8×** on the query whose objective was being missed, and the only one of that objective's three named preconditions that turned out to matter |
 | A required setting is required because it was measured, not because it sounds right | Filter pushdown was asserted at startup for five milestones and is not any more — measured a cost at every selectivity, up to 2.6× on a full query |
 | The pinned dependency set compiles with no critical duplicates | `cargo xtask check-dupes`, [ADR-0001](adr/0001-dependency-pin-set.md) |
@@ -266,7 +267,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 115 specific defects applied one at a time; all 115 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 118 specific defects applied one at a time; all 118 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
 
 ---
 
@@ -299,6 +300,11 @@ Stated plainly, because a status document that omits this is marketing.
   single file, which is fine into the millions of live files and not beyond; and nothing
   deletes the commits a checkpoint subsumes, so the log directory grows without bound even
   though nothing reads most of it.
+- **Statistics reach the optimizer but not the benchmark.** The provider supplies bounds,
+  null counts and cardinality; the TPC-H harness registers tables through the engine's own
+  listing table instead, so none of the numbers above exercise any of it. Putting TPC-H
+  behind the provider needs every table given a commit-position column and a log — which
+  is what capture produces and this harness does not.
 - **No merge strategy beyond union.** Latest-version-per-key, which mutable tables need,
   is not implemented; the provider unions its tiers.
 - **The governor decides but governs nothing.** Admission and the pressure ladder are
