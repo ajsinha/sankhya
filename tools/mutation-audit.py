@@ -713,6 +713,42 @@ CATALOGUE = [
      "            Err(_) => continue,\n        }\n    }\n\n    Err(Error::StorageUnavailable(format!(",
      "sankhya-ingest"),
 
+    ("alloc: count a reallocation as a fresh allocation",
+     "crates/sankhya-alloc/src/lib.rs",
+     "            if new_size >= layout.size() {\n                self.record_growth(new_size - layout.size());",
+     "            if new_size >= layout.size() {\n                self.record_growth(new_size);",
+     "sankhya-alloc"),
+
+    # Deliberately absent: "let the total wrap when a release exceeds it".
+    #
+    # The saturating subtraction is defence against a miscount somewhere else -- a
+    # deallocation whose size disagrees with its allocation. Through the allocator's own
+    # paths every release is paired with a growth, so the count cannot go negative and
+    # saturating and wrapping are indistinguishable. Any test that could tell them apart
+    # would have to construct the miscount, which is the defect the guard exists to
+    # survive rather than one it should permit.
+    #
+    # Recorded here rather than silently dropped, because the reasoning is the useful
+    # part and someone will otherwise write the entry again.
+
+    ("alloc: let the peak fall back to the current total",
+     "crates/sankhya-alloc/src/lib.rs",
+     "        let mut seen = self.peak.load(Ordering::Relaxed);\n        while now > seen {",
+     "        let mut seen = self.peak.load(Ordering::Relaxed);\n        while now != seen {",
+     "sankhya-alloc"),
+
+    ("brake: report a warning when the machine is about to be killed",
+     "crates/sankhya-governor/src/memory.rs",
+     "    if in_use >= limits.shed_bytes {",
+     "    if in_use >= limits.warn_bytes {",
+     "sankhya-governor"),
+
+    ("brake: fire one byte late at each threshold",
+     "crates/sankhya-governor/src/memory.rs",
+     "    if in_use >= limits.warn_bytes {\n        return Pressure::Warning {",
+     "    if in_use > limits.warn_bytes {\n        return Pressure::Warning {",
+     "sankhya-governor"),
+
     ("readpath: read every offered tier rather than the selected ones",
      "crates/sankhya-readpath/src/lib.rs",
      "    for tier in &splice.tiers {",

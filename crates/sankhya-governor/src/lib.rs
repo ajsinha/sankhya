@@ -21,8 +21,10 @@
 
 pub mod admission;
 pub mod cancel;
+pub mod memory;
 pub mod pressure;
 
 pub use admission::{admit, Decision, Demand, PoolState, Posture, Rejection, TenantLimits};
 pub use cancel::{Budget, Cancel, Deadline, Stopped};
+pub use memory::{assess_memory, BrakeLimits, Pressure};
 pub use pressure::{assess, Assessment, Level, Signals, Thresholds};

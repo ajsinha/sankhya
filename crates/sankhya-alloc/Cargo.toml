@@ -1,0 +1,28 @@
+[package]
+name         = "sankhya-alloc"
+description  = "The counting allocator. The only crate in which unsafe code is permitted."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 0
+
+# Deliberately NOT `workspace = true`.
+#
+# The workspace forbids unsafe code, and `forbid` cannot be relaxed locally — which is
+# exactly why it is used. This crate exists so that the one place unsafe is unavoidable
+# is a crate you can read in a sitting, rather than a lint exception scattered through a
+# larger one. Every other crate keeps the stronger rule.
+#
+# Everything else the workspace denies is repeated here, so the exception is to `unsafe`
+# and to nothing else.
+[lints.rust]
+unsafe_code                   = "deny"
+unreachable_pub               = "warn"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

@@ -30,7 +30,7 @@ are its own stated exit criteria:
 |---|---|
 | Performance objectives met in the pipeline, against named public-suite queries | **Not started.** Every measurement here is a microbenchmark of one mechanism. None is a recognised query at scale, and none is on reference hardware |
 | Cancellation demonstrated within its bound, including inside user code | **Half.** Deadlines and cancellation exist and are demonstrated inside a real query, bounded at one batch. There is no sandboxed user code to propagate into yet |
-| A hostile aggregation under a constrained memory limit is rejected rather than terminating the process | **Half.** Admission *decides* to reject; nothing enforces the decision. No counting allocator, no spill isolation |
+| A hostile aggregation under a constrained memory limit is rejected rather than terminating the process | **Met.** An aggregation that cannot reduce anything is refused under a one-megabyte pool, by name — and the process runs the same query to completion afterwards. Repeated five times, so a refusal that leaked its reservation would show up. Spill isolation onto a separate filesystem is still not built |
 | Plan snapshots stable; the SQL-semantics corpus green | **Not started** |
 | Cross-engine semantic differences enumerated in a tested list | **Not started** |
 | Compaction holds file counts within policy under continuous ingest | **Met.** Forty ticks of capture with maintenance sweeping every third one; the live count never passes the urgent threshold and no row is lost. The fixture asserts it actually created a backlog, or it would prove nothing |
@@ -77,6 +77,7 @@ it returns someone else's, correctly and quickly.
 | Memory pressure cannot cost data | Nothing is released until publication covers it; a full tier refuses new work and names publication as the cause, and the refusal clears once publication catches up |
 | One SQL query is answered from memory and Parquet at once | 700 positions published and 300 still in memory sum to the whole thousand, with the 700-position overlap counted once; a pinned query sees only its target; provenance names both tiers and their intervals |
 | A gap between tiers refuses the query rather than answering it short | Verified for a genuine gap, for a target past every tier, and for a tier that started mid-stream |
+| Memory is counted where it is actually spent | A counting allocator, quarantined in the one crate where `unsafe` is permitted — the workspace `forbid`s it everywhere else. Growth, release, reallocation-by-difference, the peak, and concurrent allocation are all verified against a real installed allocator |
 | Capture and maintenance commit to the same log without either stopping the other | Capture rebases onto the next free version when a compaction takes the one it was about to use — bounded, so a runaway committer is a diagnosable failure rather than a pipeline that appears to hang |
 | A query stops within one batch of its deadline | Demonstrated on a real query planned and executed by the engine over real Parquet — it returns an error rather than fewer rows, and the clock is shown to have been read no more times than the deadline allows |
 | A deadline and a cancellation are told apart | Different variants with a `retryable` flag: a deadline may succeed with longer to run, a cancellation is a decision somebody made. A client that cannot tell them apart cannot decide whether to retry |
@@ -109,7 +110,7 @@ it returns someone else's, correctly and quickly.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 103 specific defects applied one at a time; all 103 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 107 specific defects applied one at a time; all 107 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
 
 ---
 
@@ -342,6 +343,25 @@ about 2.5× more planning, because it replays the table log and the log grows wi
 count. The cost has moved from one seek per file to one sequential read — which is a much
 better shape and is not the same as free. It is also the argument for log checkpoints,
 which are not built.
+
+### Where the memory limit bites
+
+The gate is that a hostile query is *refused* rather than fatal, so the first thing to
+establish is where refusal actually begins.
+
+| Pool | An aggregation that cannot reduce anything |
+|---|---|
+| 64 KiB – 1 MiB | Refused: `Resources exhausted … SingleHashAggregateStream` |
+| 8 MiB and above | Succeeds, 400,000 groups |
+
+The operator **errors rather than spilling**, which is what makes admission worth having:
+without it a query gets far enough to fail, having consumed the machine on the way.
+
+**The first version of this test used two megabytes and passed while proving nothing** —
+just above the line, so the query succeeded and the assertion never ran. The threshold is
+now measured rather than guessed, and the test asserts the *operator* that ran out of
+room as well as the fact that something did, so an aggregation that quietly started
+spilling would be visible rather than silently making the gate meaningless.
 
 ### Replaying the table log
 
