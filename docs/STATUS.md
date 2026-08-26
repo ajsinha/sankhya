@@ -50,6 +50,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | Memory pressure cannot cost data | Nothing is released until publication covers it; a full tier refuses new work and names publication as the cause, and the refusal clears once publication catches up |
 | One SQL query is answered from memory and Parquet at once | 700 positions published and 300 still in memory sum to the whole thousand, with the 700-position overlap counted once; a pinned query sees only its target; provenance names both tiers and their intervals |
 | A gap between tiers refuses the query rather than answering it short | Verified for a genuine gap, for a target past every tier, and for a tier that started mid-stream |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 15 specific defects applied one at a time; all 15 now fail the suite. Three did not when the catalogue was first run |
 
 ---
 
@@ -103,6 +104,35 @@ Recorded because the interesting information is usually in what went wrong.
 | **The arrival tier declared coverage it did not hold.** A tier starting mid-stream reported from the durable frontier rather than from its own oldest segment, so it claimed every position before its first captured transaction | The first query spliced across two real tiers. The splice found an exact cover that did not exist, so the query would have been *answered* with the missing positions silently absent — the failure mode the splice exists to prevent, produced by the tier lying to it. This is the normal case rather than an edge case: a table onboarded from a running stream starts mid-stream by construction |
 | **The property test written to catch that defect did not catch it.** Its generator started the publication frontier equal to the stream's origin, so the two could never diverge, and its assertion encoded the buggy expectation | Deliberately reverting the fix and finding the suite still green. The generator now starts publication at zero independently of the origin, and fails within a second on the reverted code |
 | **The Parquet writer's default compression was never enabled.** The workspace pin omitted `zstd`, so every write on the default configuration panicked inside the column writer | The first crate to use the writer *without* also depending on DataFusion. Cargo unifies features across dependencies **and dev-dependencies**, and DataFusion — a dev-dependency of the writer's own crate — was quietly supplying the feature. The crate's entire test suite passed while the library was broken for every real consumer. Now guarded by `cargo xtask check-features`, which reads the manifest rather than the resolved graph, because the resolved graph is precisely what hides it |
+
+---
+
+## On the tests
+
+Two of this project's invariant tests were reviewed, passed, and would not have failed
+on the defect they were written for. Neither was found by reading them.
+
+- The arrival tier's coverage property started the publication frontier at the stream's
+  origin, so the two could never diverge — and its assertion asserted the buggy value.
+- `is_exact_cover`, the oracle every splice test leans on, had no tests of its own. It
+  could be changed to tolerate gaps between tiers, or to stop requiring the cover to
+  reach the target, and the whole suite stayed green. Every splice test would have gone
+  on passing over a planner returning partial covers.
+
+A third was found the same way: the property named *open transactions are never
+published* aborted every unsealed transaction before flushing, so it never left one in
+flight. A mutation that published rows from transactions that had not committed survived
+it untouched — and an in-flight transaction is the steady state of a busy source, not an
+edge case.
+
+`tools/mutation-audit.py` now keeps a catalogue of specific, plausible defects, applies
+each one and reports whether anything fails. It refuses to run on a dirty tree, and it
+flags a catalogue entry that no longer matches the source — a stale entry proves nothing
+while looking like coverage, which is the failure mode the tool exists to find.
+
+**The general lesson, recorded because it applies to every test not yet audited:** a test
+written to catch a defect is not evidence that it catches it. Until it has been run
+against that defect, it should be assumed to be in the same state as the three above.
 
 ---
 

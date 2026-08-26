@@ -286,3 +286,68 @@ async fn an_empty_tier_set_is_reported_as_such() {
         .expect_err("nothing to read from");
     assert!(matches!(err, ReadError::NoTiers), "{err}");
 }
+
+#[tokio::test]
+async fn a_tier_the_planner_rejected_is_not_read() {
+    // Both tiers are *offered*, and the planner selects only the published one, because
+    // it reaches the target on its own. The arrival tier is redundant here rather than
+    // wrong -- it holds real rows for positions 701..=1000, which the published tier
+    // also holds.
+    //
+    // Reading it anyway would double-count those 300 positions. That is why the
+    // planner's selection is authoritative and not merely advisory: registering
+    // everything available and letting the query sort it out discards the proof.
+    //
+    // This case exists because a mutation that read every offered tier instead of every
+    // selected one survived the rest of this file. In each of the other tests the two
+    // sets happen to coincide, or the extra tier contributes nothing after filtering,
+    // so nothing noticed.
+    let dir = tempfile::tempdir().expect("a temp dir");
+    write_parquet(
+        dir.path(),
+        "part-0000.parquet",
+        &rows(0, 1_000),
+        Lsn::new(1_000),
+        WriterConfig::default(),
+    )
+    .expect("publishing");
+
+    let published = PublishedTier {
+        directory: dir.path().to_str().expect("a utf-8 path").to_string(),
+        coverage: LsnRange::up_to(Lsn::new(1_000)),
+    };
+
+    let mut arrival = ArrivalBuffer::new("arrival", schema(), MemoryBudget::default());
+    arrival.append(rows(0, 1_000), range(0, 1_000));
+    arrival.note_durable(Lsn::new(700));
+
+    // The arrival tier really does hold rows that would be counted twice.
+    assert_eq!(
+        arrival.scan(Lsn::new(1_000)).expect("scanning").len(),
+        1,
+        "the fixture must offer a tier with real overlapping rows, or this proves nothing"
+    );
+
+    let ctx = SessionContext::new();
+    let splice = register_spliced(
+        &ctx,
+        "orders",
+        &TierSet::new(Some(&published), Some(&arrival)),
+        Lsn::new(1_000),
+    )
+    .await
+    .expect("splicing");
+
+    assert_eq!(
+        splice.tier_names(),
+        vec!["published"],
+        "the published tier reaches the target alone"
+    );
+
+    let (count, sum) = sum_of(&ctx, "orders").await;
+    assert_eq!(
+        count, 1_000,
+        "a rejected tier was read and rows were counted twice"
+    );
+    assert_eq!(sum, triangular(1_000));
+}

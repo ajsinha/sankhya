@@ -287,32 +287,110 @@ fn null_and_withheld_resolve_differently() {
 
 proptest! {
     /// However events interleave, no partial transaction is ever publishable.
+    ///
+    /// The third outcome — a transaction still *in flight* at flush time — is the one
+    /// that matters and the one an earlier version of this test never generated. It
+    /// only ever committed or aborted, so `self.open` was always empty by the time
+    /// anything was flushed. A mutation that drained every open transaction into the
+    /// sealed set on any commit — publishing rows that had not been committed and might
+    /// yet roll back — survived the whole suite untouched.
+    ///
+    /// An in-flight transaction is not an exotic case. It is the steady state of a busy
+    /// source: at any instant some transaction is part-way through, and the flush timer
+    /// does not wait for it.
     #[test]
     fn open_transactions_are_never_published(
-        txns in prop::collection::vec((1u32..50, 1usize..8, any::<bool>()), 1..20)
+        txns in prop::collection::vec((1usize..8, 0u8..3), 1..20)
     ) {
         let mut b = Batcher::new(BatchPolicy::default());
         let mut expected_sealed = 0usize;
+        let mut expected_open = 0usize;
         let mut lsn = 0u64;
 
-        for (xid, rows, sealed) in txns {
+        // Identifiers are derived from the index rather than generated. A transaction
+        // identifier is unique by definition, and a generator free to repeat one
+        // produces a stream the source cannot emit: two concurrent transactions sharing
+        // an identifier are indistinguishable, so no batcher could separate them. The
+        // decoder rejects such a stream before it reaches here.
+        for (index, (rows, outcome)) in txns.into_iter().enumerate() {
+            let xid = u32::try_from(index).expect("a small index") + 1;
             b.accept(&begin(xid), None);
             for i in 0..rows {
                 b.accept(&insert(vec![text(&i.to_string())]), None);
             }
-            if sealed {
-                lsn += 10;
-                b.accept(&commit(lsn), None);
-                expected_sealed += rows;
-            } else {
-                // Abandon it: an unsealed transaction contributes nothing.
-                b.accept(&Message::StreamAbort { xid, subtransaction_xid: xid }, None);
+            match outcome {
+                0 => {
+                    lsn += 10;
+                    b.accept(&commit(lsn), None);
+                    expected_sealed += rows;
+                }
+                1 => {
+                    // Abandoned: contributes nothing and leaves nothing.
+                    b.accept(&Message::StreamAbort { xid, subtransaction_xid: xid }, None);
+                }
+                _ => {
+                    // Left in flight. Its rows must still be held, and must not be
+                    // published by this flush or by a later commit of some other
+                    // transaction.
+                    expected_open += rows;
+                }
             }
         }
+
+        prop_assert_eq!(
+            b.open_rows(),
+            expected_open,
+            "rows of an in-flight transaction must still be held"
+        );
 
         let plan = b.flush();
         prop_assert_eq!(plan.len(), expected_sealed);
         prop_assert!(plan.covers_through.get() <= lsn);
+        prop_assert_eq!(
+            b.open_rows(),
+            expected_open,
+            "flushing must not disturb a transaction still in flight"
+        );
+    }
+
+    /// A commit publishes its own transaction and nobody else's.
+    ///
+    /// Stated separately from the test above because it is the specific shape the
+    /// mutation took: sealing on commit is the moment at which it is easiest to
+    /// accidentally drain everything open, and the result — rows published before their
+    /// transaction committed — is undetectable downstream.
+    #[test]
+    fn a_commit_publishes_only_its_own_transaction(
+        others in prop::collection::vec(1usize..6, 1..8),
+        own_rows in 1usize..6,
+    ) {
+        let mut b = Batcher::new(BatchPolicy::default());
+
+        // Several transactions left in flight, interleaved. Identifiers come from the
+        // index for the reason given above.
+        let mut held = 0usize;
+        for (index, rows) in others.iter().enumerate() {
+            let xid = u32::try_from(index).expect("a small index") + 2;
+            b.accept(&begin(xid), None);
+            for i in 0..*rows {
+                b.accept(&insert(vec![text(&i.to_string())]), None);
+            }
+            held += rows;
+        }
+
+        // One more, which commits.
+        b.accept(&begin(1), None);
+        for i in 0..own_rows {
+            b.accept(&insert(vec![text(&i.to_string())]), None);
+        }
+        b.accept(&commit(100), None);
+
+        prop_assert_eq!(
+            b.sealed_rows(),
+            own_rows,
+            "the commit published rows belonging to other, uncommitted transactions"
+        );
+        prop_assert_eq!(b.open_rows(), held);
     }
 
     /// Flushing never loses or duplicates a sealed row, however batching is tuned.
