@@ -82,6 +82,13 @@ fn fragment(dir: &std::path::Path, index: u64, from: i64, to: i64) -> LoggedFile
 }
 
 fn provider(dir: &std::path::Path) -> SankhyaTable {
+    provider_with(dir, true)
+}
+
+/// `nothing_past_target` is the provider's `exact_counts`: whether the tiers hold anything
+/// beyond the read position. When they do not, the target filter can remove nothing and is
+/// left out of the plan entirely — along with the column it would have read.
+fn provider_with(dir: &std::path::Path, nothing_past_target: bool) -> SankhyaTable {
     let files: Vec<LoggedFile> = (0..6u64)
         .map(|i| {
             let from = i64::try_from(i).expect("small") * 100 + 1;
@@ -91,7 +98,14 @@ fn provider(dir: &std::path::Path) -> SankhyaTable {
     let coverage = LsnRange::up_to(Lsn::new(600));
     let splice =
         plan_splice(&[TierRef::new("published", coverage)], Lsn::new(600)).expect("a single tier");
-    SankhyaTable::new(schema(), files, Vec::new(), Lsn::new(600), splice, true)
+    SankhyaTable::new(
+        schema(),
+        files,
+        Vec::new(),
+        Lsn::new(600),
+        splice,
+        nothing_past_target,
+    )
 }
 
 /// The operators in a plan, outermost first.
@@ -132,20 +146,13 @@ async fn a_scan_has_the_shape_it_has_always_had() {
     let ctx = SessionContext::new();
     let plan = plan_for(&ctx, provider(dir.path()), "SELECT amount FROM orders").await;
 
-    // The provider adds a filter for the read position and a projection to remove the
-    // position column again. The optimizer then *folds* the projection into the filter —
-    // `FilterExec: … projection=[amount@0]` — so there is no separate projection node,
-    // which is a better plan than the one the provider built.
-    //
-    // Pinning what the optimizer actually produces rather than what the provider handed
-    // it is the point: this test exists to notice when that folding stops happening.
+    // Reading at the latest position: nothing in any tier is past the target, so the
+    // filter would remove nothing and is left out — along with the column it would have
+    // read. That is the shape most queries get, because most queries read the latest
+    // data.
     assert_eq!(
         shape(&plan),
-        vec![
-            "FilterExec".to_string(),
-            "RepartitionExec".to_string(),
-            "DataSourceExec".to_string(),
-        ],
+        vec!["DataSourceExec".to_string()],
         "the plan for a plain scan changed"
     );
 }
@@ -188,17 +195,50 @@ async fn a_projection_does_not_read_columns_nobody_asked_for() {
 }
 
 #[tokio::test]
-async fn the_read_position_is_enforced_inside_the_plan() {
-    // Not at the top, where a buffering operator would have consumed everything before
-    // the filter ever ran.
+async fn a_pinned_read_enforces_its_position_inside_the_plan() {
+    // When the tiers *do* hold rows past the target, the filter appears — and inside the
+    // plan rather than above it, where a buffering operator would have consumed
+    // everything before the filter ever ran.
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let ctx = SessionContext::new();
+    let plan = plan_for(
+        &ctx,
+        provider_with(dir.path(), false),
+        "SELECT amount FROM orders",
+    )
+    .await;
+
+    let text = displayable(plan.as_ref()).indent(false).to_string();
+    assert!(
+        text.contains("_sankhya_commit_lsn"),
+        "no filter on the read position appears in the plan:\n{text}"
+    );
+    assert!(
+        shape(&plan).contains(&"FilterExec".to_string()),
+        "the position is not enforced by a filter: {:?}",
+        shape(&plan)
+    );
+}
+
+#[tokio::test]
+async fn a_read_at_the_latest_position_pays_for_no_filter_at_all() {
+    // The optimisation, and the reason it is worth having. Enforcing the position costs a
+    // column read and a predicate *per table*, so it compounds with join arity — measured
+    // at 39% on a six-way join. Paying that on a query reading the latest data, which is
+    // most queries, to support reading an older one is the wrong way round.
     let dir = tempfile::tempdir().expect("a temp dir");
     let ctx = SessionContext::new();
     let plan = plan_for(&ctx, provider(dir.path()), "SELECT amount FROM orders").await;
 
     let text = displayable(plan.as_ref()).indent(false).to_string();
     assert!(
-        text.contains("_sankhya_commit_lsn"),
-        "no filter on the read position appears in the plan:\n{text}"
+        !text.contains("_sankhya_commit_lsn"),
+        "the position column is still being read when nothing can be filtered:\n{text}"
+    );
+    assert!(
+        !shape(&plan).contains(&"FilterExec".to_string()),
+        "a filter that can remove nothing is still in the plan: {:?}",
+        shape(&plan)
     );
 }
 

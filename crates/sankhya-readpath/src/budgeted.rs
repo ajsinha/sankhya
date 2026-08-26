@@ -14,10 +14,17 @@
 //!
 //! # The bound
 //!
-//! One batch. A query stops within one batch of its deadline passing, plus however long
-//! that batch takes to produce — which is the honest statement, because the node cannot
-//! interrupt an operator that is mid-batch and pretending otherwise would be a promise
-//! about code it does not control.
+//! **One batch per partition.** Each partition of the scan runs its own stream and checks
+//! the budget independently, so a plan with twenty-four partitions can have twenty-four
+//! batches in flight when the deadline passes.
+//!
+//! Saying "one batch" would be the tidier claim and it would be wrong. The node cannot
+//! interrupt an operator that is mid-batch, and it cannot make one partition stop
+//! another — the shared cancellation token propagates a *cancellation*, but a deadline is
+//! a fact each partition observes for itself.
+//!
+//! The bound is therefore proportional to parallelism, which is worth stating because
+//! parallelism is chosen for throughput and this is what it costs on the other side.
 //!
 //! # Why the clock is injected
 //!

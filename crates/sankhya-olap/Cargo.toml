@@ -21,8 +21,12 @@ datafusion    = { workspace = true }
 [dev-dependencies]
 arrow = { workspace = true }
 arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
 sankhya-table = { path = "../sankhya-table" }
 sankhya-types = { path = "../sankhya-types" }
+sankhya-table-delta = { path = "../sankhya-table-delta" }
+sankhya-readpath = { path = "../sankhya-readpath" }
+parquet = { workspace = true }
 tpchgen       = { workspace = true }
 tpchgen-arrow = { workspace = true }
 sankhya-datagen = { path = "../sankhya-datagen" }

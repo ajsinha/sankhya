@@ -56,25 +56,80 @@ fn scale() -> f64 {
         .unwrap_or(SCALE)
 }
 
-/// Write one table's batches as Parquet, returning its row count.
+/// Write one table's batches as Parquet **and commit them to a table log**, returning its
+/// row count.
+///
+/// A commit-position column is added as the batches are written, because that is what
+/// capture produces and what the read path resolves against. Without it these tables
+/// could only be read through the engine's own file listing, which would make a benchmark
+/// of this system a benchmark of the engine underneath it.
 fn write_table<I>(dir: &Path, name: &str, batches: I) -> usize
 where
     I: Iterator<Item = arrow_array::RecordBatch>,
 {
+    use arrow_array::UInt64Array;
+    use arrow_schema::{DataType, Field, Schema};
+    use sankhya_table::column_stats;
+    use sankhya_table_delta::{commit, create, schema_string, Action, AddFile, Metadata};
+    use std::sync::Arc;
+
     let table_dir = dir.join(name);
-    let mut rows = 0;
+    let mut rows = 0u64;
+    let mut adds = Vec::new();
+    let mut delta_schema: Option<String> = None;
+
     for (index, batch) in batches.enumerate() {
-        rows += batch.num_rows();
-        write_parquet(
+        // The position column, one value per row and increasing across the table.
+        let positions: Vec<u64> = (rows..rows + batch.num_rows() as u64).collect();
+        let mut fields: Vec<Arc<Field>> = batch.schema().fields().iter().cloned().collect();
+        fields.push(Arc::new(Field::new(
+            "_sankhya_commit_lsn",
+            DataType::UInt64,
+            false,
+        )));
+        let mut columns = batch.columns().to_vec();
+        columns.push(Arc::new(UInt64Array::from(positions)));
+
+        let with_position =
+            arrow_array::RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+                .expect("adding the position column");
+
+        rows += with_position.num_rows() as u64;
+        if delta_schema.is_none() {
+            delta_schema =
+                Some(schema_string(&with_position.schema()).expect("a representable schema"));
+        }
+
+        let file = format!("part-{index:04}.parquet");
+        let report = write_parquet(
             &table_dir,
-            &format!("part-{index:04}.parquet"),
-            &batch,
-            Lsn::new(index as u64 + 1),
+            &file,
+            &with_position,
+            Lsn::new(rows),
             WriterConfig::default(),
         )
         .expect("writing");
+
+        // The statistics compaction would have produced, computed from the batch that was
+        // just written -- which is what makes the provider able to prune and the
+        // optimizer able to plan.
+        let statistics = sankhya_table_delta::from_column_stats(
+            with_position.num_rows() as u64,
+            &column_stats(&with_position),
+        );
+        adds.push(Action::Add(AddFile::with_statistics(
+            file,
+            report.bytes,
+            0,
+            &statistics,
+        )));
     }
-    rows
+
+    let schema = delta_schema.expect("at least one batch");
+    commit(&table_dir, 0, &create(Metadata::new(name, schema, 0))).expect("creating");
+    commit(&table_dir, 1, &adds).expect("publishing");
+
+    usize::try_from(rows).expect("a sane row count")
 }
 
 fn generate(dir: &Path) -> Vec<(String, usize)> {
@@ -154,15 +209,41 @@ fn generate_at(dir: &Path, scale: f64) -> Vec<(String, usize)> {
     ]
 }
 
+/// Register every table **through this system's own provider**.
+///
+/// Not through the engine's file listing. The provider is what resolves the file set from
+/// the log, prunes on the statistics catalogue and hands the optimizer its cardinalities —
+/// registering around it would make this a benchmark of the engine rather than of the
+/// system built on it.
 async fn register(ctx: &SessionContext, dir: &Path, tables: &[(String, usize)]) {
-    for (name, _) in tables {
-        ctx.register_parquet(
-            name,
-            dir.join(name).to_str().expect("a utf-8 path"),
-            datafusion::prelude::ParquetReadOptions::default(),
+    use sankhya_readpath::resolve;
+    use sankhya_types::LsnRange;
+    use std::sync::Arc;
+
+    for (name, rows) in tables {
+        let table_root = dir.join(name);
+        let target = Lsn::new(u64::try_from(*rows).expect("a sane row count"));
+
+        // The schema as written, which is the generated schema plus the position column.
+        let live = sankhya_table_delta::live_files(&table_root).expect("the log");
+        let first = table_root.join(&live.files[0].path);
+        let file = std::fs::File::open(&first).expect("opening");
+        let schema = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)
+            .expect("reader")
+            .schema()
+            .clone();
+
+        let provider = resolve(
+            schema,
+            &table_root,
+            Some(LsnRange::up_to(target)),
+            None,
+            target,
         )
-        .await
-        .expect("registering");
+        .expect("resolving");
+
+        ctx.register_table(name, Arc::new(provider))
+            .expect("registering");
     }
 }
 
@@ -715,4 +796,59 @@ async fn measure_what_clustering_by_the_filter_column_is_worth() {
             best.as_secs_f64() * 1000.0
         );
     }
+}
+
+/// What this system's storage costs against bare Parquet.
+///
+/// Run with `SANKHYA_TPCH_SCALE=1 cargo test -p sankhya-olap --test tpch --release --
+/// --ignored --nocapture overhead`.
+///
+/// Every row carries a commit position. That is what makes a read at a pinned position
+/// possible, and it is not free: the column is written for every row of every table, and
+/// scans pay for the bytes whether or not the query mentions it.
+///
+/// The number belongs in the open rather than inside a claim that the storage is
+/// "efficient". A cost that buys something is a design; a cost nobody measured is a
+/// surprise.
+#[tokio::test]
+#[ignore = "a measurement, not an assertion"]
+async fn measure_what_the_commit_position_costs() {
+    let scale = scale();
+
+    let with_position = tempfile::tempdir().expect("a temp dir");
+    let tables = generate_at(with_position.path(), scale);
+
+    // The same data written without the position column, which is what the generator
+    // produces and what a bare Parquet layout would hold.
+    let bare = tempfile::tempdir().expect("a temp dir");
+    const BATCH: usize = 64 * 1024;
+    let mut index = 0;
+    for batch in LineItemArrow::new(LineItemGenerator::new(scale, 1, 1)).with_batch_size(BATCH) {
+        write_parquet(
+            &bare.path().join("lineitem"),
+            &format!("part-{index:04}.parquet"),
+            &batch,
+            Lsn::new(index as u64 + 1),
+            WriterConfig::default(),
+        )
+        .expect("writing");
+        index += 1;
+    }
+
+    let ours = walk_bytes(&with_position.path().join("lineitem"));
+    let theirs = walk_bytes(&bare.path().join("lineitem"));
+    let lineitem_rows = tables
+        .iter()
+        .find(|(name, _)| name == "lineitem")
+        .map(|(_, rows)| *rows)
+        .expect("lineitem");
+
+    println!(
+        "scale factor {scale}, lineitem only: {lineitem_rows} rows\n  \
+         bare Parquet          {:>8.1} MiB\n  \
+         with commit position  {:>8.1} MiB  ({:+.1}%)",
+        theirs as f64 / (1024.0 * 1024.0),
+        ours as f64 / (1024.0 * 1024.0),
+        (ours as f64 / theirs as f64 - 1.0) * 100.0
+    );
 }

@@ -77,6 +77,16 @@ async fn run(
     budget: Budget,
     clock: Clock,
 ) -> Result<usize, String> {
+    run_with_partitions(root, total, budget, clock, 1).await
+}
+
+async fn run_with_partitions(
+    root: &std::path::Path,
+    total: u64,
+    budget: Budget,
+    clock: Clock,
+    partitions: usize,
+) -> Result<usize, String> {
     let provider = resolve(
         schema(),
         root,
@@ -86,7 +96,9 @@ async fn run(
     )
     .expect("resolving");
 
-    let ctx = SessionContext::new();
+    let ctx = SessionContext::new_with_config(
+        datafusion::prelude::SessionConfig::new().with_target_partitions(partitions),
+    );
     let state = ctx.state();
     let plan = provider
         .scan(&state, None, &[], None)
@@ -152,9 +164,9 @@ async fn a_cancelled_query_fails_and_says_retrying_is_pointless() {
 
 #[tokio::test]
 async fn the_query_stops_within_one_batch_of_its_deadline() {
-    // The bound, stated as a number and then checked. The node cannot interrupt an
-    // operator that is mid-batch, so one batch is the honest claim -- and asserting it
-    // is what stops "within a bounded time" from being a phrase in a document.
+    // The bound, stated as a number and then checked. Single-partition, because the
+    // bound is *per partition* and this is about the per-partition part; the next test is
+    // about how it scales.
     let dir = tempfile::tempdir().expect("a temp dir");
     let total = publish(dir.path(), 40, 200);
     let (clock, ticks) = counting_clock();
@@ -173,6 +185,46 @@ async fn the_query_stops_within_one_batch_of_its_deadline() {
         readings <= DEADLINE + 1,
         "the clock was read {readings} times for a deadline of {DEADLINE}; the query \
          kept going past the point it should have stopped"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_bound_is_per_partition_and_scales_with_parallelism() {
+    // Each partition runs its own stream and observes the deadline for itself, so a plan
+    // with N partitions can have N batches in flight when it passes.
+    //
+    // "One batch" would be the tidier claim and it would be wrong. The node cannot
+    // interrupt an operator that is mid-batch, and cannot make one partition stop
+    // another: the shared token propagates a *cancellation*, but a deadline is a fact
+    // each partition reads for itself.
+    //
+    // Worth asserting rather than assuming, because the number is proportional to
+    // parallelism -- which is chosen for throughput, and this is what it costs on the
+    // other side. It was also how the property was discovered: partitioning the scan
+    // broke the test above, and the test was right to break.
+    const PARTITIONS: usize = 8;
+    const DEADLINE: u64 = 3;
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let total = publish(dir.path(), 40, 200);
+    let (clock, ticks) = counting_clock();
+
+    let budget = Budget::new(Deadline::at(DEADLINE), Cancel::new(), 1);
+    let error = run_with_partitions(dir.path(), total, budget, clock, PARTITIONS)
+        .await
+        .expect_err("stopped");
+    assert!(error.contains("too late"), "{error}");
+
+    let readings = ticks.load(Ordering::SeqCst) as usize;
+    assert!(
+        readings <= DEADLINE as usize + PARTITIONS + 1,
+        "the clock was read {readings} times for a deadline of {DEADLINE} across \
+         {PARTITIONS} partitions; the bound is one batch per partition, not more"
+    );
+    assert!(
+        readings > DEADLINE as usize + 1,
+        "only {readings} readings across {PARTITIONS} partitions; the plan did not run \
+         in parallel, so this test is not measuring what it claims"
     );
 }
 

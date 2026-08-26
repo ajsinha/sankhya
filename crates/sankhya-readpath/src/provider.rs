@@ -208,10 +208,13 @@ impl SankhyaTable {
     /// asking for one column still gets one column — but the scan cost includes a column
     /// they did not ask for, which is the honest price of reading at a pinned position.
     fn scan_indices(&self, projection: Option<&Vec<usize>>) -> DfResult<(Vec<usize>, bool)> {
-        let lsn = self.lsn_index()?;
         let Some(requested) = projection else {
             return Ok(((0..self.schema.fields().len()).collect(), false));
         };
+        if !self.needs_target_filter() {
+            return Ok((requested.clone(), false));
+        }
+        let lsn = self.lsn_index()?;
         let mut indices = requested.clone();
         let added = !indices.contains(&lsn);
         if added {
@@ -220,10 +223,30 @@ impl SankhyaTable {
         Ok((indices, added))
     }
 
+    /// Whether the target can actually remove a row.
+    ///
+    /// When no tier holds anything past the target, the filter is provably a no-op — and
+    /// so is reading the column it filters on. Both are then skipped.
+    ///
+    /// This is not a micro-optimisation. Enforcing the position costs a column read and a
+    /// predicate **per table**, so it compounds with join arity: measured on a six-way
+    /// TPC-H join, the always-on form cost 39%. Paying that on a query reading the latest
+    /// data — which is most queries — to support reading an older position is the wrong
+    /// way round.
+    ///
+    /// The condition is exactly the one already computed for statistics: if the tiers hold
+    /// nothing past the target, nothing can be filtered out. Reusing it rather than
+    /// deriving a second, similar condition matters, because two conditions that are meant
+    /// to agree eventually do not.
+    const fn needs_target_filter(&self) -> bool {
+        !self.exact_counts
+    }
+
     fn published_plan(
         &self,
         indices: &[usize],
         predicates: &[(String, Predicate)],
+        partitions: usize,
     ) -> DfResult<Arc<dyn ExecutionPlan>> {
         // The engine's own Parquet source, unmodified. Nothing SANKHYA-specific reaches
         // execution — see the module documentation on why that separation is the point.
@@ -249,8 +272,28 @@ impl SankhyaTable {
             }));
             files.push(partitioned);
         }
+        // Spread across partitions so the scan uses more than one core.
+        //
+        // A single file group is a single partition, and everything above it can then
+        // only round-robin batches that were read serially — the scan itself is the
+        // bottleneck and no amount of downstream parallelism helps. This was the
+        // provider's largest cost against the engine's own file listing, which does
+        // partition, and it is invisible in a result: the answers were identical and the
+        // query used one core.
+        //
+        // Files are dealt round-robin rather than split by size. Sizes are known and
+        // packing by them would balance better, but it also groups files that were
+        // written together — which after compaction means files covering adjacent ranges
+        // land in the same partition, so a pruned scan leaves some partitions with
+        // nothing and others with everything.
+        let groups = partitions.max(1).min(files.len().max(1));
+        let mut dealt: Vec<Vec<PartitionedFile>> = vec![Vec::new(); groups];
+        for (index, file) in files.into_iter().enumerate() {
+            dealt[index % groups].push(file);
+        }
+
         builder = builder
-            .with_file_group(files.into())
+            .with_file_groups(dealt.into_iter().map(Into::into).collect())
             .with_projection_indices(Some(indices.to_vec()))?;
 
         Ok(DataSourceExec::from_data_source(builder.build()))
@@ -412,7 +455,7 @@ impl TableProvider for SankhyaTable {
 
     async fn scan(
         &self,
-        _state: &dyn Session,
+        state: &dyn Session,
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
         _limit: Option<usize>,
@@ -422,7 +465,11 @@ impl TableProvider for SankhyaTable {
         let mut parts: Vec<Arc<dyn ExecutionPlan>> = Vec::new();
 
         if !self.published.is_empty() {
-            parts.push(self.published_plan(&indices, &predicates)?);
+            parts.push(self.published_plan(
+                &indices,
+                &predicates,
+                state.config().target_partitions(),
+            )?);
         }
         if let Some(plan) = self.arrival_plan(&indices)? {
             parts.push(plan);
@@ -437,6 +484,12 @@ impl TableProvider for SankhyaTable {
             1 => parts.remove(0),
             _ => UnionExec::try_new(parts)?,
         };
+
+        if !self.needs_target_filter() {
+            // Nothing in any tier is past the target, so the filter would remove nothing
+            // and the column it reads was never added to the scan.
+            return Ok(combined);
+        }
 
         let scanned_schema = combined.schema();
         let filtered: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(

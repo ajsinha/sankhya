@@ -89,6 +89,43 @@ the name for anything more would be a misuse of it.
 
 ---
 
+## What this system's own storage costs
+
+TPC-H now runs through SANKHYA's provider rather than the engine's file listing — every
+table carrying a commit position, committed to a log, resolved and pruned through the
+catalogue. That makes the numbers a measurement of this system rather than of the engine
+underneath it, and it made two costs visible.
+
+| Single query, SF=1 | Engine's file listing | SANKHYA's provider |
+|---|---|---|
+| Q1 scan + aggregates | 450 ms | 462 ms |
+| Q6 selective filter | 213 ms | 219 ms |
+| Q3 three-way join | 333 ms | 372 ms |
+| Q5 six-way join | 415 ms | 578 ms |
+
+**Parity on scans, 12% and 39% behind on joins.** Two causes were found and fixed on the
+way here, and one remains unexplained.
+
+**The scan used one core.** The provider put every file into a single file group, which is
+a single partition — everything above it could only round-robin batches that had been read
+serially. Invisible in a result: the answers were identical and the query used one
+twenty-fourth of the machine.
+
+**The read position was enforced when it could not matter.** Reading at a pinned position
+costs a column read and a predicate *per table*, so it compounds with join arity. When no
+tier holds anything past the target the filter provably removes nothing — and the column
+it reads need not be scanned at all. Most queries read the latest data, so most queries
+were paying for a facility they were not using.
+
+The commit position itself turned out **not** to be a cost: it is monotone, so it
+delta-encodes to +0.1% on a 174 MiB table. That was the first hypothesis and it was wrong.
+
+**What remains is not explained.** The join gap is smaller than it was and it is still
+there. Recording it as unexplained is the honest state; the alternative is a plausible
+story nobody checked.
+
+---
+
 ## Clustering, which closes the objective pushdown could not
 
 `NFR-PERF-02` names bloom filters and late materialization as the preconditions for its
@@ -267,7 +304,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 118 specific defects applied one at a time; all 118 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 121 specific defects applied one at a time; all 121 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
 
 ---
 
@@ -300,11 +337,11 @@ Stated plainly, because a status document that omits this is marketing.
   single file, which is fine into the millions of live files and not beyond; and nothing
   deletes the commits a checkpoint subsumes, so the log directory grows without bound even
   though nothing reads most of it.
-- **Statistics reach the optimizer but not the benchmark.** The provider supplies bounds,
-  null counts and cardinality; the TPC-H harness registers tables through the engine's own
-  listing table instead, so none of the numbers above exercise any of it. Putting TPC-H
-  behind the provider needs every table given a commit-position column and a log — which
-  is what capture produces and this harness does not.
+- **The provider is slower than the engine's own file listing on joins**, by 12% on a
+  three-way and 39% on a six-way, at parity on scans. The cause is not established.
+  Partitioning the scan and skipping the unnecessary position filter each closed part of
+  the gap; what remains has not been explained, and guessing at it here would be worse
+  than saying so.
 - **No merge strategy beyond union.** Latest-version-per-key, which mutable tables need,
   is not implemented; the provider unions its tiers.
 - **The governor decides but governs nothing.** Admission and the pressure ladder are

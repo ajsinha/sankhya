@@ -815,6 +815,24 @@ CATALOGUE = [
      "        Some(Bound::Float(v)) => Precision::Exact(ScalarValue::Float64(Some(*v))),",
      "sankhya-readpath"),
 
+    ("provider: put every file in one group, so the scan uses one core",
+     "crates/sankhya-readpath/src/provider.rs",
+     "        let groups = partitions.max(1).min(files.len().max(1));",
+     "        let groups = 1;",
+     "sankhya-readpath"),
+
+    ("provider: enforce the read position when it cannot remove anything",
+     "crates/sankhya-readpath/src/provider.rs",
+     "    const fn needs_target_filter(&self) -> bool {\n        !self.exact_counts\n    }",
+     "    const fn needs_target_filter(&self) -> bool {\n        true\n    }",
+     "sankhya-readpath"),
+
+    ("provider: skip the read position when it can remove something",
+     "crates/sankhya-readpath/src/provider.rs",
+     "    const fn needs_target_filter(&self) -> bool {\n        !self.exact_counts\n    }",
+     "    const fn needs_target_filter(&self) -> bool {\n        false\n    }",
+     "sankhya-readpath"),
+
     ("readpath: read every offered tier rather than the selected ones",
      "crates/sankhya-readpath/src/lib.rs",
      "    for tier in &splice.tiers {",
