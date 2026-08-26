@@ -310,6 +310,60 @@ CATALOGUE = [
      "                let live = live_files(table_root).unwrap_or_default();",
      "sankhya-readpath"),
 
+    ("quantile: place an unorderable value instead of refusing",
+     "crates/sankhya-numeric/src/quantile.rs",
+     "    if let Some(at) = values.iter().position(|v| v.is_nan()) {\n        return Err(QuantileError::NotOrderable { at });\n    }",
+     "",
+     "sankhya-numeric"),
+
+    ("quantile: answer an empty input with zero",
+     "crates/sankhya-numeric/src/quantile.rs",
+     "    if values.is_empty() {\n        return Err(QuantileError::Empty);\n    }",
+     "    if values.is_empty() {\n        return Ok(0.0);\n    }",
+     "sankhya-numeric"),
+
+    ("quantile: collapse linear interpolation onto the lower observation",
+     "crates/sankhya-numeric/src/quantile.rs",
+     "            Ok(lower + (upper - lower) * fraction)",
+     "            let _ = upper;\n            Ok(lower)",
+     "sankhya-numeric"),
+
+    ("quantile: sum across the wrong element, so vectors stop lining up by scenario",
+     "crates/sankhya-numeric/src/quantile.rs",
+     "vectors.iter().map(|v| v[element]).collect()",
+     "vectors.iter().map(|v| v[0]).collect()",
+     "sankhya-numeric"),
+
+    # Deliberately absent: "sum in arrival order rather than a canonical one".
+    #
+    # It was written, it compiled, and it survived — and chasing it produced a better
+    # answer than a new test would have. Neumaier compensation alone is order-independent
+    # across 3,000 randomised inputs spanning 120 orders of magnitude, so removing the
+    # sort changes no observable behaviour that could be tested for. The sort is there to
+    # make order-independence a *guarantee* rather than an observation, and a guarantee
+    # about inputs nobody can construct is not something a test can distinguish.
+    #
+    # Recorded here rather than silently dropped, because the reasoning is the useful
+    # part and someone will otherwise write the entry again.
+
+    ("exactness: stop descending into subquery plans",
+     "crates/sankhya-olap/src/exactness.rs",
+     "    let _ = plan.apply_with_subqueries(|node| {",
+     "    let _ = plan.apply(|node| {",
+     "sankhya-olap"),
+
+    ("exactness: permit approximation by default",
+     "crates/sankhya-olap/src/exactness.rs",
+     "    #[default]\n    Required,",
+     "    Required,\n    #[default]",
+     "sankhya-olap"),
+
+    ("exactness: stay silent about approximation in the permissive mode",
+     "crates/sankhya-olap/src/exactness.rs",
+     "    Ok(Watermark {\n        approximate_functions: functions,\n    })",
+     "    Ok(Watermark::default())",
+     "sankhya-olap"),
+
     ("readpath: read every offered tier rather than the selected ones",
      "crates/sankhya-readpath/src/lib.rs",
      "    for tier in &splice.tiers {",

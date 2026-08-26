@@ -17,8 +17,10 @@
 
 #![doc(html_root_url = "https://docs.rs/sankhya-olap")]
 
+mod exactness;
 mod session;
 
+pub use exactness::{approximate_functions, check_exactness, Exactness, ExactnessError, Watermark};
 pub use session::{
     apply_required_settings, session, verify_settings, RequiredSetting, SettingsError, REQUIRED,
 };

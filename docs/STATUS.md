@@ -59,9 +59,12 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | A restart resumes from the log, not from memory | File sequence and log version are both recovered from the table's whole commit history — not from the live set, so a compacted-away name is never reused while a reader may still resolve it |
 | The whole storage loop runs through the log | 24 fragments published and committed, compacted tick by tick with each tick one atomic version, then queried by a reader given nothing but the table root — same answer, fewer live files, every superseded file still on disk |
 | SANKHYA owns its table provider | Files and row counts come from the table log; scan execution is DataFusion's own Parquet source. Splices memory and files, refuses gaps at planning time, and refuses a file the log cannot state a row count for |
+| Order statistics are exact and the convention is named | Three conventions, shown to disagree at the 99th percentile — which is the only place anyone asks for one. An unorderable value is refused rather than placed somewhere; an empty input is refused rather than answered with zero |
+| The quantile of a sum is not computed as the sum of quantiles | Demonstrated with numbers: two exposures whose worst cases fall in different scenarios give −100 combined and −190 under the naive composition |
+| An approximate function cannot answer an exact question by accident | Rejected at planning time, including inside a subquery or a `HAVING` clause; a permissive session still gets a watermark naming what it used |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 43 specific defects applied one at a time; all 43 fail the suite. Seven did not when first run, and two catalogue entries turned out to be equivalent mutants that no test could ever have caught |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 50 specific defects applied one at a time; all 50 fail the suite. Eight did not when first run; three catalogue entries turned out to be equivalent mutants no test could ever have caught, and chasing the third produced a documentation correction rather than a new test |
 
 ---
 
@@ -96,6 +99,13 @@ Stated plainly, because a status document that omits this is marketing.
   metadata cache are both unbuilt.
 - **No merge strategy beyond union.** Latest-version-per-key, which mutable tables need,
   is not implemented; the provider unions its tiers.
+- **Exact order statistics buffer their input.** Selection is linear rather than
+  `n log n`, so it beats sorting, but every observation must be resident. `FR-QUERY-08`
+  asks for a bounded-memory algorithm over large inputs and this is not one. Exact and
+  bounded are independent properties, and only the first is delivered.
+- **The exactness gate is not wired into a session.** `check_exactness` is a function
+  with no caller: nothing carries the session's exactness setting, and nothing attaches
+  the watermark to a result.
 - **No catalog and no table provider.**
 - **No log checkpoints.** Replay reads every commit, so startup cost grows linearly with
   a table's commit count. Fine at the scale tested; not fine at a year of continuous
@@ -258,6 +268,30 @@ about 2.5× more planning, because it replays the table log and the log grows wi
 count. The cost has moved from one seek per file to one sequential read — which is a much
 better shape and is not the same as free. It is also the argument for log checkpoints,
 which are not built.
+
+### Deterministic reduction
+
+Reduction sums in a canonical order with Neumaier compensation on top. Searching which
+of the two actually delivers order-independence produced a correction rather than a
+confirmation.
+
+| | |
+|---|---|
+| Randomised inputs tried, spanning 120 orders of magnitude | 3,000 |
+| Permutations where compensation *alone* gave a different total | **0** |
+| Hand-built adversarial cases where it did | **0** |
+
+**Compensation is what makes the total order-independent in practice.** The canonical
+sort — which the first draft of the documentation credited with the property — changes
+no behaviour that could be observed. What it contributes is a *guarantee*: Neumaier's
+error bound bounds the error without proving bit-identity across permutations, and its
+compensation term is itself one `f64` that can lose bits when corrections span extreme
+ranges. Sorting makes the result a function of the multiset by construction.
+
+The sort is therefore defence in depth, at `n log n` against `n`. It is kept because the
+figures it exists for have to be defended later, and *"we could not find a
+counterexample"* is a weaker thing to say than *"there cannot be one"* — but the
+documentation now says which of the two mechanisms is doing the work.
 
 ### Capture at scale
 
