@@ -312,6 +312,61 @@ async fn the_provider_carries_its_provenance() {
     assert_eq!(provenance[1].1.start_exclusive(), Lsn::new(700));
 }
 
+#[tokio::test]
+async fn a_predicate_the_provider_does_not_evaluate_is_still_applied() {
+    // This provider selects files; it does not evaluate predicates. Telling the engine
+    // otherwise -- claiming a filter is handled *exactly* -- gives it permission to drop
+    // the filter from the plan entirely, and the query silently returns every row.
+    //
+    // Nothing else in this file has a WHERE clause, so nothing else could notice.
+    let dir = tempfile::tempdir().expect("a temp dir");
+    publish(dir.path(), 10, 100);
+
+    let table = resolve(
+        schema(),
+        dir.path(),
+        Some(LsnRange::up_to(Lsn::new(1_000))),
+        None,
+        Lsn::new(1_000),
+    )
+    .expect("resolving");
+
+    let (count, sum) = measure(
+        Arc::new(table),
+        "SELECT COUNT(*) c, SUM(amount) s FROM orders WHERE amount > 900",
+    )
+    .await;
+
+    assert_eq!(count, 100, "the predicate was dropped from the plan");
+    assert_eq!(sum, triangular(1_000) - triangular(900));
+}
+
+#[tokio::test]
+async fn a_predicate_and_a_pinned_target_compose() {
+    // Two filters from different places -- one the caller wrote, one the read position
+    // implies -- must both survive into the plan.
+    let dir = tempfile::tempdir().expect("a temp dir");
+    publish(dir.path(), 10, 100);
+
+    let table = resolve(
+        schema(),
+        dir.path(),
+        Some(LsnRange::up_to(Lsn::new(1_000))),
+        None,
+        Lsn::new(500),
+    )
+    .expect("resolving");
+
+    let (count, sum) = measure(
+        Arc::new(table),
+        "SELECT COUNT(*) c, SUM(amount) s FROM orders WHERE amount > 400",
+    )
+    .await;
+
+    assert_eq!(count, 100, "rows 401..=500 and no others");
+    assert_eq!(sum, triangular(500) - triangular(400));
+}
+
 /// What metadata-only coupling is worth, measured rather than argued.
 ///
 /// Run with `cargo test -p sankhya-readpath --test provider --release -- --ignored

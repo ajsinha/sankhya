@@ -280,6 +280,36 @@ CATALOGUE = [
      "            let _ = (precision, scale);\n            \"double\".to_string()",
      "sankhya-table-delta"),
 
+    ("provider: report an upper-bound row count as exact",
+     "crates/sankhya-readpath/src/provider.rs",
+     "        splice,\n        !published_overshoots,",
+     "        splice,\n        true,",
+     "sankhya-readpath"),
+
+    ("provider: treat a file with no row count as empty",
+     "crates/sankhya-readpath/src/provider.rs",
+     "                    let rows = file.rows().ok_or_else(|| {",
+     "                    let rows = Some(file.rows().unwrap_or(0)).ok_or_else(|| {",
+     "sankhya-readpath"),
+
+    ("provider: drop the commit-position column before the target is enforced",
+     "crates/sankhya-readpath/src/provider.rs",
+     "        let mut indices = requested.clone();\n        let added = !indices.contains(&lsn);",
+     "        let mut indices = requested.clone();\n        let added = false;",
+     "sankhya-readpath"),
+
+    ("provider: claim filters are evaluated exactly, so the engine may drop them",
+     "crates/sankhya-readpath/src/provider.rs",
+     "TableProviderFilterPushDown::Inexact; filters.len()",
+     "TableProviderFilterPushDown::Exact; filters.len()",
+     "sankhya-readpath"),
+
+    ("provider: fall back to the whole live set when the log will not replay",
+     "crates/sankhya-readpath/src/provider.rs",
+     "                let live = live_files(table_root)?;",
+     "                let live = live_files(table_root).unwrap_or_default();",
+     "sankhya-readpath"),
+
     ("readpath: read every offered tier rather than the selected ones",
      "crates/sankhya-readpath/src/lib.rs",
      "    for tier in &splice.tiers {",

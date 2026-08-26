@@ -61,7 +61,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | SANKHYA owns its table provider | Files and row counts come from the table log; scan execution is DataFusion's own Parquet source. Splices memory and files, refuses gaps at planning time, and refuses a file the log cannot state a row count for |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 38 specific defects applied one at a time; all 38 fail the suite. Six did not when first run, and two catalogue entries turned out to be equivalent mutants that no test could ever have caught |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 43 specific defects applied one at a time; all 43 fail the suite. Seven did not when first run, and two catalogue entries turned out to be equivalent mutants that no test could ever have caught |
 
 ---
 
@@ -163,6 +163,10 @@ while looking like coverage, which is the failure mode the tool exists to find.
 A fourth was found the same way, later: the driver's compaction removals were checked
 only through the constructors they *could* have called, not through what the driver
 actually committed. Swapping one for the other went unnoticed.
+
+A fifth: the table provider could claim it evaluated predicates *exactly* — which gives
+the engine permission to drop the filter from the plan entirely — and every test still
+passed, because not one of them had a `WHERE` clause.
 
 The catalogue also produced one **equivalent mutant** — a change to a duplicated guard
 that left the second copy still refusing, so behaviour was unchanged and no test could
