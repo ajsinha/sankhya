@@ -257,10 +257,10 @@ CATALOGUE = [
      "",
      "sankhya-ingest"),
 
-    ("ingest: recover the sequence from live files rather than from the whole history",
+    ("ingest: resume the sequence from the earliest committed file, not the latest",
      "crates/sankhya-ingest/src/pipeline.rs",
-     "                    state.next_version = last_version.saturating_add(1);",
-     "                    state.next_version = last_version.saturating_add(1);\n                    let _ = &history;",
+     "                        .max();",
+     "                        .min();",
      "sankhya-ingest"),
 
     ("schema: publish a millisecond timestamp as a microsecond one",
