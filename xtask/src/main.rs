@@ -20,26 +20,54 @@ const LAYER_TOOLING: u32 = 100;
 /// correctness hazard, not an inefficiency: two Arrow majors make identically
 /// named types incompatible. See docs/adr/0001-dependency-pin-set.md.
 const CRITICAL_FAMILY: &[&str] = &[
-    "arrow", "arrow-array", "arrow-schema", "arrow-buffer", "arrow-ipc",
-    "parquet", "datafusion", "object_store", "delta_kernel",
+    "arrow",
+    "arrow-array",
+    "arrow-schema",
+    "arrow-buffer",
+    "arrow-ipc",
+    "parquet",
+    "datafusion",
+    "object_store",
+    "delta_kernel",
 ];
 
 /// Duplicates that are permitted because they never cross a SANKHYA API boundary.
 /// Every entry is a deliberate decision, not an accumulation.
 const DUP_ALLOWLIST: &[&str] = &[
-    "base64", "foldhash", "getrandom", "hashbrown", "itertools",
-    "rand", "rand_core", "syn", "windows-sys", "r-efi", "wasi",
-    "windows-targets", "windows_x86_64_gnu", "windows-link", "generic-array",
-    "bitflags", "heck", "regex-automata", "regex-syntax", "socket2", "winnow",
+    "base64",
+    "foldhash",
+    "getrandom",
+    "hashbrown",
+    "itertools",
+    "rand",
+    "rand_core",
+    "syn",
+    "windows-sys",
+    "r-efi",
+    "wasi",
+    "windows-targets",
+    "windows_x86_64_gnu",
+    "windows-link",
+    "generic-array",
+    "bitflags",
+    "heck",
+    "regex-automata",
+    "regex-syntax",
+    "socket2",
+    "winnow",
     // proptest pulls an older chacha; it is a dev dependency and never reaches a
     // SANKHYA API boundary.
     "rand_chacha",
     // toml's own datetime type, internal to manifest parsing in tooling.
-    "toml_datetime", "toml_parser", "toml_writer", "serde_spanned",
+    "toml_datetime",
+    "toml_parser",
+    "toml_writer",
+    "serde_spanned",
     // Pulled at two versions through the query engine's expression features. Both are
     // internal hashing and bignum utilities; neither appears in any SANKHYA signature,
     // so neither can cause the type incompatibility this gate exists to prevent.
-    "ahash", "num-bigint",
+    "ahash",
+    "num-bigint",
 ];
 
 /// Domain nouns that must not appear in core crates. The general-purpose claim is
@@ -50,10 +78,28 @@ const DUP_ALLOWLIST: &[&str] = &[
 /// neutral in its naming and still be bent toward one domain. Only the reference
 /// packs catch that. Both mechanisms are needed.
 const DOMAIN_WORDS: &[&str] = &[
-    "trade", "counterparty", "notional", "portfolio", "basel", "isin", "cusip",
-    "ledger", "aml", "kyc", "ubo", "laundering", "desk", "book_id",
-    "shipment", "consignment", "patient", "icd10", "diagnosis_code",
-    "sensor_reading", "invoice", "sku",
+    "trade",
+    "counterparty",
+    "notional",
+    "portfolio",
+    "basel",
+    "isin",
+    "cusip",
+    "ledger",
+    "aml",
+    "kyc",
+    "ubo",
+    "laundering",
+    "desk",
+    "book_id",
+    "shipment",
+    "consignment",
+    "patient",
+    "icd10",
+    "diagnosis_code",
+    "sensor_reading",
+    "invoice",
+    "sku",
     // Entries must be DISTINCTIVELY domain-specific, never ordinary English that a
     // domain also happens to use. Two have been removed for exactly that reason:
     //
@@ -142,13 +188,17 @@ fn load_crates(root: &Path) -> Vec<Crate> {
     let mut out = Vec::new();
     for group in ["crates", "packs"] {
         let dir = root.join(group);
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for e in entries.flatten() {
             let manifest = e.path().join("Cargo.toml");
             if !manifest.exists() {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&manifest) else { continue };
+            let Ok(text) = std::fs::read_to_string(&manifest) else {
+                continue;
+            };
             let v: toml::Table = match toml::from_str(&text) {
                 Ok(v) => v,
                 Err(e) => {
@@ -182,7 +232,11 @@ fn load_crates(root: &Path) -> Vec<Crate> {
                 eprintln!("  MISSING LAYER  {name} — add [package.metadata.sankhya] layer = N");
                 continue;
             }
-            out.push(Crate { name, layer: layer as u32, deps });
+            out.push(Crate {
+                name,
+                layer: layer as u32,
+                deps,
+            });
         }
     }
     out
@@ -200,7 +254,9 @@ fn check_layers(root: &Path) -> bool {
 
     for c in &crates {
         for d in &c.deps {
-            let Some(dep) = by_name.get(d.as_str()) else { continue }; // external crate
+            let Some(dep) = by_name.get(d.as_str()) else {
+                continue;
+            }; // external crate
             if c.layer == LAYER_PACK {
                 if !pack_allowance.contains(&d.as_str()) {
                     eprintln!(
@@ -213,12 +269,18 @@ fn check_layers(root: &Path) -> bool {
                 continue;
             }
             if dep.layer == LAYER_PACK {
-                eprintln!("  CORE->PACK   {} -> {} : no core crate may depend on a pack", c.name, d);
+                eprintln!(
+                    "  CORE->PACK   {} -> {} : no core crate may depend on a pack",
+                    c.name, d
+                );
                 ok = false;
                 continue;
             }
             if dep.layer == LAYER_TOOLING {
-                eprintln!("  ->TOOLING    {} -> {} : tooling is not a dependency", c.name, d);
+                eprintln!(
+                    "  ->TOOLING    {} -> {} : tooling is not a dependency",
+                    c.name, d
+                );
                 ok = false;
                 continue;
             }
@@ -281,7 +343,9 @@ fn find_cycle(crates: &[Crate], by_name: &BTreeMap<&str, &Crate>) -> Option<Vec<
             }
             None => {}
         }
-        let Some(c) = by_name.get(name) else { return None };
+        let Some(c) = by_name.get(name) else {
+            return None;
+        };
         marks.insert(c.name.as_str(), Mark::Open);
         stack.push(name.to_string());
         for d in &c.deps {
@@ -329,10 +393,14 @@ fn code_lines(src: &str) -> usize {
             }
             if !head.is_empty() {
                 n += 1;
-                if in_block { break; }
+                if in_block {
+                    break;
+                }
                 continue;
             }
-            if in_block { break; }
+            if in_block {
+                break;
+            }
         }
         let line = line.trim();
         if line.is_empty() || line.starts_with("//") {
@@ -344,12 +412,17 @@ fn code_lines(src: &str) -> usize {
 }
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for e in entries.flatten() {
         let p = e.path();
         let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
         if p.is_dir() {
-            if matches!(name, "target" | ".git" | "generated" | "snapshots" | "corpus") {
+            if matches!(
+                name,
+                "target" | ".git" | "generated" | "snapshots" | "corpus"
+            ) {
                 continue;
             }
             rust_files(&p, out);
@@ -372,7 +445,9 @@ fn check_loc(root: &Path) -> bool {
     let mut warned = 0;
     let mut largest = (0usize, String::new());
     for f in &files {
-        let Ok(src) = std::fs::read_to_string(f) else { continue };
+        let Ok(src) = std::fs::read_to_string(f) else {
+            continue;
+        };
         let n = code_lines(&src);
         let rel = f.strip_prefix(root).unwrap_or(f).display().to_string();
         if n > largest.0 {
@@ -388,7 +463,10 @@ fn check_loc(root: &Path) -> bool {
     }
     println!(
         "   {} files, largest {} at {} lines, {} approaching the limit",
-        files.len(), largest.1, largest.0, warned
+        files.len(),
+        largest.1,
+        largest.0,
+        warned
     );
     ok
 }
@@ -401,7 +479,9 @@ fn check_vocabulary(root: &Path) -> bool {
     let mut ok = true;
     let mut hits = 0;
     for f in &files {
-        let Ok(src) = std::fs::read_to_string(f) else { continue };
+        let Ok(src) = std::fs::read_to_string(f) else {
+            continue;
+        };
         let rel = f.strip_prefix(root).unwrap_or(f).display().to_string();
         // The generator and testkit legitimately construct example schemas.
         if rel.contains("sankhya-datagen") || rel.contains("sankhya-testkit") {
@@ -438,7 +518,9 @@ fn check_dupes(root: &Path) -> bool {
         println!("   no Cargo.lock yet — skipped");
         return true;
     }
-    let Ok(text) = std::fs::read_to_string(&lock) else { return true };
+    let Ok(text) = std::fs::read_to_string(&lock) else {
+        return true;
+    };
     let mut seen: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut name = String::new();
     for line in text.lines() {
@@ -446,7 +528,9 @@ fn check_dupes(root: &Path) -> bool {
             name = v.trim_end_matches('"').to_string();
         } else if let Some(v) = line.strip_prefix("version = \"") {
             if !name.is_empty() {
-                seen.entry(name.clone()).or_default().push(v.trim_end_matches('"').to_string());
+                seen.entry(name.clone())
+                    .or_default()
+                    .push(v.trim_end_matches('"').to_string());
                 name.clear();
             }
         }
@@ -460,18 +544,21 @@ fn check_dupes(root: &Path) -> bool {
         } else if DUP_ALLOWLIST.contains(&n.as_str()) {
             benign += 1;
         } else {
-            eprintln!("  NEW DUP      {n}: {versions:?} — review, then allowlist deliberately or remove");
+            eprintln!(
+                "  NEW DUP      {n}: {versions:?} — review, then allowlist deliberately or remove"
+            );
             ok = false;
         }
     }
     println!(
         "   {} packages, {benign} allowlisted duplicates, critical family single-versioned: {}",
         seen.len(),
-        !seen.iter().any(|(n, v)| CRITICAL_FAMILY.contains(&n.as_str()) && v.len() > 1)
+        !seen
+            .iter()
+            .any(|(n, v)| CRITICAL_FAMILY.contains(&n.as_str()) && v.len() > 1)
     );
     ok
 }
-
 
 /// Documentation rot, caught mechanically.
 ///
@@ -497,13 +584,17 @@ fn check_docs(root: &Path) -> bool {
     let mut versions = 0usize;
 
     for doc in &docs {
-        let Ok(text) = std::fs::read_to_string(doc) else { continue };
+        let Ok(text) = std::fs::read_to_string(doc) else {
+            continue;
+        };
         let rel = doc.strip_prefix(root).unwrap_or(doc).display().to_string();
         let dir = doc.parent().unwrap_or(root);
 
         // (a) Relative links must resolve.
         for target in markdown_link_targets(&text) {
-            if target.starts_with("http") || target.starts_with('#') || target.starts_with("mailto:")
+            if target.starts_with("http")
+                || target.starts_with('#')
+                || target.starts_with("mailto:")
             {
                 continue;
             }
@@ -552,7 +643,9 @@ fn check_docs(root: &Path) -> bool {
 }
 
 fn collect_markdown(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for e in entries.flatten() {
         let p = e.path();
         let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
@@ -612,8 +705,8 @@ fn quoted_versions(text: &str, crate_name: &str) -> Vec<String> {
 }
 
 fn leading_version(window: &str) -> Option<String> {
-    let trimmed = window
-        .trim_start_matches(|c: char| matches!(c, '`' | ' ' | '|' | '=' | '"' | '*' | ':'));
+    let trimmed =
+        window.trim_start_matches(|c: char| matches!(c, '`' | ' ' | '|' | '=' | '"' | '*' | ':'));
     let mut digits = String::new();
     for c in trimmed.chars() {
         if c.is_ascii_digit() || c == '.' {
@@ -636,7 +729,9 @@ fn backticked_crate_names(text: &str) -> Vec<String> {
         let Some(end) = after.find('`') else { break };
         let inner = &after[..end];
         if inner.starts_with("sankhya-")
-            && inner.chars().all(|c| c.is_ascii_lowercase() || c == '-' || c.is_ascii_digit())
+            && inner
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c == '-' || c.is_ascii_digit())
         {
             out.push(inner.to_string());
         }
@@ -648,8 +743,12 @@ fn backticked_crate_names(text: &str) -> Vec<String> {
 /// The exact-pinned versions from the workspace dependency table.
 fn workspace_pins(root: &Path) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
-    let Ok(text) = std::fs::read_to_string(root.join("Cargo.toml")) else { return out };
-    let Ok(v) = toml::from_str::<toml::Table>(&text) else { return out };
+    let Ok(text) = std::fs::read_to_string(root.join("Cargo.toml")) else {
+        return out;
+    };
+    let Ok(v) = toml::from_str::<toml::Table>(&text) else {
+        return out;
+    };
     let Some(deps) = v
         .get("workspace")
         .and_then(|w| w.get("dependencies"))
@@ -660,7 +759,10 @@ fn workspace_pins(root: &Path) -> BTreeMap<String, String> {
     for (name, spec) in deps {
         let raw = match spec {
             toml::Value::String(s) => Some(s.clone()),
-            toml::Value::Table(t) => t.get("version").and_then(|v| v.as_str()).map(str::to_string),
+            toml::Value::Table(t) => t
+                .get("version")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
             _ => None,
         };
         // Only exact pins are claims a document can be checked against.

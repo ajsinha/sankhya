@@ -21,6 +21,6 @@ mod compact;
 mod encode;
 mod write;
 
-pub use encode::{EncodeError, encode_batch};
-pub use compact::{CompactionOutcome, compact_files, read_parquet_stats};
-pub use write::{WriteReport, WriterConfig, write_parquet};
+pub use compact::{compact_files, read_parquet_stats, CompactionOutcome};
+pub use encode::{encode_batch, EncodeError};
+pub use write::{write_parquet, WriteReport, WriterConfig};

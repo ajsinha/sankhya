@@ -14,12 +14,12 @@
 
 #![doc(html_root_url = "https://docs.rs/sankhya-types")]
 
-mod ids;
 mod fixed;
+mod ids;
 mod position;
 mod temporal;
 
-pub use ids::{EdgeId, NodeId, QueryId, SchemaName, TableId, TableName, TenantId};
 pub use fixed::{Fixed, FixedError, Scale};
+pub use ids::{EdgeId, NodeId, QueryId, SchemaName, TableId, TableName, TenantId};
 pub use position::{Lsn, LsnRange, TableVersion};
 pub use temporal::{Timestamp, ValidityInterval};

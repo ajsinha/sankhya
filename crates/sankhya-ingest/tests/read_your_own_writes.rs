@@ -13,7 +13,7 @@
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use sankhya_cdc_apply::BatchPolicy;
 use sankhya_ingest::Pipeline;
-use sankhya_plan::{ReadMode, SessionToken, Visibility, evaluate_visibility};
+use sankhya_plan::{evaluate_visibility, ReadMode, SessionToken, Visibility};
 use sankhya_table::WriterConfig;
 use sankhya_types::Lsn;
 use std::process::Command;
@@ -36,10 +36,24 @@ impl Pg {
 
     fn sql(&self, statement: &str) -> String {
         let out = Command::new(format!("{}/psql", self.bin))
-            .args(["-h", &self.socket, "-U", "sankhya", "-d", "postgres", "-tA", "-c", statement])
+            .args([
+                "-h",
+                &self.socket,
+                "-U",
+                "sankhya",
+                "-d",
+                "postgres",
+                "-tA",
+                "-c",
+                statement,
+            ])
             .output()
             .expect("psql runs");
-        assert!(out.status.success(), "psql failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "psql failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
@@ -80,12 +94,18 @@ async fn a_write_is_visible_analytically_to_the_session_that_made_it() {
         "SELECT pg_drop_replication_slot('{slot}') WHERE EXISTS
          (SELECT 1 FROM pg_replication_slots WHERE slot_name='{slot}')"
     ));
-    pg.sql(&format!("SELECT pg_create_logical_replication_slot('{slot}','pgoutput')"));
+    pg.sql(&format!(
+        "SELECT pg_create_logical_replication_slot('{slot}','pgoutput')"
+    ));
 
     let warehouse = tempfile::tempdir().expect("a temporary directory");
     let mut pipeline = Pipeline::new(
         warehouse.path(),
-        BatchPolicy { max_rows: usize::MAX, max_transactions: usize::MAX, ..BatchPolicy::default() },
+        BatchPolicy {
+            max_rows: usize::MAX,
+            max_transactions: usize::MAX,
+            ..BatchPolicy::default()
+        },
         WriterConfig::default(),
     );
 
@@ -149,12 +169,23 @@ async fn a_write_is_visible_analytically_to_the_session_that_made_it() {
     // is free to choose a physical string representation and the test should not
     // depend on which one it picked.
     for (predicate, why) in [
-        ("device_id = 'device-ryow'", "the session must see the row it just wrote"),
-        ("notes = 'written just now'", "and must see its actual value, not a placeholder"),
-        ("_sankhya_op = 'I'", "recorded with the operation that produced it"),
+        (
+            "device_id = 'device-ryow'",
+            "the session must see the row it just wrote",
+        ),
+        (
+            "notes = 'written just now'",
+            "and must see its actual value, not a placeholder",
+        ),
+        (
+            "_sankhya_op = 'I'",
+            "recorded with the operation that produced it",
+        ),
     ] {
         let batches = ctx
-            .sql(&format!("SELECT count(*) AS n FROM captured WHERE {predicate}"))
+            .sql(&format!(
+                "SELECT count(*) AS n FROM captured WHERE {predicate}"
+            ))
             .await
             .expect("plans")
             .collect()

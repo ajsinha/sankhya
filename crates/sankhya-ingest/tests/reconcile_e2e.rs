@@ -47,10 +47,26 @@ impl Pg {
 
     fn sql(&self, statement: &str) -> String {
         let out = Command::new(format!("{}/psql", self.bin))
-            .args(["-h", &self.socket, "-U", "sankhya", "-d", "postgres", "-tA", "-F", "\u{1}", "-c", statement])
+            .args([
+                "-h",
+                &self.socket,
+                "-U",
+                "sankhya",
+                "-d",
+                "postgres",
+                "-tA",
+                "-F",
+                "\u{1}",
+                "-c",
+                statement,
+            ])
             .output()
             .expect("psql runs");
-        assert!(out.status.success(), "psql failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "psql failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).trim_end().to_string()
     }
 
@@ -103,7 +119,9 @@ async fn captured_data_reconciles_against_the_source() {
         "SELECT pg_drop_replication_slot('{slot}') WHERE EXISTS
          (SELECT 1 FROM pg_replication_slots WHERE slot_name='{slot}')"
     ));
-    pg.sql(&format!("SELECT pg_create_logical_replication_slot('{slot}','pgoutput')"));
+    pg.sql(&format!(
+        "SELECT pg_create_logical_replication_slot('{slot}','pgoutput')"
+    ));
 
     pg.sql(&format!(
         "INSERT INTO {table} (id, route_ref, from_hub, to_hub, distance_km, departed_at, departed_date)
@@ -117,7 +135,11 @@ async fn captured_data_reconciles_against_the_source() {
     let warehouse = tempfile::tempdir().expect("a temporary directory");
     let mut pipeline = Pipeline::new(
         warehouse.path(),
-        BatchPolicy { max_rows: usize::MAX, max_transactions: usize::MAX, ..BatchPolicy::default() },
+        BatchPolicy {
+            max_rows: usize::MAX,
+            max_transactions: usize::MAX,
+            ..BatchPolicy::default()
+        },
         WriterConfig::default(),
     );
     for bytes in &pg.drain(slot) {
@@ -140,7 +162,11 @@ async fn captured_data_reconciles_against_the_source() {
              FROM {table} WHERE id > {MARKER} ORDER BY id"
         ),
     );
-    assert_eq!(expected.rows() as i64, rows, "the source should hold exactly what we wrote");
+    assert_eq!(
+        expected.rows() as i64,
+        rows,
+        "the source should hold exactly what we wrote"
+    );
 
     // --- digest the analytical copy, through an independent engine -----------------
     let ctx = SessionContext::new();

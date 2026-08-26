@@ -105,5 +105,10 @@ pub fn write_parquet(
         .map_err(|e| Error::StorageUnavailable(format!("closing writer: {e}")))?;
 
     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    Ok(WriteReport { path, rows: batch.num_rows(), bytes, covers_through })
+    Ok(WriteReport {
+        path,
+        rows: batch.num_rows(),
+        bytes,
+        covers_through,
+    })
 }

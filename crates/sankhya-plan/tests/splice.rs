@@ -6,11 +6,14 @@
 //! be caught by inspection.
 
 use proptest::prelude::*;
-use sankhya_plan::{SpliceError, TierRef, is_exact_cover, plan_splice};
+use sankhya_plan::{is_exact_cover, plan_splice, SpliceError, TierRef};
 use sankhya_types::{Lsn, LsnRange};
 
 fn tier(name: &'static str, from: u64, to: u64) -> TierRef {
-    TierRef::new(name, LsnRange::new(Lsn::new(from), Lsn::new(to)).expect("valid range"))
+    TierRef::new(
+        name,
+        LsnRange::new(Lsn::new(from), Lsn::new(to)).expect("valid range"),
+    )
 }
 
 #[test]
@@ -45,14 +48,22 @@ fn a_gap_refuses_the_query_and_names_the_missing_span() {
         panic!("expected a coverage gap, got {err:?}");
     };
     assert_eq!(from, Lsn::new(400));
-    assert_eq!(to, Lsn::new(700), "the operator needs the exact missing span");
+    assert_eq!(
+        to,
+        Lsn::new(700),
+        "the operator needs the exact missing span"
+    );
 }
 
 #[test]
 fn requesting_beyond_the_frontier_is_refused() {
     let tiers = [tier("published", 0, 500)];
     let err = plan_splice(&tiers, Lsn::new(900)).expect_err("must refuse");
-    let SpliceError::BeyondFrontier { requested, available } = err else {
+    let SpliceError::BeyondFrontier {
+        requested,
+        available,
+    } = err
+    else {
         panic!("expected beyond-frontier, got {err:?}");
     };
     assert_eq!(requested, Lsn::new(900));
@@ -106,7 +117,12 @@ fn a_partial_target_trims_the_last_tier() {
     let splice = plan_splice(&tiers, Lsn::new(950)).expect("plans");
     assert_eq!(splice.target, Lsn::new(950));
     assert_eq!(
-        splice.tiers.last().expect("a tier").coverage.end_inclusive(),
+        splice
+            .tiers
+            .last()
+            .expect("a tier")
+            .coverage
+            .end_inclusive(),
         Lsn::new(950),
         "the final tier must be trimmed to the target"
     );

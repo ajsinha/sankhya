@@ -40,8 +40,18 @@ fn relation() -> Message {
         name: "readings".into(),
         replica_identity: ReplicaIdentity::Default,
         columns: vec![
-            ColumnDescriptor { name: "id".into(), type_oid: 20, type_modifier: -1, is_key: true },
-            ColumnDescriptor { name: "label".into(), type_oid: 25, type_modifier: -1, is_key: false },
+            ColumnDescriptor {
+                name: "id".into(),
+                type_oid: 20,
+                type_modifier: -1,
+                is_key: true,
+            },
+            ColumnDescriptor {
+                name: "label".into(),
+                type_oid: 25,
+                type_modifier: -1,
+                is_key: false,
+            },
         ],
     }))
 }
@@ -84,7 +94,11 @@ fn build_stream(transactions: usize, rows_each: usize) -> Vec<Message> {
 fn pipeline(dir: &std::path::Path, max_rows: usize) -> Pipeline {
     Pipeline::new(
         dir,
-        BatchPolicy { max_rows, max_transactions: usize::MAX, ..BatchPolicy::default() },
+        BatchPolicy {
+            max_rows,
+            max_transactions: usize::MAX,
+            ..BatchPolicy::default()
+        },
         WriterConfig::default(),
     )
 }
@@ -194,7 +208,10 @@ fn repeated_restarts_still_lose_nothing() {
         }
     }
 
-    assert_eq!(total, 20, "five restarts must still yield every row exactly once");
+    assert_eq!(
+        total, 20,
+        "five restarts must still yield every row exactly once"
+    );
 }
 
 #[test]

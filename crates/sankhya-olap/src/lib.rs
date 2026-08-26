@@ -20,5 +20,5 @@
 mod session;
 
 pub use session::{
-    REQUIRED, RequiredSetting, SettingsError, apply_required_settings, session, verify_settings,
+    apply_required_settings, session, verify_settings, RequiredSetting, SettingsError, REQUIRED,
 };

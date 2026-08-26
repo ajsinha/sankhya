@@ -5,7 +5,7 @@
 //! nothing in normal operation would ever reveal it.
 
 use datafusion::prelude::{SessionConfig, SessionContext};
-use sankhya_olap::{REQUIRED, apply_required_settings, session, verify_settings};
+use sankhya_olap::{apply_required_settings, session, verify_settings, REQUIRED};
 
 #[test]
 fn a_default_engine_is_not_configured_as_sankhya_requires() {

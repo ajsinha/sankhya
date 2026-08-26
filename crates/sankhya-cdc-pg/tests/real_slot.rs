@@ -6,7 +6,7 @@
 //!
 //! Skipped unless `SANKHYA_PG_BIN` and `SANKHYA_E2E_SOCKET` are set.
 
-use sankhya_cdc_pg::{SafetyPolicy, Severity, SlotState, WalStatus, assess};
+use sankhya_cdc_pg::{assess, SafetyPolicy, Severity, SlotState, WalStatus};
 use sankhya_types::Lsn;
 use std::process::Command;
 use std::time::Duration;
@@ -15,10 +15,16 @@ fn psql(sql: &str) -> Option<String> {
     let bin = std::env::var("SANKHYA_PG_BIN").ok()?;
     let socket = std::env::var("SANKHYA_E2E_SOCKET").ok()?;
     let out = Command::new(format!("{bin}/psql"))
-        .args(["-h", &socket, "-U", "sankhya", "-d", "postgres", "-tA", "-F", "|", "-c", sql])
+        .args([
+            "-h", &socket, "-U", "sankhya", "-d", "postgres", "-tA", "-F", "|", "-c", sql,
+        ])
         .output()
         .ok()?;
-    assert!(out.status.success(), "psql failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "psql failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
@@ -32,7 +38,10 @@ fn a_real_slot_is_read_and_assessed() {
         eprintln!("skipping: set SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run");
         return;
     };
-    psql(&format!("SELECT pg_create_logical_replication_slot('{slot}','pgoutput')")).expect("creates");
+    psql(&format!(
+        "SELECT pg_create_logical_replication_slot('{slot}','pgoutput')"
+    ))
+    .expect("creates");
 
     // Produce some log so the slot is holding something measurable.
     psql("SELECT pg_logical_emit_message(true, 'sankhya.test', repeat('x', 4096))").expect("emits");
@@ -73,7 +82,10 @@ fn a_real_slot_is_read_and_assessed() {
     assert!(!state.status.is_past_limit());
 
     // The slot is holding something, and the arithmetic is sane.
-    assert!(state.retained_bytes > 0, "the slot should be holding the log we just wrote");
+    assert!(
+        state.retained_bytes > 0,
+        "the slot should be holding the log we just wrote"
+    );
     assert!(state.source_position.get() > 0);
 
     let escalation = assess(&SafetyPolicy::default(), &state, Duration::from_secs(1));

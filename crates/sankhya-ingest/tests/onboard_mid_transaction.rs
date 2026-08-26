@@ -41,7 +41,9 @@ fn relation(id: u32, name: &str) -> Message {
 fn insert(relation_id: u32, value: &str) -> Message {
     Message::Insert {
         relation_id,
-        new: TupleData { values: vec![TupleValue::Text(value.into())] },
+        new: TupleData {
+            values: vec![TupleValue::Text(value.into())],
+        },
     }
 }
 
@@ -50,7 +52,11 @@ fn a_table_first_seen_inside_a_transaction_keeps_its_rows() {
     let warehouse = tempfile::tempdir().expect("a temporary directory");
     let mut pipeline = Pipeline::new(
         warehouse.path(),
-        BatchPolicy { max_rows: usize::MAX, max_transactions: usize::MAX, ..BatchPolicy::default() },
+        BatchPolicy {
+            max_rows: usize::MAX,
+            max_transactions: usize::MAX,
+            ..BatchPolicy::default()
+        },
         WriterConfig::default(),
     );
 
@@ -85,7 +91,11 @@ fn a_table_first_seen_inside_a_transaction_keeps_its_rows() {
         "rows of the transaction that introduced a table must not be refused"
     );
     assert_eq!(pipeline.open_rows(), 0, "the transaction committed");
-    assert_eq!(pipeline.pending_rows(), 3, "all three rows should be sealed and ready");
+    assert_eq!(
+        pipeline.pending_rows(),
+        3,
+        "all three rows should be sealed and ready"
+    );
 
     let published = pipeline.publish(true).expect("publishes");
     assert_eq!(published.len(), 2, "both tables should publish");
@@ -93,8 +103,14 @@ fn a_table_first_seen_inside_a_transaction_keeps_its_rows() {
     let total: usize = published.iter().map(|f| f.rows).sum();
     assert_eq!(total, 3, "no row may be lost");
 
-    let alpha = published.iter().find(|f| f.table == "alpha").expect("alpha published");
-    let beta = published.iter().find(|f| f.table == "beta").expect("beta published");
+    let alpha = published
+        .iter()
+        .find(|f| f.table == "alpha")
+        .expect("alpha published");
+    let beta = published
+        .iter()
+        .find(|f| f.table == "beta")
+        .expect("beta published");
     assert_eq!(alpha.rows, 2, "rows must not leak between tables");
     assert_eq!(beta.rows, 1);
 
@@ -110,13 +126,21 @@ fn a_table_first_seen_between_transactions_also_keeps_its_rows() {
     let warehouse = tempfile::tempdir().expect("a temporary directory");
     let mut pipeline = Pipeline::new(
         warehouse.path(),
-        BatchPolicy { max_rows: usize::MAX, max_transactions: usize::MAX, ..BatchPolicy::default() },
+        BatchPolicy {
+            max_rows: usize::MAX,
+            max_transactions: usize::MAX,
+            ..BatchPolicy::default()
+        },
         WriterConfig::default(),
     );
 
     pipeline.accept(&relation(100, "alpha")).expect("accepts");
     pipeline
-        .accept(&Message::Begin { final_lsn: Lsn::new(10), commit_time: Timestamp::EPOCH, xid: 1 })
+        .accept(&Message::Begin {
+            final_lsn: Lsn::new(10),
+            commit_time: Timestamp::EPOCH,
+            xid: 1,
+        })
         .expect("accepts");
     pipeline.accept(&insert(100, "1")).expect("accepts");
     pipeline
@@ -145,7 +169,11 @@ fn rows_after_a_commit_but_before_the_next_begin_are_refused() {
 
     pipeline.accept(&relation(100, "alpha")).expect("accepts");
     pipeline
-        .accept(&Message::Begin { final_lsn: Lsn::new(10), commit_time: Timestamp::EPOCH, xid: 1 })
+        .accept(&Message::Begin {
+            final_lsn: Lsn::new(10),
+            commit_time: Timestamp::EPOCH,
+            xid: 1,
+        })
         .expect("accepts");
     pipeline
         .accept(&Message::Commit {

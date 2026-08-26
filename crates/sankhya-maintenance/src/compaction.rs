@@ -57,7 +57,11 @@ impl PartitionState {
     /// The furthest position any file here covers.
     #[must_use]
     pub fn covers_through(&self) -> Lsn {
-        self.files.iter().map(|f| f.covers_through).max().unwrap_or(Lsn::ZERO)
+        self.files
+            .iter()
+            .map(|f| f.covers_through)
+            .max()
+            .unwrap_or(Lsn::ZERO)
     }
 }
 
@@ -170,7 +174,10 @@ impl CompactionPlan {
 ///
 /// Returns `None` when there is nothing worth doing.
 #[must_use]
-pub fn plan_compaction(policy: &CompactionPolicy, state: &PartitionState) -> Option<CompactionPlan> {
+pub fn plan_compaction(
+    policy: &CompactionPolicy,
+    state: &PartitionState,
+) -> Option<CompactionPlan> {
     let count = state.file_count();
     if count < 2 {
         // One file cannot be merged with anything, and zero is nothing.
@@ -224,7 +231,11 @@ pub fn plan_compaction(policy: &CompactionPolicy, state: &PartitionState) -> Opt
         return None;
     }
 
-    let covers_through = inputs.iter().map(|f| f.covers_through).max().unwrap_or(Lsn::ZERO);
+    let covers_through = inputs
+        .iter()
+        .map(|f| f.covers_through)
+        .max()
+        .unwrap_or(Lsn::ZERO);
     let settled = state.ticks_since_write >= policy.settle_ticks;
 
     Some(CompactionPlan {

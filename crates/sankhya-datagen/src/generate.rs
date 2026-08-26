@@ -17,13 +17,19 @@ impl Scale {
     /// The scale the acceptance run uses: ten tables, ten gigabytes.
     #[must_use]
     pub const fn acceptance() -> Self {
-        Self { total_bytes: 10 * 1024 * 1024 * 1024, tables: 10 }
+        Self {
+            total_bytes: 10 * 1024 * 1024 * 1024,
+            tables: 10,
+        }
     }
 
     /// A small scale for fast tests.
     #[must_use]
     pub const fn smoke() -> Self {
-        Self { total_bytes: 4 * 1024 * 1024, tables: 10 }
+        Self {
+            total_bytes: 4 * 1024 * 1024,
+            tables: 10,
+        }
     }
 }
 
@@ -90,12 +96,21 @@ impl Generator {
     pub fn plan(&self, scale: Scale) -> Vec<(&'static Schema, u64)> {
         let schemas = &crate::schema::all_schemas()[..scale.tables.min(10)];
         let per_table = scale.total_bytes / schemas.len().max(1) as u64;
-        schemas.iter().map(|s| (s, s.rows_for_bytes(per_table).max(1))).collect()
+        schemas
+            .iter()
+            .map(|s| (s, s.rows_for_bytes(per_table).max(1)))
+            .collect()
     }
 
     /// Generate a contiguous batch of rows for one table.
     #[must_use]
-    pub fn batch(&self, schema: &'static Schema, table_index: u64, from_row: u64, count: u64) -> RowBatch {
+    pub fn batch(
+        &self,
+        schema: &'static Schema,
+        table_index: u64,
+        from_row: u64,
+        count: u64,
+    ) -> RowBatch {
         let rows = (from_row..from_row.saturating_add(count))
             .map(|row| {
                 let mut rng = self.rng_for(table_index, row);
@@ -106,7 +121,11 @@ impl Generator {
                     .collect()
             })
             .collect();
-        RowBatch { schema: schema.name, columns: schema.columns, rows }
+        RowBatch {
+            schema: schema.name,
+            columns: schema.columns,
+            rows,
+        }
     }
 
     fn value(column: &Column, row: u64, rng: &mut ChaCha8Rng) -> Option<String> {
@@ -133,13 +152,19 @@ impl Generator {
             ColumnKind::LargePayload { len } => random_hex(rng, len as usize),
             ColumnKind::Decimal { precision, scale } => {
                 let digits = precision.saturating_sub(scale).min(15);
-                let whole: u64 = rng.random_range(0..10u64.saturating_pow(u32::from(digits)).max(1));
+                let whole: u64 =
+                    rng.random_range(0..10u64.saturating_pow(u32::from(digits)).max(1));
                 let frac: u64 = rng.random_range(0..10u64.saturating_pow(u32::from(scale)).max(1));
                 format!("{whole}.{frac:0width$}", width = usize::from(scale))
             }
             ColumnKind::Real => format!("{:.6}", rng.random_range(-1.0e6..1.0e6f64)),
             ColumnKind::Integer { min, max } => rng.random_range(min..=max).to_string(),
-            ColumnKind::Boolean => if rng.random_bool(0.5) { "true" } else { "false" }.to_string(),
+            ColumnKind::Boolean => if rng.random_bool(0.5) {
+                "true"
+            } else {
+                "false"
+            }
+            .to_string(),
             // Increases with the row sequence, so the natural sort order is also the
             // arrival order — which is what makes commit-position sorting free.
             ColumnKind::Timestamp => {

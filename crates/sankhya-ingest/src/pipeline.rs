@@ -3,8 +3,10 @@
 use sankhya_cdc_apply::{BatchPolicy, Batcher, MutationPlan};
 use sankhya_cdc_model::{Decoder, Message, RelationDescriptor};
 use sankhya_error::{Error, Result};
-use sankhya_schema::{Compatibility, Onboarded, OnboardingWarning, classify_change, onboard_relation};
-use sankhya_table::{WriterConfig, encode_batch, write_parquet};
+use sankhya_schema::{
+    classify_change, onboard_relation, Compatibility, Onboarded, OnboardingWarning,
+};
+use sankhya_table::{encode_batch, write_parquet, WriterConfig};
 use sankhya_types::Lsn;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -154,7 +156,10 @@ impl Pipeline {
 
     #[must_use]
     pub fn table_names(&self) -> Vec<&str> {
-        self.tables.values().map(|t| t.onboarded.location.source_table.as_str()).collect()
+        self.tables
+            .values()
+            .map(|t| t.onboarded.location.source_table.as_str())
+            .collect()
     }
 
     /// Feed one raw message.
@@ -313,7 +318,9 @@ impl Pipeline {
     /// Whether a table is quarantined, and why.
     #[must_use]
     pub fn quarantine_reason(&self, relation_id: u32) -> Option<&str> {
-        self.tables.get(&relation_id).and_then(|s| s.quarantine.as_deref())
+        self.tables
+            .get(&relation_id)
+            .and_then(|s| s.quarantine.as_deref())
     }
 
     /// Events discarded while a table was quarantined.
@@ -337,8 +344,12 @@ impl Pipeline {
     /// Data written under the previous shape is untouched; the two shapes coexist as
     /// separate files, which is what makes adopting a new shape cheap.
     pub fn adopt_pending_schema(&mut self, relation_id: u32) -> bool {
-        let Some(state) = self.tables.get_mut(&relation_id) else { return false };
-        let Some(pending) = state.pending_schema.take() else { return false };
+        let Some(state) = self.tables.get_mut(&relation_id) else {
+            return false;
+        };
+        let Some(pending) = state.pending_schema.take() else {
+            return false;
+        };
         state.onboarded = pending;
         state.quarantine = None;
         true
@@ -419,14 +430,21 @@ impl Pipeline {
             let batch = encode_batch(&state.onboarded.schema, &plan.mutations)
                 .map_err(|e| Error::InvariantViolated(format!("encoding a batch: {e}")))?;
 
-            let directory = self.warehouse.join(state.onboarded.location.relative_path());
+            let directory = self
+                .warehouse
+                .join(state.onboarded.location.relative_path());
             // Sequence-numbered rather than time-named, so a replay produces the same
             // file names and the output is reproducible.
             let file_name = format!("{:08}.parquet", state.sequence);
             state.sequence = state.sequence.saturating_add(1);
 
-            let report =
-                write_parquet(&directory, &file_name, &batch, plan.covers_through, self.writer)?;
+            let report = write_parquet(
+                &directory,
+                &file_name,
+                &batch,
+                plan.covers_through,
+                self.writer,
+            )?;
 
             state.published_through = plan.covers_through;
 

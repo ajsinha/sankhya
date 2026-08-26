@@ -4,7 +4,7 @@
 //! separation is the thing that makes frequent compaction safe.
 
 use sankhya_error::{Error, Result};
-use sankhya_table::{CompactionOutcome, WriterConfig, compact_files, read_parquet_stats};
+use sankhya_table::{compact_files, read_parquet_stats, CompactionOutcome, WriterConfig};
 use sankhya_types::Lsn;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -27,15 +27,13 @@ pub fn run_compaction(
     output_name: &str,
     config: WriterConfig,
 ) -> Result<CompactionOutcome> {
-    let inputs: Vec<PathBuf> = plan.inputs.iter().map(|f| directory.join(&f.name)).collect();
+    let inputs: Vec<PathBuf> = plan
+        .inputs
+        .iter()
+        .map(|f| directory.join(&f.name))
+        .collect();
 
-    let outcome = compact_files(
-        &inputs,
-        directory,
-        output_name,
-        plan.covers_through,
-        config,
-    )?;
+    let outcome = compact_files(&inputs, directory, output_name, plan.covers_through, config)?;
 
     // The plan was computed from a listing that may be stale by the time it runs. If
     // the files on disk no longer hold what the plan believed, the discrepancy is

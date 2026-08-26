@@ -32,7 +32,17 @@ impl Pg {
 
     fn sql(&self, statement: &str) -> String {
         let out = Command::new(format!("{}/psql", self.bin))
-            .args(["-h", &self.socket, "-U", "sankhya", "-d", "postgres", "-tA", "-c", statement])
+            .args([
+                "-h",
+                &self.socket,
+                "-U",
+                "sankhya",
+                "-d",
+                "postgres",
+                "-tA",
+                "-c",
+                statement,
+            ])
             .output()
             .expect("psql runs");
         assert!(
@@ -104,7 +114,9 @@ fn captures_a_real_workload_and_reconciles_against_the_source() {
         "SELECT pg_drop_replication_slot('{slot}') WHERE EXISTS
          (SELECT 1 FROM pg_replication_slots WHERE slot_name='{slot}')"
     ));
-    pg.sql(&format!("SELECT pg_create_logical_replication_slot('{slot}','pgoutput')"));
+    pg.sql(&format!(
+        "SELECT pg_create_logical_replication_slot('{slot}','pgoutput')"
+    ));
 
     // A workload over the loaded dataset, exercising all three operations and
     // several tables so cross-table transaction handling is covered.
@@ -144,7 +156,10 @@ fn captures_a_real_workload_and_reconciles_against_the_source() {
 
     // Decode and apply, asserting each message is consumed exactly.
     let decoder = Decoder::new();
-    let mut batcher = Batcher::new(BatchPolicy { max_rows: usize::MAX, ..BatchPolicy::default() });
+    let mut batcher = Batcher::new(BatchPolicy {
+        max_rows: usize::MAX,
+        ..BatchPolicy::default()
+    });
     let mut decoded = 0usize;
 
     for (i, message_bytes) in raw.iter().enumerate() {
@@ -170,12 +185,20 @@ fn captures_a_real_workload_and_reconciles_against_the_source() {
         0,
         "no mutation should have been unresolvable in this workload"
     );
-    assert_eq!(batcher.open_rows(), 0, "every transaction in the stream was committed");
+    assert_eq!(
+        batcher.open_rows(),
+        0,
+        "every transaction in the stream was committed"
+    );
 
     let plan = batcher.flush();
 
     let counts = |op: Op| plan.mutations.iter().filter(|m| m.op == op).count() as i64;
-    assert_eq!(counts(Op::Insert), inserted + 2, "inserts, including the two-table transaction");
+    assert_eq!(
+        counts(Op::Insert),
+        inserted + 2,
+        "inserts, including the two-table transaction"
+    );
     assert_eq!(counts(Op::Update), updated);
     assert_eq!(counts(Op::Delete), deleted);
 
@@ -199,8 +222,14 @@ fn captures_a_real_workload_and_reconciles_against_the_source() {
     );
 
     // Coverage must be real and monotonic.
-    assert!(plan.covers_through.get() > 0, "the plan declares no coverage");
-    assert!(plan.transaction_count >= 4, "expected at least four transactions");
+    assert!(
+        plan.covers_through.get() > 0,
+        "the plan declares no coverage"
+    );
+    assert!(
+        plan.transaction_count >= 4,
+        "expected at least four transactions"
+    );
 
     // Every mutation carries the position of its own transaction.
     assert!(plan.mutations.iter().all(|m| m.commit_lsn.get() > 0));

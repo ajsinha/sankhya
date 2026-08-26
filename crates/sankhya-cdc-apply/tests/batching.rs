@@ -5,12 +5,16 @@
 //! times slower and non-deterministic, which in practice means far less of it.
 
 use proptest::prelude::*;
-use sankhya_cdc_apply::{BatchPolicy, Batcher, FlushReason, Row, apply_unchanged};
+use sankhya_cdc_apply::{apply_unchanged, BatchPolicy, Batcher, FlushReason, Row};
 use sankhya_cdc_model::{Message, TupleData, TupleValue};
 use sankhya_types::{Lsn, Timestamp};
 
 fn begin(xid: u32) -> Message {
-    Message::Begin { final_lsn: Lsn::new(0), commit_time: Timestamp::EPOCH, xid }
+    Message::Begin {
+        final_lsn: Lsn::new(0),
+        commit_time: Timestamp::EPOCH,
+        xid,
+    }
 }
 
 fn commit(end: u64) -> Message {
@@ -22,7 +26,10 @@ fn commit(end: u64) -> Message {
 }
 
 fn insert(values: Vec<TupleValue>) -> Message {
-    Message::Insert { relation_id: 1, new: TupleData { values } }
+    Message::Insert {
+        relation_id: 1,
+        new: TupleData { values },
+    }
 }
 
 fn text(s: &str) -> TupleValue {
@@ -34,19 +41,33 @@ fn a_transaction_is_never_split_across_batches() {
     // The central invariant. Rows belonging to an open transaction must not be
     // publishable, because publishing half a transaction is a torn read that no
     // downstream consumer can detect.
-    let mut b = Batcher::new(BatchPolicy { max_rows: 2, ..BatchPolicy::default() });
+    let mut b = Batcher::new(BatchPolicy {
+        max_rows: 2,
+        ..BatchPolicy::default()
+    });
 
     b.accept(&begin(1), None);
     for i in 0..10 {
         b.accept(&insert(vec![text(&i.to_string())]), None);
     }
 
-    assert_eq!(b.sealed_rows(), 0, "an open transaction must not be publishable");
+    assert_eq!(
+        b.sealed_rows(),
+        0,
+        "an open transaction must not be publishable"
+    );
     assert_eq!(b.open_rows(), 10);
-    assert!(b.due().is_none(), "a flush must not be due while nothing is sealed");
+    assert!(
+        b.due().is_none(),
+        "a flush must not be due while nothing is sealed"
+    );
 
     b.accept(&commit(100), None);
-    assert_eq!(b.sealed_rows(), 10, "commit seals the whole transaction at once");
+    assert_eq!(
+        b.sealed_rows(),
+        10,
+        "commit seals the whole transaction at once"
+    );
     assert_eq!(b.open_rows(), 0);
 
     let plan = b.flush();
@@ -57,14 +78,30 @@ fn a_transaction_is_never_split_across_batches() {
 #[test]
 fn an_aborted_transaction_leaves_nothing() {
     let mut b = Batcher::new(BatchPolicy::default());
-    b.accept(&Message::StreamStart { xid: 7, first_segment: true }, None);
+    b.accept(
+        &Message::StreamStart {
+            xid: 7,
+            first_segment: true,
+        },
+        None,
+    );
     for i in 0..5 {
         b.accept(&insert(vec![text(&i.to_string())]), None);
     }
     assert_eq!(b.open_rows(), 5);
 
-    b.accept(&Message::StreamAbort { xid: 7, subtransaction_xid: 7 }, None);
-    assert_eq!(b.open_rows(), 0, "an aborted transaction must leave nothing behind");
+    b.accept(
+        &Message::StreamAbort {
+            xid: 7,
+            subtransaction_xid: 7,
+        },
+        None,
+    );
+    assert_eq!(
+        b.open_rows(),
+        0,
+        "an aborted transaction must leave nothing behind"
+    );
     assert_eq!(b.sealed_rows(), 0, "and must never reach the sealed set");
 }
 
@@ -84,7 +121,11 @@ fn coverage_extends_exactly_to_the_last_sealed_transaction() {
     b.accept(&insert(vec![text("y")]), None);
 
     let plan = b.flush();
-    assert_eq!(plan.covers_through, Lsn::new(300), "coverage must stop at the last SEALED commit");
+    assert_eq!(
+        plan.covers_through,
+        Lsn::new(300),
+        "coverage must stop at the last SEALED commit"
+    );
     assert_eq!(plan.len(), 3);
     assert_eq!(b.open_rows(), 1, "the open transaction survives the flush");
 }
@@ -99,7 +140,10 @@ fn every_mutation_carries_its_transaction_position() {
     b.accept(&commit(4242), None);
 
     let plan = b.flush();
-    assert!(plan.mutations.iter().all(|m| m.commit_lsn == Lsn::new(4242)));
+    assert!(plan
+        .mutations
+        .iter()
+        .all(|m| m.commit_lsn == Lsn::new(4242)));
 }
 
 #[test]
@@ -114,7 +158,10 @@ fn the_idempotency_key_is_derived_from_position_not_from_a_clock() {
         b.accept(&insert(vec![text("v")]), None);
         b.accept(&commit(999), None);
     }
-    assert_eq!(a.flush().idempotency_key("slot"), c.flush().idempotency_key("slot"));
+    assert_eq!(
+        a.flush().idempotency_key("slot"),
+        c.flush().idempotency_key("slot")
+    );
 }
 
 #[test]
@@ -162,7 +209,9 @@ fn the_hard_age_bound_still_flushes_a_trickle() {
 
 #[test]
 fn withheld_values_resolve_against_the_current_row() {
-    let current = Row { values: vec![Some("key".into()), Some("BIG PAYLOAD".into())] };
+    let current = Row {
+        values: vec![Some("key".into()), Some("BIG PAYLOAD".into())],
+    };
     let incoming = TupleData {
         values: vec![text("key"), TupleValue::Unchanged],
     };
@@ -178,31 +227,59 @@ fn withheld_values_resolve_against_the_current_row() {
 fn a_withheld_value_with_nothing_to_resolve_against_is_refused() {
     // Refusing is the only safe option. Writing a null would silently destroy the
     // column and the resulting row would look entirely plausible.
-    let incoming = TupleData { values: vec![text("key"), TupleValue::Unchanged] };
+    let incoming = TupleData {
+        values: vec![text("key"), TupleValue::Unchanged],
+    };
     assert!(apply_unchanged(&incoming, None).is_none());
 
     let mut b = Batcher::new(BatchPolicy::default());
     b.accept(&begin(1), None);
-    b.accept(&Message::Update { relation_id: 1, old: None, key_only: false, new: incoming }, None);
+    b.accept(
+        &Message::Update {
+            relation_id: 1,
+            old: None,
+            key_only: false,
+            new: incoming,
+        },
+        None,
+    );
     b.accept(&commit(1), None);
 
-    assert_eq!(b.sealed_rows(), 0, "an unresolvable mutation must not be published");
-    assert_eq!(b.unresolvable(), 1, "and must be counted, not silently absorbed");
+    assert_eq!(
+        b.sealed_rows(),
+        0,
+        "an unresolvable mutation must not be published"
+    );
+    assert_eq!(
+        b.unresolvable(),
+        1,
+        "and must be counted, not silently absorbed"
+    );
 }
 
 #[test]
 fn null_and_withheld_resolve_differently() {
-    let current = Row { values: vec![Some("keep me".into())] };
-    let explicit_null = TupleData { values: vec![TupleValue::Null] };
-    let withheld = TupleData { values: vec![TupleValue::Unchanged] };
+    let current = Row {
+        values: vec![Some("keep me".into())],
+    };
+    let explicit_null = TupleData {
+        values: vec![TupleValue::Null],
+    };
+    let withheld = TupleData {
+        values: vec![TupleValue::Unchanged],
+    };
 
     assert_eq!(
-        apply_unchanged(&explicit_null, Some(&current)).expect("resolvable").values[0],
+        apply_unchanged(&explicit_null, Some(&current))
+            .expect("resolvable")
+            .values[0],
         None,
         "an explicit null must clear the value"
     );
     assert_eq!(
-        apply_unchanged(&withheld, Some(&current)).expect("resolvable").values[0],
+        apply_unchanged(&withheld, Some(&current))
+            .expect("resolvable")
+            .values[0],
         Some("keep me".into()),
         "a withheld value must preserve it"
     );

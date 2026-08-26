@@ -18,7 +18,12 @@ use std::sync::Arc;
 const RELATION: u32 = 100;
 
 fn column(name: &str, oid: u32, is_key: bool) -> ColumnDescriptor {
-    ColumnDescriptor { name: name.into(), type_oid: oid, type_modifier: -1, is_key }
+    ColumnDescriptor {
+        name: name.into(),
+        type_oid: oid,
+        type_modifier: -1,
+        is_key,
+    }
 }
 
 fn relation(columns: Vec<ColumnDescriptor>) -> Message {
@@ -39,23 +44,37 @@ fn insert(values: usize) -> Message {
     Message::Insert {
         relation_id: RELATION,
         new: TupleData {
-            values: (0..values).map(|i| TupleValue::Text(i.to_string())).collect(),
+            values: (0..values)
+                .map(|i| TupleValue::Text(i.to_string()))
+                .collect(),
         },
     }
 }
 
 fn begin(xid: u32) -> Message {
-    Message::Begin { final_lsn: Lsn::new(0), commit_time: Timestamp::EPOCH, xid }
+    Message::Begin {
+        final_lsn: Lsn::new(0),
+        commit_time: Timestamp::EPOCH,
+        xid,
+    }
 }
 
 fn commit(at: u64) -> Message {
-    Message::Commit { commit_lsn: Lsn::new(at), end_lsn: Lsn::new(at), commit_time: Timestamp::EPOCH }
+    Message::Commit {
+        commit_lsn: Lsn::new(at),
+        end_lsn: Lsn::new(at),
+        commit_time: Timestamp::EPOCH,
+    }
 }
 
 fn pipeline(dir: &std::path::Path) -> Pipeline {
     Pipeline::new(
         dir,
-        BatchPolicy { max_rows: usize::MAX, max_transactions: usize::MAX, ..BatchPolicy::default() },
+        BatchPolicy {
+            max_rows: usize::MAX,
+            max_transactions: usize::MAX,
+            ..BatchPolicy::default()
+        },
         WriterConfig::default(),
     )
 }
@@ -82,7 +101,10 @@ fn an_added_column_is_applied_without_operator_involvement() {
     p.accept(&insert(3)).expect("accepts");
     p.accept(&commit(20)).expect("accepts");
 
-    assert!(p.quarantine_reason(RELATION).is_none(), "an addition must not quarantine");
+    assert!(
+        p.quarantine_reason(RELATION).is_none(),
+        "an addition must not quarantine"
+    );
     assert!(p.stats().schema_changes_applied >= 1);
 
     let files = p.publish(true).expect("publishes");
@@ -102,9 +124,12 @@ fn a_dropped_column_quarantines_and_says_why() {
     p.publish(true).expect("publishes");
 
     // A column disappears.
-    p.accept(&relation(vec![column("id", 20, true)])).expect("accepts");
+    p.accept(&relation(vec![column("id", 20, true)]))
+        .expect("accepts");
 
-    let reason = p.quarantine_reason(RELATION).expect("should be quarantined");
+    let reason = p
+        .quarantine_reason(RELATION)
+        .expect("should be quarantined");
     assert!(reason.contains("dropped"), "{reason}");
     assert!(
         reason.contains("cannot be inferred"),
@@ -126,7 +151,8 @@ fn a_quarantined_table_stops_publishing_but_keeps_consuming() {
     p.accept(&commit(10)).expect("accepts");
     p.publish(true).expect("publishes");
 
-    p.accept(&relation(vec![column("id", 20, true)])).expect("accepts");
+    p.accept(&relation(vec![column("id", 20, true)]))
+        .expect("accepts");
     assert!(p.quarantine_reason(RELATION).is_some());
 
     // More data arrives for the quarantined table.
@@ -146,7 +172,11 @@ fn a_quarantined_table_stops_publishing_but_keeps_consuming() {
         "but its events must be consumed and counted, not buffered — buffering would \
          hold the replication cursor back"
     );
-    assert_eq!(p.pending_rows(), 0, "nothing may accumulate for a quarantined table");
+    assert_eq!(
+        p.pending_rows(),
+        0,
+        "nothing may accumulate for a quarantined table"
+    );
     assert_eq!(p.open_rows(), 0);
 }
 
@@ -158,7 +188,8 @@ fn discarded_events_are_counted_rather_than_silent() {
     let mut p = pipeline(warehouse.path());
 
     p.accept(&original()).expect("accepts");
-    p.accept(&relation(vec![column("id", 20, true)])).expect("accepts");
+    p.accept(&relation(vec![column("id", 20, true)]))
+        .expect("accepts");
 
     p.accept(&begin(1)).expect("accepts");
     for _ in 0..12 {
@@ -177,7 +208,8 @@ fn a_quarantine_is_cleared_only_by_an_explicit_action() {
     let mut p = pipeline(warehouse.path());
 
     p.accept(&original()).expect("accepts");
-    p.accept(&relation(vec![column("id", 20, true)])).expect("accepts");
+    p.accept(&relation(vec![column("id", 20, true)]))
+        .expect("accepts");
     assert!(p.quarantine_reason(RELATION).is_some());
 
     // More traffic does not clear it.
@@ -189,7 +221,11 @@ fn a_quarantine_is_cleared_only_by_an_explicit_action() {
     // Resolving carries the decision: adopt the shape the source moved to. Merely
     // clearing the flag would leave the table expecting the old shape while the source
     // sends the new one, turning a schema problem into an ingest outage.
-    assert_eq!(p.pending_schema_columns(RELATION), Some(1), "the new shape is one column");
+    assert_eq!(
+        p.pending_schema_columns(RELATION),
+        Some(1),
+        "the new shape is one column"
+    );
     assert!(p.adopt_pending_schema(RELATION));
     assert!(p.quarantine_reason(RELATION).is_none());
 
@@ -218,7 +254,9 @@ fn an_unrepresentable_new_shape_quarantines_rather_than_writing_the_old_one() {
     ]))
     .expect("accepts");
 
-    let reason = p.quarantine_reason(RELATION).expect("should be quarantined");
+    let reason = p
+        .quarantine_reason(RELATION)
+        .expect("should be quarantined");
     assert!(reason.contains("cannot be carried"), "{reason}");
     assert_eq!(
         p.pending_schema_columns(RELATION),
@@ -251,13 +289,16 @@ fn one_quarantined_table_does_not_stop_the_others() {
     p.accept(&insert(2)).expect("accepts");
     p.accept(&Message::Insert {
         relation_id: other,
-        new: TupleData { values: vec![TupleValue::Text("1".into())] },
+        new: TupleData {
+            values: vec![TupleValue::Text("1".into())],
+        },
     })
     .expect("accepts");
     p.accept(&commit(10)).expect("accepts");
 
     // Quarantine only the first.
-    p.accept(&relation(vec![column("id", 20, true)])).expect("accepts");
+    p.accept(&relation(vec![column("id", 20, true)]))
+        .expect("accepts");
 
     let files = p.publish(true).expect("publishes");
     assert_eq!(files.len(), 1, "the healthy table must still publish");

@@ -1,6 +1,6 @@
 //! Batching, and the transaction-boundary invariant.
 
-use crate::mutation::{Mutation, MutationPlan, Op, Row, apply_unchanged};
+use crate::mutation::{apply_unchanged, Mutation, MutationPlan, Op, Row};
 use sankhya_cdc_model::Message;
 use sankhya_types::Lsn;
 use std::collections::BTreeMap;
@@ -152,10 +152,14 @@ impl Batcher {
             Message::Insert { relation_id, new } => {
                 self.push_row(*relation_id, Op::Insert, new, current_rows);
             }
-            Message::Update { relation_id, new, .. } => {
+            Message::Update {
+                relation_id, new, ..
+            } => {
                 self.push_row(*relation_id, Op::Update, new, current_rows);
             }
-            Message::Delete { relation_id, old, .. } => {
+            Message::Delete {
+                relation_id, old, ..
+            } => {
                 self.push_row(*relation_id, Op::Delete, old, current_rows);
             }
             _ => {}
@@ -191,7 +195,9 @@ impl Batcher {
     }
 
     fn seal(&mut self, xid: u32, end_lsn: Lsn) {
-        let Some(mut rows) = self.open.remove(&xid) else { return };
+        let Some(mut rows) = self.open.remove(&xid) else {
+            return;
+        };
         for row in &mut rows {
             row.commit_lsn = end_lsn;
         }

@@ -42,7 +42,10 @@ fn a_missing_row_is_detected() {
     let mut r = Reconciliation::new();
     r.compare("t", digest_of(expected), digest_of(observed));
     assert!(!r.is_clean());
-    assert!(matches!(r.discrepancies()[0].1, Discrepancy::MissingRows { .. }));
+    assert!(matches!(
+        r.discrepancies()[0].1,
+        Discrepancy::MissingRows { .. }
+    ));
 }
 
 #[test]
@@ -74,13 +77,12 @@ fn xor_is_blind_to_pairs_of_identical_rows() {
     // tables with no row identity, where duplicate rows are legitimate and expected —
     // and those are exactly the tables where a replay defect would substitute one
     // duplicated value for another.
-    let expected: &[&[Option<&str>]] =
-        &[&[Some("a")], &[Some("b")], &[Some("c")], &[Some("c")]];
-    let observed: &[&[Option<&str>]] =
-        &[&[Some("a")], &[Some("b")], &[Some("d")], &[Some("d")]];
+    let expected: &[&[Option<&str>]] = &[&[Some("a")], &[Some("b")], &[Some("c")], &[Some("c")]];
+    let observed: &[&[Option<&str>]] = &[&[Some("a")], &[Some("b")], &[Some("d")], &[Some("d")]];
 
     let xor = |rows: &[&[Option<&str>]]| {
-        rows.iter().fold(0u128, |acc, r| acc ^ RowDigest::of(r).get())
+        rows.iter()
+            .fold(0u128, |acc, r| acc ^ RowDigest::of(r).get())
     };
     assert_eq!(
         xor(expected),
@@ -91,7 +93,11 @@ fn xor_is_blind_to_pairs_of_identical_rows() {
     // The additive combiner sees it.
     let e = digest_of(expected);
     let o = digest_of(observed);
-    assert_eq!(e.rows(), o.rows(), "the counts agree, so only the checksum can catch this");
+    assert_eq!(
+        e.rows(),
+        o.rows(),
+        "the counts agree, so only the checksum can catch this"
+    );
     assert_ne!(
         e.checksum(),
         o.checksum(),
@@ -100,7 +106,10 @@ fn xor_is_blind_to_pairs_of_identical_rows() {
 
     let mut r = Reconciliation::new();
     r.compare("t", e, o);
-    assert!(!r.is_clean(), "reconciliation must fail on data XOR would have passed");
+    assert!(
+        !r.is_clean(),
+        "reconciliation must fail on data XOR would have passed"
+    );
 }
 
 #[test]
@@ -126,7 +135,9 @@ fn equal_counts_with_different_contents_are_detected() {
     r.compare("t", digest_of(expected), digest_of(observed));
     let (_, discrepancy) = r.discrepancies()[0];
     assert!(matches!(discrepancy, Discrepancy::ContentMismatch { .. }));
-    assert!(discrepancy.to_string().contains("count-only check would have passed"));
+    assert!(discrepancy
+        .to_string()
+        .contains("count-only check would have passed"));
 }
 
 #[test]
@@ -159,7 +170,11 @@ fn partial_digests_combine_in_any_order() {
     let left = digest_of(&all[..2]);
     let right = digest_of(&all[2..]);
     assert_eq!(left.merge(right), whole);
-    assert_eq!(right.merge(left), whole, "merging must be order-independent");
+    assert_eq!(
+        right.merge(left),
+        whole,
+        "merging must be order-independent"
+    );
 }
 
 #[test]

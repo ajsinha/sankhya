@@ -92,15 +92,30 @@ fn write_fixture(path: &std::path::Path, rows: usize) -> u64 {
 
 async fn time_query(pushdown: bool, path: &std::path::Path, runs: usize) -> (f64, i64) {
     let config = SessionConfig::new()
-        .set_str("datafusion.execution.parquet.pushdown_filters", &pushdown.to_string())
-        .set_str("datafusion.execution.parquet.reorder_filters", &pushdown.to_string());
+        .set_str(
+            "datafusion.execution.parquet.pushdown_filters",
+            &pushdown.to_string(),
+        )
+        .set_str(
+            "datafusion.execution.parquet.reorder_filters",
+            &pushdown.to_string(),
+        );
     let ctx = SessionContext::new_with_config(config);
-    ctx.register_parquet("t", path.to_string_lossy().as_ref(), ParquetReadOptions::default())
-        .await
-        .expect("registers");
+    ctx.register_parquet(
+        "t",
+        path.to_string_lossy().as_ref(),
+        ParquetReadOptions::default(),
+    )
+    .await
+    .expect("registers");
 
     // Warm the file cache so the comparison is of decode work, not of first-read I/O.
-    let _ = ctx.sql("SELECT count(*) FROM t").await.expect("plans").collect().await;
+    let _ = ctx
+        .sql("SELECT count(*) FROM t")
+        .await
+        .expect("plans")
+        .collect()
+        .await;
 
     let mut best = f64::MAX;
     let mut rows = 0i64;

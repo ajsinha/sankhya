@@ -2,7 +2,7 @@
 
 use proptest::prelude::*;
 use sankhya_maintenance::{
-    CompactionPolicy, CompactionUrgency, FileStat, PartitionState, plan_compaction,
+    plan_compaction, CompactionPolicy, CompactionUrgency, FileStat, PartitionState,
 };
 use sankhya_types::Lsn;
 
@@ -42,7 +42,9 @@ fn a_single_file_is_never_compacted() {
 
 #[test]
 fn many_small_files_are_compacted() {
-    let files: Vec<FileStat> = (0..20).map(|i| file(&format!("f{i}"), 2, 100 + i)).collect();
+    let files: Vec<FileStat> = (0..20)
+        .map(|i| file(&format!("f{i}"), 2, 100 + i))
+        .collect();
     let plan = plan_compaction(&CompactionPolicy::default(), &partition(files, 0))
         .expect("should compact");
     assert_eq!(plan.urgency, CompactionUrgency::Routine);
@@ -66,8 +68,9 @@ fn urgency_rises_with_file_count() {
         (150, CompactionUrgency::Urgent),
     ];
     for (count, expected) in cases {
-        let files: Vec<FileStat> =
-            (0..count).map(|i| file(&format!("f{i}"), 32, 100 + i as u64)).collect();
+        let files: Vec<FileStat> = (0..count)
+            .map(|i| file(&format!("f{i}"), 32, 100 + i as u64))
+            .collect();
         let plan = plan_compaction(&policy, &partition(files, 0));
         let urgency = plan.map_or(CompactionUrgency::None, |p| p.urgency);
         assert_eq!(urgency, expected, "with {count} files of 32 MiB");
@@ -95,8 +98,9 @@ fn many_well_sized_files_produce_no_plan() {
     // response is to say so rather than to rewrite gigabytes to no purpose.
     let policy = CompactionPolicy::default();
     for count in [10usize, 40, 150] {
-        let files: Vec<FileStat> =
-            (0..count).map(|i| file(&format!("f{i}"), 256, 100 + i as u64)).collect();
+        let files: Vec<FileStat> = (0..count)
+            .map(|i| file(&format!("f{i}"), 256, 100 + i as u64))
+            .collect();
         assert!(
             plan_compaction(&policy, &partition(files, 0)).is_none(),
             "{count} target-sized files should not be merged"
@@ -120,7 +124,9 @@ fn coverage_is_preserved_exactly() {
 
 #[test]
 fn no_row_is_lost_in_a_merge() {
-    let files: Vec<FileStat> = (0..10).map(|i| file(&format!("f{i}"), 3, 100 + i)).collect();
+    let files: Vec<FileStat> = (0..10)
+        .map(|i| file(&format!("f{i}"), 3, 100 + i))
+        .collect();
     let expected: u64 = files.iter().map(|f| f.rows).sum();
     let plan = plan_compaction(&CompactionPolicy::default(), &partition(files, 0))
         .expect("should compact");
@@ -146,7 +152,10 @@ fn the_smallest_files_are_merged_first() {
         .expect("should compact");
     let names = plan.input_names();
     for tiny in ["tiny_a", "tiny_b", "tiny_c"] {
-        assert!(names.contains(&tiny), "{tiny} should be merged first; got {names:?}");
+        assert!(
+            names.contains(&tiny),
+            "{tiny} should be merged first; got {names:?}"
+        );
     }
 }
 
@@ -155,7 +164,9 @@ fn a_merge_does_not_overshoot_the_target_size() {
     // A file larger than the target is worse than two files near it: it reduces scan
     // parallelism and coarsens pruning granularity.
     let policy = CompactionPolicy::default();
-    let files: Vec<FileStat> = (0..12).map(|i| file(&format!("f{i}"), 100, 100 + i)).collect();
+    let files: Vec<FileStat> = (0..12)
+        .map(|i| file(&format!("f{i}"), 100, 100 + i))
+        .collect();
     let plan = plan_compaction(&policy, &partition(files, 0)).expect("should compact");
     assert!(
         plan.bytes() <= policy.target_bytes,
@@ -168,39 +179,54 @@ fn a_merge_does_not_overshoot_the_target_size() {
 #[test]
 fn a_pass_is_bounded_so_it_cannot_monopolise_the_budget() {
     // Also bounds how much work an interrupted pass loses.
-    let policy = CompactionPolicy { max_files_per_pass: 5, ..CompactionPolicy::default() };
-    let files: Vec<FileStat> = (0..200).map(|i| file(&format!("f{i}"), 1, 100 + i)).collect();
+    let policy = CompactionPolicy {
+        max_files_per_pass: 5,
+        ..CompactionPolicy::default()
+    };
+    let files: Vec<FileStat> = (0..200)
+        .map(|i| file(&format!("f{i}"), 1, 100 + i))
+        .collect();
     let plan = plan_compaction(&policy, &partition(files, 0)).expect("should compact");
     assert!(plan.inputs.len() <= 5);
-    assert_eq!(plan.urgency, CompactionUrgency::Urgent, "200 files is urgent");
+    assert_eq!(
+        plan.urgency,
+        CompactionUrgency::Urgent,
+        "200 files is urgent"
+    );
 }
 
 #[test]
 fn a_settled_partition_is_marked_for_sorting_but_a_busy_one_is_not() {
     // Re-sorting a partition still receiving writes means doing it again tomorrow.
-    let files: Vec<FileStat> = (0..10).map(|i| file(&format!("f{i}"), 2, 100 + i)).collect();
+    let files: Vec<FileStat> = (0..10)
+        .map(|i| file(&format!("f{i}"), 2, 100 + i))
+        .collect();
     let policy = CompactionPolicy::default();
 
     let busy = plan_compaction(&policy, &partition(files.clone(), 0)).expect("compacts");
     assert!(!busy.settled);
 
-    let quiet = plan_compaction(&policy, &partition(files, policy.settle_ticks + 1))
-        .expect("compacts");
+    let quiet =
+        plan_compaction(&policy, &partition(files, policy.settle_ticks + 1)).expect("compacts");
     assert!(quiet.settled);
 }
 
 #[test]
 fn a_partition_of_target_sized_files_below_the_count_threshold_is_left_alone() {
     // Rewriting well-formed files is pure write amplification for no benefit.
-    let files: Vec<FileStat> = (0..4).map(|i| file(&format!("f{i}"), 256, 100 + i)).collect();
+    let files: Vec<FileStat> = (0..4)
+        .map(|i| file(&format!("f{i}"), 256, 100 + i))
+        .collect();
     assert!(plan_compaction(&CompactionPolicy::default(), &partition(files, 0)).is_none());
 }
 
 #[test]
 fn the_reason_describes_the_partition_an_operator_would_see() {
-    let files: Vec<FileStat> = (0..15).map(|i| file(&format!("f{i}"), 1, 100 + i)).collect();
-    let plan = plan_compaction(&CompactionPolicy::default(), &partition(files, 0))
-        .expect("compacts");
+    let files: Vec<FileStat> = (0..15)
+        .map(|i| file(&format!("f{i}"), 1, 100 + i))
+        .collect();
+    let plan =
+        plan_compaction(&CompactionPolicy::default(), &partition(files, 0)).expect("compacts");
     assert!(plan.reason.contains("15 files"), "{}", plan.reason);
     assert!(plan.reason.contains("median"), "{}", plan.reason);
 }

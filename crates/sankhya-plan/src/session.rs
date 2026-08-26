@@ -59,7 +59,11 @@ impl SessionToken {
     /// allowed to go backwards relative to something the client has already seen.
     #[must_use]
     pub fn merge(self, other: Self) -> Self {
-        if other.position > self.position { other } else { self }
+        if other.position > self.position {
+            other
+        } else {
+            self
+        }
     }
 }
 
@@ -176,7 +180,10 @@ pub fn evaluate_visibility(
             if applied >= at {
                 Ok(Visibility::Ready { target: at })
             } else {
-                Err(FreshnessError::SnapshotUnavailable { requested: at, applied })
+                Err(FreshnessError::SnapshotUnavailable {
+                    requested: at,
+                    applied,
+                })
             }
         }
     }
@@ -188,5 +195,8 @@ pub fn evaluate_visibility(
 /// call site rather than buried in a policy.
 #[must_use]
 pub fn wait_exhausted(until: Lsn, applied: Lsn) -> FreshnessError {
-    FreshnessError::NotReached { required: until, applied }
+    FreshnessError::NotReached {
+        required: until,
+        applied,
+    }
 }

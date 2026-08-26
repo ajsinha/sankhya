@@ -68,7 +68,10 @@ impl fmt::Display for OnboardingWarning {
                  volume and shortens the margin before a stalled consumer endangers \
                  the source"
             ),
-            Self::NameTransformed { identifier, segment } => write!(
+            Self::NameTransformed {
+                identifier,
+                segment,
+            } => write!(
                 f,
                 "{identifier:?} is stored at {segment:?}; the original is recorded \
                  alongside the data so the mapping is recoverable"
@@ -81,7 +84,11 @@ impl fmt::Display for OnboardingWarning {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum OnboardingError {
     /// A column has no faithful representation.
-    UnmappableColumn { table: String, column: String, reason: String },
+    UnmappableColumn {
+        table: String,
+        column: String,
+        reason: String,
+    },
     /// A column would shadow a reserved provenance column.
     ReservedColumn { table: String, column: String },
     /// The table's name cannot become a storage path.
@@ -93,7 +100,11 @@ pub enum OnboardingError {
 impl fmt::Display for OnboardingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnmappableColumn { table, column, reason } => write!(
+            Self::UnmappableColumn {
+                table,
+                column,
+                reason,
+            } => write!(
                 f,
                 "{table}.{column} cannot be carried faithfully: {reason}. \
                  The table is not onboarded; exclude the column or change its type"
@@ -180,7 +191,9 @@ pub fn onboard_relation(relation: &RelationDescriptor) -> Result<Onboarded, Onbo
 
     let mut warnings = Vec::new();
     if strategy == WriteStrategy::AppendOnly {
-        warnings.push(OnboardingWarning::NoRowIdentity { table: qualified.clone() });
+        warnings.push(OnboardingWarning::NoRowIdentity {
+            table: qualified.clone(),
+        });
     }
     if relation.replica_identity == ReplicaIdentity::Full {
         warnings.push(OnboardingWarning::FullReplicaIdentity { table: qualified });
@@ -192,7 +205,12 @@ pub fn onboard_relation(relation: &RelationDescriptor) -> Result<Onboarded, Onbo
         });
     }
 
-    Ok(Onboarded { location, schema, strategy, warnings })
+    Ok(Onboarded {
+        location,
+        schema,
+        strategy,
+        warnings,
+    })
 }
 
 /// Whether a table's columns are all exact, so exact aggregates over it are meaningful.
@@ -215,5 +233,8 @@ pub fn inexact_columns(schema: &LogicalSchema) -> Vec<&str> {
 /// Whether a logical type needs out-of-line storage consideration.
 #[must_use]
 pub const fn may_be_stored_out_of_line(logical: &LogicalType) -> bool {
-    matches!(logical, LogicalType::Utf8 | LogicalType::Binary | LogicalType::Json)
+    matches!(
+        logical,
+        LogicalType::Utf8 | LogicalType::Binary | LogicalType::Json
+    )
 }

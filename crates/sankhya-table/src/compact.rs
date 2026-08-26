@@ -26,7 +26,7 @@ use sankhya_error::{Error, Result};
 use sankhya_types::Lsn;
 use std::path::{Path, PathBuf};
 
-use crate::write::{WriterConfig, write_parquet};
+use crate::write::{write_parquet, WriterConfig};
 
 /// What a compaction produced.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -119,7 +119,9 @@ pub fn compact_files(
     }
 
     let Some(first) = batches.first() else {
-        return Err(Error::InvariantViolated("the inputs contained no data".to_string()));
+        return Err(Error::InvariantViolated(
+            "the inputs contained no data".to_string(),
+        ));
     };
     let schema = first.schema();
 

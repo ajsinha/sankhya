@@ -32,6 +32,6 @@ mod session;
 mod splice;
 
 pub use session::{
-    FreshnessError, ReadMode, SessionToken, Visibility, evaluate_visibility, wait_exhausted,
+    evaluate_visibility, wait_exhausted, FreshnessError, ReadMode, SessionToken, Visibility,
 };
-pub use splice::{Splice, SpliceError, TierRef, is_exact_cover, plan_splice};
+pub use splice::{is_exact_cover, plan_splice, Splice, SpliceError, TierRef};

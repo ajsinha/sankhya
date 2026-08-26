@@ -9,7 +9,7 @@
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use datafusion::prelude::SessionContext;
-use sankhya_table::{WriterConfig, compact_files, read_parquet_stats, write_parquet};
+use sankhya_table::{compact_files, read_parquet_stats, write_parquet, WriterConfig};
 use sankhya_types::Lsn;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -64,7 +64,13 @@ async fn query_all(dir: &std::path::Path, sql: &str) -> Vec<String> {
     )
     .await
     .expect("registering the table");
-    let batches = ctx.sql(sql).await.expect("planning").collect().await.expect("executing");
+    let batches = ctx
+        .sql(sql)
+        .await
+        .expect("planning")
+        .collect()
+        .await
+        .expect("executing");
     batches
         .iter()
         .map(|b| {

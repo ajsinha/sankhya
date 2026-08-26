@@ -91,7 +91,10 @@ pub struct TableDigest {
 impl TableDigest {
     #[must_use]
     pub const fn empty() -> Self {
-        Self { rows: 0, checksum: 0 }
+        Self {
+            rows: 0,
+            checksum: 0,
+        }
     }
 
     /// Add a row.
@@ -182,11 +185,22 @@ impl Reconciliation {
     }
 
     /// Compare one table.
-    pub fn compare(&mut self, table: impl Into<String>, expected: TableDigest, observed: TableDigest) {
+    pub fn compare(
+        &mut self,
+        table: impl Into<String>,
+        expected: TableDigest,
+        observed: TableDigest,
+    ) {
         let outcome = if expected.rows() > observed.rows() {
-            Err(Discrepancy::MissingRows { expected: expected.rows(), observed: observed.rows() })
+            Err(Discrepancy::MissingRows {
+                expected: expected.rows(),
+                observed: observed.rows(),
+            })
         } else if observed.rows() > expected.rows() {
-            Err(Discrepancy::ExtraRows { expected: expected.rows(), observed: observed.rows() })
+            Err(Discrepancy::ExtraRows {
+                expected: expected.rows(),
+                observed: observed.rows(),
+            })
         } else if expected.checksum() != observed.checksum() {
             Err(Discrepancy::ContentMismatch {
                 expected: expected.checksum(),

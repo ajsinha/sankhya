@@ -72,7 +72,11 @@ pub struct Column {
 }
 
 const fn col(name: &'static str, kind: ColumnKind, nullable: bool) -> Column {
-    Column { name, kind, nullable }
+    Column {
+        name,
+        kind,
+        nullable,
+    }
 }
 
 /// A synthetic table.
@@ -91,7 +95,10 @@ impl Schema {
     /// Approximate uncompressed bytes per row.
     #[must_use]
     pub fn approx_row_bytes(&self) -> u64 {
-        self.columns.iter().map(|c| u64::from(c.kind.approx_bytes())).sum()
+        self.columns
+            .iter()
+            .map(|c| u64::from(c.kind.approx_bytes()))
+            .sum()
     }
 
     /// Rows needed to reach approximately the requested uncompressed size.
@@ -107,17 +114,36 @@ impl Schema {
 /// Vehicle telemetry: the extreme narrow-and-numerous shape.
 static SHIPMENT_SCANS: &[Column] = &[
     col("id", ColumnKind::Serial, false),
-    col("consignment_ref", ColumnKind::Identifier { cardinality: 2_000_000 }, false),
+    col(
+        "consignment_ref",
+        ColumnKind::Identifier {
+            cardinality: 2_000_000,
+        },
+        false,
+    ),
     col("hub_code", ColumnKind::Category { cardinality: 240 }, false),
     col("status", ColumnKind::Category { cardinality: 12 }, false),
-    col("weight_kg", ColumnKind::Decimal { precision: 10, scale: 3 }, false),
+    col(
+        "weight_kg",
+        ColumnKind::Decimal {
+            precision: 10,
+            scale: 3,
+        },
+        false,
+    ),
     col("scanned_at", ColumnKind::Timestamp, false),
     col("scan_date", ColumnKind::Date, false),
 ];
 
 static DEVICE_READINGS: &[Column] = &[
     col("id", ColumnKind::Serial, false),
-    col("device_id", ColumnKind::Identifier { cardinality: 500_000 }, false),
+    col(
+        "device_id",
+        ColumnKind::Identifier {
+            cardinality: 500_000,
+        },
+        false,
+    ),
     col("metric", ColumnKind::Category { cardinality: 32 }, false),
     col("value", ColumnKind::Real, false),
     col("quality", ColumnKind::Integer { min: 0, max: 100 }, false),
@@ -127,21 +153,71 @@ static DEVICE_READINGS: &[Column] = &[
 
 static ORDER_LINES: &[Column] = &[
     col("id", ColumnKind::Serial, false),
-    col("order_ref", ColumnKind::Identifier { cardinality: 1_500_000 }, false),
-    col("product_code", ColumnKind::Category { cardinality: 40_000 }, false),
+    col(
+        "order_ref",
+        ColumnKind::Identifier {
+            cardinality: 1_500_000,
+        },
+        false,
+    ),
+    col(
+        "product_code",
+        ColumnKind::Category {
+            cardinality: 40_000,
+        },
+        false,
+    ),
     col("quantity", ColumnKind::Integer { min: 1, max: 500 }, false),
-    col("unit_price", ColumnKind::Decimal { precision: 12, scale: 4 }, false),
-    col("discount", ColumnKind::Decimal { precision: 6, scale: 4 }, true),
+    col(
+        "unit_price",
+        ColumnKind::Decimal {
+            precision: 12,
+            scale: 4,
+        },
+        false,
+    ),
+    col(
+        "discount",
+        ColumnKind::Decimal {
+            precision: 6,
+            scale: 4,
+        },
+        true,
+    ),
     col("placed_at", ColumnKind::Timestamp, false),
     col("placed_date", ColumnKind::Date, false),
 ];
 
 static INVENTORY_LEVELS: &[Column] = &[
     col("id", ColumnKind::Serial, false),
-    col("location_code", ColumnKind::Category { cardinality: 1_200 }, false),
-    col("product_code", ColumnKind::Category { cardinality: 40_000 }, false),
-    col("on_hand", ColumnKind::Integer { min: 0, max: 100_000 }, false),
-    col("reserved", ColumnKind::Integer { min: 0, max: 10_000 }, false),
+    col(
+        "location_code",
+        ColumnKind::Category { cardinality: 1_200 },
+        false,
+    ),
+    col(
+        "product_code",
+        ColumnKind::Category {
+            cardinality: 40_000,
+        },
+        false,
+    ),
+    col(
+        "on_hand",
+        ColumnKind::Integer {
+            min: 0,
+            max: 100_000,
+        },
+        false,
+    ),
+    col(
+        "reserved",
+        ColumnKind::Integer {
+            min: 0,
+            max: 10_000,
+        },
+        false,
+    ),
     col("updated_at", ColumnKind::Timestamp, false),
     col("updated_date", ColumnKind::Date, false),
 ];
@@ -159,19 +235,45 @@ static SUPPORT_TICKETS: &[Column] = &[
 
 static MEDIA_ASSETS: &[Column] = &[
     col("id", ColumnKind::Serial, false),
-    col("asset_ref", ColumnKind::Identifier { cardinality: 800_000 }, false),
+    col(
+        "asset_ref",
+        ColumnKind::Identifier {
+            cardinality: 800_000,
+        },
+        false,
+    ),
     col("format", ColumnKind::Category { cardinality: 18 }, false),
     col("thumbnail", ColumnKind::LargePayload { len: 9_000 }, true),
-    col("duration_s", ColumnKind::Integer { min: 1, max: 14_400 }, true),
+    col(
+        "duration_s",
+        ColumnKind::Integer {
+            min: 1,
+            max: 14_400,
+        },
+        true,
+    ),
     col("ingested_at", ColumnKind::Timestamp, false),
     col("ingested_date", ColumnKind::Date, false),
 ];
 
 static ENERGY_INTERVALS: &[Column] = &[
     col("id", ColumnKind::Serial, false),
-    col("meter_ref", ColumnKind::Identifier { cardinality: 900_000 }, false),
+    col(
+        "meter_ref",
+        ColumnKind::Identifier {
+            cardinality: 900_000,
+        },
+        false,
+    ),
     col("tariff", ColumnKind::Category { cardinality: 26 }, false),
-    col("kwh", ColumnKind::Decimal { precision: 12, scale: 6 }, false),
+    col(
+        "kwh",
+        ColumnKind::Decimal {
+            precision: 12,
+            scale: 6,
+        },
+        false,
+    ),
     col("estimated", ColumnKind::Boolean, false),
     col("interval_start", ColumnKind::Timestamp, false),
     col("interval_date", ColumnKind::Date, false),
@@ -179,19 +281,49 @@ static ENERGY_INTERVALS: &[Column] = &[
 
 static ROUTE_LEGS: &[Column] = &[
     col("id", ColumnKind::Serial, false),
-    col("route_ref", ColumnKind::Identifier { cardinality: 300_000 }, false),
+    col(
+        "route_ref",
+        ColumnKind::Identifier {
+            cardinality: 300_000,
+        },
+        false,
+    ),
     col("from_hub", ColumnKind::Category { cardinality: 240 }, false),
     col("to_hub", ColumnKind::Category { cardinality: 240 }, false),
-    col("distance_km", ColumnKind::Decimal { precision: 9, scale: 2 }, false),
+    col(
+        "distance_km",
+        ColumnKind::Decimal {
+            precision: 9,
+            scale: 2,
+        },
+        false,
+    ),
     col("departed_at", ColumnKind::Timestamp, false),
     col("departed_date", ColumnKind::Date, false),
 ];
 
 static SENSOR_CALIBRATIONS: &[Column] = &[
     col("id", ColumnKind::Serial, false),
-    col("device_id", ColumnKind::Identifier { cardinality: 500_000 }, false),
-    col("offset_value", ColumnKind::Decimal { precision: 10, scale: 6 }, false),
-    col("technician", ColumnKind::Category { cardinality: 2_400 }, false),
+    col(
+        "device_id",
+        ColumnKind::Identifier {
+            cardinality: 500_000,
+        },
+        false,
+    ),
+    col(
+        "offset_value",
+        ColumnKind::Decimal {
+            precision: 10,
+            scale: 6,
+        },
+        false,
+    ),
+    col(
+        "technician",
+        ColumnKind::Category { cardinality: 2_400 },
+        false,
+    ),
     col("notes", ColumnKind::Text { mean_len: 140 }, true),
     col("calibrated_at", ColumnKind::Timestamp, false),
     col("calibrated_date", ColumnKind::Date, false),
@@ -199,7 +331,13 @@ static SENSOR_CALIBRATIONS: &[Column] = &[
 
 static ACCESS_EVENTS: &[Column] = &[
     col("id", ColumnKind::Serial, false),
-    col("principal_ref", ColumnKind::Identifier { cardinality: 120_000 }, false),
+    col(
+        "principal_ref",
+        ColumnKind::Identifier {
+            cardinality: 120_000,
+        },
+        false,
+    ),
     col("resource", ColumnKind::Text { mean_len: 60 }, false),
     col("action", ColumnKind::Category { cardinality: 20 }, false),
     col("allowed", ColumnKind::Boolean, false),
@@ -209,16 +347,76 @@ static ACCESS_EVENTS: &[Column] = &[
 ];
 
 static SCHEMAS: &[Schema] = &[
-    Schema { name: "shipment_scans",      columns: SHIPMENT_SCANS,      profile: WriteProfile::AppendOnly,     update_rate_per_mille: 0,   delete_rate_per_mille: 0 },
-    Schema { name: "device_readings",     columns: DEVICE_READINGS,     profile: WriteProfile::AppendOnly,     update_rate_per_mille: 0,   delete_rate_per_mille: 0 },
-    Schema { name: "order_lines",         columns: ORDER_LINES,         profile: WriteProfile::SlowlyChanging, update_rate_per_mille: 45,  delete_rate_per_mille: 3 },
-    Schema { name: "inventory_levels",    columns: INVENTORY_LEVELS,    profile: WriteProfile::HotMutable,     update_rate_per_mille: 600, delete_rate_per_mille: 5 },
-    Schema { name: "support_tickets",     columns: SUPPORT_TICKETS,     profile: WriteProfile::HotMutable,     update_rate_per_mille: 320, delete_rate_per_mille: 8 },
-    Schema { name: "media_assets",        columns: MEDIA_ASSETS,        profile: WriteProfile::SlowlyChanging, update_rate_per_mille: 60,  delete_rate_per_mille: 4 },
-    Schema { name: "energy_intervals",    columns: ENERGY_INTERVALS,    profile: WriteProfile::AppendOnly,     update_rate_per_mille: 0,   delete_rate_per_mille: 0 },
-    Schema { name: "route_legs",          columns: ROUTE_LEGS,          profile: WriteProfile::SlowlyChanging, update_rate_per_mille: 30,  delete_rate_per_mille: 2 },
-    Schema { name: "sensor_calibrations", columns: SENSOR_CALIBRATIONS, profile: WriteProfile::SlowlyChanging, update_rate_per_mille: 80,  delete_rate_per_mille: 6 },
-    Schema { name: "access_events",       columns: ACCESS_EVENTS,       profile: WriteProfile::AppendOnly,     update_rate_per_mille: 0,   delete_rate_per_mille: 0 },
+    Schema {
+        name: "shipment_scans",
+        columns: SHIPMENT_SCANS,
+        profile: WriteProfile::AppendOnly,
+        update_rate_per_mille: 0,
+        delete_rate_per_mille: 0,
+    },
+    Schema {
+        name: "device_readings",
+        columns: DEVICE_READINGS,
+        profile: WriteProfile::AppendOnly,
+        update_rate_per_mille: 0,
+        delete_rate_per_mille: 0,
+    },
+    Schema {
+        name: "order_lines",
+        columns: ORDER_LINES,
+        profile: WriteProfile::SlowlyChanging,
+        update_rate_per_mille: 45,
+        delete_rate_per_mille: 3,
+    },
+    Schema {
+        name: "inventory_levels",
+        columns: INVENTORY_LEVELS,
+        profile: WriteProfile::HotMutable,
+        update_rate_per_mille: 600,
+        delete_rate_per_mille: 5,
+    },
+    Schema {
+        name: "support_tickets",
+        columns: SUPPORT_TICKETS,
+        profile: WriteProfile::HotMutable,
+        update_rate_per_mille: 320,
+        delete_rate_per_mille: 8,
+    },
+    Schema {
+        name: "media_assets",
+        columns: MEDIA_ASSETS,
+        profile: WriteProfile::SlowlyChanging,
+        update_rate_per_mille: 60,
+        delete_rate_per_mille: 4,
+    },
+    Schema {
+        name: "energy_intervals",
+        columns: ENERGY_INTERVALS,
+        profile: WriteProfile::AppendOnly,
+        update_rate_per_mille: 0,
+        delete_rate_per_mille: 0,
+    },
+    Schema {
+        name: "route_legs",
+        columns: ROUTE_LEGS,
+        profile: WriteProfile::SlowlyChanging,
+        update_rate_per_mille: 30,
+        delete_rate_per_mille: 2,
+    },
+    Schema {
+        name: "sensor_calibrations",
+        columns: SENSOR_CALIBRATIONS,
+        profile: WriteProfile::SlowlyChanging,
+        update_rate_per_mille: 80,
+        delete_rate_per_mille: 6,
+    },
+    Schema {
+        name: "access_events",
+        columns: ACCESS_EVENTS,
+        profile: WriteProfile::AppendOnly,
+        update_rate_per_mille: 0,
+        delete_rate_per_mille: 0,
+    },
 ];
 
 /// Every synthetic schema.

@@ -16,22 +16,20 @@
 
 #![doc(html_root_url = "https://docs.rs/sankhya-schema")]
 
-mod mapping;
-mod naming;
 mod evolve;
-mod onboard;
+mod mapping;
 mod model;
+mod naming;
+mod onboard;
 
-pub use mapping::{MappingError, TypeMapping, map_source_type, numeric_modifier};
+pub use evolve::{apply_compatible, classify_change, widened_decimal, Compatibility, SchemaChange};
+pub use mapping::{map_source_type, numeric_modifier, MappingError, TypeMapping};
 pub use model::{Field, LogicalSchema, LogicalType, Precision};
 pub use naming::{
-    CollisionCheck, NameClass, NamingError, PathSegment, RESERVED_SEGMENTS, TableLocation,
-    segment_for,
+    segment_for, CollisionCheck, NameClass, NamingError, PathSegment, TableLocation,
+    RESERVED_SEGMENTS,
 };
 pub use onboard::{
-    Onboarded, OnboardingError, OnboardingWarning, WriteStrategy, inexact_columns,
-    is_fully_exact, may_be_stored_out_of_line, onboard_relation,
-};
-pub use evolve::{
-    Compatibility, SchemaChange, apply_compatible, classify_change, widened_decimal,
+    inexact_columns, is_fully_exact, may_be_stored_out_of_line, onboard_relation, Onboarded,
+    OnboardingError, OnboardingWarning, WriteStrategy,
 };

@@ -22,5 +22,5 @@
 mod batch;
 mod mutation;
 
-pub use batch::{Batcher, BatchPolicy, FlushReason};
-pub use mutation::{Mutation, MutationPlan, Op, Row, apply_unchanged, op_of};
+pub use batch::{BatchPolicy, Batcher, FlushReason};
+pub use mutation::{apply_unchanged, op_of, Mutation, MutationPlan, Op, Row};

@@ -2,7 +2,7 @@
 
 use proptest::prelude::*;
 use sankhya_plan::{
-    FreshnessError, ReadMode, SessionToken, Visibility, evaluate_visibility, wait_exhausted,
+    evaluate_visibility, wait_exhausted, FreshnessError, ReadMode, SessionToken, Visibility,
 };
 use sankhya_types::Lsn;
 use std::time::Duration;
@@ -15,16 +15,16 @@ fn token(at: u64) -> SessionToken {
 fn a_read_after_a_write_waits_for_that_write() {
     // The feature that makes the unified-system claim credible. Without it the first
     // thing anyone tries - write a row, then query it - shows the row missing.
-    let visibility = evaluate_visibility(
-        ReadMode::ReadYourWrites,
-        Some(token(1000)),
-        Lsn::new(900),
-    )
-    .expect("waiting is not an error");
+    let visibility =
+        evaluate_visibility(ReadMode::ReadYourWrites, Some(token(1000)), Lsn::new(900))
+            .expect("waiting is not an error");
 
     assert_eq!(
         visibility,
-        Visibility::Wait { until: Lsn::new(1000), behind_by: 100 }
+        Visibility::Wait {
+            until: Lsn::new(1000),
+            behind_by: 100
+        }
     );
 }
 
@@ -42,14 +42,24 @@ fn a_session_that_has_observed_nothing_never_waits() {
     // connection for no benefit.
     let visibility =
         evaluate_visibility(ReadMode::ReadYourWrites, None, Lsn::new(500)).expect("proceeds");
-    assert_eq!(visibility, Visibility::Ready { target: Lsn::new(500) });
+    assert_eq!(
+        visibility,
+        Visibility::Ready {
+            target: Lsn::new(500)
+        }
+    );
 }
 
 #[test]
 fn eventual_reads_never_wait() {
-    let visibility =
-        evaluate_visibility(ReadMode::Eventual, Some(token(u64::MAX)), Lsn::new(1)).expect("proceeds");
-    assert_eq!(visibility, Visibility::Ready { target: Lsn::new(1) });
+    let visibility = evaluate_visibility(ReadMode::Eventual, Some(token(u64::MAX)), Lsn::new(1))
+        .expect("proceeds");
+    assert_eq!(
+        visibility,
+        Visibility::Ready {
+            target: Lsn::new(1)
+        }
+    );
 }
 
 #[test]
@@ -84,7 +94,9 @@ fn a_pinned_read_targets_its_version_not_the_latest() {
     .expect("proceeds");
     assert_eq!(
         visibility,
-        Visibility::Ready { target: Lsn::new(500) },
+        Visibility::Ready {
+            target: Lsn::new(500)
+        },
         "a pinned read must not drift forward to newer data"
     );
 }
@@ -96,7 +108,8 @@ fn an_exhausted_wait_becomes_an_explicit_failure() {
     let err = wait_exhausted(Lsn::new(1000), Lsn::new(900));
     assert!(matches!(err, FreshnessError::NotReached { .. }));
     assert!(
-        err.to_string().contains("refused rather than answered with older data"),
+        err.to_string()
+            .contains("refused rather than answered with older data"),
         "the message should say why it failed: {err}"
     );
 }
@@ -104,12 +117,19 @@ fn an_exhausted_wait_becomes_an_explicit_failure() {
 #[test]
 fn bounded_reads_serve_what_exists() {
     let visibility = evaluate_visibility(
-        ReadMode::Bounded { max_staleness: Duration::from_secs(5) },
+        ReadMode::Bounded {
+            max_staleness: Duration::from_secs(5),
+        },
         Some(token(2000)),
         Lsn::new(1000),
     )
     .expect("proceeds");
-    assert_eq!(visibility, Visibility::Ready { target: Lsn::new(1000) });
+    assert_eq!(
+        visibility,
+        Visibility::Ready {
+            target: Lsn::new(1000)
+        }
+    );
 }
 
 #[test]

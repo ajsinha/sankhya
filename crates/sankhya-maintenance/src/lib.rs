@@ -32,6 +32,6 @@ mod compaction;
 mod execute;
 
 pub use compaction::{
-    CompactionPlan, CompactionPolicy, CompactionUrgency, FileStat, PartitionState, plan_compaction,
+    plan_compaction, CompactionPlan, CompactionPolicy, CompactionUrgency, FileStat, PartitionState,
 };
-pub use execute::{RetentionPolicy, RetirementOutcome, retire_inputs, run_compaction};
+pub use execute::{retire_inputs, run_compaction, RetentionPolicy, RetirementOutcome};

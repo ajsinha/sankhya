@@ -2,16 +2,25 @@
 
 use sankhya_cdc_model::{ColumnDescriptor, Decoder, Message, RelationDescriptor, ReplicaIdentity};
 use sankhya_schema::{
-    LogicalType, OnboardingError, OnboardingWarning, WriteStrategy, inexact_columns,
-    is_fully_exact, onboard_relation,
+    inexact_columns, is_fully_exact, onboard_relation, LogicalType, OnboardingError,
+    OnboardingWarning, WriteStrategy,
 };
 use std::process::Command;
 
 fn column(name: &str, oid: u32, modifier: i32, is_key: bool) -> ColumnDescriptor {
-    ColumnDescriptor { name: name.into(), type_oid: oid, type_modifier: modifier, is_key }
+    ColumnDescriptor {
+        name: name.into(),
+        type_oid: oid,
+        type_modifier: modifier,
+        is_key,
+    }
 }
 
-fn relation(name: &str, identity: ReplicaIdentity, columns: Vec<ColumnDescriptor>) -> RelationDescriptor {
+fn relation(
+    name: &str,
+    identity: ReplicaIdentity,
+    columns: Vec<ColumnDescriptor>,
+) -> RelationDescriptor {
     RelationDescriptor {
         relation_id: 1,
         namespace: "public".into(),
@@ -37,7 +46,11 @@ fn a_keyed_table_is_mergeable() {
 #[test]
 fn a_key_column_is_never_nullable() {
     // A nullable key would identify nothing.
-    let r = relation("t", ReplicaIdentity::Default, vec![column("id", 20, -1, true)]);
+    let r = relation(
+        "t",
+        ReplicaIdentity::Default,
+        vec![column("id", 20, -1, true)],
+    );
     let onboarded = onboard_relation(&r).expect("onboards");
     assert!(!onboarded.schema.fields[0].nullable);
 }
@@ -67,7 +80,10 @@ fn replica_identity_nothing_forces_append_only_even_with_a_key() {
         ReplicaIdentity::Nothing,
         vec![column("id", 20, -1, true)],
     );
-    assert_eq!(onboard_relation(&r).expect("onboards").strategy, WriteStrategy::AppendOnly);
+    assert_eq!(
+        onboard_relation(&r).expect("onboards").strategy,
+        WriteStrategy::AppendOnly
+    );
 }
 
 #[test]
@@ -108,7 +124,10 @@ fn a_column_shadowing_provenance_is_refused() {
     let r = relation(
         "t",
         ReplicaIdentity::Default,
-        vec![column("id", 20, -1, true), column("_sankhya_commit_lsn", 20, -1, false)],
+        vec![
+            column("id", 20, -1, true),
+            column("_sankhya_commit_lsn", 20, -1, false),
+        ],
     );
     assert!(matches!(
         onboard_relation(&r),
@@ -144,10 +163,16 @@ fn stream_relations(slot: &str) -> Option<Vec<RelationDescriptor>> {
 
     let psql = |sql: &str| -> String {
         let out = Command::new(format!("{bin}/psql"))
-            .args(["-h", &socket, "-U", "sankhya", "-d", "postgres", "-tA", "-c", sql])
+            .args([
+                "-h", &socket, "-U", "sankhya", "-d", "postgres", "-tA", "-c", sql,
+            ])
             .output()
             .expect("psql runs");
-        assert!(out.status.success(), "psql failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "psql failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
 
@@ -155,7 +180,9 @@ fn stream_relations(slot: &str) -> Option<Vec<RelationDescriptor>> {
         "SELECT pg_drop_replication_slot('{slot}') WHERE EXISTS
          (SELECT 1 FROM pg_replication_slots WHERE slot_name='{slot}')"
     ));
-    psql(&format!("SELECT pg_create_logical_replication_slot('{slot}','pgoutput')"));
+    psql(&format!(
+        "SELECT pg_create_logical_replication_slot('{slot}','pgoutput')"
+    ));
 
     // Touch every table so the stream carries a description of each.
     //
@@ -207,8 +234,12 @@ fn every_table_in_the_real_dataset_onboards() {
     let mut seen = std::collections::BTreeSet::new();
 
     for relation in &relations {
-        let onboarded = onboard_relation(relation)
-            .unwrap_or_else(|e| panic!("{}.{} failed to onboard: {e}", relation.namespace, relation.name));
+        let onboarded = onboard_relation(relation).unwrap_or_else(|e| {
+            panic!(
+                "{}.{} failed to onboard: {e}",
+                relation.namespace, relation.name
+            )
+        });
 
         // Every fixture table has a primary key, so all should be mergeable. If one
         // were not, the storage layer would silently skip merge machinery it needs.
@@ -237,7 +268,11 @@ fn every_table_in_the_real_dataset_onboards() {
         seen.insert(relation.name.clone());
     }
 
-    assert_eq!(seen.len(), 10, "expected the ten acceptance tables, saw {seen:?}");
+    assert_eq!(
+        seen.len(),
+        10,
+        "expected the ten acceptance tables, saw {seen:?}"
+    );
     eprintln!(
         "onboarding: {mergeable} tables, {columns} columns, all mergeable and \
          identity-named, derived from the live stream alone"
@@ -265,7 +300,10 @@ fn the_real_dataset_exercises_both_exact_and_inexact_columns() {
             }
         }
     }
-    assert!(with_floats > 0, "the fixture set must contain inexact columns");
+    assert!(
+        with_floats > 0,
+        "the fixture set must contain inexact columns"
+    );
     assert!(fully_exact > 0, "and tables that are entirely exact");
     eprintln!("exactness: {fully_exact} fully-exact tables, {with_floats} containing floats");
 }

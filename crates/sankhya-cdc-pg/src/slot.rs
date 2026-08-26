@@ -76,7 +76,9 @@ impl SlotState {
     /// Positions between confirmed and current.
     #[must_use]
     pub fn behind_by(&self) -> u64 {
-        self.source_position.get().saturating_sub(self.confirmed_position.get())
+        self.source_position
+            .get()
+            .saturating_sub(self.confirmed_position.get())
     }
 
     /// Whether the consumer has caught up entirely.

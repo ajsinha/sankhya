@@ -154,7 +154,9 @@ fn floating_point_would_not_be_order_independent() {
     );
 
     let scale = Scale::new(6).expect("scale 6 is valid");
-    let exact: Vec<Fixed> = (1..=1000).map(|i| Fixed::from_units(i128::from(i), scale)).collect();
+    let exact: Vec<Fixed> = (1..=1000)
+        .map(|i| Fixed::from_units(i128::from(i), scale))
+        .collect();
     let ef: Fixed = Fixed::sum(exact.iter().copied(), scale).expect("no overflow");
     let eb: Fixed = Fixed::sum(exact.iter().rev().copied(), scale).expect("no overflow");
     assert_eq!(ef, eb, "fixed-point summation must be order-independent");

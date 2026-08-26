@@ -45,7 +45,12 @@ fn code_prefix_matches_class() {
             Class::Fatal => 'S',
         };
         let actual = code.chars().nth(4).unwrap_or('?');
-        assert_eq!(actual, expected, "{code} prefix disagrees with its class {:?}", e.class());
+        assert_eq!(
+            actual,
+            expected,
+            "{code} prefix disagrees with its class {:?}",
+            e.class()
+        );
     }
 }
 
@@ -74,7 +79,10 @@ fn only_fatal_pages_a_human() {
 fn source_endangerment_is_fatal() {
     // INV-2. If this is ever downgraded, SANKHYA could quietly keep running while
     // the database it depends on fills its log volume.
-    assert_eq!(Error::SourceEndangered { detail: None }.class(), Class::Fatal);
+    assert_eq!(
+        Error::SourceEndangered { detail: None }.class(),
+        Class::Fatal
+    );
 }
 
 #[test]

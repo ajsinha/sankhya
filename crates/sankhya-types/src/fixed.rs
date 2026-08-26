@@ -132,7 +132,10 @@ impl Fixed {
         self.same_scale(other)?;
         self.units
             .checked_add(other.units)
-            .map(|units| Self { units, scale: self.scale })
+            .map(|units| Self {
+                units,
+                scale: self.scale,
+            })
             .ok_or(FixedError::Overflow)
     }
 
@@ -141,7 +144,10 @@ impl Fixed {
         self.same_scale(other)?;
         self.units
             .checked_sub(other.units)
-            .map(|units| Self { units, scale: self.scale })
+            .map(|units| Self {
+                units,
+                scale: self.scale,
+            })
             .ok_or(FixedError::Overflow)
     }
 
@@ -149,7 +155,10 @@ impl Fixed {
     pub fn mul_int(self, factor: i128) -> Result<Self, FixedError> {
         self.units
             .checked_mul(factor)
-            .map(|units| Self { units, scale: self.scale })
+            .map(|units| Self {
+                units,
+                scale: self.scale,
+            })
             .ok_or(FixedError::Overflow)
     }
 
@@ -157,7 +166,10 @@ impl Fixed {
     pub fn neg(self) -> Result<Self, FixedError> {
         self.units
             .checked_neg()
-            .map(|units| Self { units, scale: self.scale })
+            .map(|units| Self {
+                units,
+                scale: self.scale,
+            })
             .ok_or(FixedError::Overflow)
     }
 
@@ -181,9 +193,15 @@ impl Fixed {
         }
         let factor = pow10(from - to_places).ok_or(FixedError::Overflow)?;
         if self.units % factor != 0 {
-            return Err(FixedError::PrecisionLoss { from, to: to_places });
+            return Err(FixedError::PrecisionLoss {
+                from,
+                to: to_places,
+            });
         }
-        Ok(Self { units: self.units / factor, scale: to })
+        Ok(Self {
+            units: self.units / factor,
+            scale: to,
+        })
     }
 
     /// Sum a sequence exactly.

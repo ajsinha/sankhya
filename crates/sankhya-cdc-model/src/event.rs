@@ -107,7 +107,9 @@ impl TupleData {
     /// Whether any value was withheld as unchanged.
     #[must_use]
     pub fn has_unchanged(&self) -> bool {
-        self.values.iter().any(|v| matches!(v, TupleValue::Unchanged))
+        self.values
+            .iter()
+            .any(|v| matches!(v, TupleValue::Unchanged))
     }
 }
 
@@ -116,35 +118,82 @@ impl TupleData {
 #[non_exhaustive]
 pub enum Message {
     /// Transaction start. Everything until the matching commit belongs to it.
-    Begin { final_lsn: Lsn, commit_time: Timestamp, xid: u32 },
+    Begin {
+        final_lsn: Lsn,
+        commit_time: Timestamp,
+        xid: u32,
+    },
     /// Transaction end. **A transaction is sealed only here**, and only sealed
     /// transactions are eligible to be flushed — a batch never splits one.
-    Commit { commit_lsn: Lsn, end_lsn: Lsn, commit_time: Timestamp },
+    Commit {
+        commit_lsn: Lsn,
+        end_lsn: Lsn,
+        commit_time: Timestamp,
+    },
     /// A relation's shape. Sent before the first row message for that relation, and
     /// again whenever the shape changes.
     Relation(Arc<RelationDescriptor>),
     /// A type description for a non-built-in type.
-    Type { type_oid: u32, namespace: String, name: String },
-    Insert { relation_id: u32, new: TupleData },
+    Type {
+        type_oid: u32,
+        namespace: String,
+        name: String,
+    },
+    Insert {
+        relation_id: u32,
+        new: TupleData,
+    },
     /// An update. `old` is present only when the source sends a before-image.
-    Update { relation_id: u32, old: Option<TupleData>, key_only: bool, new: TupleData },
+    Update {
+        relation_id: u32,
+        old: Option<TupleData>,
+        key_only: bool,
+        new: TupleData,
+    },
     /// A delete. `old` identifies the row; `key_only` says whether it is the full row.
-    Delete { relation_id: u32, old: TupleData, key_only: bool },
+    Delete {
+        relation_id: u32,
+        old: TupleData,
+        key_only: bool,
+    },
     /// Truncate, which may name several relations at once.
-    Truncate { relation_ids: Vec<u32>, cascade: bool, restart_identity: bool },
+    Truncate {
+        relation_ids: Vec<u32>,
+        cascade: bool,
+        restart_identity: bool,
+    },
     /// Origin of a replicated change, used to avoid loops in bidirectional setups.
-    Origin { commit_lsn: Lsn, name: String },
+    Origin {
+        commit_lsn: Lsn,
+        name: String,
+    },
     /// A logical message, transactional or not. SANKHYA uses these as archival
     /// attestations — for provenance, never as a safety mechanism.
-    Logical { transactional: bool, lsn: Lsn, prefix: String, content: Vec<u8> },
+    Logical {
+        transactional: bool,
+        lsn: Lsn,
+        prefix: String,
+        content: Vec<u8>,
+    },
     /// Start of an in-progress transaction streamed before commit.
-    StreamStart { xid: u32, first_segment: bool },
+    StreamStart {
+        xid: u32,
+        first_segment: bool,
+    },
     /// End of a streamed segment.
     StreamStop,
     /// A streamed transaction committed.
-    StreamCommit { xid: u32, commit_lsn: Lsn, end_lsn: Lsn, commit_time: Timestamp },
+    StreamCommit {
+        xid: u32,
+        commit_lsn: Lsn,
+        end_lsn: Lsn,
+        commit_time: Timestamp,
+    },
     /// A streamed transaction aborted. All buffered state for it is discarded.
-    StreamAbort { xid: u32, subtransaction_xid: u32 },
+    StreamAbort {
+        xid: u32,
+        subtransaction_xid: u32,
+    },
 }
 
 impl Message {

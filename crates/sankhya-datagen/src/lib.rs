@@ -19,8 +19,8 @@
 
 #![doc(html_root_url = "https://docs.rs/sankhya-datagen")]
 
-mod schema;
 mod generate;
+mod schema;
 
 pub use generate::{Generator, RowBatch, Scale};
-pub use schema::{Column, ColumnKind, Schema, WriteProfile, all_schemas, schema_by_name};
+pub use schema::{all_schemas, schema_by_name, Column, ColumnKind, Schema, WriteProfile};

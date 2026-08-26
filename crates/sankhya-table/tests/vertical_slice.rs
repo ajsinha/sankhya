@@ -18,8 +18,8 @@
 use datafusion::prelude::SessionContext;
 use sankhya_cdc_apply::{BatchPolicy, Batcher};
 use sankhya_cdc_model::{Decoder, Message};
-use sankhya_schema::{WriteStrategy, onboard_relation};
-use sankhya_table::{WriterConfig, encode_batch, write_parquet};
+use sankhya_schema::{onboard_relation, WriteStrategy};
+use sankhya_table::{encode_batch, write_parquet, WriterConfig};
 use std::process::Command;
 
 struct Pg {
@@ -37,7 +37,17 @@ impl Pg {
 
     fn sql(&self, statement: &str) -> String {
         let out = Command::new(format!("{}/psql", self.bin))
-            .args(["-h", &self.socket, "-U", "sankhya", "-d", "postgres", "-tA", "-c", statement])
+            .args([
+                "-h",
+                &self.socket,
+                "-U",
+                "sankhya",
+                "-d",
+                "postgres",
+                "-tA",
+                "-c",
+                statement,
+            ])
             .output()
             .expect("psql runs");
         assert!(
@@ -66,7 +76,9 @@ async fn a_real_workload_becomes_queryable_parquet() {
         "SELECT pg_drop_replication_slot('{slot}') WHERE EXISTS
          (SELECT 1 FROM pg_replication_slots WHERE slot_name='{slot}')"
     ));
-    pg.sql(&format!("SELECT pg_create_logical_replication_slot('{slot}','pgoutput')"));
+    pg.sql(&format!(
+        "SELECT pg_create_logical_replication_slot('{slot}','pgoutput')"
+    ));
 
     // A workload with exact decimals, booleans, zoned timestamps and dates — the
     // types most likely to be carried wrongly.
@@ -102,12 +114,19 @@ async fn a_real_workload_becomes_queryable_parquet() {
 
     // --- decode, onboard from the stream, batch ----------------------------------
     let decoder = Decoder::new();
-    let mut batcher = Batcher::new(BatchPolicy { max_rows: usize::MAX, ..BatchPolicy::default() });
+    let mut batcher = Batcher::new(BatchPolicy {
+        max_rows: usize::MAX,
+        ..BatchPolicy::default()
+    });
     let mut onboarded = None;
 
     for bytes in &messages {
         let (message, consumed) = decoder.decode_prefix(bytes).expect("decodes");
-        assert_eq!(consumed, bytes.len(), "each message must be consumed exactly");
+        assert_eq!(
+            consumed,
+            bytes.len(),
+            "each message must be consumed exactly"
+        );
 
         if let Message::Relation(relation) = &message {
             if relation.name == table {
@@ -123,10 +142,21 @@ async fn a_real_workload_becomes_queryable_parquet() {
     }
 
     let onboarded = onboarded.expect("the stream described the table");
-    assert_eq!(batcher.unresolvable(), 0, "no mutation should be unresolvable");
+    assert_eq!(
+        batcher.unresolvable(),
+        0,
+        "no mutation should be unresolvable"
+    );
     let plan = batcher.flush();
-    assert_eq!(plan.len() as i64, rows, "every inserted row should be captured");
-    assert!(plan.covers_through.get() > 0, "the plan must declare coverage");
+    assert_eq!(
+        plan.len() as i64,
+        rows,
+        "every inserted row should be captured"
+    );
+    assert!(
+        plan.covers_through.get() > 0,
+        "the plan must declare coverage"
+    );
 
     // --- encode and write ---------------------------------------------------------
     let batch = encode_batch(&onboarded.schema, &plan.mutations).expect("encodes");
@@ -149,7 +179,10 @@ async fn a_real_workload_becomes_queryable_parquet() {
 
     // The layout mirrors the source: the path says which table this is.
     assert!(
-        report.path.to_string_lossy().contains(&format!("public/{table}")),
+        report
+            .path
+            .to_string_lossy()
+            .contains(&format!("public/{table}")),
         "path should mirror the source schema and table: {}",
         report.path.display()
     );
@@ -233,7 +266,10 @@ async fn a_real_workload_becomes_queryable_parquet() {
         .collect()
         .await
         .expect("executes");
-    let groups: usize = grouped.iter().map(datafusion::arrow::array::RecordBatch::num_rows).sum();
+    let groups: usize = grouped
+        .iter()
+        .map(datafusion::arrow::array::RecordBatch::num_rows)
+        .sum();
     assert_eq!(groups, 26, "the workload used twenty-six distinct tariffs");
 
     pg.sql(&format!("SELECT pg_drop_replication_slot('{slot}')"));

@@ -42,7 +42,10 @@ pub struct BackfillPlan {
 impl BackfillPlan {
     #[must_use]
     pub fn new(table: impl Into<String>, snapshot_position: Lsn) -> Self {
-        Self { table: table.into(), snapshot_position }
+        Self {
+            table: table.into(),
+            snapshot_position,
+        }
     }
 
     /// What the snapshot covers: everything up to and including its position.
@@ -84,23 +87,35 @@ impl Handoff {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HandoffError {
     /// The stream begins before the snapshot ends: rows would be applied twice.
-    Overlap { snapshot_through: Lsn, stream_from: Lsn },
+    Overlap {
+        snapshot_through: Lsn,
+        stream_from: Lsn,
+    },
     /// The stream begins after the snapshot ends: changes in between are lost.
     ///
     /// This is the outcome of creating the slot *after* reading the snapshot, which is
     /// the natural order to write the code in and the wrong one.
-    Gap { snapshot_through: Lsn, stream_from: Lsn },
+    Gap {
+        snapshot_through: Lsn,
+        stream_from: Lsn,
+    },
 }
 
 impl fmt::Display for HandoffError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Overlap { snapshot_through, stream_from } => write!(
+            Self::Overlap {
+                snapshot_through,
+                stream_from,
+            } => write!(
                 f,
                 "the stream begins at {stream_from} but the snapshot already covers \
                  through {snapshot_through}; rows in the overlap would be applied twice"
             ),
-            Self::Gap { snapshot_through, stream_from } => write!(
+            Self::Gap {
+                snapshot_through,
+                stream_from,
+            } => write!(
                 f,
                 "the snapshot covers through {snapshot_through} but the stream begins \
                  at {stream_from}; changes in between reach neither half. Create the \
@@ -126,18 +141,23 @@ pub fn plan_handoff(snapshot: &BackfillPlan, stream_from: Lsn) -> Result<Handoff
     let snapshot_through = snapshot.snapshot_position;
 
     if stream_from < snapshot_through {
-        return Err(HandoffError::Overlap { snapshot_through, stream_from });
+        return Err(HandoffError::Overlap {
+            snapshot_through,
+            stream_from,
+        });
     }
     if stream_from > snapshot_through {
-        return Err(HandoffError::Gap { snapshot_through, stream_from });
+        return Err(HandoffError::Gap {
+            snapshot_through,
+            stream_from,
+        });
     }
 
     Ok(Handoff {
         snapshot: LsnRange::up_to(snapshot_through),
         // Open-ended in practice; represented here as beginning where the snapshot ends.
-        stream: LsnRange::new(snapshot_through, snapshot_through).unwrap_or_else(|| {
-            LsnRange::up_to(snapshot_through)
-        }),
+        stream: LsnRange::new(snapshot_through, snapshot_through)
+            .unwrap_or_else(|| LsnRange::up_to(snapshot_through)),
     })
 }
 
@@ -148,5 +168,8 @@ pub fn plan_handoff(snapshot: &BackfillPlan, stream_from: Lsn) -> Result<Handoff
 #[must_use]
 pub fn advance_stream(handoff: &Handoff, to: Lsn) -> Option<Handoff> {
     let stream = LsnRange::new(handoff.snapshot.end_inclusive(), to)?;
-    Some(Handoff { snapshot: handoff.snapshot, stream })
+    Some(Handoff {
+        snapshot: handoff.snapshot,
+        stream,
+    })
 }

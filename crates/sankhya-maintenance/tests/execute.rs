@@ -8,9 +8,9 @@
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use sankhya_maintenance::{
-    CompactionPlan, CompactionUrgency, FileStat, RetentionPolicy, retire_inputs, run_compaction,
+    retire_inputs, run_compaction, CompactionPlan, CompactionUrgency, FileStat, RetentionPolicy,
 };
-use sankhya_table::{WriterConfig, write_parquet};
+use sankhya_table::{write_parquet, WriterConfig};
 use sankhya_types::Lsn;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -27,8 +27,8 @@ fn write_fragment(dir: &std::path::Path, name: &str, start: i64, rows: i64, lsn:
         ))],
     )
     .expect("building a batch");
-    let report = write_parquet(dir, name, &batch, Lsn::new(lsn), WriterConfig::default())
-        .expect("writing");
+    let report =
+        write_parquet(dir, name, &batch, Lsn::new(lsn), WriterConfig::default()).expect("writing");
     FileStat {
         name: name.to_string(),
         bytes: report.bytes,
@@ -114,13 +114,8 @@ fn retirement_proceeds_once_the_grace_period_has_passed() {
     let outcome = run_compaction(&plan, dir.path(), "merged.parquet", WriterConfig::default())
         .expect("running the plan");
 
-    let retirement = retire_inputs(
-        &outcome,
-        &BTreeSet::new(),
-        24,
-        &RetentionPolicy::default(),
-    )
-    .expect("retiring");
+    let retirement = retire_inputs(&outcome, &BTreeSet::new(), 24, &RetentionPolicy::default())
+        .expect("retiring");
 
     assert_eq!(retirement.removed.len(), 4);
     assert!(retirement.bytes_reclaimed > 0);
@@ -147,13 +142,8 @@ fn a_pinned_snapshot_keeps_its_files() {
     let mut referenced = BTreeSet::new();
     referenced.insert(Lsn::new(2001));
 
-    let retirement = retire_inputs(
-        &outcome,
-        &referenced,
-        10_000,
-        &RetentionPolicy::default(),
-    )
-    .expect("retiring");
+    let retirement = retire_inputs(&outcome, &referenced, 10_000, &RetentionPolicy::default())
+        .expect("retiring");
 
     assert!(retirement.removed.is_empty());
     assert!(retirement.retained[0].1.contains("snapshot"));
@@ -174,13 +164,8 @@ fn a_snapshot_past_the_merge_does_not_block_retirement() {
     let mut referenced = BTreeSet::new();
     referenced.insert(Lsn::new(9_999));
 
-    let retirement = retire_inputs(
-        &outcome,
-        &referenced,
-        10_000,
-        &RetentionPolicy::default(),
-    )
-    .expect("retiring");
+    let retirement = retire_inputs(&outcome, &referenced, 10_000, &RetentionPolicy::default())
+        .expect("retiring");
 
     assert_eq!(retirement.removed.len(), 3);
 }
@@ -223,11 +208,8 @@ fn a_truncated_replacement_stops_retirement_entirely() {
         .expect("running the plan");
 
     // Replace the output with a valid but shorter file.
-    let short = RecordBatch::try_new(
-        schema(),
-        vec![Arc::new(Int64Array::from(vec![1i64, 2, 3]))],
-    )
-    .expect("building");
+    let short = RecordBatch::try_new(schema(), vec![Arc::new(Int64Array::from(vec![1i64, 2, 3]))])
+        .expect("building");
     std::fs::remove_file(&outcome.output).expect("removing");
     write_parquet(
         dir.path(),

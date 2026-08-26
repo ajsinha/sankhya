@@ -4,16 +4,25 @@
 //! easy; one that refuses to produce a misleading name is the point.
 
 use proptest::prelude::*;
-use sankhya_schema::{CollisionCheck, NameClass, NamingError, TableLocation, segment_for};
+use sankhya_schema::{segment_for, CollisionCheck, NameClass, NamingError, TableLocation};
 
 #[test]
 fn ordinary_identifiers_pass_through_untouched() {
     // The overwhelmingly common case: the source folds unquoted identifiers to lower
     // case, so they are already valid path segments and nothing happens at all.
-    for name in ["orders", "order_lines", "device_readings", "t2", "shipment_scans_2025"] {
+    for name in [
+        "orders",
+        "order_lines",
+        "device_readings",
+        "t2",
+        "shipment_scans_2025",
+    ] {
         let segment = segment_for(name).expect("maps");
         assert_eq!(segment.as_str(), name, "{name} should be untouched");
-        assert!(segment.is_identity(), "{name} should require no transformation");
+        assert!(
+            segment.is_identity(),
+            "{name} should require no transformation"
+        );
     }
 }
 
@@ -22,9 +31,16 @@ fn every_acceptance_table_is_identity_mapped() {
     // If any of the ten fixture tables needed transforming, the warehouse layout would
     // stop being self-explanatory for the very dataset we test against.
     for name in [
-        "shipment_scans", "device_readings", "order_lines", "inventory_levels",
-        "support_tickets", "media_assets", "energy_intervals", "route_legs",
-        "sensor_calibrations", "access_events",
+        "shipment_scans",
+        "device_readings",
+        "order_lines",
+        "inventory_levels",
+        "support_tickets",
+        "media_assets",
+        "energy_intervals",
+        "route_legs",
+        "sensor_calibrations",
+        "access_events",
     ] {
         let location = TableLocation::resolve("public", name).expect("resolves");
         assert!(
@@ -115,7 +131,10 @@ fn a_hidden_prefix_is_never_produced() {
 fn an_identifier_with_nothing_legible_is_refused() {
     for input in ["", "!!!", "///", "   "] {
         let err = segment_for(input).expect_err("must refuse");
-        assert!(matches!(err, NamingError::Empty { .. }), "{input:?} gave {err:?}");
+        assert!(
+            matches!(err, NamingError::Empty { .. }),
+            "{input:?} gave {err:?}"
+        );
     }
 }
 
@@ -126,12 +145,23 @@ fn a_collision_is_refused_and_names_both_sides() {
     let mut check = CollisionCheck::new();
     let first = TableLocation::resolve("public", "Order Items").expect("resolves");
     let second = TableLocation::resolve("public", "order.items").expect("resolves");
-    assert_eq!(first.relative_path(), second.relative_path(), "these should collide");
+    assert_eq!(
+        first.relative_path(),
+        second.relative_path(),
+        "these should collide"
+    );
 
     check.insert(&first).expect("first insert succeeds");
-    let err = check.insert(&second).expect_err("the collision must be refused");
+    let err = check
+        .insert(&second)
+        .expect_err("the collision must be refused");
 
-    let NamingError::Collision { identifier, existing, segment } = err else {
+    let NamingError::Collision {
+        identifier,
+        existing,
+        segment,
+    } = err
+    else {
         panic!("expected a collision, got {err:?}");
     };
     // An operator needs to know exactly what conflicts, not merely that something did.
@@ -145,7 +175,9 @@ fn case_only_differences_collide_and_are_refused() {
     // Legal as distinct tables in the source, fatal on a case-insensitive filesystem.
     // Caught at onboarding rather than at the first write.
     let mut check = CollisionCheck::new();
-    check.insert(&TableLocation::resolve("public", "Orders").expect("resolves")).expect("first");
+    check
+        .insert(&TableLocation::resolve("public", "Orders").expect("resolves"))
+        .expect("first");
     let err = check
         .insert(&TableLocation::resolve("public", "orders").expect("resolves"))
         .expect_err("must refuse");
@@ -157,14 +189,18 @@ fn re_registering_the_same_table_is_not_a_collision() {
     let mut check = CollisionCheck::new();
     let location = TableLocation::resolve("public", "orders").expect("resolves");
     check.insert(&location).expect("first");
-    check.insert(&location).expect("the same table is not a conflict");
+    check
+        .insert(&location)
+        .expect("the same table is not a conflict");
     assert_eq!(check.len(), 1);
 }
 
 #[test]
 fn the_collision_message_explains_the_refusal() {
     let mut check = CollisionCheck::new();
-    check.insert(&TableLocation::resolve("s", "A B").expect("resolves")).expect("first");
+    check
+        .insert(&TableLocation::resolve("s", "A B").expect("resolves"))
+        .expect("first");
     let err = check
         .insert(&TableLocation::resolve("s", "a.b").expect("resolves"))
         .expect_err("must refuse");
