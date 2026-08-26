@@ -3226,9 +3226,12 @@ dependencies = [
  "datafusion",
  "sankhya-datagen",
  "sankhya-error",
+ "sankhya-table",
  "sankhya-types",
  "tempfile",
  "tokio",
+ "tpchgen",
+ "tpchgen-arrow",
 ]
 
 [[package]]
@@ -3975,6 +3978,22 @@ name = "tower-service"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
+
+[[package]]
+name = "tpchgen"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e26c6d047694183517044ea72d2e0337b05b43d40809f0958f603a7e5a286855"
+
+[[package]]
+name = "tpchgen-arrow"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c64c19d707b783f219883549268da8ea98f91e7aaec3b626563044a21c2b37aa"
+dependencies = [
+ "arrow",
+ "tpchgen",
+]
 
 [[package]]
 name = "tracing"

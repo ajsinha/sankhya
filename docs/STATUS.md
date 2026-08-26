@@ -28,7 +28,7 @@ are its own stated exit criteria:
 
 | Gate | State |
 |---|---|
-| Performance objectives met in the pipeline, against named public-suite queries | **Not started.** Every measurement here is a microbenchmark of one mechanism. None is a recognised query at scale, and none is on reference hardware |
+| Performance objectives met in the pipeline, against named public-suite queries | **Numbers exist; the objectives are not met.** Four TPC-H queries at scale factor 1, at the concurrency the requirements name — **two of the four exceed the closest stated objective**, and the preconditions those objectives assume are not built. See below |
 | Cancellation demonstrated within its bound, including inside user code | **Half.** Deadlines and cancellation exist and are demonstrated inside a real query, bounded at one batch. There is no sandboxed user code to propagate into yet |
 | A hostile aggregation under a constrained memory limit is rejected rather than terminating the process | **Met.** An aggregation that cannot reduce anything is refused under a one-megabyte pool, by name — and the process runs the same query to completion afterwards. Repeated five times, so a refusal that leaked its reservation would show up. Spill isolation onto a separate filesystem is still not built |
 | Plan snapshots stable; the SQL-semantics corpus green | **Met.** Thirty-nine semantics cases pinned by hand from the standard's rules; plan *shapes* pinned rather than plan text, plus assertions on the optimisations that fail silently — projection pushdown, two-phase aggregation, the read-position filter inside the plan, and file pruning naming which file survives rather than counting |
@@ -44,6 +44,42 @@ The *result* cache does not exist either — but its **key** does, because what 
 result-cache key correct is a security property and the right time to fix it is before
 anything is caching. A key that omits the entitlement set does not return a stale answer;
 it returns someone else's, correctly and quickly.
+
+---
+
+## TPC-H, and two objectives that are not met
+
+Every other measurement in this document isolates one mechanism. These are queries
+somebody else wrote, so the numbers can be compared to something other than themselves.
+
+Data generated at scale factor 1 — 8,661,245 rows, 261 MiB of Parquet — written through
+this system's own write path. Best of three for single-query latency; five rounds at the
+stated concurrency for the rest, after two warm-up executions.
+
+| | Clients | Median | p95 | Nearest objective | |
+|---|---|---|---|---|---|
+| **Q1** pricing summary — full scan, eight aggregates | 4 | 497 ms | **565 ms** | `NFR-PERF-04` wide scan, < 3 s | **inside** |
+| **Q6** forecasting revenue — narrow selective filter | 8 | 323 ms | **351 ms** | `NFR-PERF-02` selective lookup, < 250 ms | **over** |
+| **Q3** shipping priority — three-way join, top-N | 8 | 751 ms | **770 ms** | `NFR-PERF-03` pivot, < 1 s | **inside** |
+| **Q5** local supplier volume — six-way join | 8 | 1144 ms | **1211 ms** | `NFR-PERF-03` pivot, < 1 s | **over** |
+
+**Two of the four are over.** Both deserve qualification, and neither qualification makes
+them met:
+
+- Q6 is a range scan over roughly a seventh of the table, not the "selective needle
+  lookup" `NFR-PERF-02` describes — and that objective explicitly assumes bloom filters
+  and late materialization, neither of which is built.
+- Q5 is a six-way join, which is a harder shape than the "multi-dimensional pivot"
+  `NFR-PERF-03` describes.
+
+So the mapping from these queries to those objectives is mine rather than the
+requirements', and it is approximate. What can be said without qualification is that
+there are now numbers against recognisable queries at a stated concurrency, and that two
+of them are the wrong side of the closest thing to a target this project has written down.
+
+**What this is not:** an audited TPC-H result. Scale factor 1 on a development machine,
+single node, four of twenty-two queries, no substitution rules, no refresh streams. Using
+the name for anything more would be a misuse of it.
 
 ---
 

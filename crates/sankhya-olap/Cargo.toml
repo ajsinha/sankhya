@@ -21,6 +21,10 @@ datafusion    = { workspace = true }
 [dev-dependencies]
 arrow = { workspace = true }
 arrow-array = { workspace = true }
+sankhya-table = { path = "../sankhya-table" }
+sankhya-types = { path = "../sankhya-types" }
+tpchgen       = { workspace = true }
+tpchgen-arrow = { workspace = true }
 sankhya-datagen = { path = "../sankhya-datagen" }
 tokio    = { workspace = true }
 tempfile = { workspace = true }

@@ -32,6 +32,11 @@ datafusion    = { version = "=55.0.0", default-features = false, features = [
     "string_expressions", "math_expressions", "regex_expressions",
 ] }
 delta_kernel_default_engine = { version = "=0.27.1", default-features = false }
+# TPC-H data generation, for benchmarks only. Pure Rust with no C dependency, which is
+# why it is viable here at all: the reference generator is a C program that would have to
+# be vendored, built and kept working on every platform this is developed on.
+tpchgen       = { version = "=3.0.0" }
+tpchgen-arrow = { version = "=3.0.0" }
 delta_kernel  = { version = "=0.27.1", default-features = false, features = ["arrow-59"] }
 
 tokio         = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time", "fs", "process", "io-util", "net"] }
