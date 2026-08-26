@@ -14,3 +14,21 @@ layer = 2
 workspace = true
 
 [dependencies]
+sankhya-types = { path = "../sankhya-types" }
+sankhya-error = { path = "../sankhya-error" }
+serde         = { workspace = true, features = ["derive"] }
+serde_json    = { workspace = true }
+
+# Test-only, deliberately.
+#
+# The kernel and its engine are used as an independent *oracle*: they read the log this
+# crate writes and must agree with this crate's own reader. Keeping them out of the
+# production dependency path is what DEC-06's metadata-only coupling actually asks for --
+# the storage library supplies a definition of correctness, not an I/O layer. It also
+# keeps 84 packages and a duplicated HTTP client out of the shipped binary.
+[dev-dependencies]
+delta_kernel                = { workspace = true }
+delta_kernel_default_engine = { workspace = true }
+tempfile                    = { workspace = true }
+tokio                       = { workspace = true }
+url                         = "2"

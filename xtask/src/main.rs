@@ -58,6 +58,12 @@ const DUP_ALLOWLIST: &[&str] = &[
     // proptest pulls an older chacha; it is a dev dependency and never reaches a
     // SANKHYA API boundary.
     "rand_chacha",
+    // Both reach the tree only through delta_kernel_default_engine, which is a
+    // *dev*-dependency used as an oracle: it reads the Delta log SANKHYA writes and must
+    // agree about the live set. Neither appears in any production dependency path, and
+    // that is checked below rather than assumed.
+    "reqwest",
+    "core-foundation",
     // toml's own datetime type, internal to manifest parsing in tooling.
     "toml_datetime",
     "toml_parser",
@@ -856,8 +862,62 @@ fn check_features(root: &Path) -> bool {
         }
     }
 
+    ok &= check_dev_only(root);
+
     if ok {
         println!("  all required features are declared on the workspace pin");
+    }
+    ok
+}
+
+/// Crates that must never appear in a production dependency path.
+///
+/// A test-only dependency is a claim about the shipped binary, and a claim in a comment
+/// decays. `delta_kernel_default_engine` is used as an oracle — it reads the Delta log
+/// SANKHYA writes and must agree about the live set — and moving it into
+/// `[dependencies]` would pull eighty-four packages and a duplicated HTTP client into
+/// the binary while looking like a one-line change.
+const DEV_ONLY: &[(&str, &str)] = &[(
+    "delta_kernel_default_engine",
+    "it is an oracle for the log writer, not an I/O layer; DEC-06 couples to storage \
+     metadata only",
+)];
+
+fn check_dev_only(root: &Path) -> bool {
+    let mut ok = true;
+    let crates_dir = root.join("crates");
+    let Ok(entries) = std::fs::read_dir(&crates_dir) else {
+        println!("  FAIL: {} is unreadable", crates_dir.display());
+        return false;
+    };
+
+    for entry in entries.flatten() {
+        let manifest = entry.path().join("Cargo.toml");
+        let Ok(text) = std::fs::read_to_string(&manifest) else {
+            continue;
+        };
+        let Ok(doc) = toml::from_str::<toml::Table>(&text) else {
+            continue;
+        };
+        let Some(deps) = doc.get("dependencies").and_then(toml::Value::as_table) else {
+            continue;
+        };
+
+        for (name, because) in DEV_ONLY {
+            if deps.contains_key(*name) {
+                println!(
+                    "  FAIL {} lists {name} as a production dependency — {because}",
+                    entry.file_name().to_string_lossy()
+                );
+                ok = false;
+            }
+        }
+    }
+
+    if ok {
+        for (name, _) in DEV_ONLY {
+            println!("  ok   {name} is test-only");
+        }
     }
     ok
 }

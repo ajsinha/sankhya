@@ -54,6 +54,8 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | The maintenance scheduler cannot destroy retained history | There is no erasure class to configure — the guard is on the type, and an exhaustive match makes adding a variant a compile error |
 | A fragmented warehouse is cleared by ticking, and converges | 60 fragments reduced by repeated ticks until nothing is left to do, with the row count unchanged; urgency maps onto the class ladder, so a degrading partition preempts and an ordinary one waits; one failing partition does not block the rest |
 | A query is unaffected by compaction running underneath it | The same aggregate before and after a merge, over the live set |
+| The live set is durable and readable by other engines | SANKHYA writes the Delta transaction log itself, and `delta_kernel` — a dev-dependency used as an independent oracle — reads it and agrees about the schema, version and live files, including across a compaction where four superseded fragments are still on disk |
+| A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
 | The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 25 specific defects applied one at a time; all 25 fail the suite. Three did not when the catalogue was first run |
 
 ---
@@ -85,10 +87,14 @@ Stated plainly, because a status document that omits this is marketing.
   the SANKHYA-owned `TableProvider` of DEC-06 — there is no statistics catalogue, no
   pruning from SANKHYA's own metadata, and no merge strategy beyond union.
 - **No catalog and no table provider.**
-- **No table log.** The live set is carried in memory by the caller across maintenance
-  ticks, which is correct but not durable: a restart loses it, and there is nothing for
-  an external engine to read. This is the concrete gap where Delta or Iceberg belongs —
-  see the finding below.
+- **The table log is written but not yet wired in.** `sankhya-table-delta` commits and
+  replays a valid Delta log, and the kernel reads it — but the ingest path still
+  publishes Parquet without committing, and the maintenance driver still takes its live
+  set from the caller rather than from the log. The log exists; nothing writes to it in
+  anger yet.
+- **No checkpoints, deletion vectors, column mapping, partition values or statistics in
+  the log.** A reader requiring any of them refuses these tables, which is the correct
+  outcome — refusing is visible, and a partially-implemented protocol feature is not.
 - **Nothing calls the maintenance loop on a timer.** The tick is built and tested end to
   end, but a caller has to invoke it, supply the live set and supply the pinned snapshot
   positions retirement checks against.
@@ -109,6 +115,7 @@ Recorded because the interesting information is usually in what went wrong.
 | The documentation-rot check found a stale version claim on its first run | Its own first execution |
 | **Zone offsets were stripped rather than applied, shifting a whole timestamp column by four hours** | End-to-end reconciliation against the source. Every value stayed internally consistent, so nothing looked wrong until the two sides were compared |
 | **Duplicate suppression worked per batch rather than per row, so a batch spanning the restart boundary republished its already-durable half** | Crash-safety tests sweeping every possible interruption point. A resent stream does not rebatch identically, which a single hand-picked crash point would not have revealed |
+| **The hand-written Delta log was invalid, and this crate's own reader accepted it happily.** The `add` action's `partitionValues` field is non-nullable and was omitted entirely | The kernel, on the very first read. The log looked reasonable and round-tripped through this crate perfectly, because a reader ignores a field it never writes. Two implementations agreeing is worth nothing when one of them wrote both sides |
 | **A directory listing is not a file set, and both the planner and the read path were treating it as one.** Compaction only ever adds, so between a merge and the retirement of its inputs the directory holds both — the same rows twice, by design, for at least a full grace period | Writing the convergence test. Re-observing the directory each tick made the planner merge files an earlier merge had already superseded. Nothing is wrong on disk; the *readers* were wrong. The published tier now names its files individually, the live set is carried across ticks, and the negative case is a test: the same query against the directory returns the merged rows twice |
 | **The arrival tier declared coverage it did not hold.** A tier starting mid-stream reported from the durable frontier rather than from its own oldest segment, so it claimed every position before its first captured transaction | The first query spliced across two real tiers. The splice found an exact cover that did not exist, so the query would have been *answered* with the missing positions silently absent — the failure mode the splice exists to prevent, produced by the tier lying to it. This is the normal case rather than an edge case: a table onboarded from a running stream starts mid-stream by construction |
 | **The property test written to catch that defect did not catch it.** Its generator started the publication frontier equal to the stream's origin, so the two could never diverge, and its assertion encoded the buggy expectation | Deliberately reverting the fix and finding the suite still green. The generator now starts publication at zero independently of the origin, and fails within a second on the reverted code |

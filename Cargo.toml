@@ -30,6 +30,7 @@ datafusion    = { version = "=55.0.0", default-features = false, features = [
     "parquet", "sql", "unicode_expressions", "datetime_expressions",
     "string_expressions", "math_expressions", "regex_expressions",
 ] }
+delta_kernel_default_engine = { version = "=0.27.1", default-features = false }
 delta_kernel  = { version = "=0.27.1", default-features = false, features = ["arrow-59"] }
 
 tokio         = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time", "fs", "process", "io-util", "net"] }

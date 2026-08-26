@@ -766,6 +766,16 @@ The live set is therefore a first-class value carried across maintenance ticks, 
 
 The published tier accordingly names its files individually rather than pointing at a directory. Both behaviours are tested, including the negative one: a query registered against the directory is shown to return the merged rows twice while the same query against the live set returns them once.
 
+#### 9.1.4 The log is written by hand, and validated by the kernel
+
+The table log is emitted by SANKHYA directly — a few hundred lines covering `protocol`, `metaData`, `add` and `remove`, one JSON object per line, staged and renamed so a reader never observes a partial commit. Concurrency control is the protocol's own: a writer picks the next version and fails if someone took it, and the loser rebases because its decisions were made against a state that no longer exists.
+
+The kernel is a **dev-dependency**, used as an independent oracle: it reads the log SANKHYA wrote and must agree about the schema, the version and the live set. This arrangement is what DEC-06's metadata-only coupling actually asks for — the storage library supplies a definition of correctness, not an I/O layer — and it keeps eighty-four packages and a duplicated HTTP client out of the shipped binary. That the dependency stays test-only is checked mechanically rather than left to review.
+
+**The oracle earned its place on its first run.** The log this system wrote was invalid: the `add` action's `partitionValues` field is non-nullable and had been omitted. It round-tripped through SANKHYA's own reader perfectly, because a reader ignores a field it never writes. Two implementations agreeing is worth nothing when the same author wrote both sides.
+
+One detail worth stating because getting it wrong is silent: a compaction's `remove` actions declare `dataChange: false`. Compaction rewrites files without changing rows, and a reader streaming changes from the table would otherwise see every compacted row as a deletion followed by a re-insertion — a flood of spurious changes proportional to how well maintenance is working.
+
 ### 9.2 Commit cadence scales with volume
 
 A fixed commit interval is wrong for small tables, where metadata then dominates the data itself. The cadence is derived rather than configured:
