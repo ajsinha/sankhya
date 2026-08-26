@@ -287,6 +287,24 @@ Each epoch maintains a compact digest of the keys it touched, so the planner can
 
 **A topology consequence.** The buffer lives on the node running the applier. Executors do not have it. Therefore maximum-freshness reads are routed to the coordinator, while executors serve pinned-snapshot and relaxed-freshness reads. This is a documented constraint and one of the seams identified for future scaling.
 
+#### 5.4.1 The retention rule, and why it is not an eviction policy
+
+**A segment may be released only once a durable tier covers it.** Not when it is old, not when memory is tight, not when it has been read.
+
+This inverts the usual cache relationship, and the inversion is the point. A cache evicts under pressure and takes a miss. This tier has nothing to miss *to* until publication has happened, so evicting under pressure does not degrade an answer — it destroys one. Worse, releasing a segment from the middle of the interval opens a coverage gap, and the splice is a proof of exact cover that cannot be talked into approximating one. The query would be refused.
+
+So when memory runs short and nothing is releasable, the only correct response is to push back on ingest. That is reported as a distinct condition rather than absorbed, because it is a **publication** problem wearing a memory problem's clothes: the tier is full because publication has stalled, and adding memory treats the symptom.
+
+The escalation has a deliberate gap between its soft and hard limits, so ingest gets a chance to lengthen its commit interval — the highest-leverage response, since it reduces publication *and* compaction load simultaneously — before it is stopped rather than running normally into a wall.
+
+#### 5.4.2 Coverage is trimmed; data is not
+
+The buffer physically retains segments the published tier already covers, because releasing them is governed by the rule above. But it **declares** coverage starting at the durable frontier, so the two tiers abut exactly and the splice succeeds. Declaring the physical extent instead would overlap, and the planner rejects overlapping tiers rather than guessing which to believe.
+
+The consequence is that a scan must filter **per row** — `durable_through < lsn <= target` — not per segment. A segment straddling the frontier is half durable and half not; returning it whole would double-count its durable half against the published tier. This is the same defect, one layer up, as suppressing duplicates per batch rather than per row, which is a mistake this system has already made once.
+
+A straddling segment is retained whole rather than split. Splitting costs a copy to reclaim memory the next publication frees anyway.
+
 ### 5.5 Merge strategies
 
 Selected by declared table capability, never by heuristic:
@@ -1360,7 +1378,7 @@ Recorded because a design document that presents only settled decisions is not r
 
 | # | Question | Blocks | Owner |
 |---|---|---|---|
-| 1 | Is the arrival buffer cleanly retrofittable behind the read-path planner interface? If so, a simpler first release commits every few seconds with no buffer, since a few seconds of lag is acceptable. If not, it must be built first | Storage milestone scope | Systems architect |
+| ~~1~~ | ~~Is the arrival buffer cleanly retrofittable behind the read-path planner interface?~~ **Answered: yes.** The tier was built against the existing `TierRef`/`plan_splice` interface with no change to the planner, and the two tiers are shown to splice. The retrofit question is closed; §5.4.1 records what governs the tier instead | — | — |
 | 2 | Capacity model and scaling roadmap for warehouses in the hundreds of terabytes: node sizing per size tier, metadata footprint, compaction throughput required, and whether maintenance must scale out | Capacity documentation; possibly node roles | Architect and query specialist |
 | 3 | Whether managed cloud database offerings preserve replication slots across failover | Any availability commitment in attached mode on managed cloud databases | Database specialist |
 | 4 | Whether the alternative format's library pushes down decimal predicates and surfaces distinct-value statistics | Whether that format is viable at all as a second implementation | Database specialist |

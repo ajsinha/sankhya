@@ -2622,6 +2622,14 @@ version = "0.1.0"
 [[package]]
 name = "sankhya-table-memory"
 version = "0.1.0"
+dependencies = [
+ "arrow",
+ "arrow-array",
+ "arrow-schema",
+ "proptest",
+ "sankhya-plan",
+ "sankhya-types",
+]
 
 [[package]]
 name = "sankhya-telemetry"

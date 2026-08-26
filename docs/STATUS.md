@@ -15,7 +15,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M0** Foundations, spikes, walking skeleton | 10–12 ew | **Complete**, merged to `main` |
 | **M1** Zero-configuration sync and read-your-own-writes | 14–18 ew | **Complete** |
 | **M2** Ingest correctness and durability | 24–28 ew | **Substantially complete** — batching invariants, source-safety ladder, reconciliation, idempotence, crash safety, schema evolution and the backfill handoff all exist and are tested. What remains is the slot *lifecycle* driver and the snapshot *reader* — the correctness contracts are in place, the machinery that runs them on a timer is not |
-| **M3** Query engine and storage performance | 28–34 ew | A vertical slice, asserted engine settings, and compaction — policy, execution and retirement, with the small-file penalty measured. No table provider, statistics catalogue or caching |
+| **M3** Query engine and storage performance | 28–34 ew | A vertical slice, asserted engine settings, compaction — policy, execution and retirement, with the small-file penalty measured — and the arrival tier's retention contract. No table provider, statistics catalogue or caching |
 | **M4**–**M8** | — | Not started |
 
 ---
@@ -45,6 +45,9 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | Small-file accumulation is detected and planned against | Two independent triggers, bounded passes, coverage preserved exactly, and a plan that always reduces the file count |
 | Compaction runs without changing any answer | The same aggregate over 12 fragments and over the file they merge into, compared row for row; row counts verified against the inputs before the merge is reported as successful |
 | Compaction cannot remove a file a reader might still be holding | Retirement refuses inside the grace period, refuses while a snapshot is pinned at or before the merged coverage, and refuses entirely if the replacement is missing or short |
+| A write is visible before it is durable | The arrival tier answers from memory and drops out of the splice once published; the two tiers are shown to abut exactly with no change to the planner |
+| The arrival tier never loses or double-counts a position | Property tests over arbitrary interleavings of appends and publication: every position between the durable frontier and the target appears exactly once, and a scan never returns a position the published tier already holds |
+| Memory pressure cannot cost data | Nothing is released until publication covers it; a full tier refuses new work and names publication as the cause, and the refusal clears once publication catches up |
 
 ---
 
@@ -63,10 +66,13 @@ Stated plainly, because a status document that omits this is marketing.
 - **No backfill reader.** The handoff *contract* is built and verified against a live
   slot, but nothing yet reads the existing rows. Only changes after a slot exists are
   captured.
-- **No arrival buffer.** The tiered read path is planned and property-tested but has
-  only one tier to plan over, so read-your-own-writes currently waits for publication
-  rather than for an in-memory tier. The waiting *contract* is right; the tier that
-  would make the wait shorter does not exist yet.
+- **The arrival tier is a retention contract, not the buffer the architecture
+  describes.** What exists is the part that governs correctness: coverage, per-row
+  filtering at the durable frontier, and the rule that publication alone releases
+  memory. What does not exist is §5.4's epoch ring, the per-epoch key digests that let
+  a historical query skip the tier at no cost, and per-tenant sub-caps. Nothing yet
+  wires the tier into the ingest path either, so read-your-own-writes still waits for
+  publication in practice.
 - **No catalog and no table provider.**
 - **No maintenance scheduler.** Compaction plans, executes and retires correctly, but
   nothing runs it on a timer, and nothing yet supplies the set of pinned snapshot
