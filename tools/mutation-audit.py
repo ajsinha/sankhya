@@ -126,6 +126,36 @@ CATALOGUE = [
      "        let from = self.durable_through;",
      "sankhya-table-memory"),
 
+    ("scheduler: let the duty cycle bound safety work",
+     "crates/sankhya-maintenance/src/schedule.rs",
+     "        !self.may_preempt_queries()",
+     "        true",
+     "sankhya-maintenance"),
+
+    ("scheduler: age a starved job into a higher class",
+     "crates/sankhya-maintenance/src/schedule.rs",
+     "        a.class\n            .cmp(&b.class)",
+     "        b.ticks_deferred\n            .cmp(&a.ticks_deferred)\n            .then_with(|| a.class.cmp(&b.class))",
+     "sankhya-maintenance"),
+
+    ("scheduler: start a job that cannot checkpoint and cannot finish",
+     "crates/sankhya-maintenance/src/schedule.rs",
+     "            if budget == 0 || job.estimated_ticks > budget {",
+     "            if job.resumable && (budget == 0 || job.estimated_ticks > budget) {",
+     "sankhya-maintenance"),
+
+    ("scheduler: run optional work outside a maintenance window",
+     "crates/sankhya-maintenance/src/schedule.rs",
+     "        if job.class.windows_only() && !state.in_maintenance_window {",
+     "        if false {",
+     "sankhya-maintenance"),
+
+    ("scheduler: order a job with no visible consequence first",
+     "crates/sankhya-maintenance/src/schedule.rs",
+     "                    .unwrap_or(u64::MAX)\n                    .cmp(&b.ticks_to_visible.unwrap_or(u64::MAX))",
+     "                    .unwrap_or(0)\n                    .cmp(&b.ticks_to_visible.unwrap_or(0))",
+     "sankhya-maintenance"),
+
     ("readpath: read every offered tier rather than the selected ones",
      "crates/sankhya-readpath/src/lib.rs",
      "    for tier in &splice.tiers {",

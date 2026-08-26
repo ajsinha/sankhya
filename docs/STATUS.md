@@ -15,7 +15,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M0** Foundations, spikes, walking skeleton | 10–12 ew | **Complete**, merged to `main` |
 | **M1** Zero-configuration sync and read-your-own-writes | 14–18 ew | **Complete** |
 | **M2** Ingest correctness and durability | 24–28 ew | **Substantially complete** — batching invariants, source-safety ladder, reconciliation, idempotence, crash safety, schema evolution and the backfill handoff all exist and are tested. What remains is the slot *lifecycle* driver and the snapshot *reader* — the correctness contracts are in place, the machinery that runs them on a timer is not |
-| **M3** Query engine and storage performance | 28–34 ew | A vertical slice, asserted engine settings, compaction — policy, execution and retirement, with the small-file penalty measured — and the arrival tier's retention contract. No table provider, statistics catalogue or caching |
+| **M3** Query engine and storage performance | 28–34 ew | A vertical slice, asserted engine settings, compaction (policy, execution and retirement, with the small-file penalty measured), the arrival tier's retention contract, a query spliced across both tiers, and the maintenance scheduler's arbitration. No table provider, statistics catalogue or caching |
 | **M4**–**M8** | — | Not started |
 
 ---
@@ -50,7 +50,9 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | Memory pressure cannot cost data | Nothing is released until publication covers it; a full tier refuses new work and names publication as the cause, and the refusal clears once publication catches up |
 | One SQL query is answered from memory and Parquet at once | 700 positions published and 300 still in memory sum to the whole thousand, with the 700-position overlap counted once; a pinned query sees only its target; provenance names both tiers and their intervals |
 | A gap between tiers refuses the query rather than answering it short | Verified for a genuine gap, for a target past every tier, and for a tier that started mid-stream |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 15 specific defects applied one at a time; all 15 now fail the suite. Three did not when the catalogue was first run |
+| Maintenance work is arbitrated against one budget across both sides | Strict class ladder; safety and availability work preempts queries and ignores the duty cycle, everything below it does not; a job that cannot checkpoint is refused rather than started; waiting never promotes a job out of its class |
+| The maintenance scheduler cannot destroy retained history | There is no erasure class to configure — the guard is on the type, and an exhaustive match makes adding a variant a compile error |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 20 specific defects applied one at a time; all 20 fail the suite. Three did not when the catalogue was first run |
 
 ---
 
@@ -81,9 +83,11 @@ Stated plainly, because a status document that omits this is marketing.
   the SANKHYA-owned `TableProvider` of DEC-06 — there is no statistics catalogue, no
   pruning from SANKHYA's own metadata, and no merge strategy beyond union.
 - **No catalog and no table provider.**
-- **No maintenance scheduler.** Compaction plans, executes and retires correctly, but
-  nothing runs it on a timer, and nothing yet supplies the set of pinned snapshot
-  positions that retirement checks against — the caller passes it in.
+- **The maintenance scheduler decides but does not drive.** The arbitration is built
+  and tested — classes, preemption, duty cycle, deferral reporting — but nothing calls
+  it on a timer, nothing converts a compaction plan into a `Job`, and nothing supplies
+  the pinned snapshot positions retirement checks against. It is an arbiter without a
+  clock.
 - **No graph engine, no API surfaces, no multi-tenancy, no security.**
 
 ---

@@ -30,8 +30,10 @@
 
 mod compaction;
 mod execute;
+mod schedule;
 
 pub use compaction::{
     plan_compaction, CompactionPlan, CompactionPolicy, CompactionUrgency, FileStat, PartitionState,
 };
 pub use execute::{retire_inputs, run_compaction, RetentionPolicy, RetirementOutcome};
+pub use schedule::{schedule, Class, Deferral, Job, Schedule, Scheduled, SystemState};
