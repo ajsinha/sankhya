@@ -3252,6 +3252,8 @@ dependencies = [
  "arrow-schema",
  "async-trait",
  "datafusion",
+ "futures",
+ "sankhya-governor",
  "sankhya-plan",
  "sankhya-stats",
  "sankhya-table",

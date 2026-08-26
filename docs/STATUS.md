@@ -29,7 +29,7 @@ are its own stated exit criteria:
 | Gate | State |
 |---|---|
 | Performance objectives met in the pipeline, against named public-suite queries | **Not started.** Every measurement here is a microbenchmark of one mechanism. None is a recognised query at scale, and none is on reference hardware |
-| Cancellation demonstrated within its bound, including inside user code | **Not started.** There are no deadlines and no cancellation |
+| Cancellation demonstrated within its bound, including inside user code | **Half.** Deadlines and cancellation exist and are demonstrated inside a real query, bounded at one batch. There is no sandboxed user code to propagate into yet |
 | A hostile aggregation under a constrained memory limit is rejected rather than terminating the process | **Half.** Admission *decides* to reject; nothing enforces the decision. No counting allocator, no spill isolation |
 | Plan snapshots stable; the SQL-semantics corpus green | **Not started** |
 | Cross-engine semantic differences enumerated in a tested list | **Not started** |
@@ -77,6 +77,8 @@ it returns someone else's, correctly and quickly.
 | Memory pressure cannot cost data | Nothing is released until publication covers it; a full tier refuses new work and names publication as the cause, and the refusal clears once publication catches up |
 | One SQL query is answered from memory and Parquet at once | 700 positions published and 300 still in memory sum to the whole thousand, with the 700-position overlap counted once; a pinned query sees only its target; provenance names both tiers and their intervals |
 | A gap between tiers refuses the query rather than answering it short | Verified for a genuine gap, for a target past every tier, and for a tier that started mid-stream |
+| A query stops within one batch of its deadline | Demonstrated on a real query planned and executed by the engine over real Parquet — it returns an error rather than fewer rows, and the clock is shown to have been read no more times than the deadline allows |
+| A deadline and a cancellation are told apart | Different variants with a `retryable` flag: a deadline may succeed with longer to run, a cancellation is a decision somebody made. A client that cannot tell them apart cannot decide whether to retry |
 | A query the system cannot afford never starts | Admission estimates from plan cardinality and queues or refuses; the queue is bounded, so a refusal arrives immediately rather than after a timeout |
 | A client can tell a permanent refusal from a temporary one | "Too large for the pool" and "too large right now" are distinct answers with a `retryable` flag — collapsing them is how a client retries forever |
 | One tenant cannot starve another, or take an idle pool | A floor is honoured under global pressure; a cap binds even when nothing else is running |
@@ -106,7 +108,7 @@ it returns someone else's, correctly and quickly.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 95 specific defects applied one at a time; all 95 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 101 specific defects applied one at a time; all 101 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
 
 ---
 
@@ -231,6 +233,12 @@ passed, because not one of them had a `WHERE` clause.
 A sixth: the test asserting that a disjunction is never split used `a = x OR a = y`,
 which the engine rewrites into an `IN` list before it reaches the code under test. The
 test exercised no disjunction at all.
+
+A ninth was found by the audit *hanging* rather than reporting: a threaded cancellation
+test looped forever when the cancellation check was removed, so a defect that should have
+been a failure in seconds became a thirty-minute stall. The loop is bounded now — a test
+that stalls a pipeline is how a real defect gets discovered in someone else's build
+rather than in this one.
 
 An eighth: the regression guard written for the quadratic replay above passed against
 the quadratic replay. It spread its workload across thousands of commits, where linear

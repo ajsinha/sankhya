@@ -40,9 +40,11 @@ use std::sync::Arc;
 /// The commit-position column every tier carries, and the one the target filters on.
 pub(crate) const COMMIT_LSN: &str = "_sankhya_commit_lsn";
 
+mod budgeted;
 mod predicate;
 mod provider;
 
+pub use budgeted::{BudgetedExec, Clock};
 pub use predicate::extract;
 pub use provider::{resolve, resolve_cached, LoggedFile, SankhyaTable};
 

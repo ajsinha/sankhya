@@ -32,6 +32,13 @@ Mutations edit source files in place. Each file is read before it is edited and 
 from that copy in a `finally`, and every file the run touched is verified byte-identical
 at the end.
 
+A `finally` does not run when the process is killed, and a run interrupted mid-mutation
+would otherwise leave a deliberate defect in the working tree looking like ordinary
+uncommitted work — which is exactly what happened once, and cost a confusing half hour of
+tests failing for no visible reason. So the same restore is installed as a signal
+handler, and every mutation is also recorded in a sidecar file that a later run finds and
+undoes before doing anything else.
+
 The check is on the files this run mutates, not on the whole tree. An earlier version
 refused to run on any uncommitted change, which sounded safer and was worse: it forced a
 commit before every audit, so the history filled with placeholder commits and the audit
@@ -46,10 +53,17 @@ Usage
 
 import glob
 import os
+import signal
 import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Records the file currently under mutation and its original contents, so an interrupted
+# run can be undone by the next one. Inside the repository on purpose: a sidecar in a
+# temporary directory is one reboot away from being the thing that made the defect
+# permanent.
+IN_FLIGHT = os.path.join(ROOT, "tools", ".mutation-in-flight")
 
 # (label, file, find, replace, crate whose tests should catch it)
 #
@@ -641,6 +655,42 @@ CATALOGUE = [
      "            Err(e) => {\n                report.failed.push((name.clone(), e.to_string()));\n                break;\n            }",
      "sankhya-maintenance"),
 
+    ("cancel: report a deadline when the query was explicitly cancelled",
+     "crates/sankhya-governor/src/cancel.rs",
+     "        if self.cancel.is_cancelled() {\n            return Err(Stopped::Cancelled);\n        }\n        if self.deadline.expired_at(now) {",
+     "        if self.deadline.expired_at(now) {",
+     "sankhya-governor"),
+
+    ("cancel: allow a check interval of zero",
+     "crates/sankhya-governor/src/cancel.rs",
+     "            check_every: check_every.max(1),",
+     "            check_every,",
+     "sankhya-governor"),
+
+    ("cancel: let a relative deadline wrap instead of saturating",
+     "crates/sankhya-governor/src/cancel.rs",
+     "            at: now.saturating_add(ticks),",
+     "            at: now.wrapping_add(ticks),",
+     "sankhya-governor"),
+
+    ("cancel: tell a client a cancellation can be retried",
+     "crates/sankhya-governor/src/cancel.rs",
+     "        matches!(self, Self::DeadlineExceeded { .. })",
+     "        true",
+     "sankhya-governor"),
+
+    ("budgeted: end the stream quietly instead of failing",
+     "crates/sankhya-readpath/src/budgeted.rs",
+     "            return Poll::Ready(Some(Err(to_error(stopped))));",
+     "            let _ = stopped;\n            return Poll::Ready(None);",
+     "sankhya-readpath"),
+
+    ("budgeted: never check the budget at all",
+     "crates/sankhya-readpath/src/budgeted.rs",
+     "        if let Err(stopped) = this.budget.check_periodically(this.batches, (this.clock)()) {",
+     "        if let Err(stopped) = Ok::<(), Stopped>(()) {",
+     "sankhya-readpath"),
+
     ("readpath: read every offered tier rather than the selected ones",
      "crates/sankhya-readpath/src/lib.rs",
      "    for tier in &splice.tiers {",
@@ -653,6 +703,35 @@ CATALOGUE = [
      'format!("SELECT * FROM {t}")',
      "sankhya-readpath"),
 ]
+
+
+def begin(path, original):
+    """Record what is about to be mutated, so an interrupted run can be undone."""
+    with open(IN_FLIGHT, "w") as handle:
+        handle.write(path + "\n")
+        handle.write(original)
+
+
+def finish(path, original):
+    """Restore the file and clear the record."""
+    with open(path, "w") as handle:
+        handle.write(original)
+    if os.path.exists(IN_FLIGHT):
+        os.remove(IN_FLIGHT)
+
+
+def recover():
+    """Undo a mutation left behind by an interrupted run."""
+    if not os.path.exists(IN_FLIGHT):
+        return
+    with open(IN_FLIGHT) as handle:
+        path = handle.readline().rstrip("\n")
+        original = handle.read()
+    if path and os.path.exists(path):
+        with open(path, "w") as handle:
+            handle.write(original)
+        print(f"recovered {os.path.relpath(path, ROOT)} from an interrupted run")
+    os.remove(IN_FLIGHT)
 
 
 def digest(path):
@@ -668,6 +747,17 @@ def regression_files():
 
 
 def main():
+    # Anything a previous run left behind, before deciding what to do next.
+    recover()
+
+    # A kill does not run `finally`. These do.
+    def restore_and_exit(signum, _frame):
+        recover()
+        sys.exit(128 + signum)
+
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, restore_and_exit)
+
     pattern = sys.argv[1] if len(sys.argv) > 1 else ""
     entries = [e for e in CATALOGUE if pattern in e[0]]
     if not entries:
@@ -701,6 +791,7 @@ def main():
             missing.append(label)
             continue
 
+        begin(path, original)
         open(path, "w").write(original.replace(find, repl, count))
         try:
             p = subprocess.run(["cargo", "test", "-p", crate, "--quiet"],
@@ -713,7 +804,7 @@ def main():
             else:
                 verdict, ok = "caught", True
         finally:
-            open(path, "w").write(original)
+            finish(path, original)
 
         print(f"{verdict:10} {label}")
         if not ok:

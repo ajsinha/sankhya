@@ -10,6 +10,9 @@
 //! [`pressure`] decides how much the system will give up to protect the source, because
 //! the source's limits are the ones that cannot be recovered from at all.
 //!
+//! [`cancel`] stops work that is no longer wanted, within a bound that is stated as a
+//! number rather than hoped for.
+//!
 //! Both are pure functions over declared state. That is deliberate: a system's behaviour
 //! under load is exactly the behaviour nobody can reproduce on demand, so the part that
 //! decides it should be the part that needs no machine to test.
@@ -17,7 +20,9 @@
 #![doc(html_root_url = "https://docs.rs/sankhya-governor")]
 
 pub mod admission;
+pub mod cancel;
 pub mod pressure;
 
 pub use admission::{admit, Decision, Demand, PoolState, Posture, Rejection, TenantLimits};
+pub use cancel::{Budget, Cancel, Deadline, Stopped};
 pub use pressure::{assess, Assessment, Level, Signals, Thresholds};

@@ -19,6 +19,8 @@ sankhya-plan         = { path = "../sankhya-plan" }
 sankhya-table-memory = { path = "../sankhya-table-memory" }
 sankhya-table-delta  = { path = "../sankhya-table-delta" }
 sankhya-stats        = { path = "../sankhya-stats" }
+sankhya-governor     = { path = "../sankhya-governor" }
+futures              = "0.3"
 datafusion           = { workspace = true }
 async-trait          = "0.1"
 arrow-array          = { workspace = true }
