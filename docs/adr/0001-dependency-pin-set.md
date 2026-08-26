@@ -67,3 +67,15 @@ allowlists exactly these and denies the critical family unconditionally.
 
 The gate runs on every pull request. This ADR is re-verified quarterly against the
 ecosystem baseline in `REQUIREMENTS.md` §7.
+
+---
+
+## Addendum — measured during M0 implementation
+
+| Observation | Value |
+|---|---|
+| Cold `cargo check` of the full critical family | 32.9 s, 594 MB peak RSS, 24 cores |
+| Vendored PostgreSQL 17.11 build | clean; 35 MB install |
+| Synthetic load, 10 tables | 99,235,351 rows, 10 GiB logical / 14 GB on disk, 188.7 s (~526k rows/s) |
+| Generation throughput | ~147 MB/s |
+| End-to-end capture | 933 messages decoded, 922 mutations, 4 transactions, reconciled |
