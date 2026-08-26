@@ -751,6 +751,21 @@ This required scaling the fixture before it was a real test. An earlier run over
 
 Merging also reduced the data by **2.23×**, largely through better compression across a larger block and less per-file overhead.
 
+#### 9.1.3 A directory listing is not a file set
+
+A direct consequence of the add-only rule, and easy to miss because the naive version works perfectly until the first compaction runs.
+
+Between a merge and the retirement of its inputs, the directory holds **both** — the file that was written and the files it replaced, the same rows twice. That window lasts at least a full grace period and exists by design. So anything answering "which files belong to this table" by listing the directory is wrong for the whole of it:
+
+- **A planner given a listing** will plan a merge whose inputs include files an earlier merge already superseded, and the result contains those rows twice — permanently, this time.
+- **A reader given a listing** double-counts every merged row for the duration of the window.
+
+The live set is therefore a first-class value carried across maintenance ticks, not something derived from storage. A tick moves it forward: superseded inputs leave, the new output arrives, and files the tick did not touch are carried through unchanged including their declared coverage.
+
+> **This is the concrete reason the system needs a table log rather than merely liking the idea.** "Which files are live" is not answerable from the filesystem once compaction has run, and both correctness properties above depend on answering it. A directory of Parquet files is a storage layout; it is not a table.
+
+The published tier accordingly names its files individually rather than pointing at a directory. Both behaviours are tested, including the negative one: a query registered against the directory is shown to return the merged rows twice while the same query against the live set returns them once.
+
 ### 9.2 Commit cadence scales with volume
 
 A fixed commit interval is wrong for small tables, where metadata then dominates the data itself. The cadence is derived rather than configured:

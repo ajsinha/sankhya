@@ -52,6 +52,8 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | A gap between tiers refuses the query rather than answering it short | Verified for a genuine gap, for a target past every tier, and for a tier that started mid-stream |
 | Maintenance work is arbitrated against one budget across both sides | Strict class ladder; safety and availability work preempts queries and ignores the duty cycle, everything below it does not; a job that cannot checkpoint is refused rather than started; waiting never promotes a job out of its class |
 | The maintenance scheduler cannot destroy retained history | There is no erasure class to configure — the guard is on the type, and an exhaustive match makes adding a variant a compile error |
+| A fragmented warehouse is cleared by ticking, and converges | 60 fragments reduced by repeated ticks until nothing is left to do, with the row count unchanged; urgency maps onto the class ladder, so a degrading partition preempts and an ordinary one waits; one failing partition does not block the rest |
+| A query is unaffected by compaction running underneath it | The same aggregate before and after a merge, over the live set |
 | The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 20 specific defects applied one at a time; all 20 fail the suite. Three did not when the catalogue was first run |
 
 ---
@@ -83,11 +85,13 @@ Stated plainly, because a status document that omits this is marketing.
   the SANKHYA-owned `TableProvider` of DEC-06 — there is no statistics catalogue, no
   pruning from SANKHYA's own metadata, and no merge strategy beyond union.
 - **No catalog and no table provider.**
-- **The maintenance scheduler decides but does not drive.** The arbitration is built
-  and tested — classes, preemption, duty cycle, deferral reporting — but nothing calls
-  it on a timer, nothing converts a compaction plan into a `Job`, and nothing supplies
-  the pinned snapshot positions retirement checks against. It is an arbiter without a
-  clock.
+- **No table log.** The live set is carried in memory by the caller across maintenance
+  ticks, which is correct but not durable: a restart loses it, and there is nothing for
+  an external engine to read. This is the concrete gap where Delta or Iceberg belongs —
+  see the finding below.
+- **Nothing calls the maintenance loop on a timer.** The tick is built and tested end to
+  end, but a caller has to invoke it, supply the live set and supply the pinned snapshot
+  positions retirement checks against.
 - **No graph engine, no API surfaces, no multi-tenancy, no security.**
 
 ---
@@ -105,6 +109,7 @@ Recorded because the interesting information is usually in what went wrong.
 | The documentation-rot check found a stale version claim on its first run | Its own first execution |
 | **Zone offsets were stripped rather than applied, shifting a whole timestamp column by four hours** | End-to-end reconciliation against the source. Every value stayed internally consistent, so nothing looked wrong until the two sides were compared |
 | **Duplicate suppression worked per batch rather than per row, so a batch spanning the restart boundary republished its already-durable half** | Crash-safety tests sweeping every possible interruption point. A resent stream does not rebatch identically, which a single hand-picked crash point would not have revealed |
+| **A directory listing is not a file set, and both the planner and the read path were treating it as one.** Compaction only ever adds, so between a merge and the retirement of its inputs the directory holds both — the same rows twice, by design, for at least a full grace period | Writing the convergence test. Re-observing the directory each tick made the planner merge files an earlier merge had already superseded. Nothing is wrong on disk; the *readers* were wrong. The published tier now names its files individually, the live set is carried across ticks, and the negative case is a test: the same query against the directory returns the merged rows twice |
 | **The arrival tier declared coverage it did not hold.** A tier starting mid-stream reported from the durable frontier rather than from its own oldest segment, so it claimed every position before its first captured transaction | The first query spliced across two real tiers. The splice found an exact cover that did not exist, so the query would have been *answered* with the missing positions silently absent — the failure mode the splice exists to prevent, produced by the tier lying to it. This is the normal case rather than an edge case: a table onboarded from a running stream starts mid-stream by construction |
 | **The property test written to catch that defect did not catch it.** Its generator started the publication frontier equal to the stream's origin, so the two could never diverge, and its assertion encoded the buggy expectation | Deliberately reverting the fix and finding the suite still green. The generator now starts publication at zero independently of the origin, and fails within a second on the reverted code |
 | **The Parquet writer's default compression was never enabled.** The workspace pin omitted `zstd`, so every write on the default configuration panicked inside the column writer | The first crate to use the writer *without* also depending on DataFusion. Cargo unifies features across dependencies **and dev-dependencies**, and DataFusion — a dev-dependency of the writer's own crate — was quietly supplying the feature. The crate's entire test suite passed while the library was broken for every real consumer. Now guarded by `cargo xtask check-features`, which reads the manifest rather than the resolved graph, because the resolved graph is precisely what hides it |

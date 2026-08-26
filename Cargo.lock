@@ -2520,11 +2520,15 @@ version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
+ "datafusion",
  "proptest",
  "sankhya-error",
+ "sankhya-readpath",
  "sankhya-table",
+ "sankhya-table-memory",
  "sankhya-types",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

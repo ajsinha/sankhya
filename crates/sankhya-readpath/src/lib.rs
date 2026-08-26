@@ -43,9 +43,25 @@ const COMMIT_LSN: &str = "_sankhya_commit_lsn";
 /// Published files for one table, and what they cover.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct PublishedTier {
-    /// A directory of Parquet files. Every file under it belongs to this table.
-    pub directory: String,
+    /// The files that are **live**, named individually.
+    ///
+    /// Not a directory, and this is the whole point. Compaction only ever adds, so
+    /// between a merge and the retirement of its inputs the directory holds both the
+    /// inputs and the file that replaced them — the same rows twice, by design, for at
+    /// least a full grace period. A reader pointed at the directory double-counts every
+    /// merged row for that entire window.
+    ///
+    /// The naive version works perfectly until the first compaction runs, which is what
+    /// makes it worth stating here rather than leaving to the caller.
+    pub files: Vec<String>,
     pub coverage: LsnRange,
+}
+
+impl PublishedTier {
+    #[must_use]
+    pub fn new(files: Vec<String>, coverage: LsnRange) -> Self {
+        Self { files, coverage }
+    }
 }
 
 /// The tiers available to answer a query.
@@ -145,9 +161,17 @@ pub async fn register_spliced(
         match tier.name {
             "published" => {
                 let published = tiers.published.expect("selected, therefore offered");
+                if published.files.is_empty() {
+                    return Err(ReadError::Engine(
+                        "the published tier declared coverage but named no files".to_string(),
+                    ));
+                }
                 let table = format!("{name}__published");
-                ctx.register_parquet(&table, &published.directory, ParquetReadOptions::default())
+                let frame = ctx
+                    .read_parquet(published.files.clone(), ParquetReadOptions::default())
                     .await
+                    .map_err(|e| ReadError::Engine(e.to_string()))?;
+                ctx.register_table(&table, frame.into_view())
                     .map_err(|e| ReadError::Engine(e.to_string()))?;
                 parts.push(table);
             }

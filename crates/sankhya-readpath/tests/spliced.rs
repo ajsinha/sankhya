@@ -37,6 +37,10 @@ fn rows(from: u64, to: u64) -> RecordBatch {
     .expect("building a batch")
 }
 
+fn path_of(dir: &std::path::Path, name: &str) -> String {
+    dir.join(name).to_str().expect("a utf-8 path").to_string()
+}
+
 fn range(from: u64, to: u64) -> LsnRange {
     LsnRange::new(Lsn::new(from), Lsn::new(to)).expect("a non-empty range")
 }
@@ -69,10 +73,10 @@ fn fixture(durable: u64, held: u64) -> Fixture {
     arrival.note_durable(Lsn::new(durable));
 
     Fixture {
-        published: PublishedTier {
-            directory: dir.path().to_str().expect("a utf-8 path").to_string(),
-            coverage: LsnRange::up_to(Lsn::new(durable)),
-        },
+        published: PublishedTier::new(
+            vec![path_of(dir.path(), "part-0000.parquet")],
+            LsnRange::up_to(Lsn::new(durable)),
+        ),
         arrival,
         _dir: dir,
     }
@@ -212,10 +216,10 @@ async fn a_gap_between_the_tiers_is_refused() {
     let mut arrival = ArrivalBuffer::new("arrival", schema(), MemoryBudget::default());
     arrival.append(rows(700, 1_000), range(700, 1_000));
 
-    let published = PublishedTier {
-        directory: dir.path().to_str().expect("a utf-8 path").to_string(),
-        coverage: LsnRange::up_to(Lsn::new(300)),
-    };
+    let published = PublishedTier::new(
+        vec![path_of(dir.path(), "part-0000.parquet")],
+        LsnRange::up_to(Lsn::new(300)),
+    );
 
     let ctx = SessionContext::new();
     let err = register_spliced(
@@ -312,10 +316,10 @@ async fn a_tier_the_planner_rejected_is_not_read() {
     )
     .expect("publishing");
 
-    let published = PublishedTier {
-        directory: dir.path().to_str().expect("a utf-8 path").to_string(),
-        coverage: LsnRange::up_to(Lsn::new(1_000)),
-    };
+    let published = PublishedTier::new(
+        vec![path_of(dir.path(), "part-0000.parquet")],
+        LsnRange::up_to(Lsn::new(1_000)),
+    );
 
     let mut arrival = ArrivalBuffer::new("arrival", schema(), MemoryBudget::default());
     arrival.append(rows(0, 1_000), range(0, 1_000));
