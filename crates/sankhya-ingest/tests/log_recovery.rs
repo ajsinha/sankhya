@@ -168,6 +168,29 @@ fn a_restart_does_not_reuse_a_file_name() {
     unique.sort();
     unique.dedup();
     assert_eq!(unique.len(), after.len(), "a file name was reused");
+
+    // Names alone are not enough, and this is the assertion that matters.
+    //
+    // Overwriting a live file changes its *content*, not its name. The live set looks
+    // identical, the file count is unchanged, and the rows that were in the overwritten
+    // file have simply become different rows. The log records the overwrite as a second
+    // `add` for the same path, so that is what to look for.
+    let history = read_actions(&root).expect("reading");
+    let mut added: Vec<&str> = history
+        .iter()
+        .filter_map(|(_, a)| match a {
+            Action::Add(f) => Some(f.path.as_str()),
+            _ => None,
+        })
+        .collect();
+    let total = added.len();
+    added.sort_unstable();
+    added.dedup();
+    assert_eq!(
+        added.len(),
+        total,
+        "a path was added twice, which means a live file was overwritten"
+    );
 }
 
 #[test]
@@ -236,4 +259,18 @@ fn a_name_is_not_reused_even_after_the_file_leaves_the_live_set() {
             "{name} was retired and its name has been reused"
         );
     }
+
+    // And no path was written over, retired or not.
+    let history = read_actions(&root).expect("reading");
+    let mut added: Vec<&str> = history
+        .iter()
+        .filter_map(|(_, a)| match a {
+            Action::Add(f) => Some(f.path.as_str()),
+            _ => None,
+        })
+        .collect();
+    let total = added.len();
+    added.sort_unstable();
+    added.dedup();
+    assert_eq!(added.len(), total, "a path was added twice");
 }
