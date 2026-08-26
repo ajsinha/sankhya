@@ -64,9 +64,10 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | A skipped file never hides a matching row | Property-tested over arbitrary values and predicates, and again over *merged* statistics — compaction merges rather than recomputes, so a merge that narrowed a bound would produce a defect appearing only after maintenance ran |
 | Distinct-value counts are estimated well enough to order a join | Within 5% from 10 to 100,000 distinct values, exact under merge, and reproducible across processes — a per-process hash seed would make two nodes disagree about a plan and the disagreement would look like an optimizer bug |
 | An approximate function cannot answer an exact question by accident | Rejected at planning time, including inside a subquery or a `HAVING` clause; a permissive session still gets a watermark naming what it used |
+| The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 56 specific defects applied one at a time; all 56 fail the suite. Ten did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, and chasing one of those produced a documentation correction rather than a new test |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 60 specific defects applied one at a time; all 60 fail the suite. Eleven did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
 
 ---
 
@@ -92,11 +93,10 @@ Stated plainly, because a status document that omits this is marketing.
   a historical query skip the tier at no cost, and per-tenant sub-caps. Nothing yet
   wires the tier into the ingest path either, so read-your-own-writes still waits for
   publication in practice.
-- **The statistics catalogue is not wired into the provider.** Bounds, null fractions,
-  average widths and distinct-value sketches all exist and merge correctly, and
-  `can_skip` is property-tested — but nothing computes them at compaction, nothing
-  persists them, and the provider does not consult them. The pruning decision is built;
-  the pipeline that would feed it is not.
+- **Nothing computes or persists statistics.** The provider consults them and prunes on
+  them, and the caller must supply them. Compaction reads every row already, so that is
+  where they should be computed — and it does not do it. Nor is there anywhere to store
+  them between processes.
 - **No caching.** Every plan replays the table log from the first commit, so planning
   cost grows with commit count — slowly, but without bound. Log checkpoints and a
   metadata cache are both unbuilt.
@@ -180,6 +180,10 @@ actually committed. Swapping one for the other went unnoticed.
 A fifth: the table provider could claim it evaluated predicates *exactly* — which gives
 the engine permission to drop the filter from the plan entirely — and every test still
 passed, because not one of them had a `WHERE` clause.
+
+A sixth: the test asserting that a disjunction is never split used `a = x OR a = y`,
+which the engine rewrites into an `IN` list before it reaches the code under test. The
+test exercised no disjunction at all.
 
 The catalogue also produced one **equivalent mutant** — a change to a duplicated guard
 that left the second copy still refusing, so behaviour was unchanged and no test could
@@ -271,6 +275,24 @@ about 2.5× more planning, because it replays the table log and the log grows wi
 count. The cost has moved from one seek per file to one sequential read — which is a much
 better shape and is not the same as free. It is also the argument for log checkpoints,
 which are not built.
+
+### File pruning
+
+200 files of 2,000 rows, the same query with and without the catalogue.
+
+| Predicate selects | With statistics | Without | |
+|---|---|---|---|
+| One file in 200 | 1.26 ms | 9.21 ms | **7.3×** |
+| A tenth of the table | 3.89 ms | 10.81 ms | **2.8×** |
+| Everything | 17.52 ms | 17.71 ms | **1.0×** |
+
+The gradient is the point. Pruning helps in proportion to what a predicate can exclude,
+so a single figure would be meaningless — and the last row matters as much as the first:
+when nothing can be pruned, consulting the catalogue costs nothing measurable.
+
+Every row of that table was checked to return the same answer with and without the
+statistics, because a pruning measurement that does not verify the answer is measuring
+how fast it can be wrong.
 
 ### Deterministic reduction
 

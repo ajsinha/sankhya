@@ -46,16 +46,18 @@ use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::scalar::ScalarValue;
 use sankhya_plan::{plan_splice, Splice, TierRef};
+use sankhya_stats::{can_skip, ColumnStats, Predicate};
 use sankhya_table_delta::live_files;
 use sankhya_table_memory::ArrivalBuffer;
 use sankhya_types::{Lsn, LsnRange};
+use std::collections::BTreeMap;
 
 use crate::ReadError;
 
 use crate::COMMIT_LSN;
 
 /// One published file, as the log describes it.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct LoggedFile {
     /// Absolute path.
     pub path: String,
@@ -65,6 +67,44 @@ pub struct LoggedFile {
     /// Exact, and taken from the log rather than from the file's own footer. This is
     /// what lets planning cost nothing per file.
     pub rows: u64,
+    /// Per-column statistics, where the catalogue has them.
+    ///
+    /// Absent means "nothing is known", which means the file is read. It never means
+    /// "no values" — see the statistics crate on why unknown and unbounded must not be
+    /// conflated.
+    pub stats: BTreeMap<String, ColumnStats>,
+}
+
+impl LoggedFile {
+    #[must_use]
+    pub fn new(path: String, size: u64, rows: u64) -> Self {
+        Self {
+            path,
+            size,
+            rows,
+            stats: BTreeMap::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_stats(mut self, stats: BTreeMap<String, ColumnStats>) -> Self {
+        self.stats = stats;
+        self
+    }
+
+    /// Whether the catalogue proves this file cannot satisfy `predicates`.
+    ///
+    /// Every predicate must hold for a row to match, so proving *any one* of them
+    /// impossible is enough to skip the file. A predicate on a column the catalogue
+    /// knows nothing about proves nothing and is ignored.
+    #[must_use]
+    pub fn provably_irrelevant(&self, predicates: &[(String, Predicate)]) -> bool {
+        predicates.iter().any(|(column, predicate)| {
+            self.stats
+                .get(column)
+                .is_some_and(|stats| can_skip(stats, predicate))
+        })
+    }
 }
 
 /// A table SANKHYA answers for, over a proven set of tiers.
@@ -109,6 +149,22 @@ impl SankhyaTable {
     #[must_use]
     pub const fn splice(&self) -> &Splice {
         &self.splice
+    }
+
+    /// How many published files the catalogue can prove irrelevant to `filters`.
+    ///
+    /// Exposed so a caller can see pruning happening. A pruning mechanism nobody can
+    /// observe is one nobody notices has stopped working.
+    #[must_use]
+    pub fn prunable(&self, filters: &[Expr]) -> usize {
+        let predicates = crate::predicate::extract(filters);
+        if predicates.is_empty() {
+            return 0;
+        }
+        self.published
+            .iter()
+            .filter(|f| f.provably_irrelevant(&predicates))
+            .count()
     }
 
     /// Rows across every tier, before the target filter.
@@ -164,7 +220,11 @@ impl SankhyaTable {
         Ok((indices, added))
     }
 
-    fn published_plan(&self, indices: &[usize]) -> DfResult<Arc<dyn ExecutionPlan>> {
+    fn published_plan(
+        &self,
+        indices: &[usize],
+        predicates: &[(String, Predicate)],
+    ) -> DfResult<Arc<dyn ExecutionPlan>> {
         // The engine's own Parquet source, unmodified. Nothing SANKHYA-specific reaches
         // execution — see the module documentation on why that separation is the point.
         let source = Arc::new(ParquetSource::new(Arc::clone(&self.schema)));
@@ -172,6 +232,12 @@ impl SankhyaTable {
 
         let mut files = Vec::with_capacity(self.published.len());
         for file in &self.published {
+            // Skipping happens here rather than in the engine, because the catalogue is
+            // SANKHYA's and the engine has never seen it. A file the catalogue proves
+            // irrelevant is never named in the plan at all, so its footer is never read.
+            if file.provably_irrelevant(predicates) {
+                continue;
+            }
             let trimmed = file.path.trim_start_matches('/');
             let mut partitioned = PartitionedFile::new(trimmed.to_string(), file.size);
             // The row count the log recorded, handed to the engine rather than read
@@ -252,14 +318,15 @@ impl TableProvider for SankhyaTable {
         &self,
         _state: &dyn Session,
         projection: Option<&Vec<usize>>,
-        _filters: &[Expr],
+        filters: &[Expr],
         _limit: Option<usize>,
     ) -> DfResult<Arc<dyn ExecutionPlan>> {
         let (indices, lsn_added) = self.scan_indices(projection)?;
+        let predicates = crate::predicate::extract(filters);
         let mut parts: Vec<Arc<dyn ExecutionPlan>> = Vec::new();
 
         if !self.published.is_empty() {
-            parts.push(self.published_plan(&indices)?);
+            parts.push(self.published_plan(&indices, &predicates)?);
         }
         if let Some(plan) = self.arrival_plan(&indices)? {
             parts.push(plan);
@@ -367,11 +434,11 @@ pub fn resolve(
                             file.path
                         ))
                     })?;
-                    files.push(LoggedFile {
-                        path: table_root.join(&file.path).to_string_lossy().into_owned(),
-                        size: file.size,
+                    files.push(LoggedFile::new(
+                        table_root.join(&file.path).to_string_lossy().into_owned(),
+                        file.size,
                         rows,
-                    });
+                    ));
                 }
             }
             "arrival" => {

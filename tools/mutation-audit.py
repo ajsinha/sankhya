@@ -403,6 +403,34 @@ CATALOGUE = [
      "        if false {",
      "sankhya-stats"),
 
+    # Treats Or exactly as And. It has to replace the And arm rather than adding an Or
+    # arm afterwards: the generic binary arm below matches every operator, so anything
+    # added after it is unreachable and the mutation is inert. That mistake cost a round
+    # of "the test does not cover this" before the mutation was checked by hand.
+    ("predicate: split a disjunction and apply one side",
+     "crates/sankhya-readpath/src/predicate.rs",
+     "            op: Operator::And,",
+     "            op: Operator::And | Operator::Or,",
+     "sankhya-readpath"),
+
+    ("predicate: do not flip a reversed comparison",
+     "crates/sankhya-readpath/src/predicate.rs",
+     "        (other, Expr::Column(c)) => (c, literal(other)?, flip(op)?),",
+     "        (other, Expr::Column(c)) => (c, literal(other)?, op),",
+     "sankhya-readpath"),
+
+    ("provider: skip a file the catalogue knows nothing about",
+     "crates/sankhya-readpath/src/provider.rs",
+     "                .is_some_and(|stats| can_skip(stats, predicate))",
+     "                .is_none_or(|stats| can_skip(stats, predicate))",
+     "sankhya-readpath"),
+
+    ("provider: skip a file when any one predicate is merely unproven",
+     "crates/sankhya-readpath/src/provider.rs",
+     "        predicates.iter().any(|(column, predicate)| {",
+     "        !predicates.is_empty() && predicates.iter().all(|(column, predicate)| {",
+     "sankhya-readpath"),
+
     ("readpath: read every offered tier rather than the selected ones",
      "crates/sankhya-readpath/src/lib.rs",
      "    for tier in &splice.tiers {",

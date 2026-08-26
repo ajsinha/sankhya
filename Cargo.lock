@@ -3238,6 +3238,7 @@ dependencies = [
  "async-trait",
  "datafusion",
  "sankhya-plan",
+ "sankhya-stats",
  "sankhya-table",
  "sankhya-table-delta",
  "sankhya-table-memory",
