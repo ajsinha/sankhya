@@ -39,6 +39,13 @@ tests failing for no visible reason. So the same restore is installed as a signa
 handler, and every mutation is also recorded in a sidecar file that a later run finds and
 undoes before doing anything else.
 
+Two runs must never overlap, so a lock file holds the owning process id. Overlapping runs
+mutate the same files and restore each other's originals, which produces a tree carrying
+several deliberate defects at once and no record of where they came from — that also
+happened, and was considerably harder to work out than the first case. A lock whose owner
+is gone is taken over rather than respected, so a crashed run does not block the next one
+forever.
+
 The check is on the files this run mutates, not on the whole tree. An earlier version
 refused to run on any uncommitted change, which sounded safer and was worse: it forced a
 commit before every audit, so the history filled with placeholder commits and the audit
@@ -64,6 +71,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # temporary directory is one reboot away from being the thing that made the defect
 # permanent.
 IN_FLIGHT = os.path.join(ROOT, "tools", ".mutation-in-flight")
+
+# Holds the process id of the run that owns the working tree.
+LOCK = os.path.join(ROOT, "tools", ".mutation-lock")
 
 # (label, file, find, replace, crate whose tests should catch it)
 #
@@ -717,6 +727,50 @@ CATALOGUE = [
 ]
 
 
+def running(pid):
+    """Whether a process is alive, without signalling it."""
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, ValueError):
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def take_lock():
+    """Claim the working tree, or explain who has it."""
+    if os.path.exists(LOCK):
+        try:
+            with open(LOCK) as handle:
+                owner = int(handle.read().strip())
+        except (ValueError, OSError):
+            owner = None
+        # A lock whose owner is gone is stale. Respecting it would let one crashed run
+        # block every later one, which is a worse failure than the one it prevents.
+        if owner is not None and owner != os.getpid() and running(owner):
+            print(f"another run (pid {owner}) is already mutating this tree; two runs "
+                  f"restore each other's originals and leave several deliberate defects "
+                  f"behind at once")
+            return False
+        print("taking over a lock left by a run that is no longer alive")
+
+    with open(LOCK, "w") as handle:
+        handle.write(str(os.getpid()))
+    return True
+
+
+def release_lock():
+    if os.path.exists(LOCK):
+        try:
+            with open(LOCK) as handle:
+                if int(handle.read().strip()) != os.getpid():
+                    return
+        except (ValueError, OSError):
+            pass
+        os.remove(LOCK)
+
+
 def begin(path, original):
     """Record what is about to be mutated, so an interrupted run can be undone."""
     with open(IN_FLIGHT, "w") as handle:
@@ -759,12 +813,16 @@ def regression_files():
 
 
 def main():
+    if not take_lock():
+        return 2
+
     # Anything a previous run left behind, before deciding what to do next.
     recover()
 
     # A kill does not run `finally`. These do.
     def restore_and_exit(signum, _frame):
         recover()
+        release_lock()
         sys.exit(128 + signum)
 
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
@@ -774,6 +832,7 @@ def main():
     entries = [e for e in CATALOGUE if pattern in e[0]]
     if not entries:
         print(f"no catalogue entry matches {pattern!r}")
+        release_lock()
         return 2
 
     # A failing property test writes a regression seed, and every mutation that works is
@@ -827,10 +886,13 @@ def main():
 
     changed = [p for p, d in before.items() if digest(p) != d]
     if changed:
+        release_lock()
         print("\nthese files were not restored and the results below cannot be trusted:")
         for path in changed:
             print(f"  {os.path.relpath(path, ROOT)}")
         return 2
+
+    release_lock()
 
     print()
     if survivors:
