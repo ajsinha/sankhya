@@ -161,14 +161,33 @@ impl Decoder {
         Self
     }
 
-    /// Decode one message.
+    /// Decode one message, requiring it to consume the whole slice.
     ///
     /// # Errors
     ///
     /// Returns a [`DecodeError`] naming the byte position for any malformed input.
     /// Never panics, for any input whatsoever — asserted by a fuzz-style property test.
     pub fn decode(&self, bytes: &[u8]) -> Result<Message, DecodeError> {
+        self.decode_prefix(bytes).map(|(message, _)| message)
+    }
+
+    /// Decode the message at the start of `bytes`, returning it and the number of
+    /// bytes it occupied.
+    ///
+    /// Messages are self-delimiting rather than length-prefixed, so a continuous
+    /// replication stream can only be split by decoding it. This is the entry point
+    /// the capture loop uses.
+    ///
+    /// # Errors
+    ///
+    /// As [`Decoder::decode`].
+    pub fn decode_prefix(&self, bytes: &[u8]) -> Result<(Message, usize), DecodeError> {
         let mut c = Cursor::new(bytes);
+        let message = Self::decode_at(&mut c)?;
+        Ok((message, c.pos))
+    }
+
+    fn decode_at(c: &mut Cursor<'_>) -> Result<Message, DecodeError> {
         let tag = c.u8()?;
         match tag {
             b'B' => Ok(Message::Begin {
@@ -184,7 +203,7 @@ impl Decoder {
                     commit_time: c.timestamp()?,
                 })
             }
-            b'R' => Self::relation(&mut c),
+            b'R' => Self::relation(c),
             b'Y' => Ok(Message::Type {
                 type_oid: c.u32()?,
                 namespace: c.cstring()?,
@@ -196,13 +215,13 @@ impl Decoder {
                 if marker != b'N' {
                     return Err(DecodeError::UnknownTupleSection { at: c.pos - 1, marker });
                 }
-                Ok(Message::Insert { relation_id, new: Self::tuple(&mut c)? })
+                Ok(Message::Insert { relation_id, new: Self::tuple(c)? })
             }
-            b'U' => Self::update(&mut c),
-            b'D' => Self::delete(&mut c),
-            b'T' => Self::truncate(&mut c),
+            b'U' => Self::update(c),
+            b'D' => Self::delete(c),
+            b'T' => Self::truncate(c),
             b'O' => Ok(Message::Origin { commit_lsn: c.lsn()?, name: c.cstring()? }),
-            b'M' => Self::logical(&mut c),
+            b'M' => Self::logical(c),
             b'S' => Ok(Message::StreamStart { xid: c.u32()?, first_segment: c.u8()? != 0 }),
             b'E' => Ok(Message::StreamStop),
             b'c' => {
