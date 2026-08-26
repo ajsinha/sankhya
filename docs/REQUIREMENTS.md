@@ -297,21 +297,34 @@ We are not writing a scan engine. DataFusion still provides `ParquetSource`, `Fi
 
 **Problem.** `CON-08` requires that tables be directly readable by external engines such as Spark with no SANKHYA process involved. `DEC-07` resolves latest-version-per-key at read time inside SANKHYA. An external engine reading the raw change log would see un-merged rows and compute wrong answers. These requirements are in direct conflict.
 
-**Decision.** The warehouse contains exactly two kinds of object, and only one of them is published:
+**Decision.** The un-merged change data is **not hidden**. It is published as a **sibling table with a distinct name**, so that every directory under the warehouse root is correct for an external reader standing alone:
 
-1. **The published table** — `<warehouse>/<schema>/<table>/`. Materialized by compaction. Always self-consistent and always correct for any compliant external reader, with no SANKHYA involvement. This is the only thing under the mandated path.
-2. **The internal change log and staging area** — held outside the published warehouse namespace, never advertised in the catalog as externally readable, and not required to be independently interpretable.
+```
+<warehouse_root>/<schema>/<table>/            merged current state — correct standalone
+<warehouse_root>/<schema>/<table>__changes/   append-only change log — correct standalone
+${SANKHYA_DATA}/hotwal/, spill/               in-flight, node-local, never on shared storage
+```
 
-**Two freshness contracts, both stated explicitly to consumers:**
+**Why a published sibling rather than a hidden staging area.** An earlier form of this decision placed un-merged data in an internal staging area on shared storage. Publishing it instead is strictly better on three counts:
 
-| Reader | Sees data as of | Bounded by |
-|---|---|---|
-| SANKHYA's own readers | Sub-second to a few seconds | Arrival buffer and change-log merge |
-| External engines (Spark, Trino, DuckDB) | Compaction cadence | Hot partitions ≤ 5 min; warm hourly; cold daily |
+1. **Each byte is written to shared storage once, not twice.** The apply path writes the change log; compaction reads it to build the base.
+2. **No external reader can obtain a wrong answer from either path.** One is the merged state; the other is exactly the change log its name declares. A hidden staging area relies on external readers not finding it — which is a convention, not a guarantee.
+3. **It gives external consumers a genuinely fresh path that a hidden area could not.** Appending requires no merge, so the change log is as fresh as the batch interval.
 
-Publishing a single number for both would be false. Publishing neither would make `CON-08` untestable.
+The change log is independently valuable: it *is* the change-data feed, and it is the immutable audit record.
 
-**Cost.** External readers see a slightly staler view than SANKHYA's own. Given `CON-11` this is acceptable, and it is the honest consequence of wanting both continuous ingest and open external readability.
+**Two external contracts, both stated explicitly:**
+
+| Contract | Read | Freshness | Correctness |
+|---|---|---|---|
+| **Simple** | The base table alone | Publish cadence | **Always correct standalone.** Zero knowledge required |
+| **Fresh** | Base and change log, via a merge definition SANKHYA publishes in its catalog and in the table's identity sidecar | Batch interval — seconds | Correct if the documented merge is applied |
+
+The two coverage ranges are **disjoint by construction** — the base covers up to its high-water mark and the delta covers strictly beyond it — so double-counting is impossible rather than merely unlikely.
+
+**Append-only and keyless tables have no second stage at all.** A table with no primary key has no "current row", so the base *is* the append target and its freshness equals the batch interval at zero merge cost. This is the correct model for event and telemetry data and covers a large fraction of tables in a general-purpose deployment.
+
+**The honest disclosure**, which belongs in the specification rather than being discovered during an integration: external readers taking the simple path see **mutable** tables at publish cadence — minutes, not seconds. This is not a configuration choice; it follows directly from copy-on-write mutation meeting the correct-standalone requirement. Three responses are supported: read the Fresh contract; shorten the publish interval and pay measured write amplification; or declare the table append-only where the semantics permit, in which case there is no merge and no lag.
 
 ---
 
