@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 
 const LOC_HARD: usize = 1500;
 const LOC_WARN: usize = 800;
@@ -143,6 +143,15 @@ fn main() -> ExitCode {
     if run_all || task == "check-features" {
         failed |= !check_features(&root);
     }
+    if run_all || task == "check-lints" {
+        failed |= !check_lints(&root);
+    }
+    // Deliberately not in `check-all`: it generates a scale-factor-1 dataset and runs
+    // for minutes, and it needs a machine that is not otherwise busy. It belongs to the
+    // performance pipeline, which runs it on its own.
+    if task == "check-performance" {
+        failed |= !check_performance(&root);
+    }
     if !run_all
         && !matches!(
             task.as_str(),
@@ -152,12 +161,14 @@ fn main() -> ExitCode {
                 | "check-dupes"
                 | "check-docs"
                 | "check-features"
+                | "check-lints"
+                | "check-performance"
         )
     {
         eprintln!(
             "usage: cargo xtask \
              [check-all|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
-             |check-features]"
+             |check-features|check-lints|check-performance]"
         );
         return ExitCode::from(2);
     }
@@ -645,6 +656,9 @@ fn check_docs(root: &Path) -> bool {
         "   {} documents, {links} relative links, {versions} version claims checked",
         docs.len()
     );
+
+    ok &= check_status_agreement(&docs);
+
     ok
 }
 
@@ -920,4 +934,138 @@ fn check_dev_only(root: &Path) -> bool {
         }
     }
     ok
+}
+
+/// The `NFR-PERF-*` objectives, run as a gate.
+///
+/// Separate from `check-all` because it costs minutes and needs a quiet machine, and a
+/// check that people learn to skip is worse than one they have to invoke. This is the
+/// command the performance pipeline runs; `docs/IMPLEMENTATION_PLAN.md` M3 exit
+/// criterion 1 says "in the pipeline", and this is what makes that phrase mean
+/// something a build can fail on.
+fn check_performance(root: &Path) -> bool {
+    println!("== check-performance");
+    let status = Command::new(env!("CARGO"))
+        .current_dir(root)
+        .args([
+            "test",
+            "-p",
+            "sankhya-olap",
+            "--test",
+            "tpch",
+            "--release",
+            "--",
+            "--ignored",
+            "--nocapture",
+            "--exact",
+            "the_performance_objectives_are_met",
+        ])
+        // The objectives are stated at scale factor 1. Running them at anything else
+        // measures a different requirement.
+        .env("SANKHYA_TPCH_SCALE", "1")
+        .status();
+
+    match status {
+        Ok(status) if status.success() => {
+            println!("   objectives met");
+            true
+        }
+        Ok(_) => {
+            eprintln!("   FAILED: at least one objective is not met");
+            false
+        }
+        Err(error) => {
+            eprintln!("   FAILED: could not run the gate: {error}");
+            false
+        }
+    }
+}
+
+/// Clippy across every target, with the workspace's denied lints.
+///
+/// In `check-all` because the denied set is a safety policy, not a style preference:
+/// `unwrap`, `expect`, `panic` and unchecked indexing are refused in library code
+/// because a server must not abort on data it did not choose. A policy that does not
+/// run is not a policy — this was declared in `Cargo.toml` from the start and had never
+/// been enforced by anything, and the library code had accumulated violations in six
+/// crates, including a wire decoder indexing attacker-supplied bytes.
+///
+/// Test targets allow the same lints, stated file by file rather than globally, because
+/// a test panicking is how a test fails.
+fn check_lints(root: &Path) -> bool {
+    println!("== check-lints");
+    let output = Command::new(env!("CARGO"))
+        .current_dir(root)
+        .args(["clippy", "--workspace", "--all-targets", "--keep-going"])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            println!("   clean across every target");
+            true
+        }
+        Ok(output) => {
+            let text = String::from_utf8_lossy(&output.stderr);
+            let count = text.lines().filter(|l| l.starts_with("error")).count();
+            eprintln!("   FAILED: {count} clippy error(s)");
+            for line in text.lines().filter(|l| l.starts_with("error")).take(10) {
+                eprintln!("     {line}");
+            }
+            false
+        }
+        Err(error) => {
+            eprintln!("   FAILED: could not run clippy: {error}");
+            false
+        }
+    }
+}
+
+/// Every document's `**Status:**` line says the same thing.
+///
+/// Documentation rot is usually not a false statement; it is two true-at-different-times
+/// statements sitting in different files. This catches the specific case that has
+/// actually happened here: four documents carried "Design phase" long after
+/// implementation started, and two of those had been half-updated into "Implementation —
+/// M0–M3 complete — no implementation has begun", which is a sentence that contradicts
+/// itself and which nobody reading one document in isolation would notice.
+///
+/// Only files declaring a `**Status:**` header line participate. Prose status paragraphs
+/// are left alone: this checks the machine-readable claim, not the writing.
+fn check_status_agreement(docs: &[PathBuf]) -> bool {
+    let mut seen: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+    for doc in docs {
+        // Architecture decision records carry their own status vocabulary — Accepted,
+        // Superseded — which is about the decision, not about the project. They are a
+        // different kind of claim and are excluded rather than forced to agree.
+        if doc.components().any(|c| c.as_os_str() == "adr") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(doc) else {
+            continue;
+        };
+        let name = doc
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        for line in text.lines().take(20) {
+            if let Some(rest) = line.strip_prefix("**Status:** ") {
+                seen.entry(rest.trim().to_string()).or_default().push(name);
+                break;
+            }
+        }
+    }
+
+    if seen.len() > 1 {
+        eprintln!("  DISAGREEMENT: documents state different statuses");
+        for (status, files) in &seen {
+            eprintln!("    {:<50} {}", status, files.join(", "));
+        }
+        return false;
+    }
+
+    if let Some((status, files)) = seen.iter().next() {
+        println!("   {} documents agree on status: {status}", files.len());
+    }
+    true
 }

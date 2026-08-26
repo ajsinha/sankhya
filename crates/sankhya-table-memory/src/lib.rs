@@ -265,19 +265,28 @@ impl ArrivalBuffer {
             straddling_retained: 0,
         };
 
-        while let Some(front) = self.segments.front() {
-            if front.coverage.end_inclusive() <= self.durable_through {
-                let segment = self.segments.pop_front().expect("just inspected");
-                self.bytes = self.bytes.saturating_sub(segment.bytes);
-                released.segments += 1;
-                released.rows += segment.batch.num_rows();
-                released.bytes += segment.bytes;
-            } else {
+        loop {
+            // The front is inspected, then released, then popped. Peeking and unwrapping
+            // the pop would be correct today and is the shape that breaks the moment a
+            // branch is added between the two.
+            let Some(front) = self.segments.front() else {
+                break;
+            };
+            if front.coverage.end_inclusive() > self.durable_through {
+                // A segment straddling the durable frontier is retained whole: part of
+                // it is not yet durable, and releasing it would lose those rows.
                 if front.coverage.start_exclusive() < self.durable_through {
                     released.straddling_retained = 1;
                 }
                 break;
             }
+            let Some(segment) = self.segments.pop_front() else {
+                break;
+            };
+            self.bytes = self.bytes.saturating_sub(segment.bytes);
+            released.segments += 1;
+            released.rows += segment.batch.num_rows();
+            released.bytes += segment.bytes;
         }
 
         released

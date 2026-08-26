@@ -70,8 +70,12 @@ impl DistinctSketch {
         // first, then compensating, keeps the count in the documented range.
         let remaining = (h << PRECISION) | ((1 << PRECISION) - 1);
         let rank = u8::try_from(remaining.leading_zeros() + 1).unwrap_or(u8::MAX);
-        if rank > self.registers[index] {
-            self.registers[index] = rank;
+        // `index` is `PRECISION` bits wide and `registers` is `1 << PRECISION` long, so
+        // this cannot miss — but the workspace denies indexing, and a sketch that
+        // silently wrote past its registers would corrupt a cardinality estimate rather
+        // than fail, which is the failure mode hardest to notice.
+        if let Some(register) = self.registers.get_mut(index) {
+            *register = (*register).max(rank);
         }
     }
 

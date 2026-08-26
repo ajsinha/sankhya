@@ -100,8 +100,14 @@ fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
     for b in bytes {
-        out.push(char::from(DIGITS[usize::from(b >> 4)]));
-        out.push(char::from(DIGITS[usize::from(b & 0x0f)]));
+        // `get` rather than an index: both nibbles are four bits and `DIGITS` is
+        // sixteen long, so neither lookup can miss — but the workspace denies indexing
+        // and an unreachable branch costs nothing here.
+        for nibble in [b >> 4, b & 0x0f] {
+            if let Some(digit) = DIGITS.get(usize::from(nibble)) {
+                out.push(char::from(*digit));
+            }
+        }
     }
     out
 }

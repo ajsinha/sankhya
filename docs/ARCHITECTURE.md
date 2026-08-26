@@ -2,8 +2,8 @@
 
 **Document ID:** SNK-AD-001
 **Version:** 0.1.0 (draft for review)
-**Status:** Design phase
-**Date:** 2026-08-25
+**Status:** Implementation — M0–M3 complete, M4 in progress
+**Date:** 2026-08-26
 **Companion documents:** `REQUIREMENTS.md` (SNK-RD-001), `IMPLEMENTATION_PLAN.md`, `ROADMAP.md`
 
 ---
@@ -863,12 +863,14 @@ The reason is version skew, and it is concrete rather than stylistic. A table fo
 | 200 | 0.63 ms | 3.02 ms | **4.8×** |
 | 800 | 1.37 ms | 10.33 ms | **7.5×** |
 
-The advantage widens with file count, which is the shape the claim predicts. Note that the provider is **not flat**: sixteen times the files costs about 2.5× more planning, because replaying the log grows with commit count. The cost has been moved from one seek per file to one sequential read of a log, not abolished — and it is the argument for log checkpoints, which are not built.
+The advantage widens with file count, which is the shape the claim predicts. Note that the provider is **not flat**: sixteen times the files costs about 2.5× more planning, because replaying the log grows with commit count. The cost has been moved from one seek per file to one sequential read of a log, not abolished — and it was the argument for log checkpoints, which are now built: a checkpoint collapses the replay to one read of a summary plus the commits after it.
 
 Two details the provider gets right and a naive one would not:
 
 - **Statistics are marked exact only when nothing can be filtered out.** A query pinned below what the tiers hold has an upper bound, not a count. Reporting it as exact lets the optimizer order joins on a number that is simply wrong — a slow plan chosen confidently, which is harder to notice than a slow plan chosen for want of information.
-- **The commit-position column is read even when the query does not select it**, because the target filter is evaluated on it, and projected away afterwards. Reading at a pinned position genuinely costs a column the caller did not ask for; hiding that would be dishonest about the price of time travel.
+- **The commit-position column is read when the query pins a position**, because the target filter is evaluated on it, and projected away afterwards. Time travel genuinely costs a column the caller did not ask for, and hiding that would be dishonest about its price. When no tier holds anything past the target the filter provably removes nothing, and neither the filter nor the column read is planned at all — which matters because the cost is per table and therefore compounds with join arity.
+- **The scan reports its own statistics, not the table's.** These are different numbers arriving at different times: the table's are read during logical planning, the scan's during physical planning, and join selection reads the second. A provider that supplies only the first leaves every table looking unmeasurable at the moment the engine decides how to join it — so it repartitions tables it could broadcast, and because tables reporting no size are ordered against tables that do, one absent figure moves every join in the query. The scan's figures are also counted over the files that survived pruning, so a selective predicate is reflected in the number the decision actually uses.
+- **File grouping is left to the engine above its own threshold.** The engine splits file groups by byte range, which balances on size and beats anything a provider can do by counting files — but only for scans large enough to be worth splitting, below which it leaves a single group alone, and a single group is a single partition. So the provider deals files out only below that threshold. Doing both is worse than either: the engine then rebalances an arrangement already unbalanced by file count.
 
 ### 9.2 Commit cadence scales with volume
 

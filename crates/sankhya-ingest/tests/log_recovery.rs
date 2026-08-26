@@ -9,6 +9,18 @@
 //! errors, the file count does not change, and the rows in the overwritten file simply
 //! become different rows.
 
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
 use sankhya_cdc_apply::BatchPolicy;
 use sankhya_cdc_model::{
     ColumnDescriptor, Message, RelationDescriptor, ReplicaIdentity, TupleData, TupleValue,

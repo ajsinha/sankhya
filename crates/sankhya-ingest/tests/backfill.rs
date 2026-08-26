@@ -4,6 +4,18 @@
 //! boundary between "rows as they were" and "changes since then" exact is not, and
 //! both ways of getting it wrong are silent.
 
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
 use sankhya_ingest::{advance_stream, plan_handoff, BackfillPlan, HandoffError};
 use sankhya_types::Lsn;
 use std::process::Command;

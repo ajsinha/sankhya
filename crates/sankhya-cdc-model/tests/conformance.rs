@@ -29,6 +29,18 @@
 //!
 //! Regenerate with `crates/sankhya-cdc-model/tests/fixtures/regenerate.sh`.
 
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
 use sankhya_cdc_model::{Decoder, Message, ReplicaIdentity, TupleValue};
 
 const REAL_STREAM: &[u8] = include_bytes!("fixtures/real-pgoutput-v4.bin");

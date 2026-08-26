@@ -3,6 +3,18 @@
 //! Installed as the global allocator for this test binary, because an allocator tested
 //! through a wrapper that is not actually allocating is testing the wrapper.
 
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
 use sankhya_alloc::Counting;
 use std::alloc::System;
 

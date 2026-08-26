@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f940312c7b8f6b0723ece52ad70782f1c26c2a53366b8267cfd3b735ec65d29c # shrinks to jobs = [Job { name: "job-000", class: Safety, estimated_ticks: 0, resumable: false, ticks_deferred: 0, ticks_to_visible: None }, Job { name: "job-000", class: Availability, estimated_ticks: 0, resumable: false, ticks_deferred: 1, ticks_to_visible: None }], state = SystemState { in_maintenance_window: false, queries_running: 0, duty_cycle_ticks_remaining: 0 }
+cc 76be9b3b8bf94625438fadb5ca7de6425e159b5c09c0b0d03c64daac1ba00696 # shrinks to jobs = [Job { name: "job-000", class: Optional, estimated_ticks: 0, resumable: false, ticks_deferred: 0, ticks_to_visible: None }], state = SystemState { in_maintenance_window: false, queries_running: 0, duty_cycle_ticks_remaining: 1 }

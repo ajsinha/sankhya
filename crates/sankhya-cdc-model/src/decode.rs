@@ -116,14 +116,29 @@ impl<'a> Cursor<'a> {
             })
     }
 
+    /// The next `N` bytes as a fixed-size array.
+    ///
+    /// Indexing a slice that was just checked to be long enough is safe but not
+    /// *provably* safe to a reader or to a lint, and the workspace denies indexing
+    /// precisely so that a decoder reading attacker-supplied bytes cannot panic on one.
+    /// Returning the array instead moves the length check into the type, so the callers
+    /// below have nothing left to get wrong.
+    fn take_array<const N: usize>(&mut self) -> Result<[u8; N], DecodeError> {
+        let start = self.pos;
+        let slice = self.take(N)?;
+        <[u8; N]>::try_from(slice).map_err(|_| DecodeError::Truncated {
+            at: start,
+            needed: N,
+            available: slice.len(),
+        })
+    }
+
     fn i16(&mut self) -> Result<i16, DecodeError> {
-        let b = self.take(2)?;
-        Ok(i16::from_be_bytes([b[0], b[1]]))
+        Ok(i16::from_be_bytes(self.take_array()?))
     }
 
     fn u32(&mut self) -> Result<u32, DecodeError> {
-        let b = self.take(4)?;
-        Ok(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+        Ok(u32::from_be_bytes(self.take_array()?))
     }
 
     fn i32(&mut self) -> Result<i32, DecodeError> {
@@ -131,10 +146,7 @@ impl<'a> Cursor<'a> {
     }
 
     fn u64(&mut self) -> Result<u64, DecodeError> {
-        let b = self.take(8)?;
-        Ok(u64::from_be_bytes([
-            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-        ]))
+        Ok(u64::from_be_bytes(self.take_array()?))
     }
 
     fn i64(&mut self) -> Result<i64, DecodeError> {
@@ -163,8 +175,12 @@ impl<'a> Cursor<'a> {
             .iter()
             .position(|b| *b == 0)
             .ok_or(DecodeError::UnterminatedString { at: start })?;
-        let text = std::str::from_utf8(&rest[..nul])
-            .map_err(|_| DecodeError::InvalidUtf8 { at: start })?
+        let text = rest
+            .get(..nul)
+            .ok_or(DecodeError::UnterminatedString { at: start })
+            .and_then(|bytes| {
+                std::str::from_utf8(bytes).map_err(|_| DecodeError::InvalidUtf8 { at: start })
+            })?
             .to_owned();
         self.pos = start.saturating_add(nul).saturating_add(1);
         Ok(text)

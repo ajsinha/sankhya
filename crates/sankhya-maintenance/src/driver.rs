@@ -185,20 +185,22 @@ pub fn plan_tick(
     let jobs: Vec<Job> = pending.iter().map(|p| p.job.clone()).collect();
     let decided = schedule(&jobs, state);
 
-    let find = |name: &str| {
-        pending
-            .iter()
-            .find(|p| p.job.name == name)
-            .cloned()
-            .expect("every scheduled job came from this list")
-    };
+    // Every scheduled job came from `pending`, so each lookup resolves. `filter_map`
+    // rather than an unwrap: if the scheduler ever returned a name that did not, the
+    // right outcome is a tick that runs the jobs it can identify, not a panic in the
+    // maintenance loop.
+    let find = |name: &str| pending.iter().find(|p| p.job.name == name).cloned();
 
     TickPlan {
-        run: decided.run.iter().map(|s| find(&s.job.name)).collect(),
+        run: decided
+            .run
+            .iter()
+            .filter_map(|s| find(&s.job.name))
+            .collect(),
         deferred: decided
             .deferred
             .iter()
-            .map(|(job, reason)| (find(&job.name), reason.to_string()))
+            .filter_map(|(job, reason)| Some((find(&job.name)?, reason.to_string())))
             .collect(),
         preempts_queries: decided.preempts_queries(),
     }

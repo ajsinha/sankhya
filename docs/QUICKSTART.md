@@ -1,7 +1,9 @@
 # SANKHYA — Quickstart
 
-**Status:** the project is in early implementation. This guide reflects what works
-**today**, and says plainly what does not yet. Anything not listed here is not built.
+**Status:** Implementation — M0–M3 complete, M4 in progress
+
+This guide reflects what works **today**, and says plainly what does not yet. Anything
+not listed here is not built.
 
 Everything below runs on one machine with no container runtime, no message broker, no
 object store and no cloud credentials.
@@ -206,7 +208,8 @@ that admits less.
 | Automatic table onboarding | **Working across many tables.** Schema, write strategy and path are derived from the replication stream alone; several tables capture independently from one interleaved stream and each reconciles against the source. Nothing drives it on a timer |
 | Storage and the table log | **Working.** Each table gets its own Delta log; capture commits every file it publishes, and a restart recovers its position from that log rather than from memory. The Delta kernel reads these tables, which is what makes the open-storage claim testable rather than aspirational |
 | Compaction and maintenance | **Working as a loop, not as a daemon.** Fragmented partitions are planned, merged, committed and converged, with retirement refusing to remove anything a reader might still hold. Nothing calls the loop on a timer |
-| Analytical queries | **A tiered read is working.** One SQL statement is answered from memory and Parquet at once, spliced so no position is counted twice or missed, and refused outright when the tiers do not cover the query's span. There is no table provider, no statistics catalogue and no caching |
+| Analytical queries | **Working, and measured.** A table provider plans from the table log alone — no directory listing, no footer reads — prunes files by recorded statistics, feeds bounds and cardinalities to the optimizer, and resolves updated and deleted rows to one current version each. One SQL statement is answered from memory and Parquet at once, spliced so no position is counted twice or missed, and refused outright when the tiers do not cover the query's span. TPC-H at scale factor 1 meets its three performance objectives under a build gate. No result cache, no bloom filters, no partitioning |
+| Query governance | **Working.** Deadlines and cancellation bounded at one batch per partition; admission control that refuses an aggregation too large to run rather than letting it take the process down, and says whether retrying could ever help |
 | Graph engine | Not started |
 | API surfaces | Not started |
 | Multi-tenancy and security | Not started |

@@ -94,7 +94,8 @@ impl Generator {
     /// table does not dominate the run.
     #[must_use]
     pub fn plan(&self, scale: Scale) -> Vec<(&'static Schema, u64)> {
-        let schemas = &crate::schema::all_schemas()[..scale.tables.min(10)];
+        let all = crate::schema::all_schemas();
+        let schemas = all.get(..scale.tables.min(all.len())).unwrap_or(all);
         let per_table = scale.total_bytes / schemas.len().max(1) as u64;
         schemas
             .iter()

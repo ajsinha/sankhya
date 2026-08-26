@@ -5,6 +5,18 @@
 //! design exists for, and it is invisible in a correctness test — a provider that opens
 //! every Parquet footer returns exactly the same rows.
 
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
 use arrow_array::{Int64Array, RecordBatch, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
 use datafusion::prelude::SessionContext;
@@ -540,4 +552,73 @@ async fn a_cached_resolve_sees_a_commit_made_after_it_warmed() {
     let (count, sum) = measure(Arc::new(after), AGGREGATE).await;
     assert_eq!(count, 500);
     assert_eq!(sum, triangular(500));
+}
+
+/// A scan of many files runs on more than one partition.
+///
+/// This guards a defect that was found by measurement rather than by a test: the
+/// provider handed the engine a single file group, a single group is a single
+/// partition, and everything above it could then only redistribute batches that had
+/// been read serially. The answers were identical and the query used one core.
+///
+/// It is asserted here rather than left to a benchmark because it is invisible in a
+/// result. Nothing about the rows returned says how many threads produced them, so
+/// without this the regression would come back silently — as it originally arrived.
+///
+/// The provider deliberately does *not* group the files itself. It passes them as one
+/// group and lets the engine split them by byte range, which balances on size rather
+/// than on file count and matches what the engine does for its own listing tables.
+/// Grouping them by hand first was measurably worse, because the engine then had to
+/// repartition an already-unbalanced arrangement. So the assertion is on the outcome —
+/// the scan is parallel — not on the mechanism that produces it.
+#[tokio::test]
+async fn a_scan_of_many_files_is_parallel() {
+    use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    publish(dir.path(), 32, 100);
+
+    let table = resolve(
+        schema(),
+        dir.path(),
+        Some(LsnRange::up_to(Lsn::new(3_200))),
+        None,
+        Lsn::new(3_200),
+    )
+    .expect("resolving");
+
+    // Fixed rather than inherited from the machine, so the assertion means the same
+    // thing on a build agent with two cores as on a workstation with ninety-six.
+    let ctx = SessionContext::new_with_config(
+        datafusion::prelude::SessionConfig::new().with_target_partitions(8),
+    );
+    ctx.register_table("orders", Arc::new(table))
+        .expect("registering");
+
+    let plan = ctx
+        .sql("SELECT SUM(amount) FROM orders")
+        .await
+        .expect("planning")
+        .create_physical_plan()
+        .await
+        .expect("a physical plan");
+
+    // Walk to the scan itself. Partition counts above it prove nothing: a repartition
+    // can manufacture eight partitions from one serial reader, which is exactly the
+    // shape the original defect had.
+    fn scan_partitions(plan: &Arc<dyn ExecutionPlan>) -> Option<usize> {
+        if plan.name() == "DataSourceExec" {
+            return Some(plan.output_partitioning().partition_count());
+        }
+        plan.children()
+            .into_iter()
+            .find_map(|child| scan_partitions(&Arc::clone(child)))
+    }
+
+    let partitions = scan_partitions(&plan).expect("a scan in the plan");
+    assert!(
+        partitions > 1,
+        "the scan reads 32 files on {partitions} partition(s); it should use more than \
+         one, or every core above it waits on one thread"
+    );
 }

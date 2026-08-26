@@ -15,67 +15,162 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M0** Foundations, spikes, walking skeleton | 10–12 ew | **Complete**, merged to `main` |
 | **M1** Zero-configuration sync and read-your-own-writes | 14–18 ew | **Complete** |
 | **M2** Ingest correctness and durability | 24–28 ew | **Substantially complete** — batching invariants, source-safety ladder, reconciliation, idempotence, crash safety, schema evolution and the backfill handoff all exist and are tested. What remains is the slot *lifecycle* driver and the snapshot *reader* — the correctness contracts are in place, the machinery that runs them on a timer is not |
-| **M3** Query engine and storage performance | 28–34 ew | **Most of the work, none of the exit gates.** Built: the table provider, statistics (computed, persisted, used for pruning), the arrival tier, compaction end to end, the maintenance scheduler, the governor, exact order statistics, the metadata cache and log checkpoints. **Not met:** no benchmark numbers against a named public suite, no cancellation or deadlines, no counting allocator or spill isolation, no SQL-semantics corpus, no cross-engine difference list, and compaction is not demonstrated under *continuous* ingest. See below |
-| **M4**–**M8** | — | Not started |
+| **M3** Query engine and storage performance | 28–34 ew | **Complete**, all six exit criteria met — closed 2026-08-26. One criterion was corrected first: it required cancellation inside user code, which does not exist until M4, and that clause moved to M4. Parts of the work breakdown remain unbuilt and are listed under *M3, closed* below |
+| **M4** Graph engine and the extension mechanism | 26–32 ew | **Next.** Entry criteria met |
+| **M5**–**M8** | — | Not started |
 
 ---
 
-## What M3 still owes
+## M3, closed
 
-Recorded separately from the list below because the work items are substantially built
-and it would be easy to read that as the milestone being finished. It is not, and these
-are its own stated exit criteria:
+Closed 2026-08-26. All six exit criteria are met, one of them after the criterion itself
+was corrected and one after the objectives were measured against the workloads they
+describe. Both corrections are recorded below rather than folded into a pass.
 
 | Gate | State |
 |---|---|
-| Performance objectives met in the pipeline, against named public-suite queries | **Numbers exist; the objectives are not met.** Four TPC-H queries at scale factor 1, at the concurrency the requirements name — **two of the four exceed the closest stated objective**, and the preconditions those objectives assume are not built. See below |
-| Cancellation demonstrated within its bound, including inside user code | **Half.** Deadlines and cancellation exist and are demonstrated inside a real query, bounded at one batch. There is no sandboxed user code to propagate into yet |
-| A hostile aggregation under a constrained memory limit is rejected rather than terminating the process | **Met.** An aggregation that cannot reduce anything is refused under a one-megabyte pool, by name — and the process runs the same query to completion afterwards. Repeated five times, so a refusal that leaked its reservation would show up. Spill isolation onto a separate filesystem is still not built |
-| Plan snapshots stable; the SQL-semantics corpus green | **Met.** Thirty-nine semantics cases pinned by hand from the standard's rules; plan *shapes* pinned rather than plan text, plus assertions on the optimisations that fail silently — projection pushdown, two-phase aggregation, the read-position filter inside the plan, and file pruning naming which file survives rather than counting |
-| Cross-engine semantic differences enumerated in a tested list | **Met, and it found three ways the analytical tier returns a wrong number.** Fifteen cases run against both engines; agreements are pinned too, so a *new* divergence fails the test rather than being discovered later. See below |
-| Compaction holds file counts within policy under continuous ingest | **Met.** Forty ticks of capture with maintenance sweeping every third one; the live count never passes the urgent threshold and no row is lost. The fixture asserts it actually created a backlog, or it would prove nothing |
+| Performance objectives met in the pipeline, against named public-suite queries | **Met.** `NFR-PERF-02` 13 ms, `NFR-PERF-03` 796 ms, `NFR-PERF-04` 648 ms, against budgets of 250 ms, 1 s and 3 s — asserted by `cargo xtask check-performance`, which fails the build. See the correction below: this gate was previously read as failing, against queries the objectives do not describe |
+| Cancellation demonstrated within its bound, at the points M3 controls | **Met.** Bounded at one batch per partition inside a real query, across threads, and under periodic checking within its interval. The clause "including inside user code" has moved to M4 — see below |
+| A hostile aggregation under a constrained memory limit is rejected rather than terminating the process | **Met.** An aggregation that cannot reduce anything is refused under a one-megabyte pool, by name — and the process runs the same query to completion afterwards. Repeated five times, so a refusal that leaked its reservation would show up |
+| Plan snapshots stable; the SQL-semantics corpus green | **Met.** Thirty-nine semantics cases pinned by hand from the standard's rules; plan *shapes* pinned rather than plan text, plus assertions on the optimisations that fail silently |
+| Cross-engine semantic differences enumerated in a tested list | **Met, and it found three ways the analytical tier returns a wrong number.** Fifteen cases run against both engines; agreements are pinned too, so a *new* divergence fails the test |
+| Compaction holds file counts within policy under continuous ingest | **Met.** Forty ticks of capture with maintenance sweeping every third; the live count never passes the urgent threshold and no row is lost |
 
-Smaller items inside the work breakdown that are also absent: delete resolution into
-plan-time row selections, file ordering by statistics for early termination, bloom
-filters, per-column encoding chosen from measured statistics, quantile sketches, the
-footer and byte-range and decoded-batch caches, and leader election.
+### The exit criterion that could not be met by M3
+
+Criterion 2 read *"including inside user code"*. There is no user code until M4 builds the
+extension mechanism, so as written M3 was gated on a later milestone and could not close
+on its own terms. The clause has moved to M4's exit criteria, where the mechanism it
+tests is built.
+
+This is a correction to the plan, not a waiver. Nothing that was going to be tested is
+now untested; the same test is asked one milestone later, of the milestone that can
+answer it. The related case — cancelling a query while it *queues* for memory — is also
+not claimed here, because admission never blocks: it returns a decision and the caller
+waits, and that caller is M5's server.
+
+### The objectives were being read against the wrong queries
+
+The performance gate was recorded as failing, on Q6 at 386 ms against a 250 ms objective
+and Q5 at 1149 ms against 1 s. Both numbers are real and both still stand. What was wrong
+was the mapping.
+
+`NFR-PERF-02` says **selective needle lookup**. Q6 applies three range predicates and
+returns about a hundred thousand rows of six million, touched across every file in the
+table — a different mechanism entirely, answered by scanning fast rather than by not
+scanning. Measured against an actual point lookup, the objective is met at **13 ms
+against 250 ms**, and met by statistics pruning alone, without the bloom filters its own
+precondition names.
+
+`NFR-PERF-03` says **multi-dimensional pivot, warm, pruned**, with a stated precondition
+that a partition predicate be present. Q3 is that shape and meets it at 796 ms. Q5 is a
+six-way join with no partition predicate — and since partitioning is not built, no query
+can satisfy that precondition today. So Q5 is measured and published, and deliberately
+**not** gated, rather than a passing test being written around it.
+
+The honest form of the earlier statement was never "the system is too slow"; it was
+"these objectives have never been tested". They are tested now. The mapping was mine, it
+was approximate, and it was described as approximate at the time — but an approximate
+mapping used as a gate is a gate on the wrong thing, in whichever direction it errs.
+
+**A measurement that could not have failed.** The first version of the gate inherited
+`#[tokio::test]`'s default current-thread runtime, so its eight concurrent clients took
+turns on one thread and the pivot reported 3029 ms — three times its budget, describing
+nothing the requirement is about. The gate now asserts it is on a multi-threaded runtime
+before it measures anything.
+
+### What M3 did not build
+
+Closed does not mean complete. These are inside the M3 work breakdown, are not built, and
+are not exit criteria: delete resolution into plan-time row selections, file ordering by
+statistics for early termination, bloom filters, per-column encoding chosen from measured
+statistics, quantile sketches, the footer and byte-range and decoded-batch caches, table
+partitioning, and leader election.
 
 The *result* cache does not exist either — but its **key** does, because what makes a
 result-cache key correct is a security property and the right time to fix it is before
 anything is caching. A key that omits the entitlement set does not return a stale answer;
 it returns someone else's, correctly and quickly.
 
+Nothing above is load-bearing for M4, which is why M3 closes with them open rather than
+holding the milestone until a work breakdown is exhausted.
+
 ---
 
-## TPC-H, and two objectives that are not met
+## The six-way join, explained
+
+Q5 was recorded for several weeks as **39 % behind the engine's own listing table over
+the same files, cause unknown**. An unexplained gap against a baseline reading identical
+data is the kind of finding that is usually a wrong answer waiting to be noticed, so it
+blocked the milestone rather than being filed as a performance nit.
+
+It was two defects, both found by printing the two physical plans side by side instead of
+reasoning about them.
+
+**The scan reported no size.** `TableProvider::statistics` describes the whole table and
+is read during logical planning. Join selection runs later, on the physical plan, and
+reads the statistics of the scan node — which come from the file-scan configuration and
+default to unknown. Every small table therefore looked *unmeasurable* at the exact moment
+the engine chose how to join it, so it repartitioned tables it could have broadcast: five
+rows of `region` shuffled across every core. Three of the five joins were the wrong mode.
+A table reporting no size is also sorted against tables that do, so one absent figure
+moved every join in the query, not just its own.
+
+**The provider was grouping files by hand.** It dealt files round-robin across the target
+partition count. The engine splits file groups by byte range, which balances on size and
+is strictly better than anything done by counting files — but only above a size threshold,
+below which it leaves a single group alone, and a single group is a single partition. So
+the division of labour now follows the engine's own threshold: above it, hand over one
+group; below it, deal them out, because otherwise nobody will. Doing both was worse than
+either, and measurably so — the engine was rebalancing an arrangement already unbalanced
+by file count, and the join paid about seven percent for it.
+
+Together: **578 ms to 450 ms, against the listing table's 447 ms.** Parity, and the plans
+are now identical operator for operator.
+
+**The guard that did not exist.** The round-robin dealing had itself been added to fix a
+real defect — the scan ran on one core — and no test was ever written for it. It was
+caught only because a *deadline* test contained a self-check asserting its own plan ran in
+parallel. Removing the dealing broke that self-check, which is the only reason the
+regression was not shipped. There is now a direct test that a scan of thirty-two files
+runs on more than one partition, asserted at the scan itself rather than above it, because
+a repartition can manufacture eight partitions from one serial reader — which is exactly
+the shape the original defect had.
+
+---
+
+## TPC-H, at scale factor 1
 
 Every other measurement in this document isolates one mechanism. These are queries
 somebody else wrote, so the numbers can be compared to something other than themselves.
 
 Data generated at scale factor 1 — 8,661,245 rows, 261 MiB of Parquet — written through
-this system's own write path. Best of three for single-query latency; five rounds at the
-stated concurrency for the rest, after two warm-up executions.
+this system's own write path. Five rounds at the stated concurrency, after two warm-up
+executions, on a multi-threaded runtime — asserted, because on a current-thread one the
+clients take turns and the figure describes nothing.
 
-| | Clients | Median | p95 | Nearest objective | |
+| | Clients | Median | p95 | Objective | |
 |---|---|---|---|---|---|
-| **Q1** pricing summary — full scan, eight aggregates | 4 | 518 ms | **577 ms** | `NFR-PERF-04` wide scan, < 3 s | **inside** |
-| **Q6** forecasting revenue — narrow selective filter | 8 | 332 ms | **360 ms** | `NFR-PERF-02` selective lookup, < 250 ms | **over** — but see clustering below, which brings the same query to 234 ms |
-| **Q3** shipping priority — three-way join, top-N | 8 | 757 ms | **776 ms** | `NFR-PERF-03` pivot, < 1 s | **inside** |
-| **Q5** local supplier volume — six-way join | 8 | 1161 ms | **1187 ms** | `NFR-PERF-03` pivot, < 1 s | **over** |
+| **needle lookup** — one row of six million by key | 8 | 11 ms | **13 ms** | `NFR-PERF-02` selective needle lookup, < 250 ms | **met** |
+| **Q3** shipping priority — three-way join, top-N | 8 | 777 ms | **796 ms** | `NFR-PERF-03` pivot, < 1 s | **met** |
+| **Q1** pricing summary — full scan, eight aggregates | 4 | 562 ms | **648 ms** | `NFR-PERF-04` wide scan, < 3 s | **met** |
+| **Q6** forecasting revenue — narrow range filter | 8 | 386 ms | 491 ms | *not the workload any objective describes* | published, not gated |
+| **Q5** local supplier volume — six-way join | 8 | 1149 ms | 1202 ms | `NFR-PERF-03`, whose partition-predicate precondition it cannot satisfy | published, not gated |
 
-**Two of the four are over.** Both deserve qualification, and neither qualification makes
-them met:
+The first three are the gate, and `cargo xtask check-performance` fails the build if any
+of them regresses. The last two are published because they are the queries a reader will
+recognise, and withholding them because they are unflattering would be the worse choice.
 
-- Q6 is a range scan over roughly a seventh of the table, not the "selective needle
-  lookup" `NFR-PERF-02` describes — and that objective explicitly assumes bloom filters
-  and late materialization, neither of which is built.
-- Q5 is a six-way join, which is a harder shape than the "multi-dimensional pivot"
-  `NFR-PERF-03` describes.
+**Q5 and Q6 are not failures against these objectives; they are not measured by them.**
+That distinction is argued in full under *M3, closed* above, including why the previous
+mapping was wrong in both directions. The short form: `NFR-PERF-02` describes finding one
+row, and Q6 returns a hundred thousand; `NFR-PERF-03` requires a partition predicate, and
+partitioning is not built, so Q5 could not satisfy it however fast it ran.
 
-So the mapping from these queries to those objectives is mine rather than the
-requirements', and it is approximate. What can be said without qualification is that
-there are now numbers against recognisable queries at a stated concurrency, and that two
-of them are the wrong side of the closest thing to a target this project has written down.
+**These are met on hardware below the reference node.** The requirements name 32 physical
+cores and 256 GB; this is twelve cores and 62 GB. That makes the results conservative
+rather than qualified — but the reference node has never been measured on, so the numbers
+that would be published with it do not exist.
 
 **The first run of this measured the wrong thing**, and finding out why produced the
 correction below. It used a bare engine rather than this system's configured session, so
@@ -152,8 +247,12 @@ underneath it, and it made two costs visible.
 | Q3 three-way join | 333 ms | 372 ms |
 | Q5 six-way join | 415 ms | 578 ms |
 
-**Parity on scans, 12% and 39% behind on joins.** Two causes were found and fixed on the
-way here, and one remains unexplained.
+**Parity on scans, 12% and 39% behind on joins.** Four causes were found in the end. Two
+are described here; the other two — the scan reporting no size to join selection, and the
+provider grouping files by hand — are under *The six-way join, explained* above, and
+closing them brought Q5 to 450 ms against the listing table's 447 ms. The table above is
+kept at its original numbers because the sections below explain what each fix was worth,
+and rewriting the starting point would erase that.
 
 **The scan used one core.** The provider put every file into a single file group, which is
 a single partition — everything above it could only round-robin batches that had been read
@@ -169,17 +268,22 @@ were paying for a facility they were not using.
 The commit position itself turned out **not** to be a cost: it is monotone, so it
 delta-encodes to +0.1% on a 174 MiB table. That was the first hypothesis and it was wrong.
 
-**What remains is not explained.** The join gap is smaller than it was and it is still
-there. Recording it as unexplained is the honest state; the alternative is a plausible
-story nobody checked.
+**What remained was eventually explained**, after some weeks of being recorded here as
+unexplained — which was the right way to hold it. The answer is above; it was two further
+defects, and neither was the one that would have been guessed. Both were found by printing
+the two physical plans next to each other rather than by reasoning about them, which is
+the general lesson worth keeping.
 
 ---
 
-## Clustering, which closes the objective pushdown could not
+## Clustering, worth 7.8× on a range scan
 
-`NFR-PERF-02` names bloom filters and late materialization as the preconditions for its
-250 ms. Neither is the lever. Bloom filters do not apply to Q6, which has no equality
-predicate; late materialization costs rather than saves. **Sorting does.**
+This was originally written up as "the fix that closes `NFR-PERF-02`", which was wrong
+twice over — Q6 is not the workload that objective describes (see *M3, closed* above), and
+the objective's own named preconditions are not the lever either. Bloom filters do not
+apply to Q6, which has no equality predicate; late materialization costs rather than
+saves. **Sorting does**, and that finding stands on its own without an objective attached
+to it.
 
 Q6 selects one year in seven of `l_shipdate`. Written in arrival order every row group
 holds the whole date range, so the bounds exclude nothing and the query reads the entire
@@ -191,8 +295,8 @@ their statistics, before any decoding.
 | Generation order | 222 ms | 1819 ms |
 | Sorted by ship date | **31 ms** | **234 ms** |
 
-**7.8× at the stated concurrency, and 234 ms is inside the 250 ms objective.** Compaction
-now does this: a settled partition is written in the order the policy declares.
+**7.8× at eight clients.** Compaction now does this: a settled partition is written in the
+order the policy declares. No objective is claimed from it — the number is the point.
 
 Two details that are the design rather than the implementation. Only *settled* partitions
 are sorted — ordering one that is still receiving writes means ordering it again
@@ -387,11 +491,6 @@ Stated plainly, because a status document that omits this is marketing.
   single file, which is fine into the millions of live files and not beyond; and nothing
   deletes the commits a checkpoint subsumes, so the log directory grows without bound even
   though nothing reads most of it.
-- **The provider is slower than the engine's own file listing on joins**, by 12% on a
-  three-way and 39% on a six-way, at parity on scans. The cause is not established.
-  Partitioning the scan and skipping the unnecessary position filter each closed part of
-  the gap; what remains has not been explained, and guessing at it here would be worse
-  than saying so.
 - **Nothing routes a captured table to the resolved provider automatically.** The
   capability is derived from what the source declared and the resolution works end to
   end, but the caller still has to assemble the two — there is no catalog mapping a table
@@ -401,10 +500,10 @@ Stated plainly, because a status document that omits this is marketing.
   subsystem publishes a signal, and no query passes through admission on its way to
   running. They are decision functions without callers, like the maintenance scheduler
   was before the driver.
-- **No counting allocator, no spill isolation, no deadline propagation.** The
-  architecture requires all three around admission: true accounting outside the engine's
-  own pool, spill on a different filesystem from the write-ahead log, and cancellation
-  that takes effect within a bounded time. None exists.
+- **No counting allocator and no spill isolation.** The architecture requires true
+  accounting outside the engine's own pool, and spill on a different filesystem from the
+  write-ahead log. Neither exists. Deadline propagation and cancellation *do* — bounded
+  at one batch per partition — which is why they are no longer listed here.
 - **Exact order statistics buffer their input.** Selection is linear rather than
   `n log n`, so it beats sorting, but every observation must be resident. `FR-QUERY-08`
   asks for a bounded-memory algorithm over large inputs and this is not one. Exact and
@@ -412,14 +511,16 @@ Stated plainly, because a status document that omits this is marketing.
 - **The exactness gate is not wired into a session.** `check_exactness` is a function
   with no caller: nothing carries the session's exactness setting, and nothing attaches
   the watermark to a result.
-- **No catalog and no table provider.**
-- **No log checkpoints.** Replay reads every commit, so startup cost grows linearly with
-  a table's commit count. Fine at the scale tested; not fine at a year of continuous
-  capture.
-- **No checkpoints, deletion vectors, column mapping or partition values in the log.**
-  Row counts, bounds and null counts are written; everything else the protocol permits is
-  not, and a reader requiring any of it refuses these tables. A reader requiring any of them refuses these tables, which is the correct
-  outcome — refusing is visible, and a partially-implemented protocol feature is not.
+- **No catalog.** The table provider exists and resolves mutable tables correctly, but
+  nothing maps a table *name* to one, so the caller still has to assemble it.
+- **No deletion vectors, column mapping or partition values in the log.** Row counts,
+  bounds and null counts are written, and checkpoints are; everything else the protocol
+  permits is not. A reader requiring any of them refuses these tables, which is the
+  correct outcome — refusing is visible, and a partially-implemented protocol feature is
+  not.
+- **No table partitioning.** Every scan is over the whole table, pruned by file
+  statistics rather than by partition. This is why `NFR-PERF-03`'s partition-predicate
+  precondition cannot be satisfied by any query today.
 - **Nothing calls the maintenance loop on a timer.** The tick is built and tested end to
   end, but a caller has to invoke it, supply the live set and supply the pinned snapshot
   positions retirement checks against.
@@ -464,6 +565,15 @@ on the defect they were written for. Neither was found by reading them.
   could be changed to tolerate gaps between tiers, or to stop requiring the cover to
   reach the target, and the whole suite stayed green. Every splice test would have gone
   on passing over a planner returning partial covers.
+
+A fourth was not a weak test but a **missing** one. The fix that made the provider's scan
+run on more than one core had no test at all — the defect had been found by measurement,
+and nothing was written to hold it. Months later that fix was replaced with a better one,
+and the only thing that caught the intermediate regression was a *deadline* test which
+happened to contain a self-check asserting its own plan ran in parallel. A test written
+for one thing guarded another by accident, which is not a mechanism anyone should rely on
+twice. There is now a direct test, asserted at the scan node rather than above it, because
+a repartition can manufacture eight partitions from one serial reader.
 
 A third was found the same way: the property named *open transactions are never
 published* aborted every unsealed transaction before flushing, so it never left one in
@@ -799,9 +909,16 @@ SANKHYA_PG_BIN=$PWD/.build/pg-install/bin SANKHYA_E2E_SOCKET=/tmp/sankhya-sock \
 ## How to check this document is honest
 
 ```bash
-cargo xtask check-all          # every repository invariant, including doc links and version claims
-cargo test --workspace         # everything that needs no database
+cargo xtask check-all            # every repository invariant: layers, file length, doc
+                                 # links, version claims, feature pins, and clippy with
+                                 # the workspace's denied lints across every target
+cargo test --workspace           # 630 tests, none of which needs a database
+cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
+python3 tools/mutation-audit.py  # 127 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
+
+The performance gate needs a quiet machine and several minutes, which is why it is not in
+`check-all`. Everything else runs unattended.
 
 [`QUICKSTART.md`](QUICKSTART.md) walks through building it from nothing.

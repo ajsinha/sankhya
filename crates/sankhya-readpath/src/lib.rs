@@ -212,7 +212,14 @@ pub async fn register_spliced(
     for tier in &splice.tiers {
         match tier.name {
             "published" => {
-                let published = tiers.published.expect("selected, therefore offered");
+                // Selected implies offered — reported rather than unwrapped, matching
+                // how an unreadable tier name is handled below.
+                let Some(published) = tiers.published else {
+                    return Err(ReadError::Engine(
+                        "the planner selected the published tier, which was not offered"
+                            .to_string(),
+                    ));
+                };
                 if published.files.is_empty() {
                     return Err(ReadError::Engine(
                         "the published tier declared coverage but named no files".to_string(),
@@ -228,7 +235,11 @@ pub async fn register_spliced(
                 parts.push(table);
             }
             "arrival" => {
-                let arrival = tiers.arrival.expect("selected, therefore offered");
+                let Some(arrival) = tiers.arrival else {
+                    return Err(ReadError::Engine(
+                        "the planner selected the arrival tier, which was not offered".to_string(),
+                    ));
+                };
                 let batches = arrival.scan(target)?;
                 let table = format!("{name}__arrival");
                 let provider = MemTable::try_new(arrival.schema(), vec![batches])

@@ -4,6 +4,18 @@
 //! costs a refused query that would have been fine; a missed one costs a wrong number
 //! nobody notices, which is the failure this exists to prevent.
 
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
 use sankhya_stats::{decimal_sum_risk, integer_sum_risk, Bound, ColumnStats, SumRisk};
 
 fn column(min: i64, max: i64, rows: u64, nulls: u64) -> ColumnStats {

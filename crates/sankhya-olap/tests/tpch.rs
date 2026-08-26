@@ -30,6 +30,18 @@
 //! refresh streams. Calling it a TPC-H benchmark would be a misuse of the name; it is a
 //! set of TPC-H queries used as a workload.
 
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
 use datafusion::prelude::SessionContext;
 use sankhya_table::{write_parquet, WriterConfig};
 use sankhya_types::Lsn;
@@ -851,4 +863,304 @@ async fn measure_what_the_commit_position_costs() {
         ours as f64 / (1024.0 * 1024.0),
         (ours as f64 / theirs as f64 - 1.0) * 100.0
     );
+}
+
+/// The plan for Q5, through the provider and through the engine's own file listing.
+///
+/// Run with `cargo test -p sankhya-olap --test tpch --release -- --ignored --nocapture
+/// diff_plans`.
+///
+/// A latency difference between two ways of reading the same data is either the reading
+/// or the plan. Printing both plans settles which, and guessing at it costs more than
+/// looking.
+#[tokio::test]
+#[ignore = "a diagnostic, not an assertion"]
+async fn diff_plans_for_the_six_way_join() {
+    use datafusion::physical_plan::displayable;
+    use datafusion::prelude::ParquetReadOptions;
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let tables = generate_at(dir.path(), scale());
+
+    let q5 = queries()
+        .into_iter()
+        .find(|(name, _, _)| *name == "Q5")
+        .map(|(_, _, sql)| sql)
+        .expect("Q5");
+
+    // Through the provider.
+    let provider_ctx = sankhya_olap::session().expect("settings");
+    register(&provider_ctx, dir.path(), &tables).await;
+
+    // Through the engine's file listing, over the same files.
+    let listing_ctx = sankhya_olap::session().expect("settings");
+    for (name, _) in &tables {
+        listing_ctx
+            .register_parquet(
+                name,
+                dir.path().join(name).to_str().expect("a utf-8 path"),
+                ParquetReadOptions::default(),
+            )
+            .await
+            .expect("registering");
+    }
+
+    for (label, ctx) in [("provider", &provider_ctx), ("listing", &listing_ctx)] {
+        let plan = ctx
+            .sql(q5)
+            .await
+            .expect("planning")
+            .create_physical_plan()
+            .await
+            .expect("physical plan");
+
+        // Join order is what a size or cardinality difference changes, so that is what
+        // is printed: the joins in the order the optimizer nested them.
+        let text = displayable(plan.as_ref()).indent(false).to_string();
+        for line in text
+            .lines()
+            .filter(|l| l.contains("FilterExec") || l.contains("DataSourceExec"))
+        {
+            let t = line.trim();
+            println!("    | {}", &t[..200.min(t.len())]);
+        }
+        let joins: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("HashJoinExec"))
+            .map(str::trim)
+            .collect();
+        println!("--- {label}: {} joins", joins.len());
+        for join in joins {
+            println!("    {}", &join[..160.min(join.len())]);
+        }
+
+        // Best of five. The interest is the difference between the two paths, and a
+        // mean carries whatever else the machine was doing into that difference.
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..5 {
+            let start = std::time::Instant::now();
+            ctx.sql(q5)
+                .await
+                .expect("planning")
+                .collect()
+                .await
+                .expect("running");
+            best = best.min(start.elapsed());
+        }
+        println!("    {label}: {best:>9.2?}");
+    }
+}
+
+/// `NFR-PERF-02` measured against a needle lookup, which is what it asks for.
+///
+/// Run with `SANKHYA_TPCH_SCALE=1 cargo test -p sankhya-olap --test tpch --release --
+/// --ignored --nocapture needle`.
+///
+/// This exists because the objective was being read against Q6, and Q6 is not a needle
+/// lookup. Q6 applies three range predicates and returns something under two percent of
+/// six million rows — around a hundred thousand of them, touched across every file in
+/// the table. `NFR-PERF-02` describes finding *one* row in a large table, which is a
+/// different mechanism entirely: it is answered by pruning almost every file unread,
+/// not by scanning quickly.
+///
+/// Reporting Q6 against it therefore failed an objective that had never been tested.
+/// The public suite has no needle lookup — TPC-H has no point query at all — so the
+/// requirement's own words are used instead, and the mismatch is recorded rather than
+/// the number being quietly re-mapped to a friendlier objective.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "a measurement, not an assertion"]
+async fn measure_a_needle_lookup() {
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let scale = scale();
+    let tables = generate_at(dir.path(), scale);
+    let ctx = Arc::new(sankhya_olap::session().expect("the required settings must apply"));
+    register(&ctx, dir.path(), &tables).await;
+
+    // A key from the middle of the table. The first or last would prune to the first or
+    // last file and flatter the result; the middle is the ordinary case.
+    let sql = "SELECT l_orderkey, l_partkey, l_extendedprice \
+               FROM lineitem WHERE l_orderkey = 3000001";
+
+    for _ in 0..2 {
+        let _ = ctx.sql(sql).await.expect("planning").collect().await;
+    }
+
+    const CLIENTS: usize = 8;
+    let mut samples = Vec::new();
+    for _ in 0..5 {
+        let handles: Vec<_> = (0..CLIENTS)
+            .map(|_| {
+                let ctx = Arc::clone(&ctx);
+                tokio::spawn(async move {
+                    let start = std::time::Instant::now();
+                    let rows = ctx
+                        .sql(sql)
+                        .await
+                        .expect("planning")
+                        .collect()
+                        .await
+                        .expect("executing");
+                    (
+                        start.elapsed(),
+                        rows.iter().map(|b| b.num_rows()).sum::<usize>(),
+                    )
+                })
+            })
+            .collect();
+        for handle in handles {
+            samples.push(handle.await.expect("a client panicked"));
+        }
+    }
+
+    // A lookup that found nothing would be fast for the wrong reason.
+    let found = samples[0].1;
+    assert!(
+        found > 0,
+        "the needle key matched no rows; the measurement is meaningless"
+    );
+
+    let mut times: Vec<_> = samples.iter().map(|(t, _)| *t).collect();
+    times.sort_unstable();
+    let at = |q: f64| times[((times.len() as f64 * q) as usize).min(times.len() - 1)];
+    println!(
+        "scale factor {scale}, {CLIENTS} clients, {found} row(s) matched\n\
+         needle lookup: median {:.1} ms, p95 {:.1} ms  (NFR-PERF-02 target: p95 < 250 ms)",
+        at(0.5).as_secs_f64() * 1000.0,
+        at(0.95).as_secs_f64() * 1000.0,
+    );
+}
+
+/// The performance objectives, asserted rather than printed.
+///
+/// Run with `SANKHYA_TPCH_SCALE=1 cargo test -p sankhya-olap --test tpch --release --
+/// --ignored --nocapture objectives`, which is what `cargo xtask check-performance`
+/// invokes.
+///
+/// Every other performance test in this file prints a number and passes regardless.
+/// That is right for a measurement and wrong for an objective: `NFR-PERF-*` are
+/// requirements, and a requirement that cannot fail a build is a preference. This is
+/// the only test here that fails when the system gets slower.
+///
+/// Each objective is measured against the workload its own text describes, not against
+/// whichever public-suite query is nearest:
+///
+/// - **`NFR-PERF-02`** says *selective needle lookup*. TPC-H contains no point query, so
+///   this uses one. It was previously read against Q6, which returns about a hundred
+///   thousand rows from three range predicates — a different mechanism, and one that
+///   failed an objective never actually tested. See `measure_a_needle_lookup`.
+/// - **`NFR-PERF-03`** says *multi-dimensional pivot, warm, pruned*. Q3 is that shape.
+///   Q5 is a six-way join, and it is measured and published by
+///   `measure_tpch_under_concurrency` — but it is not gated here, because it does not
+///   satisfy the objective's stated precondition that a partition predicate be present.
+///   Partitioning is not built, so no query can currently satisfy it. That is recorded
+///   as an open item in `docs/STATUS.md`, not hidden by a passing test.
+/// - **`NFR-PERF-04`** says *wide scan, warm, local cache*. Q1 is that shape.
+///
+/// The margins are wide enough that this should not be flaky. If it starts failing
+/// intermittently, the correct response is to find what regressed, not to raise the
+/// bound — the bounds are the requirements, and they are already being met on hardware
+/// well below the reference node.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "the performance gate: minutes, and needs a quiet machine"]
+async fn the_performance_objectives_are_met() {
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let scale = scale();
+    let tables = generate_at(dir.path(), scale);
+    let ctx = Arc::new(sankhya_olap::session().expect("the required settings must apply"));
+    register(&ctx, dir.path(), &tables).await;
+
+    let needle = "SELECT l_orderkey, l_partkey, l_extendedprice \
+                  FROM lineitem WHERE l_orderkey = 3000001";
+    let pivot = queries()
+        .into_iter()
+        .find(|(n, _, _)| *n == "Q3")
+        .map(|(_, _, sql)| sql)
+        .expect("Q3");
+    let scan = queries()
+        .into_iter()
+        .find(|(n, _, _)| *n == "Q1")
+        .map(|(_, _, sql)| sql)
+        .expect("Q1");
+
+    let cases = [
+        (
+            "NFR-PERF-02",
+            "selective needle lookup",
+            needle,
+            8usize,
+            250u128,
+        ),
+        ("NFR-PERF-03", "multi-dimensional pivot", pivot, 8, 1_000),
+        ("NFR-PERF-04", "wide scan", scan, 4, 3_000),
+    ];
+
+    let mut over = Vec::new();
+    for (id, what, sql, clients, budget_ms) in cases {
+        let p95 = percentile_under_load(&ctx, sql, clients).await;
+        let ms = p95.as_millis();
+        println!("{id}  {what:<24} {clients} clients  p95 {ms:>5} ms  budget {budget_ms} ms");
+        if ms >= budget_ms {
+            over.push(format!(
+                "{id} ({what}): p95 {ms} ms against a {budget_ms} ms budget"
+            ));
+        }
+    }
+
+    assert!(
+        over.is_empty(),
+        "performance objectives not met on this machine:\n  {}",
+        over.join("\n  ")
+    );
+}
+
+/// p95 across five rounds of `clients` concurrent executions, after two warm-ups.
+async fn percentile_under_load(
+    ctx: &std::sync::Arc<datafusion::prelude::SessionContext>,
+    sql: &str,
+    clients: usize,
+) -> std::time::Duration {
+    use std::sync::Arc;
+
+    for _ in 0..2 {
+        let _ = ctx.sql(sql).await.expect("planning").collect().await;
+    }
+
+    // Eight clients on a current-thread runtime are eight clients taking turns, and the
+    // resulting number describes nothing the requirement is about. This was not
+    // hypothetical: the first version of the gate inherited the default flavour and
+    // reported a pivot three times over its budget.
+    assert!(
+        tokio::runtime::Handle::current().metrics().num_workers() > 1,
+        "this measurement needs a multi-threaded runtime; on a current-thread one the \
+         clients serialize and the figure is meaningless"
+    );
+
+    let mut samples = Vec::new();
+    for _ in 0..5 {
+        let handles: Vec<_> = (0..clients)
+            .map(|_| {
+                let ctx = Arc::clone(ctx);
+                let sql = sql.to_string();
+                tokio::spawn(async move {
+                    let start = std::time::Instant::now();
+                    ctx.sql(&sql)
+                        .await
+                        .expect("planning")
+                        .collect()
+                        .await
+                        .expect("executing");
+                    start.elapsed()
+                })
+            })
+            .collect();
+        for handle in handles {
+            samples.push(handle.await.expect("a client panicked"));
+        }
+    }
+    samples.sort_unstable();
+    samples[((samples.len() as f64 * 0.95) as usize).min(samples.len() - 1)]
 }

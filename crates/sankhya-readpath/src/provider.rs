@@ -247,6 +247,7 @@ impl SankhyaTable {
         indices: &[usize],
         predicates: &[(String, Predicate)],
         partitions: usize,
+        split_threshold: usize,
     ) -> DfResult<Arc<dyn ExecutionPlan>> {
         // The engine's own Parquet source, unmodified. Nothing SANKHYA-specific reaches
         // execution — see the module documentation on why that separation is the point.
@@ -254,6 +255,8 @@ impl SankhyaTable {
         let mut builder = FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), source);
 
         let mut files = Vec::with_capacity(self.published.len());
+        let mut retained = Vec::with_capacity(self.published.len());
+        let (mut rows, mut bytes) = (0u64, 0u64);
         for file in &self.published {
             // Skipping happens here rather than in the engine, because the catalogue is
             // SANKHYA's and the engine has never seen it. A file the catalogue proves
@@ -271,28 +274,68 @@ impl SankhyaTable {
                 column_statistics: Statistics::unknown_column(&self.schema),
             }));
             files.push(partitioned);
+            retained.push(file.clone());
+            rows += file.rows;
+            bytes += file.size;
         }
-        // Spread across partitions so the scan uses more than one core.
+        // Whether to group the files here, or hand them over as one group and let the
+        // engine do it.
         //
-        // A single file group is a single partition, and everything above it can then
-        // only round-robin batches that were read serially — the scan itself is the
-        // bottleneck and no amount of downstream parallelism helps. This was the
-        // provider's largest cost against the engine's own file listing, which does
-        // partition, and it is invisible in a result: the answers were identical and the
-        // query used one core.
+        // The engine splits file groups by byte range, which balances on size and is
+        // strictly better than anything this code can do by counting files — but it
+        // only does so once the scan is large enough to be worth splitting. Below that
+        // threshold it leaves a single group alone, and a single group is a single
+        // partition: the scan reads serially while every core above it waits.
         //
-        // Files are dealt round-robin rather than split by size. Sizes are known and
-        // packing by them would balance better, but it also groups files that were
-        // written together — which after compaction means files covering adjacent ranges
-        // land in the same partition, so a pruned scan leaves some partitions with
-        // nothing and others with everything.
-        let groups = partitions.max(1).min(files.len().max(1));
-        let mut dealt: Vec<Vec<PartitionedFile>> = vec![Vec::new(); groups];
-        for (index, file) in files.into_iter().enumerate() {
-            dealt[index % groups].push(file);
-        }
+        // So the division of labour follows the engine's own threshold. Above it, hand
+        // over one group and let the engine balance by bytes. Below it, deal the files
+        // out here, because otherwise nobody will.
+        //
+        // Doing both — dealing first and letting the engine split afterwards — is worse
+        // than either, and measurably so: the engine then rebalances an arrangement that
+        // was already unbalanced by file count, and the six-way join paid about seven
+        // percent for it.
+        let dealt = if bytes >= split_threshold as u64 {
+            vec![files]
+        } else {
+            // Round-robin rather than packed by size. Sizes are known and packing would
+            // balance better, but it also groups files that were written together —
+            // which after compaction means files covering adjacent ranges land in the
+            // same partition, so a pruned scan leaves some partitions with nothing and
+            // others with everything.
+            let groups = partitions.max(1).min(files.len().max(1));
+            let mut dealt: Vec<Vec<PartitionedFile>> = vec![Vec::new(); groups];
+            for (index, file) in files.into_iter().enumerate() {
+                // `groups` is at least one and the modulus is below it, so this resolves.
+                if let Some(group) = dealt.get_mut(index % groups) {
+                    group.push(file);
+                }
+            }
+            dealt
+        };
+        // The scan's own statistics, which are not the table's.
+        //
+        // `TableProvider::statistics` describes the whole table and is read during
+        // logical planning. Join selection runs later, on the physical plan, and reads
+        // the statistics of the `DataSourceExec` — which come from here and default to
+        // unknown. Leaving them unset meant every small table looked unmeasurable at the
+        // moment the engine decided how to join it, so it repartitioned tables it could
+        // have broadcast: five rows shuffled across every core.
+        //
+        // Counted over the files that survived pruning rather than the whole table, so a
+        // predicate that removes most of the data is reflected in the number the join
+        // decision actually uses.
+        //
+        // Exact in both fields: these are recorded counts and recorded sizes, for a set
+        // of files now fixed in the plan.
+        let scanned = Statistics {
+            num_rows: exact(rows),
+            total_byte_size: exact(bytes),
+            column_statistics: column_statistics(&self.schema, &retained),
+        };
 
         builder = builder
+            .with_statistics(scanned)
             .with_file_groups(dealt.into_iter().map(Into::into).collect())
             .with_projection_indices(Some(indices.to_vec()))?;
 
@@ -436,7 +479,22 @@ impl TableProvider for SankhyaTable {
         };
         Some(Statistics {
             num_rows,
-            total_byte_size: datafusion::common::stats::Precision::Absent,
+            // The optimizer orders joins by size, and a table reporting no size is
+            // sorted against tables that do — so one absent figure moves every join in
+            // the query, not just this table's.
+            //
+            // Inexact, because it is the compressed size on disk rather than what the
+            // rows occupy once decoded, and because the arrival tier's contribution is
+            // not counted. Both make it an understatement, which is the safer direction
+            // for a build-side decision.
+            total_byte_size: if self.published.is_empty() {
+                datafusion::common::stats::Precision::Absent
+            } else {
+                datafusion::common::stats::Precision::Inexact(
+                    usize::try_from(self.published.iter().map(|f| f.size).sum::<u64>())
+                        .unwrap_or(usize::MAX),
+                )
+            },
             column_statistics: column_statistics(&self.schema, &self.published),
         })
     }
@@ -469,6 +527,7 @@ impl TableProvider for SankhyaTable {
                 &indices,
                 &predicates,
                 state.config().target_partitions(),
+                state.config_options().optimizer.repartition_file_min_size,
             )?);
         }
         if let Some(plan) = self.arrival_plan(&indices)? {
@@ -651,7 +710,15 @@ fn resolve_with(
                 }
             }
             "arrival" => {
-                let tier = arrival.expect("selected, therefore offered");
+                // The splice selected this tier, which it can only do from what was
+                // offered — so it is present. Reported rather than unwrapped because
+                // the arm below already reports a tier name the provider cannot read,
+                // and a tier it can name but not find is the same class of fault.
+                let Some(tier) = arrival else {
+                    return Err(ReadError::Engine(
+                        "the planner selected the arrival tier, which was not offered".to_string(),
+                    ));
+                };
                 batches = tier.scan(target)?;
             }
             other => {

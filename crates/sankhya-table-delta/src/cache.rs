@@ -101,9 +101,13 @@ impl LogCache {
             },
         };
 
+        // `Current` is only produced when the entry was found above, so this lookup
+        // cannot miss. Falling through to the replay below if it ever did is both
+        // correct and slower, which is the right way round for an impossible case.
         if outcome == Outcome::Current {
-            let replay = entries.get(table_root).expect("current implies cached");
-            return Ok((replay.live_set(), outcome));
+            if let Some(replay) = entries.get(table_root) {
+                return Ok((replay.live_set(), outcome));
+            }
         }
 
         let replay = entries.entry(table_root.to_path_buf()).or_default();

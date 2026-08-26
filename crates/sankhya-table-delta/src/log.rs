@@ -585,8 +585,16 @@ impl Replay {
         for (version, action) in actions {
             self.version = Some(version);
             match action {
-                Action::Add(add) => match self.position.get(&add.path) {
-                    Some(index) => self.files[*index] = Some(add),
+                // `position` is only ever written alongside a push to `files`, so every
+                // index it holds is in range. Resolving through `get_mut` rather than
+                // indexing keeps that invariant from being the only thing standing
+                // between a malformed log and a panic during replay.
+                Action::Add(add) => match self.position.get(&add.path).copied() {
+                    Some(index) => {
+                        if let Some(slot) = self.files.get_mut(index) {
+                            *slot = Some(add);
+                        }
+                    }
                     None => {
                         self.position.insert(add.path.clone(), self.files.len());
                         self.files.push(Some(add));
@@ -594,7 +602,9 @@ impl Replay {
                 },
                 Action::Remove(remove) => {
                     if let Some(index) = self.position.remove(&remove.path) {
-                        self.files[index] = None;
+                        if let Some(slot) = self.files.get_mut(index) {
+                            *slot = None;
+                        }
                     }
                 }
                 Action::Protocol { .. } | Action::Metadata(_) => {}

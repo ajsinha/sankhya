@@ -13,6 +13,18 @@
 //! `cargo test` needs no database. Driven by
 //! `crates/sankhya-cdc-apply/tests/run_e2e.sh`.
 
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
 use sankhya_cdc_apply::{BatchPolicy, Batcher, Op};
 use sankhya_cdc_model::{Decoder, Message};
 use std::process::Command;

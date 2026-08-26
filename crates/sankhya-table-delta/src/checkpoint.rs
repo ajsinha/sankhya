@@ -69,7 +69,11 @@ fn empty_maps(rows: usize) -> ArrayRef {
         StringBuilder::new(),
     );
     for _ in 0..rows {
-        builder.append(true).expect("appending an empty map");
+        // Appending an empty map cannot fail — the builder has no children to be out of
+        // step with. Ignoring the result rather than unwrapping it keeps the crate free
+        // of panic paths; a builder that did fail would produce a short array, and the
+        // schema check on read would catch that.
+        let _ = builder.append(true);
     }
     Arc::new(builder.finish())
 }
@@ -161,8 +165,9 @@ fn checkpoint_batch(
     // height with a validity mask selecting its row. Arrow requires child arrays to be
     // full length even where the parent is null, so the unused slots carry placeholder
     // values that no reader will ever look at.
-    let mut protocol_valid = vec![false; rows];
-    protocol_valid[0] = true;
+    // Row 0 carries the protocol action, row 1 the metadata. Built by position rather
+    // than by index assignment so the length and the set bit cannot disagree.
+    let protocol_valid: Vec<bool> = (0..rows).map(|row| row == 0).collect();
     let protocol = StructArray::new(
         protocol_fields(),
         vec![
@@ -180,8 +185,7 @@ fn checkpoint_batch(
         Some(NullBuffer::from(protocol_valid)),
     );
 
-    let mut metadata_valid = vec![false; rows];
-    metadata_valid[1] = true;
+    let metadata_valid: Vec<bool> = (0..rows).map(|row| row == 1).collect();
     let format = StructArray::new(
         format_fields(),
         vec![

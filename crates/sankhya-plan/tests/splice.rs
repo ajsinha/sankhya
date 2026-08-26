@@ -5,6 +5,18 @@
 //! counting a row twice and losing one — return a plausible number, so neither would
 //! be caught by inspection.
 
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
 use proptest::prelude::*;
 use sankhya_plan::{is_exact_cover, plan_splice, SpliceError, TierRef};
 use sankhya_types::{Lsn, LsnRange};

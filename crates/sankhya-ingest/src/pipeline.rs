@@ -687,6 +687,15 @@ impl Pipeline {
 
 #[cfg(test)]
 mod rebase_tests {
+    // Tests may panic — see the note on the integration tests. The workspace denies
+    // these because a server must not panic on data it did not choose.
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        clippy::panic,
+        clippy::indexing_slicing,
+        clippy::float_cmp
+    )]
     use super::{commit_rebasing, Rebased, REBASE_ATTEMPTS};
     use sankhya_table_delta::CommitError;
     use std::cell::Cell;

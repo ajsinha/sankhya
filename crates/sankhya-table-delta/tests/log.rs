@@ -3,6 +3,18 @@
 //! The interesting cases are the ones where order matters, because replay is the only
 //! thing standing between a correct file set and one that double-counts.
 
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
 use sankhya_table_delta::{
     commit, commits, create, live_files, Action, AddFile, CommitError, Metadata, RemoveFile,
 };

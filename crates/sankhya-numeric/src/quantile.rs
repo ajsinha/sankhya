@@ -175,10 +175,10 @@ pub fn quantile_of_sum(
     q: f64,
     convention: Convention,
 ) -> Result<f64, QuantileError> {
-    if vectors.is_empty() {
+    let Some(first) = vectors.first() else {
         return Err(QuantileError::Empty);
-    }
-    let width = vectors[0].len();
+    };
+    let width = first.len();
     if width == 0 {
         return Err(QuantileError::Empty);
     }
@@ -189,11 +189,19 @@ pub fn quantile_of_sum(
         return Err(QuantileError::NotOrderable { at: 0 });
     }
 
-    let mut totals = vec![0.0f64; width];
-    for element in 0..width {
-        let column: Vec<f64> = vectors.iter().map(|v| v[element]).collect();
-        totals[element] = crate::deterministic_sum(&column);
-    }
+    // Transposed by iterator rather than by index. Every vector has been checked to be
+    // `width` long, so indexing would be safe — but the workspace denies it, and the
+    // reason it does is that "checked above" ages badly when the check and the index
+    // drift apart. `nth` cannot read past the end whatever happens to the check.
+    let mut totals: Vec<f64> = (0..width)
+        .map(|element| {
+            let column: Vec<f64> = vectors
+                .iter()
+                .filter_map(|v| v.get(element).copied())
+                .collect();
+            crate::deterministic_sum(&column)
+        })
+        .collect();
 
     quantile(&mut totals, q, convention)
 }
