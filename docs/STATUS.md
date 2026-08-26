@@ -15,7 +15,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M0** Foundations, spikes, walking skeleton | 10–12 ew | **Complete**, merged to `main` |
 | **M1** Zero-configuration sync and read-your-own-writes | 14–18 ew | **Complete** |
 | **M2** Ingest correctness and durability | 24–28 ew | **Substantially complete** — batching invariants, source-safety ladder, reconciliation, idempotence, crash safety, schema evolution and the backfill handoff all exist and are tested. What remains is the slot *lifecycle* driver and the snapshot *reader* — the correctness contracts are in place, the machinery that runs them on a timer is not |
-| **M3** Query engine and storage performance | 28–34 ew | A vertical slice only |
+| **M3** Query engine and storage performance | 28–34 ew | A vertical slice, plus asserted engine settings. No table provider, statistics catalogue, caching or compaction |
 | **M4**–**M8** | — | Not started |
 
 ---
@@ -96,6 +96,28 @@ On a 24-core machine with NVMe storage.
 | Synthetic generation | ~147 MB/s |
 | Bulk load, 10 tables | 99,235,351 rows / 10 GiB in 188.7 s (~526k rows/s) |
 | On-disk size after load | 14 GB |
+
+### Query-engine settings
+
+| | |
+|---|---|
+| Filter pushdown, 5M rows / 523 MiB / 1-in-10,000 selectivity | **1.02× — neutral** |
+| The same measurement with a compressible payload | 0.74× — *slower*, an artefact of the fixture |
+
+**This corrected a claim rather than confirming one.** Earlier drafts of the
+requirements and architecture documents asserted that filter pushdown was worth roughly
+an order of magnitude. It is not, on this shape. The setting is still pinned — neutral
+is not harmful and the benefit is expected on wider payloads — but the documents now
+record the measurement instead of the assumption.
+
+The first attempt showed pushdown *slower*, which was a fixture artefact: a repetitive
+padding string dictionary-encodes so well that decoding it is nearly free, so avoiding
+that decode saves nothing while the row-selection bookkeeping still costs. Worth
+recording, because a benchmark whose data is unrepresentative produces confident wrong
+numbers rather than obviously wrong ones.
+
+The companion claim about the Parquet page row-count limit has **not** been measured and
+should be read as unverified.
 
 ### Capture at scale
 

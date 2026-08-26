@@ -2533,6 +2533,14 @@ version = "0.1.0"
 [[package]]
 name = "sankhya-olap"
 version = "0.1.0"
+dependencies = [
+ "datafusion",
+ "sankhya-datagen",
+ "sankhya-error",
+ "sankhya-types",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "sankhya-oltp-pg"

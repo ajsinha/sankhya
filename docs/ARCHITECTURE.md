@@ -659,12 +659,25 @@ Two settings in the stack have defaults that switch off the mechanism they belon
 
 | Setting | Default | Consequence of leaving it |
 |---|---|---|
-| Query-engine **filter pushdown** and **filter reordering** | disabled | No late materialization. Selective queries read every payload column for every row rather than only for survivors |
+| Query-engine **filter pushdown** and **filter reordering** | disabled | Predicates are not evaluated inside the Parquet decoder. **Measured neutral (1.02×) on one representative scan** — see the measurement note below — but pinned regardless |
 | Parquet writer **page row-count limit** | effectively unlimited | The page index stores bounds *per page*. With no row cap, a narrow column packs enormous row counts into a single page — a boolean can fit tens of millions of rows in one page — and the page index degenerates to one entry covering everything. **Page pruning silently does nothing** |
 
 With a row cap in place, a typical row group yields dozens of pages per column, so a selective predicate skips almost all of them. The cost is disk only: the page index lives in its own section and is read on demand, so planning latency is unaffected.
 
 **Both are asserted at startup, not merely configured**, because an upstream default can change between versions and the resulting regression would be invisible.
+
+**A measured correction.** An earlier draft of this document asserted that filter
+pushdown was worth roughly an order of magnitude. It was measured at **1.02×** on a
+five-million-row, 523 MiB scan at one-in-ten-thousand selectivity — essentially
+neutral. The first attempt at that measurement showed pushdown *slower* (0.74×), which
+turned out to be an artefact of a highly compressible payload: a repetitive string
+dictionary-encodes so well that decoding it is nearly free, so avoiding the decode
+saves nothing while the row-selection bookkeeping still costs.
+
+The setting remains required — neutral is not harmful, and the benefit is expected on
+wider payloads — but the justification now records what was measured. The page
+row-count limit has not yet been measured and its claim should be read as unverified
+until it has been.
 
 ---
 
