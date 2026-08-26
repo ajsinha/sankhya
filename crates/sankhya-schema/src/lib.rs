@@ -18,6 +18,7 @@
 
 mod mapping;
 mod naming;
+mod evolve;
 mod onboard;
 mod model;
 
@@ -30,4 +31,7 @@ pub use naming::{
 pub use onboard::{
     Onboarded, OnboardingError, OnboardingWarning, WriteStrategy, inexact_columns,
     is_fully_exact, may_be_stored_out_of_line, onboard_relation,
+};
+pub use evolve::{
+    Compatibility, SchemaChange, apply_compatible, classify_change, widened_decimal,
 };

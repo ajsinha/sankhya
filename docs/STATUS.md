@@ -14,7 +14,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 |---|---|---|
 | **M0** Foundations, spikes, walking skeleton | 10–12 ew | **Complete**, merged to `main` |
 | **M1** Zero-configuration sync and read-your-own-writes | 14–18 ew | **Complete** |
-| **M2** Ingest correctness and durability | 24–28 ew | Partly — batching invariants and reconciliation-by-test exist; slot lifecycle, backfill and the escalation ladder do not |
+| **M2** Ingest correctness and durability | 24–28 ew | **Substantially complete** — batching invariants, source-safety ladder, reconciliation, idempotence, crash safety, schema evolution and the backfill handoff all exist and are tested. What remains is the slot *lifecycle* driver and the snapshot *reader* — the correctness contracts are in place, the machinery that runs them on a timer is not |
 | **M3** Query engine and storage performance | 28–34 ew | A vertical slice only |
 | **M4**–**M8** | — | Not started |
 
@@ -37,6 +37,11 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | Several tables capture independently from one interleaved stream | 4 tables, each reconciling against the source |
 | Capture holds up at scale | 1,000,000 rows across all 10 tables at ~285k rows/s, every table reconciling |
 | A session sees its own write analytically | Wrote, capture caught up in 6 ms, the query returned the row |
+| Capture cannot endanger its own source | Five-rung ladder escalating strictly below the database's own limit, validated against a real slot |
+| Captured data provably matches the source | 3,000 rows digested independently on both sides, no discrepancies |
+| A restart cannot duplicate data | Replay is filtered per row; every crash point across a constructed stream yields each row exactly once |
+| A schema change never corrupts data | Additive changes apply automatically; anything whose intent cannot be inferred quarantines, keeps consuming so the cursor advances, and requires an operator to adopt the new shape |
+| Backfill meets streaming with no gap and no overlap | Verified against a live slot; a late slot is shown to drop real positions into neither half |
 
 ---
 
@@ -49,10 +54,12 @@ Stated plainly, because a status document that omits this is marketing.
   replication connection. The decoder and pipeline are transport-agnostic by design, but
   the transport itself is unwritten. Note that neither mainstream Rust PostgreSQL client
   supports the replication protocol, so this is real work rather than a wiring exercise.
-- **No slot lifecycle.** No creation policy, no position advancement, no lag monitoring,
-  and **none of the source-safety escalation ladder** — which is the single most
-  important operational safeguard in the design.
-- **No backfill.** Only changes occurring after a slot exists are captured.
+- **No slot lifecycle.** No creation policy and no position advancement. The
+  source-safety ladder now exists and is tested against a real slot, but nothing drives
+  it on a timer yet — it is a decision function without a caller.
+- **No backfill reader.** The handoff *contract* is built and verified against a live
+  slot, but nothing yet reads the existing rows. Only changes after a slot exists are
+  captured.
 - **No arrival buffer.** The tiered read path is planned and property-tested but has
   only one tier to plan over, so read-your-own-writes currently waits for publication
   rather than for an in-memory tier. The waiting *contract* is right; the tier that
@@ -73,6 +80,8 @@ Recorded because the interesting information is usually in what went wrong.
 | The fixture capture tool injected newline separators into a binary stream | The decoder was right and the capture was wrong; found at the first byte after a transaction boundary |
 | The layer rule forbade same-layer dependencies, which was wrong rather than strict | A vocabulary crate legitimately building on another |
 | The documentation-rot check found a stale version claim on its first run | Its own first execution |
+| **Zone offsets were stripped rather than applied, shifting a whole timestamp column by four hours** | End-to-end reconciliation against the source. Every value stayed internally consistent, so nothing looked wrong until the two sides were compared |
+| **Duplicate suppression worked per batch rather than per row, so a batch spanning the restart boundary republished its already-durable half** | Crash-safety tests sweeping every possible interruption point. A resent stream does not rebatch identically, which a single hand-picked crash point would not have revealed |
 
 ---
 

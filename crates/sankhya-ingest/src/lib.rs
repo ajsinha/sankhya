@@ -21,6 +21,12 @@
 
 #![doc(html_root_url = "https://docs.rs/sankhya-ingest")]
 
+mod backfill;
 mod pipeline;
+mod reconcile;
 
 pub use pipeline::{Pipeline, PipelineStats, PublishedFile, TableState};
+pub use backfill::{
+    Backfill, BackfillPlan, Handoff, HandoffError, advance_stream, plan_handoff,
+};
+pub use reconcile::{Discrepancy, Reconciliation, RowDigest, TableDigest};
