@@ -18,6 +18,7 @@
 
 mod mapping;
 mod naming;
+mod onboard;
 mod model;
 
 pub use mapping::{MappingError, TypeMapping, map_source_type, numeric_modifier};
@@ -25,4 +26,8 @@ pub use model::{Field, LogicalSchema, LogicalType, Precision};
 pub use naming::{
     CollisionCheck, NameClass, NamingError, PathSegment, RESERVED_SEGMENTS, TableLocation,
     segment_for,
+};
+pub use onboard::{
+    Onboarded, OnboardingError, OnboardingWarning, WriteStrategy, inexact_columns,
+    is_fully_exact, may_be_stored_out_of_line, onboard_relation,
 };
