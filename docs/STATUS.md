@@ -64,13 +64,14 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | A skipped file never hides a matching row | Property-tested over arbitrary values and predicates, and again over *merged* statistics — compaction merges rather than recomputes, so a merge that narrowed a bound would produce a defect appearing only after maintenance ran |
 | Distinct-value counts are estimated well enough to order a join | Within 5% from 10 to 100,000 distinct values, exact under merge, and reproducible across processes — a per-process hash seed would make two nodes disagree about a plan and the disagreement would look like an optimizer bug |
 | An approximate function cannot answer an exact question by accident | Rejected at planning time, including inside a subquery or a `HAVING` clause; a permissive session still gets a watermark naming what it used |
+| Log replay scales linearly with a table's history | Guarded by measuring the *ratio* between two sizes rather than a clock, so it means the same on any machine — and proven to fail on the quadratic implementation it replaced |
 | A file is prunable from the moment it is published | Capture computes statistics from the batch it just encoded — the same data, already in memory — so a file does not wait for maintenance to become skippable |
 | Statistics survive a restart and other engines can read them | Bounds and null counts are written into the table log itself, so a fresh process prunes exactly as a warm one does — and the kernel reads a log carrying them |
 | Compaction computes the statistics the provider prunes on | Bounds, null counts, widths and a cardinality sketch, produced by the merge that was already reading the data — no separate analysis pass and nothing for an operator to remember to run |
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 66 specific defects applied one at a time; all 66 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 67 specific defects applied one at a time; all 67 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
 
 ---
 
@@ -99,9 +100,11 @@ Stated plainly, because a status document that omits this is marketing.
 - **The cardinality sketch is not persisted.** The protocol has nowhere to put it, so a
   column read back from the log reports zero distinct values. Nothing currently reads
   that figure, but it is a trap for whatever does first.
-- **No caching.** Every plan replays the table log from the first commit, so planning
-  cost grows with commit count — slowly, but without bound. Log checkpoints and a
-  metadata cache are both unbuilt.
+- **No log checkpoints and no metadata cache.** Every plan replays the table log from the
+  first commit. That is now linear rather than quadratic, but linear in a table's whole
+  history is still unbounded: 117 ms at fifty thousand commits, and dominated by opening
+  fifty thousand files rather than by anything a better algorithm could fix. Checkpoints
+  are what that needs.
 - **No merge strategy beyond union.** Latest-version-per-key, which mutable tables need,
   is not implemented; the provider unions its tiers.
 - **Exact order statistics buffer their input.** Selection is linear rather than
@@ -185,6 +188,10 @@ passed, because not one of them had a `WHERE` clause.
 A sixth: the test asserting that a disjunction is never split used `a = x OR a = y`,
 which the engine rewrites into an `IN` list before it reaches the code under test. The
 test exercised no disjunction at all.
+
+An eighth: the regression guard written for the quadratic replay above passed against
+the quadratic replay. It spread its workload across thousands of commits, where linear
+file I/O dominates the quadratic term entirely.
 
 A seventh, and the most useful: statistics computation had no tests in its own crate at
 all. It was exercised only through an end-to-end test in a *different* crate, so
@@ -282,6 +289,33 @@ about 2.5× more planning, because it replays the table log and the log grows wi
 count. The cost has moved from one seek per file to one sequential read — which is a much
 better shape and is not the same as free. It is also the argument for log checkpoints,
 which are not built.
+
+### Replaying the table log
+
+One add per commit, replayed from the first.
+
+| Commits | Before | After |
+|---|---|---|
+| 100 | 0.32 ms | 0.34 ms |
+| 1,000 | 1.99 ms | 3.58 ms |
+| 10,000 | 81.5 ms | 20.5 ms |
+| 50,000 | **1.96 s** | **117 ms** |
+
+**The first column is a defect, not a cost.** The replay searched the accumulated file
+list for every add and filtered it for every remove — quadratic in the number of files,
+invisible in every test, and two seconds per query plan at fifty thousand commits. A
+table committing every ten seconds reaches that inside a week.
+
+Positions are now held in an index. What remains is linear and is dominated by opening
+one file per commit, which is what checkpoints exist to fix rather than anything an
+algorithm can.
+
+The regression guard measures the **ratio** between two sizes rather than elapsed time,
+so it means the same thing on any machine. Its first version put the actions in thousands
+of separate commits and passed against the very implementation it was written to catch —
+the quadratic term is per action, not per commit, so file I/O buried it. Concentrating
+the actions into ten commits separates them: 16.1× for four times the files against about
+4× for the fixed version.
 
 ### Computing statistics at compaction
 

@@ -467,6 +467,12 @@ CATALOGUE = [
      "                &[DeltaAction::Add(DeltaAdd::with_rows(\n                    file_name.clone(),\n                    report.bytes,\n                    0,\n                    u64::try_from(report.rows).unwrap_or(0),\n                ))],",
      "sankhya-ingest"),
 
+    ("log: replay by scanning the file list instead of indexing it",
+     "crates/sankhya-table-delta/src/log.rs",
+     "            Action::Add(add) => match position.get(&add.path) {\n                // An add of a path already present replaces it rather than duplicating\n                // it. Duplicating would double-count every row in the file.\n                Some(index) => files[*index] = Some(add),\n                None => {\n                    position.insert(add.path.clone(), files.len());\n                    files.push(Some(add));\n                }\n            },",
+     "            Action::Add(add) => {\n                let _ = &position;\n                if let Some(existing) = files.iter_mut().flatten().find(|f| f.path == add.path) {\n                    *existing = add;\n                } else {\n                    files.push(Some(add));\n                }\n            }",
+     "sankhya-table-delta"),
+
     ("readpath: read every offered tier rather than the selected ones",
      "crates/sankhya-readpath/src/lib.rs",
      "    for tier in &splice.tiers {",
