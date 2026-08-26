@@ -863,6 +863,12 @@ CATALOGUE = [
      "        return self.raw.scan(_state, _projection, _filters, _limit).await;\n        #[allow(unreachable_code)]\n        Err(DataFusionError::Internal(",
      "sankhya-readpath"),
 
+    ("merge: treat a relation with no row identity as mutable",
+     "crates/sankhya-readpath/src/merge.rs",
+     "        if key.is_empty() {\n            return Self::AppendOnly;\n        }\n        Self::Mutable { key }",
+     "        Self::Mutable { key }",
+     "sankhya-readpath"),
+
     ("readpath: read every offered tier rather than the selected ones",
      "crates/sankhya-readpath/src/lib.rs",
      "    for tier in &splice.tiers {",

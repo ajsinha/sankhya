@@ -328,3 +328,81 @@ async fn scanning_a_resolved_table_directly_refuses_rather_than_serving_history(
         "the refusal must say what serving a raw scan would cost: {err}"
     );
 }
+
+#[test]
+fn the_capability_comes_from_what_the_source_declared() {
+    // The source states which columns identify a row -- its replica identity -- and that
+    // statement arrives with the relation. Reading it is taking the declaration, not
+    // inferring one, which is the distinction the architecture draws.
+    let mutable = Capability::from_source(["id"]);
+    assert!(mutable.needs_resolution());
+    assert_eq!(mutable.key(), ["id".to_string()]);
+
+    let composite = Capability::from_source(["tenant", "id"]);
+    assert_eq!(composite.key(), ["tenant".to_string(), "id".to_string()]);
+}
+
+#[test]
+fn a_relation_with_no_row_identity_is_append_only_for_reading() {
+    // Not a guess that no updates will arrive. A statement that none could be applied:
+    // with no key there is nothing to resolve versions against, so an update has no
+    // meaning here even if the source sends one. The fix is the source's replica
+    // identity, which onboarding already warns about.
+    let capability = Capability::from_source(Vec::<String>::new());
+    assert_eq!(capability, Capability::AppendOnly);
+    assert!(!capability.needs_resolution());
+}
+
+#[tokio::test]
+async fn a_captured_relation_resolves_on_the_key_the_source_gave() {
+    // End to end from the relation description: the columns the source marked as
+    // identifying are the ones the read path resolves on, with nothing in between
+    // deciding.
+    use sankhya_cdc_model::{ColumnDescriptor, RelationDescriptor, ReplicaIdentity};
+    use sankhya_schema::onboard_relation;
+
+    let relation = RelationDescriptor {
+        relation_id: 1,
+        namespace: "public".into(),
+        name: "accounts".into(),
+        replica_identity: ReplicaIdentity::Default,
+        columns: vec![
+            ColumnDescriptor {
+                name: "id".into(),
+                type_oid: 20,
+                type_modifier: -1,
+                is_key: true,
+            },
+            ColumnDescriptor {
+                name: "balance".into(),
+                type_oid: 20,
+                type_modifier: -1,
+                is_key: false,
+            },
+        ],
+    };
+
+    let onboarded = onboard_relation(&relation).expect("onboarding");
+    let keys: Vec<&str> = onboarded
+        .schema
+        .key_fields()
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
+    let capability = Capability::from_source(keys);
+
+    assert!(capability.needs_resolution());
+    assert_eq!(capability.key(), ["id".to_string()]);
+
+    // And it actually resolves.
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let raw = table(
+        dir.path(),
+        &[Change(1, 100, 10, "I"), Change(1, 250, 20, "U")],
+    );
+    let resolved = Arc::new(ResolvedTable::new(raw, capability.key()).expect("resolving"));
+    assert_eq!(
+        query(resolved, "SELECT count(*), sum(balance) FROM accounts").await,
+        vec!["1 | 250"]
+    );
+}

@@ -107,6 +107,14 @@ It is resolved now, by declared capability rather than by heuristic:
 Expressed as a logical plan the optimizer can see through, rather than as an opaque
 physical operator that would have to re-implement every optimisation inside itself.
 
+**The capability comes from the source, not from a guess.** The relation states which
+columns identify a row — its replica identity — and that statement arrives with the
+relation description. Reading it is taking the declaration, not inferring one. A relation
+declaring no identity is append-only *for reading*, and that is a statement about what can
+be done rather than a prediction: with no key there is nothing to resolve versions
+against, so an update could not be applied even if one arrived. The fix for that is the
+source's replica identity, which onboarding already warns about.
+
 Three things this gets right that a first attempt would not:
 
 **The deletion filter runs after the resolution, not before.** Filtering tombstones first
@@ -346,7 +354,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 126 specific defects applied one at a time; all 126 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 127 specific defects applied one at a time; all 127 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
 
 ---
 
@@ -384,10 +392,10 @@ Stated plainly, because a status document that omits this is marketing.
   Partitioning the scan and skipping the unnecessary position filter each closed part of
   the gap; what remains has not been explained, and guessing at it here would be worse
   than saying so.
-- **Nothing chooses a table's capability automatically.** The resolution is built and
-  tested; the caller declares whether a table is append-only or mutable, and capture does
-  not record what the source said. Onboarding knows the replica identity, which is where
-  that declaration should come from.
+- **Nothing routes a captured table to the resolved provider automatically.** The
+  capability is derived from what the source declared and the resolution works end to
+  end, but the caller still has to assemble the two — there is no catalog mapping a table
+  name to its provider, because there is no catalog.
 - **The governor decides but governs nothing.** Admission and the pressure ladder are
   built and tested, and nothing calls either: no memory pool reports its occupancy, no
   subsystem publishes a signal, and no query passes through admission on its way to

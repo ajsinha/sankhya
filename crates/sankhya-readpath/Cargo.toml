@@ -27,6 +27,8 @@ arrow-array          = { workspace = true }
 arrow-schema         = { workspace = true }
 
 [dev-dependencies]
+sankhya-schema    = { path = "../sankhya-schema" }
+sankhya-cdc-model = { path = "../sankhya-cdc-model" }
 arrow         = { workspace = true }
 sankhya-table = { path = "../sankhya-table" }
 tokio         = { workspace = true }

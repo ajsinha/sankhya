@@ -68,6 +68,37 @@ impl Capability {
         Ok(Self::Mutable { key })
     }
 
+    /// The capability the source itself declared.
+    ///
+    /// # Why reading this is not a heuristic
+    ///
+    /// The architecture requires the strategy to be *declared*, never guessed. Guessing
+    /// would mean something like "no update has arrived yet, so treat it as append-only" —
+    /// correct until the first update, after which every query silently double-counts.
+    ///
+    /// This is not that. The source states which columns identify a row — its replica
+    /// identity — and that statement is what arrives with the relation. Reading it is
+    /// taking the declaration, not inferring one.
+    ///
+    /// A relation that declares no identifying columns is append-only **as far as reading
+    /// is concerned**, and that is a statement about what can be done rather than about
+    /// what will happen: without a row identity there is no key to resolve versions
+    /// against, so an update could not be applied even if one arrived. The right response
+    /// to updates on such a table is to fix the source's replica identity, and the
+    /// onboarding path already warns about it.
+    #[must_use]
+    pub fn from_source<I, S>(key_columns: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let key: Vec<String> = key_columns.into_iter().map(Into::into).collect();
+        if key.is_empty() {
+            return Self::AppendOnly;
+        }
+        Self::Mutable { key }
+    }
+
     /// Whether reading this table requires resolving versions.
     #[must_use]
     pub const fn needs_resolution(&self) -> bool {
