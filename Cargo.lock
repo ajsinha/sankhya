@@ -2495,6 +2495,17 @@ version = "0.1.0"
 [[package]]
 name = "sankhya-ingest"
 version = "0.1.0"
+dependencies = [
+ "datafusion",
+ "sankhya-cdc-apply",
+ "sankhya-cdc-model",
+ "sankhya-error",
+ "sankhya-schema",
+ "sankhya-table",
+ "sankhya-types",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "sankhya-maintenance"

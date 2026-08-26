@@ -87,6 +87,7 @@ Everything here runs without a database. The interesting parts:
 | `sankhya-schema` | Every type round-trips exactly or is refused with a reason; naming collisions are refused rather than disambiguated; all ten tables onboard from the live stream alone |
 | `sankhya-plan` | A query is answered from tiers covering its span **exactly once** — neither double-counting nor losing rows |
 | `sankhya-table` | Text values become typed Arrow; an unparseable value is an error, never a null |
+| `sankhya-ingest` | Several tables capture independently from one interleaved stream, with no rows lost or leaked between them |
 | `sankhya-datagen` | The generator is reproducible, which is what makes reconciliation meaningful |
 
 ---
@@ -202,7 +203,7 @@ that admits less.
 |---|---|
 | Analytical query engine | **A vertical slice works.** A captured workload becomes Parquet and answers SQL, with an exact decimal sum matching the source. There is no table provider, no catalog and no server around it yet |
 | The server binary | **A stub.** There is no daemon to run yet |
-| Automatic table onboarding | **Working end to end for one table at a time.** Schema, write strategy and path are derived from the replication stream alone and the data is written as queryable Parquet. Continuous multi-table operation is not wired up |
+| Automatic table onboarding | **Working across many tables.** Schema, write strategy and path are derived from the replication stream alone; several tables capture independently from one interleaved stream and each reconciles against the source. There is no long-running process driving it yet |
 | Graph engine | Not started |
 | API surfaces | Not started |
 | Multi-tenancy and security | Not started |
