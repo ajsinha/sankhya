@@ -37,8 +37,10 @@
 #![doc(html_root_url = "https://docs.rs/sankhya-table-delta")]
 
 mod log;
+mod schema;
 
 pub use log::{
     commit, create, live_files, read_actions, Action, AddFile, CommitError, Format, LiveSet,
     Metadata, RemoveFile, Version,
 };
+pub use schema::{schema_string, UnsupportedType};

@@ -3156,6 +3156,7 @@ dependencies = [
  "sankhya-plan",
  "sankhya-schema",
  "sankhya-table",
+ "sankhya-table-delta",
  "sankhya-types",
  "tempfile",
  "tokio",
@@ -3283,6 +3284,8 @@ dependencies = [
 name = "sankhya-table-delta"
 version = "0.1.0"
 dependencies = [
+ "arrow-array",
+ "arrow-schema",
  "delta_kernel",
  "delta_kernel_default_engine",
  "sankhya-error",

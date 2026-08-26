@@ -7,6 +7,11 @@ use sankhya_schema::{
     classify_change, onboard_relation, Compatibility, Onboarded, OnboardingWarning,
 };
 use sankhya_table::{encode_batch, write_parquet, WriterConfig};
+use sankhya_table_delta::{
+    commit as delta_commit, create as delta_create, read_actions as delta_read_actions,
+    schema_string as delta_schema_string, Action as DeltaAction, AddFile as DeltaAdd,
+    Metadata as DeltaMetadata,
+};
 use sankhya_types::Lsn;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -85,6 +90,13 @@ pub struct TableState {
     pending_schema: Option<Onboarded>,
     /// Events discarded while quarantined, so the loss is visible rather than silent.
     dead_lettered: usize,
+    /// The next version to commit to this table's log.
+    ///
+    /// Zero means the table has no log yet, so the first publish also creates it. Held
+    /// per table because each table has its own log — which is what makes a table
+    /// independently readable by an external engine, and what stops one table's
+    /// quarantine from blocking another's publications.
+    next_version: u64,
     /// The furthest position already published for this table.
     ///
     /// Recovered from the table's own commit history rather than from external state,
@@ -98,6 +110,7 @@ impl TableState {
             onboarded,
             batcher: Batcher::new(policy),
             sequence: 0,
+            next_version: 0,
             quarantine: None,
             pending_schema: None,
             dead_lettered: 0,
@@ -433,6 +446,39 @@ impl Pipeline {
             let directory = self
                 .warehouse
                 .join(state.onboarded.location.relative_path());
+
+            // Recover position from the table's own log before naming anything.
+            //
+            // A restart resets in-memory state, and both counters below are derived
+            // rather than remembered — so they must come from the log, which is the only
+            // thing that survives. Without this the pipeline would restart at sequence
+            // zero and write `00000000.parquet` over a file that is still live, and
+            // restart at version zero and be told the table already exists.
+            //
+            // The sequence is the highest ever committed, not the highest still live: a
+            // compacted-away file's name must not be reused while readers holding an
+            // older snapshot can still resolve it.
+            if state.next_version == 0 {
+                let history = delta_read_actions(&directory)
+                    .map_err(|e| Error::StorageUnavailable(e.to_string()))?;
+                if let Some((last_version, _)) = history.last() {
+                    state.next_version = last_version.saturating_add(1);
+                    let highest = history
+                        .iter()
+                        .filter_map(|(_, action)| match action {
+                            DeltaAction::Add(add) => add
+                                .path
+                                .strip_suffix(".parquet")
+                                .and_then(|stem| stem.parse::<u64>().ok()),
+                            _ => None,
+                        })
+                        .max();
+                    if let Some(highest) = highest {
+                        state.sequence = state.sequence.max(highest.saturating_add(1));
+                    }
+                }
+            }
+
             // Sequence-numbered rather than time-named, so a replay produces the same
             // file names and the output is reproducible.
             let file_name = format!("{:08}.parquet", state.sequence);
@@ -445,6 +491,46 @@ impl Pipeline {
                 plan.covers_through,
                 self.writer,
             )?;
+
+            // Commit *after* the file is written, never before.
+            //
+            // The two failure windows are not symmetric. A file on disk but not in the
+            // log is invisible: no query sees it, and the orphan cleaner reclaims it.
+            // A file in the log but not on disk makes every query on the table fail.
+            // So the log always lags the filesystem, never leads it.
+            //
+            // A crash in between leaves an uncommitted file, and the resent stream
+            // rewrites it under the same sequence-derived name before committing. That
+            // is why the names are sequence-derived rather than time-derived.
+            let table_root = directory.clone();
+            if state.next_version == 0 {
+                let schema_json = delta_schema_string(&state.onboarded.schema.arrow_schema())
+                    .map_err(|e| Error::InvariantViolated(e.to_string()))?;
+                delta_commit(
+                    &table_root,
+                    0,
+                    &delta_create(DeltaMetadata::new(
+                        state.onboarded.location.source_table.clone(),
+                        schema_json,
+                        0,
+                    )),
+                )
+                .map_err(|e| Error::StorageUnavailable(e.to_string()))?;
+                state.next_version = 1;
+            }
+
+            delta_commit(
+                &table_root,
+                state.next_version,
+                &[DeltaAction::Add(DeltaAdd::with_rows(
+                    file_name.clone(),
+                    report.bytes,
+                    0,
+                    u64::try_from(report.rows).unwrap_or(0),
+                ))],
+            )
+            .map_err(|e| Error::StorageUnavailable(e.to_string()))?;
+            state.next_version = state.next_version.saturating_add(1);
 
             state.published_through = plan.covers_through;
 

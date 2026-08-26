@@ -245,6 +245,36 @@ CATALOGUE = [
      "        actions.push(Action::Add(AddFile::new(\n            name(&outcome.output),\n            outcome.bytes,\n            now,\n        )));",
      "sankhya-maintenance"),
 
+    ("ingest: commit to the log before the file is written",
+     "crates/sankhya-ingest/src/pipeline.rs",
+     "            state.published_through = plan.covers_through;",
+     "",
+     "sankhya-ingest"),
+
+    ("ingest: restart the file sequence from zero rather than from the log",
+     "crates/sankhya-ingest/src/pipeline.rs",
+     "                        state.sequence = state.sequence.max(highest.saturating_add(1));",
+     "",
+     "sankhya-ingest"),
+
+    ("ingest: recover the sequence from live files rather than from the whole history",
+     "crates/sankhya-ingest/src/pipeline.rs",
+     "                    state.next_version = last_version.saturating_add(1);",
+     "                    state.next_version = last_version.saturating_add(1);\n                    let _ = &history;",
+     "sankhya-ingest"),
+
+    ("schema: publish a millisecond timestamp as a microsecond one",
+     "crates/sankhya-table-delta/src/schema.rs",
+     "        DataType::Timestamp(TimeUnit::Microsecond, _) => \"timestamp\".to_string(),",
+     "        DataType::Timestamp(_, _) => \"timestamp\".to_string(),",
+     "sankhya-table-delta"),
+
+    ("schema: publish a decimal as a double",
+     "crates/sankhya-table-delta/src/schema.rs",
+     "            format!(\"decimal({precision},{scale})\")",
+     "            let _ = (precision, scale);\n            \"double\".to_string()",
+     "sankhya-table-delta"),
+
     ("readpath: read every offered tier rather than the selected ones",
      "crates/sankhya-readpath/src/lib.rs",
      "    for tier in &splice.tiers {",
