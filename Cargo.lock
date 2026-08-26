@@ -3155,6 +3155,7 @@ dependencies = [
  "sankhya-error",
  "sankhya-plan",
  "sankhya-schema",
+ "sankhya-stats",
  "sankhya-table",
  "sankhya-table-delta",
  "sankhya-types",

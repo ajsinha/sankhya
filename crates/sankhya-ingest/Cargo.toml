@@ -24,6 +24,7 @@ sankhya-table-delta = { path = "../sankhya-table-delta" }
 sankhya-plan      = { path = "../sankhya-plan" }
 
 [dev-dependencies]
+sankhya-stats = { path = "../sankhya-stats" }
 sankhya-table-delta = { path = "../sankhya-table-delta" }
 proptest   = { workspace = true }
 tempfile   = { workspace = true }

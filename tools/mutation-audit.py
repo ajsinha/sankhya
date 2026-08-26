@@ -461,6 +461,12 @@ CATALOGUE = [
      "        actions.push(Action::Add(AddFile::with_rows(\n            name(&outcome.output),\n            outcome.bytes,\n            now,\n            outcome.rows,\n        )));",
      "sankhya-maintenance"),
 
+    ("ingest: publish a file without the statistics it could have carried",
+     "crates/sankhya-ingest/src/pipeline.rs",
+     "                &[DeltaAction::Add(DeltaAdd::with_statistics(\n                    file_name.clone(),\n                    report.bytes,\n                    0,\n                    &statistics,\n                ))],",
+     "                &[DeltaAction::Add(DeltaAdd::with_rows(\n                    file_name.clone(),\n                    report.bytes,\n                    0,\n                    u64::try_from(report.rows).unwrap_or(0),\n                ))],",
+     "sankhya-ingest"),
+
     ("readpath: read every offered tier rather than the selected ones",
      "crates/sankhya-readpath/src/lib.rs",
      "    for tier in &splice.tiers {",

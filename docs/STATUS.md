@@ -64,12 +64,13 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | A skipped file never hides a matching row | Property-tested over arbitrary values and predicates, and again over *merged* statistics — compaction merges rather than recomputes, so a merge that narrowed a bound would produce a defect appearing only after maintenance ran |
 | Distinct-value counts are estimated well enough to order a join | Within 5% from 10 to 100,000 distinct values, exact under merge, and reproducible across processes — a per-process hash seed would make two nodes disagree about a plan and the disagreement would look like an optimizer bug |
 | An approximate function cannot answer an exact question by accident | Rejected at planning time, including inside a subquery or a `HAVING` clause; a permissive session still gets a watermark naming what it used |
+| A file is prunable from the moment it is published | Capture computes statistics from the batch it just encoded — the same data, already in memory — so a file does not wait for maintenance to become skippable |
 | Statistics survive a restart and other engines can read them | Bounds and null counts are written into the table log itself, so a fresh process prunes exactly as a warm one does — and the kernel reads a log carrying them |
 | Compaction computes the statistics the provider prunes on | Bounds, null counts, widths and a cardinality sketch, produced by the merge that was already reading the data — no separate analysis pass and nothing for an operator to remember to run |
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 65 specific defects applied one at a time; all 65 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 66 specific defects applied one at a time; all 66 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
 
 ---
 
@@ -95,9 +96,6 @@ Stated plainly, because a status document that omits this is marketing.
   a historical query skip the tier at no cost, and per-tenant sub-caps. Nothing yet
   wires the tier into the ingest path either, so read-your-own-writes still waits for
   publication in practice.
-- **Capture publishes without statistics.** Compaction commits bounds and null counts;
-  the publish path commits only a row count. So a freshly captured file is never pruned
-  until maintenance has been over it, which is safe and slower than it needs to be.
 - **The cardinality sketch is not persisted.** The protocol has nowhere to put it, so a
   column read back from the log reports zero distinct values. Nothing currently reads
   that figure, but it is a trap for whatever does first.

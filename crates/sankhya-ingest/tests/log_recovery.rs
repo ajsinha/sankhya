@@ -284,3 +284,87 @@ fn a_name_is_not_reused_even_after_the_file_leaves_the_live_set() {
     added.dedup();
     assert_eq!(added.len(), total, "a path was added twice");
 }
+
+#[test]
+fn a_published_file_is_prunable_from_the_moment_it_is_committed() {
+    // Without this, a freshly captured file is never skipped until maintenance has been
+    // over it -- safe, and slower than it needs to be for exactly as long as compaction
+    // is behind. The batch is already in memory and is already the file's exact
+    // contents, so this costs no read.
+    use sankhya_stats::{can_skip, Bound, Predicate};
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let mut p = pipeline(dir.path());
+    run(&mut p, &stream(0, 6, 10));
+
+    let root = table_root(dir.path());
+    let live = live_files(&root).expect("log");
+    assert!(!live.files.is_empty());
+
+    for file in &live.files {
+        let statistics = file
+            .statistics()
+            .unwrap_or_else(|| panic!("{} was published without statistics", file.path));
+        let columns = sankhya_table_delta::to_column_stats(&statistics);
+
+        let id = columns
+            .get("id")
+            .unwrap_or_else(|| panic!("{} has no statistics for id", file.path));
+
+        assert!(id.min.is_some(), "{} has no lower bound for id", file.path);
+        assert!(id.max.is_some());
+        assert_eq!(id.nulls, 0);
+
+        // The column is declared int8 in the relation, so it maps to an integer bound
+        // rather than a text one even though the wire carries it as text -- which is
+        // the type mapping doing its job, and is worth asserting because a bound of the
+        // wrong type silently prunes nothing.
+        assert!(matches!(id.min, Some(Bound::Int(_))), "{:?}", id.min);
+
+        // And they are usable: nothing in this stream has an id beyond the tenth
+        // thousand, so every file is skippable for a predicate above it.
+        assert!(can_skip(id, &Predicate::GreaterThan(Bound::Int(999_999))));
+    }
+}
+
+#[test]
+fn published_bounds_do_not_claim_more_than_the_file_holds() {
+    // A bound that overstates is safe; one that understates skips a file holding a
+    // match. Checked against the file's own contents rather than against what the
+    // pipeline believed it wrote.
+    use sankhya_stats::{can_skip, Bound, Predicate};
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let mut p = pipeline(dir.path());
+    run(&mut p, &stream(0, 4, 10));
+
+    let root = table_root(dir.path());
+    for file in &live_files(&root).expect("log").files {
+        let columns = sankhya_table_delta::to_column_stats(&file.statistics().expect("statistics"));
+        let id = &columns["id"];
+        let Some(Bound::Int(min)) = id.min else {
+            panic!("expected an integer bound for id, got {:?}", id.min);
+        };
+        let Some(Bound::Int(max)) = id.max else {
+            panic!("expected an integer bound for id");
+        };
+        assert!(min <= max);
+
+        // Every value actually in the file is inside the declared bounds, so no
+        // predicate matching a real value may skip the file.
+        for value in [min, max] {
+            assert!(
+                !can_skip(id, &Predicate::Equals(Bound::Int(value))),
+                "{} declares {min}..={max} and would skip {value}",
+                file.path
+            );
+        }
+        assert!(!can_skip(
+            id,
+            &Predicate::Between {
+                low: Bound::Int(min),
+                high: Bound::Int(max),
+            }
+        ));
+    }
+}

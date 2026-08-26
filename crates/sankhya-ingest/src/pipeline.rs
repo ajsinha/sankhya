@@ -6,11 +6,11 @@ use sankhya_error::{Error, Result};
 use sankhya_schema::{
     classify_change, onboard_relation, Compatibility, Onboarded, OnboardingWarning,
 };
-use sankhya_table::{encode_batch, write_parquet, WriterConfig};
+use sankhya_table::{column_stats, encode_batch, write_parquet, WriterConfig};
 use sankhya_table_delta::{
-    commit as delta_commit, create as delta_create, read_actions as delta_read_actions,
-    schema_string as delta_schema_string, Action as DeltaAction, AddFile as DeltaAdd,
-    Metadata as DeltaMetadata,
+    commit as delta_commit, create as delta_create, from_column_stats as delta_from_column_stats,
+    read_actions as delta_read_actions, schema_string as delta_schema_string,
+    Action as DeltaAction, AddFile as DeltaAdd, Metadata as DeltaMetadata,
 };
 use sankhya_types::Lsn;
 use std::collections::BTreeMap;
@@ -519,14 +519,23 @@ impl Pipeline {
                 state.next_version = 1;
             }
 
+            // Statistics from the batch that was just encoded, so a file is prunable
+            // from the moment it is published rather than only after maintenance has
+            // been over it. The batch is already in memory and already the exact
+            // contents of the file, so this costs no read.
+            let statistics = delta_from_column_stats(
+                u64::try_from(report.rows).unwrap_or(0),
+                &column_stats(&batch),
+            );
+
             delta_commit(
                 &table_root,
                 state.next_version,
-                &[DeltaAction::Add(DeltaAdd::with_rows(
+                &[DeltaAction::Add(DeltaAdd::with_statistics(
                     file_name.clone(),
                     report.bytes,
                     0,
-                    u64::try_from(report.rows).unwrap_or(0),
+                    &statistics,
                 ))],
             )
             .map_err(|e| Error::StorageUnavailable(e.to_string()))?;
