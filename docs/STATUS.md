@@ -89,6 +89,32 @@ the name for anything more would be a misuse of it.
 
 ---
 
+## Mutable tables return wrong answers
+
+Capture records inserts, updates and deletes as rows. The read path **unions its tiers and
+stops there**. So a row that has been updated is returned twice — once as it was, once as
+it is.
+
+Measured directly: one logical row, inserted and then updated, comes back as **two rows**.
+`COUNT(*)` says two. `SUM` adds the old value to the new one.
+
+This is not a missing optimisation. It is a wrong answer, on the ordinary case of a table
+somebody updates, and nothing in the result indicates it. Every correctness property built
+so far — exactly-once capture, reconciliation against the source, splice coverage, the
+exactness gate — holds, and the answer is still wrong, because none of them is about
+*resolving* two versions of a row.
+
+Every test that reads captured data uses append-only fixtures. That is why this survived
+to be found by a deliberate probe rather than by the suite: the read path has never been
+asked a question about a row that changed.
+
+What is needed is the merge strategy the architecture already specifies — union for
+append-only tables, latest-version-per-key for mutable ones, chosen by declared table
+capability rather than by heuristic. The pieces exist: rows carry their commit position
+and their operation, which is what a resolution needs.
+
+---
+
 ## What this system's own storage costs
 
 TPC-H now runs through SANKHYA's provider rather than the engine's file listing — every
@@ -342,8 +368,8 @@ Stated plainly, because a status document that omits this is marketing.
   Partitioning the scan and skipping the unnecessary position filter each closed part of
   the gap; what remains has not been explained, and guessing at it here would be worse
   than saying so.
-- **No merge strategy beyond union.** Latest-version-per-key, which mutable tables need,
-  is not implemented; the provider unions its tiers.
+- **Mutable tables return wrong answers.** See below — this is a correctness defect, not
+  a missing optimisation, and it is the most serious thing outstanding.
 - **The governor decides but governs nothing.** Admission and the pressure ladder are
   built and tested, and nothing calls either: no memory pool reports its occupancy, no
   subsystem publishes a signal, and no query passes through admission on its way to
