@@ -39,6 +39,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | A session sees its own write analytically | Wrote, capture caught up in 6 ms, the query returned the row |
 | Capture cannot endanger its own source | Five-rung ladder escalating strictly below the database's own limit, validated against a real slot |
 | Captured data provably matches the source | 3,000 rows digested independently on both sides, no discrepancies |
+| A restart cannot duplicate data | Replayed ranges are skipped and counted; new work past the published position is never skipped |
 
 ---
 

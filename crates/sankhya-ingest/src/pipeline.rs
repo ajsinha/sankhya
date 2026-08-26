@@ -34,6 +34,12 @@ pub struct PipelineStats {
     /// Non-zero is a defect condition, not a tolerable loss. Surfaced rather than
     /// absorbed so it cannot pass unnoticed.
     pub unresolvable: usize,
+    /// Batches skipped because their range was already published.
+    ///
+    /// Expected and healthy after a restart — this is what converts at-least-once
+    /// delivery into exactly-once effect. A count that keeps rising during steady
+    /// operation, however, means something is replaying that should not be.
+    pub batches_skipped_as_duplicate: usize,
     /// The highest position wholly published across every table.
     pub applied_through: Lsn,
 }
@@ -44,11 +50,21 @@ pub struct TableState {
     pub onboarded: Onboarded,
     batcher: Batcher,
     sequence: u64,
+    /// The furthest position already published for this table.
+    ///
+    /// Recovered from the table's own commit history rather than from external state,
+    /// so there is nothing that can fall out of agreement with the data itself.
+    published_through: Lsn,
 }
 
 impl TableState {
     fn new(onboarded: Onboarded, policy: BatchPolicy) -> Self {
-        Self { onboarded, batcher: Batcher::new(policy), sequence: 0 }
+        Self {
+            onboarded,
+            batcher: Batcher::new(policy),
+            sequence: 0,
+            published_through: Lsn::ZERO,
+        }
     }
 }
 
@@ -223,6 +239,22 @@ impl Pipeline {
                 continue;
             }
 
+            // Idempotence, and the reason it is checked here rather than trusted.
+            //
+            // Delivery is at-least-once: after a crash the source resends everything
+            // since the last confirmed position, so a batch already published will
+            // arrive again. Publishing it a second time would duplicate every row in
+            // it, and row counts alone would still look plausible against a source
+            // that had itself grown.
+            //
+            // The check is a comparison of positions rather than of content, because
+            // positions are monotonic and content is not.
+            if plan.covers_through <= state.published_through {
+                self.stats.batches_skipped_as_duplicate =
+                    self.stats.batches_skipped_as_duplicate.saturating_add(1);
+                continue;
+            }
+
             let batch = encode_batch(&state.onboarded.schema, &plan.mutations)
                 .map_err(|e| Error::InvariantViolated(format!("encoding a batch: {e}")))?;
 
@@ -234,6 +266,8 @@ impl Pipeline {
 
             let report =
                 write_parquet(&directory, &file_name, &batch, plan.covers_through, self.writer)?;
+
+            state.published_through = plan.covers_through;
 
             self.stats.rows_captured = self.stats.rows_captured.saturating_add(report.rows);
             self.stats.files_published = self.stats.files_published.saturating_add(1);
@@ -269,5 +303,21 @@ impl Pipeline {
     #[must_use]
     pub fn warehouse(&self) -> &Path {
         &self.warehouse
+    }
+
+    /// Restore the published position for a table, as recovery would.
+    ///
+    /// In a running system this comes from the table's own commit metadata. It is
+    /// exposed so a restart can be simulated exactly, rather than approximated.
+    pub fn restore_published_position(&mut self, relation_id: u32, through: Lsn) {
+        if let Some(state) = self.tables.get_mut(&relation_id) {
+            state.published_through = through;
+        }
+    }
+
+    /// The furthest position published for a table.
+    #[must_use]
+    pub fn published_through(&self, relation_id: u32) -> Option<Lsn> {
+        self.tables.get(&relation_id).map(|s| s.published_through)
     }
 }
