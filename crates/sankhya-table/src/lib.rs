@@ -22,7 +22,7 @@ mod encode;
 mod stats;
 mod write;
 
-pub use compact::{compact_files, read_parquet_stats, CompactionOutcome};
+pub use compact::{compact_files, compact_files_sorted, read_parquet_stats, CompactionOutcome};
 pub use encode::{encode_batch, EncodeError};
 pub use stats::column_stats;
 pub use write::{write_parquet, WriteReport, WriterConfig};

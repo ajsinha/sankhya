@@ -59,7 +59,7 @@ stated concurrency for the rest, after two warm-up executions.
 | | Clients | Median | p95 | Nearest objective | |
 |---|---|---|---|---|---|
 | **Q1** pricing summary — full scan, eight aggregates | 4 | 518 ms | **577 ms** | `NFR-PERF-04` wide scan, < 3 s | **inside** |
-| **Q6** forecasting revenue — narrow selective filter | 8 | 332 ms | **360 ms** | `NFR-PERF-02` selective lookup, < 250 ms | **over** |
+| **Q6** forecasting revenue — narrow selective filter | 8 | 332 ms | **360 ms** | `NFR-PERF-02` selective lookup, < 250 ms | **over** — but see clustering below, which brings the same query to 234 ms |
 | **Q3** shipping priority — three-way join, top-N | 8 | 757 ms | **776 ms** | `NFR-PERF-03` pivot, < 1 s | **inside** |
 | **Q5** local supplier volume — six-way join | 8 | 1161 ms | **1187 ms** | `NFR-PERF-03` pivot, < 1 s | **over** |
 
@@ -86,6 +86,36 @@ since M3 began turned out to be a cost.
 **What this is not:** an audited TPC-H result. Scale factor 1 on a development machine,
 single node, four of twenty-two queries, no substitution rules, no refresh streams. Using
 the name for anything more would be a misuse of it.
+
+---
+
+## Clustering, which closes the objective pushdown could not
+
+`NFR-PERF-02` names bloom filters and late materialization as the preconditions for its
+250 ms. Neither is the lever. Bloom filters do not apply to Q6, which has no equality
+predicate; late materialization costs rather than saves. **Sorting does.**
+
+Q6 selects one year in seven of `l_shipdate`. Written in arrival order every row group
+holds the whole date range, so the bounds exclude nothing and the query reads the entire
+table. Written in date order most row groups fall outside the year and are skipped on
+their statistics, before any decoding.
+
+| Layout | Single query | p95 at 8 clients |
+|---|---|---|
+| Generation order | 222 ms | 1819 ms |
+| Sorted by ship date | **31 ms** | **234 ms** |
+
+**7.8× at the stated concurrency, and 234 ms is inside the 250 ms objective.** Compaction
+now does this: a settled partition is written in the order the policy declares.
+
+Two details that are the design rather than the implementation. Only *settled* partitions
+are sorted — ordering one that is still receiving writes means ordering it again
+tomorrow, for a layout correct until the next append. And the key is **declared, not
+inferred**: a key chosen from observed queries would change under a workload shift and
+rewrite the whole table to follow it, which costs more than the ordering is worth.
+
+Q5, the six-way join, is still over its objective. Clustering does not help a join, and
+what would is not built.
 
 ---
 
@@ -173,6 +203,7 @@ been done. Nothing yet consults the check.
 
 | Capability | Evidence |
 |---|---|
+| A settled partition is written in the order it declares | Compaction sorts, which is what turns row-group bounds into an index — **7.8×** on the query whose objective was being missed, and the only one of that objective's three named preconditions that turned out to matter |
 | A required setting is required because it was measured, not because it sounds right | Filter pushdown was asserted at startup for five milestones and is not any more — measured a cost at every selectivity, up to 2.6× on a full query |
 | The pinned dependency set compiles with no critical duplicates | `cargo xtask check-dupes`, [ADR-0001](adr/0001-dependency-pin-set.md) |
 | PostgreSQL 17.11 builds from vendored, checksum-verified source | `vendor/postgresql/build.sh` |
@@ -235,7 +266,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 111 specific defects applied one at a time; all 111 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 115 specific defects applied one at a time; all 115 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
 
 ---
 

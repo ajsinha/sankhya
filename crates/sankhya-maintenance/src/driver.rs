@@ -126,6 +126,12 @@ impl DriverPolicy {
 pub struct PendingCompaction {
     pub plan: CompactionPlan,
     pub job: Job,
+    /// The ordering this partition should be written in, from the policy.
+    ///
+    /// Carried on the pending item rather than looked up at execution time, so the plan
+    /// records what it intended: a policy edited between planning and running would
+    /// otherwise silently produce a different layout than the plan said.
+    pub clustering: Vec<String>,
 }
 
 /// What one tick decided.
@@ -169,7 +175,11 @@ pub fn plan_tick(
             ticks_deferred: 0,
             ticks_to_visible: DriverPolicy::ticks_to_visible(plan.urgency),
         };
-        pending.push(PendingCompaction { plan, job });
+        pending.push(PendingCompaction {
+            plan,
+            job,
+            clustering: policy.compaction.clustering.clone(),
+        });
     }
 
     let jobs: Vec<Job> = pending.iter().map(|p| p.job.clone()).collect();
@@ -235,7 +245,7 @@ pub fn execute_tick(
 
     for (index, pending) in plan.run.iter().enumerate() {
         let name = format!("compacted-{sequence:06}-{index:04}.parquet");
-        match run_compaction(&pending.plan, directory, &name, config) {
+        match run_compaction(&pending.plan, directory, &name, config, &pending.clustering) {
             Ok(outcome) => {
                 report.bytes_before = report.bytes_before.saturating_add(outcome.bytes_before);
                 report.bytes_after = report.bytes_after.saturating_add(outcome.bytes);

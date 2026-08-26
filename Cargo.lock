@@ -3185,6 +3185,7 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "datafusion",
+ "parquet",
  "proptest",
  "sankhya-cdc-apply",
  "sankhya-cdc-model",

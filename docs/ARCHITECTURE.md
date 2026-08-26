@@ -956,6 +956,17 @@ Declaration paths exist for the cases that genuinely need knowledge, in preceden
 
 **Sorting costs approximately one additional pass over the data, once per partition, at top-level compaction.** Re-clustering historical data costs a full read and write of the table and is therefore an explicit, scheduled operator action, never automatic.
 
+**What it buys, measured.** On TPC-H Q6, which selects one year in seven of a date column:
+
+| Layout | Single query | p95 at 8 clients |
+|---|---|---|
+| Arrival order | 222 ms | 1819 ms |
+| Sorted by the filtered column | **31 ms** | **234 ms** |
+
+**7.8× at concurrency**, entirely from row groups skipped on their statistics before any decoding. It is also the difference between missing `NFR-PERF-02`'s 250 ms and meeting it.
+
+That objective names bloom filters and late materialization as its preconditions. Neither turned out to be the lever: bloom filters do not apply to a query with no equality predicate, and late materialization *costs* on this data (§8.6.1). Sorting was the third thing, and it was the one that mattered — which is worth recording, because the objective's own list of preconditions would have sent someone to build the wrong two.
+
 **Multi-dimensional interleaved ordering is not used**, for two independent reasons: an open row-duplication defect in the implementation, and — separately — interleaving defeats the delta encoding on the sort columns, so it compresses worse than plain lexicographic ordering while also being harder for the optimizer to exploit.
 
 ### 9.8 Partitioning

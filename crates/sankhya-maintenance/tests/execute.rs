@@ -70,8 +70,14 @@ fn a_plan_executes_and_leaves_its_inputs_alone() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let plan = plan_over(dir.path(), 6);
 
-    let outcome = run_compaction(&plan, dir.path(), "merged.parquet", WriterConfig::default())
-        .expect("running the plan");
+    let outcome = run_compaction(
+        &plan,
+        dir.path(),
+        "merged.parquet",
+        WriterConfig::default(),
+        &[],
+    )
+    .expect("running the plan");
 
     assert_eq!(outcome.rows, 600);
     assert_eq!(outcome.covers_through, plan.covers_through);
@@ -90,8 +96,14 @@ fn retirement_waits_out_the_grace_period() {
     // entitled to open them, and it has no way to tell us it is doing so.
     let dir = tempfile::tempdir().expect("a temp dir");
     let plan = plan_over(dir.path(), 4);
-    let outcome = run_compaction(&plan, dir.path(), "merged.parquet", WriterConfig::default())
-        .expect("running the plan");
+    let outcome = run_compaction(
+        &plan,
+        dir.path(),
+        "merged.parquet",
+        WriterConfig::default(),
+        &[],
+    )
+    .expect("running the plan");
 
     let policy = RetentionPolicy {
         grace_ticks: 24,
@@ -111,8 +123,14 @@ fn retirement_waits_out_the_grace_period() {
 fn retirement_proceeds_once_the_grace_period_has_passed() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let plan = plan_over(dir.path(), 4);
-    let outcome = run_compaction(&plan, dir.path(), "merged.parquet", WriterConfig::default())
-        .expect("running the plan");
+    let outcome = run_compaction(
+        &plan,
+        dir.path(),
+        "merged.parquet",
+        WriterConfig::default(),
+        &[],
+    )
+    .expect("running the plan");
 
     let retirement = retire_inputs(&outcome, &BTreeSet::new(), 24, &RetentionPolicy::default())
         .expect("retiring");
@@ -136,8 +154,14 @@ fn a_pinned_snapshot_keeps_its_files() {
     // snapshot may resolve to cannot be removed however old it is.
     let dir = tempfile::tempdir().expect("a temp dir");
     let plan = plan_over(dir.path(), 3);
-    let outcome = run_compaction(&plan, dir.path(), "merged.parquet", WriterConfig::default())
-        .expect("running the plan");
+    let outcome = run_compaction(
+        &plan,
+        dir.path(),
+        "merged.parquet",
+        WriterConfig::default(),
+        &[],
+    )
+    .expect("running the plan");
 
     let mut referenced = BTreeSet::new();
     referenced.insert(Lsn::new(2001));
@@ -158,8 +182,14 @@ fn a_snapshot_past_the_merge_does_not_block_retirement() {
     // merged coverage reads the replacement.
     let dir = tempfile::tempdir().expect("a temp dir");
     let plan = plan_over(dir.path(), 3);
-    let outcome = run_compaction(&plan, dir.path(), "merged.parquet", WriterConfig::default())
-        .expect("running the plan");
+    let outcome = run_compaction(
+        &plan,
+        dir.path(),
+        "merged.parquet",
+        WriterConfig::default(),
+        &[],
+    )
+    .expect("running the plan");
 
     let mut referenced = BTreeSet::new();
     referenced.insert(Lsn::new(9_999));
@@ -176,8 +206,14 @@ fn a_missing_replacement_stops_retirement_entirely() {
     // the one case that is an error rather than a retained file.
     let dir = tempfile::tempdir().expect("a temp dir");
     let plan = plan_over(dir.path(), 3);
-    let outcome = run_compaction(&plan, dir.path(), "merged.parquet", WriterConfig::default())
-        .expect("running the plan");
+    let outcome = run_compaction(
+        &plan,
+        dir.path(),
+        "merged.parquet",
+        WriterConfig::default(),
+        &[],
+    )
+    .expect("running the plan");
 
     std::fs::remove_file(&outcome.output).expect("removing the replacement");
 
@@ -204,8 +240,14 @@ fn a_truncated_replacement_stops_retirement_entirely() {
     // Verified, not assumed. The merge may have succeeded hours before retirement runs.
     let dir = tempfile::tempdir().expect("a temp dir");
     let plan = plan_over(dir.path(), 3);
-    let outcome = run_compaction(&plan, dir.path(), "merged.parquet", WriterConfig::default())
-        .expect("running the plan");
+    let outcome = run_compaction(
+        &plan,
+        dir.path(),
+        "merged.parquet",
+        WriterConfig::default(),
+        &[],
+    )
+    .expect("running the plan");
 
     // Replace the output with a valid but shorter file.
     let short = RecordBatch::try_new(schema(), vec![Arc::new(Int64Array::from(vec![1i64, 2, 3]))])
@@ -243,8 +285,14 @@ fn a_stale_plan_is_reported_rather_than_absorbed() {
     let mut plan = plan_over(dir.path(), 3);
     plan.inputs[0].rows = 999_999;
 
-    let err = run_compaction(&plan, dir.path(), "merged.parquet", WriterConfig::default())
-        .expect_err("a stale plan should be reported");
+    let err = run_compaction(
+        &plan,
+        dir.path(),
+        "merged.parquet",
+        WriterConfig::default(),
+        &[],
+    )
+    .expect_err("a stale plan should be reported");
 
     assert!(format!("{err}").contains("expected"));
 }

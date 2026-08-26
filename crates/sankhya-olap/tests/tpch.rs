@@ -583,3 +583,136 @@ async fn measure_pushdown_against_selectivity() {
         );
     }
 }
+
+/// What sorting the data by the column a query filters on is worth.
+///
+/// Run with `SANKHYA_TPCH_SCALE=1 cargo test -p sankhya-olap --test tpch --release --
+/// --ignored --nocapture clustering`.
+///
+/// # Why this is the lever rather than pushdown
+///
+/// Q6 filters `l_shipdate` to one year of seven. Written in generation order, every row
+/// group holds the whole date range, so the bounds exclude nothing and the scan reads
+/// everything. Written in date order, most row groups fall entirely outside the year and
+/// are skipped on their statistics — before any decoding, which is the only saving that
+/// is free.
+///
+/// The architecture's rule is to prefer the reversible decision: sorting is cheap to
+/// change at the next compaction, partitioning is a physical commitment. This measures
+/// what the reversible one buys.
+#[tokio::test]
+#[ignore = "a measurement, not an assertion"]
+async fn measure_what_clustering_by_the_filter_column_is_worth() {
+    use datafusion::prelude::ParquetReadOptions;
+
+    let scale = scale();
+    let generated = tempfile::tempdir().expect("a temp dir");
+    let tables = generate_at(generated.path(), scale);
+
+    // Read the generated lineitem back and write it again in date order. Doing it
+    // through a query rather than by hand is the point: this is what a compaction that
+    // sorts would produce.
+    let ctx = std::sync::Arc::new(sankhya_olap::session().expect("settings"));
+    register(&ctx, generated.path(), &tables).await;
+
+    let sorted_dir = tempfile::tempdir().expect("a temp dir");
+    let batches = ctx
+        .sql("SELECT * FROM lineitem ORDER BY l_shipdate")
+        .await
+        .expect("planning")
+        .collect()
+        .await
+        .expect("executing");
+
+    // Re-batched to the same size as the unsorted files, so the comparison is between
+    // orderings rather than between file layouts.
+    const ROWS_PER_FILE: usize = 64 * 1024;
+    let schema = batches[0].schema();
+    let combined = arrow::compute::concat_batches(&schema, &batches).expect("concat");
+    let mut index = 0;
+    let mut file = 0;
+    while index < combined.num_rows() {
+        let len = ROWS_PER_FILE.min(combined.num_rows() - index);
+        write_parquet(
+            &sorted_dir.path().join("lineitem"),
+            &format!("part-{file:04}.parquet"),
+            &combined.slice(index, len),
+            Lsn::new(file as u64 + 1),
+            WriterConfig::default(),
+        )
+        .expect("writing");
+        index += len;
+        file += 1;
+    }
+
+    let sorted_ctx = std::sync::Arc::new(sankhya_olap::session().expect("settings"));
+    sorted_ctx
+        .register_parquet(
+            "lineitem",
+            sorted_dir
+                .path()
+                .join("lineitem")
+                .to_str()
+                .expect("a utf-8 path"),
+            ParquetReadOptions::default(),
+        )
+        .await
+        .expect("registering");
+
+    let q6 = queries()
+        .into_iter()
+        .find(|(name, _, _)| *name == "Q6")
+        .map(|(_, _, sql)| sql)
+        .expect("Q6");
+
+    println!("scale factor {scale}, best of three, milliseconds");
+    for (label, context) in [
+        ("generation order", &ctx),
+        ("sorted by ship date", &sorted_ctx),
+    ] {
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..3 {
+            let start = std::time::Instant::now();
+            let _ = context
+                .sql(q6)
+                .await
+                .expect("planning")
+                .collect()
+                .await
+                .expect("executing");
+            best = best.min(start.elapsed());
+        }
+        // And at eight clients, which is what NFR-PERF-02 states its 250 ms against.
+        let shared = std::sync::Arc::clone(context);
+        let mut samples = Vec::new();
+        for _ in 0..3 {
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    let ctx = std::sync::Arc::clone(&shared);
+                    let sql = q6.to_string();
+                    tokio::spawn(async move {
+                        let start = std::time::Instant::now();
+                        let _ = ctx
+                            .sql(&sql)
+                            .await
+                            .expect("planning")
+                            .collect()
+                            .await
+                            .expect("executing");
+                        start.elapsed()
+                    })
+                })
+                .collect();
+            for handle in handles {
+                samples.push(handle.await.expect("a client panicked"));
+            }
+        }
+        samples.sort_unstable();
+        let p95 = samples[(samples.len() * 95) / 100].as_secs_f64() * 1000.0;
+
+        println!(
+            "{label:>22}  {:>8.1} single  {p95:>8.1} p95 at 8 clients",
+            best.as_secs_f64() * 1000.0
+        );
+    }
+}

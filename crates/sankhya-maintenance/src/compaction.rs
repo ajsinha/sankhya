@@ -93,7 +93,7 @@ impl fmt::Display for CompactionUrgency {
 }
 
 /// Thresholds.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CompactionPolicy {
     /// The size a compacted file aims for.
     ///
@@ -110,6 +110,14 @@ pub struct CompactionPolicy {
     pub urgent_file_count: usize,
     /// Ticks of quiet after which a partition is considered settled.
     pub settle_ticks: u64,
+    /// Columns a settled partition is ordered by, if any.
+    ///
+    /// Declared rather than inferred. A key chosen from observed queries would change
+    /// under a workload shift and rewrite the whole table to follow it, which costs more
+    /// than the ordering is worth — and the architecture's rule is to prefer the
+    /// reversible decision, which means changing this deliberately at the next
+    /// compaction rather than automatically.
+    pub clustering: Vec<String>,
     /// Most files to merge in one pass.
     ///
     /// Bounded so a single compaction cannot monopolise the maintenance budget, and so
@@ -126,6 +134,7 @@ impl Default for CompactionPolicy {
             elevated_file_count: 32,
             urgent_file_count: 128,
             settle_ticks: 60,
+            clustering: Vec::new(),
             max_files_per_pass: 32,
         }
     }

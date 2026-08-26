@@ -773,6 +773,30 @@ CATALOGUE = [
      "    let Some(limit) = ten_to(digits) else {\n        return SumRisk::Safe;\n    };",
      "sankhya-stats"),
 
+    ("clustering: sort a partition that is still receiving writes",
+     "crates/sankhya-maintenance/src/execute.rs",
+     "    let clustering: &[String] = if plan.settled { clustering } else { &[] };",
+     "",
+     "sankhya-maintenance"),
+
+    ("clustering: merge unsorted when the key names an unknown column",
+     "crates/sankhya-table/src/compact.rs",
+     "        let column = batch.column_by_name(name).ok_or_else(|| {\n            Error::InvariantViolated(format!(\n                \"the clustering key names {name}, which is not a column of this table; \\\n                 merging unsorted would leave a partition that looks clustered and is \\\n                 not, and nothing downstream could tell\"\n            ))\n        })?;",
+     "        let Some(column) = batch.column_by_name(name) else {\n            continue;\n        };",
+     "sankhya-maintenance"),
+
+    ("clustering: sort descending instead of ascending",
+     "crates/sankhya-table/src/compact.rs",
+     "                descending: false,",
+     "                descending: true,",
+     "sankhya-maintenance"),
+
+    ("clustering: reorder only the first column and leave the rest",
+     "crates/sankhya-table/src/compact.rs",
+     "        .map(|column| arrow::compute::take(column, &indices, None))",
+     "        .enumerate()\n        .map(|(i, column)| {\n            if i == 0 {\n                arrow::compute::take(column, &indices, None)\n            } else {\n                Ok(Arc::clone(column))\n            }\n        })",
+     "sankhya-maintenance"),
+
     ("readpath: read every offered tier rather than the selected ones",
      "crates/sankhya-readpath/src/lib.rs",
      "    for tier in &splice.tiers {",

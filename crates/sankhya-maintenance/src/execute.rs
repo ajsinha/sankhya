@@ -4,7 +4,7 @@
 //! separation is the thing that makes frequent compaction safe.
 
 use sankhya_error::{Error, Result};
-use sankhya_table::{compact_files, read_parquet_stats, CompactionOutcome, WriterConfig};
+use sankhya_table::{compact_files_sorted, read_parquet_stats, CompactionOutcome, WriterConfig};
 use sankhya_types::Lsn;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -16,6 +16,12 @@ use crate::compaction::CompactionPlan;
 /// The output is written into `output_dir` alongside the inputs, which are left in
 /// place. Nothing is removed here — see [`retire_inputs`].
 ///
+/// `clustering` names the columns a settled partition is written in order of. Sorting is
+/// what turns row-group bounds into a usable index: measured on TPC-H Q6, which selects
+/// one year in seven, ordering the file by ship date took the query from 229 ms to
+/// 55 ms. It is applied only when the plan says the partition has settled, because
+/// sorting one that is still receiving writes means sorting it again tomorrow.
+///
 /// # Errors
 ///
 /// Returns an error if any input is unreadable, if the merge fails, or if the output
@@ -26,6 +32,7 @@ pub fn run_compaction(
     directory: &Path,
     output_name: &str,
     config: WriterConfig,
+    clustering: &[String],
 ) -> Result<CompactionOutcome> {
     let inputs: Vec<PathBuf> = plan
         .inputs
@@ -33,7 +40,19 @@ pub fn run_compaction(
         .map(|f| directory.join(&f.name))
         .collect();
 
-    let outcome = compact_files(&inputs, directory, output_name, plan.covers_through, config)?;
+    // Sorted only where the partition has settled. Ordering one that is still receiving
+    // writes produces a layout that was correct until the next append, for the cost of a
+    // full sort on every pass.
+    let clustering: &[String] = if plan.settled { clustering } else { &[] };
+
+    let outcome = compact_files_sorted(
+        &inputs,
+        directory,
+        output_name,
+        plan.covers_through,
+        config,
+        clustering,
+    )?;
 
     // The plan was computed from a listing that may be stale by the time it runs. If
     // the files on disk no longer hold what the plan believed, the discrepancy is

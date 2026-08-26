@@ -20,6 +20,7 @@ sankhya-table = { path = "../sankhya-table" }
 sankhya-table-delta = { path = "../sankhya-table-delta" }
 
 [dev-dependencies]
+parquet = { workspace = true }
 sankhya-ingest = { path = "../sankhya-ingest" }
 sankhya-cdc-apply = { path = "../sankhya-cdc-apply" }
 sankhya-cdc-model = { path = "../sankhya-cdc-model" }
