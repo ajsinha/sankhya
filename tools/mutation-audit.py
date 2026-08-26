@@ -198,10 +198,14 @@ CATALOGUE = [
      "",
      "sankhya-table-delta"),
 
+    # Both checks, not just the first. The first is a fast path; the second closes the
+    # race between checking and renaming. Removing only the fast path is an *equivalent
+    # mutant* -- behaviour is unchanged, so no test can catch it, and an entry that can
+    # never fail is noise that trains you to ignore survivors.
     ("log: allow a second commit to overwrite an existing version",
      "crates/sankhya-table-delta/src/log.rs",
-     "    let path = commit_path(table_root, version);\n    if path.exists() {\n        return Err(CommitError::VersionTaken(version));\n    }",
-     "    let path = commit_path(table_root, version);",
+     "    if path.exists() {\n        return Err(CommitError::VersionTaken(version));\n    }",
+     "",
      "sankhya-table-delta"),
 
     ("log: skip a malformed line instead of reporting it",

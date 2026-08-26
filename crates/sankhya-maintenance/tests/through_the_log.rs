@@ -311,3 +311,98 @@ async fn a_tick_that_loses_the_version_race_is_refused() {
     let err = commit_tick(root, 1, &report, 0).expect_err("the version is taken");
     assert!(format!("{err}").contains("rebase"));
 }
+
+#[tokio::test]
+async fn the_driver_publishes_a_compaction_as_a_rewrite_not_a_deletion() {
+    // Asserted on what the driver actually commits, not on the constructor it could
+    // have called. A removal marked as a data change tells a reader streaming changes
+    // that every compacted row was deleted and re-inserted -- a flood of spurious
+    // changes proportional to how well maintenance is working.
+    //
+    // This case exists because a mutation swapping the driver's `rewritten` for
+    // `deleted` survived a test that checked only the two constructors in isolation.
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let root = dir.path();
+    commit(root, 0, &create(Metadata::new("orders", SCHEMA, 0))).expect("creating");
+
+    let mut adds = Vec::new();
+    let mut files = Vec::new();
+    for i in 0..8u64 {
+        let name = format!("part-{i:04}.parquet");
+        let report = write_parquet(
+            root,
+            &name,
+            &rows(i * 100, i * 100 + 100),
+            Lsn::new(i * 100 + 100),
+            WriterConfig::default(),
+        )
+        .expect("publishing");
+        adds.push(Action::Add(AddFile::with_rows(
+            name.clone(),
+            report.bytes,
+            0,
+            100,
+        )));
+        files.push(FileStat {
+            name,
+            bytes: report.bytes,
+            rows: 100,
+            covers_through: Lsn::new(i * 100 + 100),
+        });
+    }
+    commit(root, 1, &adds).expect("publishing");
+
+    let policy = DriverPolicy {
+        compaction: CompactionPolicy {
+            small_file_bytes: 1024 * 1024,
+            routine_file_count: 4,
+            ..CompactionPolicy::default()
+        },
+        ..DriverPolicy::default()
+    };
+    let plan = plan_tick(
+        &[PartitionState {
+            table: "orders".to_string(),
+            partition: "all".to_string(),
+            files,
+            ticks_since_write: 100,
+        }],
+        &policy,
+        &SystemState {
+            in_maintenance_window: false,
+            queries_running: 0,
+            duty_cycle_ticks_remaining: 10_000,
+        },
+    );
+    let report = execute_tick(&plan, root, 1, WriterConfig::default()).expect("ticking");
+    commit_tick(root, 2, &report, 1).expect("committing");
+
+    let actions = sankhya_table_delta::read_actions(root).expect("reading the log");
+    let removals: Vec<_> = actions
+        .iter()
+        .filter_map(|(v, a)| match a {
+            Action::Remove(r) if *v == 2 => Some(r),
+            _ => None,
+        })
+        .collect();
+
+    assert!(!removals.is_empty(), "the tick must have removed something");
+    for removal in &removals {
+        assert!(
+            !removal.data_change,
+            "{} was published as a deletion; compaction does not change rows",
+            removal.path
+        );
+    }
+
+    // And the add is not a spurious insertion either -- it genuinely adds a file, so
+    // dataChange is true there and that is correct.
+    let added: Vec<_> = actions
+        .iter()
+        .filter_map(|(v, a)| match a {
+            Action::Add(f) if *v == 2 => Some(f),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(added.len(), 1);
+}
