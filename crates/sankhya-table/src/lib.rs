@@ -17,8 +17,10 @@
 
 #![doc(html_root_url = "https://docs.rs/sankhya-table")]
 
+mod compact;
 mod encode;
 mod write;
 
 pub use encode::{EncodeError, encode_batch};
+pub use compact::{CompactionOutcome, compact_files, read_parquet_stats};
 pub use write::{WriteReport, WriterConfig, write_parquet};

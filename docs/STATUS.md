@@ -15,7 +15,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M0** Foundations, spikes, walking skeleton | 10–12 ew | **Complete**, merged to `main` |
 | **M1** Zero-configuration sync and read-your-own-writes | 14–18 ew | **Complete** |
 | **M2** Ingest correctness and durability | 24–28 ew | **Substantially complete** — batching invariants, source-safety ladder, reconciliation, idempotence, crash safety, schema evolution and the backfill handoff all exist and are tested. What remains is the slot *lifecycle* driver and the snapshot *reader* — the correctness contracts are in place, the machinery that runs them on a timer is not |
-| **M3** Query engine and storage performance | 28–34 ew | A vertical slice, asserted engine settings, and compaction policy. No table provider, statistics catalogue or caching |
+| **M3** Query engine and storage performance | 28–34 ew | A vertical slice, asserted engine settings, and compaction — policy, execution and retirement, with the small-file penalty measured. No table provider, statistics catalogue or caching |
 | **M4**–**M8** | — | Not started |
 
 ---
@@ -43,6 +43,8 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | A schema change never corrupts data | Additive changes apply automatically; anything whose intent cannot be inferred quarantines, keeps consuming so the cursor advances, and requires an operator to adopt the new shape |
 | Backfill meets streaming with no gap and no overlap | Verified against a live slot; a late slot is shown to drop real positions into neither half |
 | Small-file accumulation is detected and planned against | Two independent triggers, bounded passes, coverage preserved exactly, and a plan that always reduces the file count |
+| Compaction runs without changing any answer | The same aggregate over 12 fragments and over the file they merge into, compared row for row; row counts verified against the inputs before the merge is reported as successful |
+| Compaction cannot remove a file a reader might still be holding | Retirement refuses inside the grace period, refuses while a snapshot is pinned at or before the merged coverage, and refuses entirely if the replacement is missing or short |
 
 ---
 
@@ -65,7 +67,10 @@ Stated plainly, because a status document that omits this is marketing.
   only one tier to plan over, so read-your-own-writes currently waits for publication
   rather than for an in-memory tier. The waiting *contract* is right; the tier that
   would make the wait shorter does not exist yet.
-- **No catalog, no table provider, no compaction, no maintenance.**
+- **No catalog and no table provider.**
+- **No maintenance scheduler.** Compaction plans, executes and retires correctly, but
+  nothing runs it on a timer, and nothing yet supplies the set of pinned snapshot
+  positions that retirement checks against — the caller passes it in.
 - **No graph engine, no API surfaces, no multi-tenancy, no security.**
 
 ---
@@ -83,6 +88,7 @@ Recorded because the interesting information is usually in what went wrong.
 | The documentation-rot check found a stale version claim on its first run | Its own first execution |
 | **Zone offsets were stripped rather than applied, shifting a whole timestamp column by four hours** | End-to-end reconciliation against the source. Every value stayed internally consistent, so nothing looked wrong until the two sides were compared |
 | **Duplicate suppression worked per batch rather than per row, so a batch spanning the restart boundary republished its already-durable half** | Crash-safety tests sweeping every possible interruption point. A resent stream does not rebatch identically, which a single hand-picked crash point would not have revealed |
+| **The Parquet writer's default compression was never enabled.** The workspace pin omitted `zstd`, so every write on the default configuration panicked inside the column writer | The first crate to use the writer *without* also depending on DataFusion. Cargo unifies features across dependencies **and dev-dependencies**, and DataFusion — a dev-dependency of the writer's own crate — was quietly supplying the feature. The crate's entire test suite passed while the library was broken for every real consumer. Now guarded by `cargo xtask check-features`, which reads the manifest rather than the resolved graph, because the resolved graph is precisely what hides it |
 
 ---
 
@@ -119,6 +125,31 @@ numbers rather than obviously wrong ones.
 
 The companion claim about the Parquet page row-count limit has **not** been measured and
 should be read as unverified.
+
+### Compaction
+
+400 fragments totalling 20,000,000 rows, merged into one file.
+
+| | 400 files | 1 file | Ratio |
+|---|---|---|---|
+| Short query — one narrow range | 16.9 ms | 3.8 ms | **4.42×** |
+| Long query — full aggregation | 121.0 ms | 97.3 ms | **1.24×** |
+| On-disk size | 61.0 MB | 27.4 MB | **2.23×** |
+
+**This confirmed a claim, having first failed to test it.** The architecture asserts that
+small files cost query *planning* rather than scanning, which predicts a roughly fixed
+per-query penalty — dominant on short queries, amortised away on long ones. The
+measurement bears that out: the absolute overhead stays in the same order (13 ms to
+24 ms) across a query doing thirty times more work, while the ratio collapses from 4.42×
+to 1.24×.
+
+The first run used 1,000,000 rows and produced 4.43× and 3.77× — apparently uniform, and
+readable only as "more files are slower". The long query was not long enough for
+planning to amortise against. The fixture was scaled until the two hypotheses gave
+different answers; before that it was not evidence for either.
+
+The practical consequence is that fragmentation is an **interactive-latency** problem
+rather than a throughput one, which is the reason it is worth a first-class subsystem.
 
 ### Capture at scale
 

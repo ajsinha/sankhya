@@ -2518,8 +2518,11 @@ dependencies = [
 name = "sankhya-maintenance"
 version = "0.1.0"
 dependencies = [
+ "arrow-array",
+ "arrow-schema",
  "proptest",
  "sankhya-error",
+ "sankhya-table",
  "sankhya-types",
  "tempfile",
 ]

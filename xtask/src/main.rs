@@ -88,15 +88,24 @@ fn main() -> ExitCode {
     if run_all || task == "check-docs" {
         failed |= !check_docs(&root);
     }
+    if run_all || task == "check-features" {
+        failed |= !check_features(&root);
+    }
     if !run_all
         && !matches!(
             task.as_str(),
-            "check-layers" | "check-loc" | "check-vocabulary" | "check-dupes" | "check-docs"
+            "check-layers"
+                | "check-loc"
+                | "check-vocabulary"
+                | "check-dupes"
+                | "check-docs"
+                | "check-features"
         )
     {
         eprintln!(
             "usage: cargo xtask \
-             [check-all|check-layers|check-loc|check-vocabulary|check-dupes|check-docs]"
+             [check-all|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
+             |check-features]"
         );
         return ExitCode::from(2);
     }
@@ -660,4 +669,93 @@ fn workspace_pins(root: &Path) -> BTreeMap<String, String> {
         }
     }
     out
+}
+
+/// Features a dependency must declare because our own defaults require them.
+///
+/// # Why this check exists
+///
+/// Cargo unifies features across a crate's dependencies *and its dev-dependencies*.
+/// A library crate can therefore pass its entire test suite while missing a feature its
+/// public API needs, because a test-only dependency happened to enable it. The library
+/// is broken for every real consumer and its own tests cannot tell.
+///
+/// That is not hypothetical: the Parquet writer's default compression is Zstandard, the
+/// workspace pin did not enable `zstd`, and `sankhya-table`'s tests passed anyway
+/// because DataFusion — a dev-dependency — turned it on. The defect surfaced only when
+/// a second crate depended on the writer without also depending on DataFusion.
+///
+/// Checking the manifest rather than the resolved graph is deliberate: the resolved
+/// graph is exactly the thing that hides the problem.
+const REQUIRED_FEATURES: &[(&str, &[(&str, &str)])] = &[(
+    "parquet",
+    &[
+        (
+            "zstd",
+            "WriterConfig::default() emits Zstandard; without this feature every write \
+             panics inside the column writer",
+        ),
+        (
+            "snap",
+            "Snappy is the format's most widely written codec; we must be able to read \
+             files other engines produced",
+        ),
+    ],
+)];
+
+fn check_features(root: &Path) -> bool {
+    println!("== check-features ==");
+
+    let manifest_path = root.join("Cargo.toml");
+    let text = match std::fs::read_to_string(&manifest_path) {
+        Ok(t) => t,
+        Err(e) => {
+            println!("  FAIL: reading {}: {e}", manifest_path.display());
+            return false;
+        }
+    };
+    let doc: toml::Table = match toml::from_str(&text) {
+        Ok(d) => d,
+        Err(e) => {
+            println!("  FAIL: parsing {}: {e}", manifest_path.display());
+            return false;
+        }
+    };
+
+    let Some(deps) = doc
+        .get("workspace")
+        .and_then(|w| w.get("dependencies"))
+        .and_then(toml::Value::as_table)
+    else {
+        println!("  FAIL: [workspace.dependencies] is missing");
+        return false;
+    };
+
+    let mut ok = true;
+    for (crate_name, required) in REQUIRED_FEATURES {
+        let Some(spec) = deps.get(*crate_name) else {
+            println!("  FAIL: {crate_name} is not a workspace dependency");
+            ok = false;
+            continue;
+        };
+        let declared: Vec<&str> = spec
+            .get("features")
+            .and_then(toml::Value::as_array)
+            .map(|a| a.iter().filter_map(toml::Value::as_str).collect())
+            .unwrap_or_default();
+
+        for (feature, because) in *required {
+            if declared.contains(feature) {
+                println!("  ok   {crate_name}/{feature}");
+            } else {
+                println!("  FAIL {crate_name}/{feature} is not declared — {because}");
+                ok = false;
+            }
+        }
+    }
+
+    if ok {
+        println!("  all required features are declared on the workspace pin");
+    }
+    ok
 }

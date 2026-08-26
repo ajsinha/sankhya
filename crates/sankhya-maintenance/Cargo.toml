@@ -16,7 +16,10 @@ workspace = true
 [dependencies]
 sankhya-types = { path = "../sankhya-types" }
 sankhya-error = { path = "../sankhya-error" }
+sankhya-table = { path = "../sankhya-table" }
 
 [dev-dependencies]
 proptest = { workspace = true }
-tempfile = { workspace = true }
+tempfile    = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }

@@ -702,6 +702,37 @@ Lakehouse compaction has the write-amplification shape of a log-structured merge
 
 Each byte is written once at each level, giving roughly **3× total write amplification instead of two orders of magnitude**. When a partition's newest data falls behind a watermark it is compacted once to the top level and **sealed**; a sealed partition is never rewritten. This bounds total compaction work to a function of data volume rather than of data volume multiplied by elapsed time.
 
+#### 9.1.1 Compaction adds; a separate operation removes
+
+The rule that makes frequent compaction safe is that **a merge never deletes anything**. It writes a new file and leaves its inputs in place, so a reader holding a snapshot continues reading files that are still there. There is no window in which a file under a reader disappears.
+
+Deleting the inputs is a distinct operation with distinct preconditions, all of which must hold for a given file:
+
+1. **The replacement verifies.** Its row count is re-read from its footer at retirement time, not trusted from the merge. A merge may have completed hours earlier.
+2. **No retained snapshot can resolve to the input.** Time travel and long sessions both pin a position; a file a pinned snapshot may reach is kept however old it is.
+3. **The grace period has elapsed.** A reader that listed files a moment before the merge is entitled to open them and has no way to announce that it is doing so. The grace period must exceed the longest query the deployment permits.
+
+An input failing any precondition is **retained with a reason**, which is a correct outcome rather than a failure — retirement is an optimisation, and declining it costs only disk. The one case that is an error is a missing or short replacement: that means the compaction did not actually happen, and nothing may be removed at all.
+
+Separating the two operations means the frequent, cheap one carries essentially no risk, and the dangerous one runs rarely and under stricter conditions.
+
+#### 9.1.2 What compaction is worth, measured
+
+The claim in §9.3 is specific: small files cost query **planning** — listing, footer reads, metadata resolution — rather than scanning. That predicts a roughly *fixed* penalty per query, which should therefore dominate short queries and amortise away on long ones.
+
+Measured over 20,000,000 rows, comparing 400 fragments against the single file they merge into:
+
+| Query | 400 files | 1 file | Ratio | Absolute overhead |
+|---|---|---|---|---|
+| Short — one narrow range | 16.9 ms | 3.8 ms | **4.42×** | 13.1 ms |
+| Long — full aggregation | 121.0 ms | 97.3 ms | **1.24×** | 23.7 ms |
+
+The prediction holds. The overhead stays within the same order across a query that does thirty times more work, while the *ratio* collapses from 4.42× to 1.24×. Fragmentation is therefore an interactive-latency problem, not a throughput one — which is what makes it worth paying attention to, since interactive latency is the thing anyone notices.
+
+This required scaling the fixture before it was a real test. An earlier run over 1,000,000 rows showed 4.43× and 3.77× — apparently uniform, and it would have been read as "more files are slower". The long query simply was not long enough for planning to amortise against. A measurement that cannot distinguish the hypothesis from its negation is not evidence.
+
+Merging also reduced the data by **2.23×**, largely through better compression across a larger block and less per-file overhead.
+
 ### 9.2 Commit cadence scales with volume
 
 A fixed commit interval is wrong for small tables, where metadata then dominates the data itself. The cadence is derived rather than configured:

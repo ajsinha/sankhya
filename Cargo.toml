@@ -21,7 +21,7 @@ arrow         = { version = "=59.2.0" }
 arrow-array   = { version = "=59.2.0" }
 arrow-schema  = { version = "=59.2.0" }
 arrow-ipc     = { version = "=59.2.0" }
-parquet       = { version = "=59.2.0", default-features = false, features = ["arrow", "async"] }
+parquet       = { version = "=59.2.0", default-features = false, features = ["arrow", "async", "zstd", "snap"] }
 object_store  = { version = "=0.13.2" }
 # Features are chosen deliberately rather than inherited. Excluded on purpose:
 # `compression` (the object-store layer owns codec choice) and `recursive_protection`

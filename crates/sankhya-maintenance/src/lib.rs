@@ -29,7 +29,9 @@
 #![doc(html_root_url = "https://docs.rs/sankhya-maintenance")]
 
 mod compaction;
+mod execute;
 
 pub use compaction::{
     CompactionPlan, CompactionPolicy, CompactionUrgency, FileStat, PartitionState, plan_compaction,
 };
+pub use execute::{RetentionPolicy, RetirementOutcome, retire_inputs, run_compaction};
