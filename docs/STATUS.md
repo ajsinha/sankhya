@@ -55,9 +55,11 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | A fragmented warehouse is cleared by ticking, and converges | 60 fragments reduced by repeated ticks until nothing is left to do, with the row count unchanged; urgency maps onto the class ladder, so a degrading partition preempts and an ordinary one waits; one failing partition does not block the rest |
 | A query is unaffected by compaction running underneath it | The same aggregate before and after a merge, over the live set |
 | The live set is durable and readable by other engines | SANKHYA writes the Delta transaction log itself, and `delta_kernel` — a dev-dependency used as an independent oracle — reads it and agrees about the schema, version and live files, including across a compaction where four superseded fragments are still on disk |
+| Capture publishes into a table log | Each table gets its own log; every file is committed with its row count, the creating commit carries the schema, and a translation that is not exact refuses to publish rather than publishing something similar |
+| A restart resumes from the log, not from memory | File sequence and log version are both recovered from the table's whole commit history — not from the live set, so a compacted-away name is never reused while a reader may still resolve it |
 | The whole storage loop runs through the log | 24 fragments published and committed, compacted tick by tick with each tick one atomic version, then queried by a reader given nothing but the table root — same answer, fewer live files, every superseded file still on disk |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 33 specific defects applied one at a time; all 33 fail the suite. Five did not when first run, and one entry turned out to be an equivalent mutant that no test could ever have caught |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 38 specific defects applied one at a time; all 38 fail the suite. Six did not when first run, and two catalogue entries turned out to be equivalent mutants that no test could ever have caught |
 
 ---
 
@@ -88,9 +90,9 @@ Stated plainly, because a status document that omits this is marketing.
   the SANKHYA-owned `TableProvider` of DEC-06 — there is no statistics catalogue, no
   pruning from SANKHYA's own metadata, and no merge strategy beyond union.
 - **No catalog and no table provider.**
-- **The ingest path does not commit.** The maintenance driver and the read path both go
-  through the log now, but capture still writes Parquet without a commit, so a table
-  only enters the log when something else puts it there.
+- **No log checkpoints.** Replay reads every commit, so startup cost grows linearly with
+  a table's commit count. Fine at the scale tested; not fine at a year of continuous
+  capture.
 - **No checkpoints, deletion vectors, column mapping, partition values, or column-level
   statistics in the log.** Row counts are written, because a file that cannot be planned
   against is only located rather than described. Bounds and null counts are not: wrong
@@ -117,6 +119,8 @@ Recorded because the interesting information is usually in what went wrong.
 | The documentation-rot check found a stale version claim on its first run | Its own first execution |
 | **Zone offsets were stripped rather than applied, shifting a whole timestamp column by four hours** | End-to-end reconciliation against the source. Every value stayed internally consistent, so nothing looked wrong until the two sides were compared |
 | **Duplicate suppression worked per batch rather than per row, so a batch spanning the restart boundary republished its already-durable half** | Crash-safety tests sweeping every possible interruption point. A resent stream does not rebatch identically, which a single hand-picked crash point would not have revealed |
+| **A restart would have overwritten a live file.** The pipeline's file sequence was in-memory state starting at zero, so a restarted capture wrote `00000000.parquet` over a file that was still live and still referenced | Committing to the log. The overwrite had always been possible, but nothing could see it: the file count does not change, no error is raised, and the rows in the overwritten file simply become different rows. It surfaced as a version conflict — the log refusing to create a table that already existed — and the overwrite was the real defect behind it |
+| **The test written for that overwrite could not detect it, twice over.** It asserted on file *names*, which an overwrite does not change; and its fixture published a single file per run, so resuming from the highest committed sequence and resuming from the lowest were the same number | The mutation audit, on two consecutive attempts. Now asserted on the log's own history — a path added twice *is* the overwrite — with a fixture that publishes at every transaction boundary, as continuous capture does |
 | **The log described where files were but not what was in them.** With no row counts, a compaction plan driven from the log could not state what it expected to merge | The first tick planned from the log rather than from a value threaded out of the writer. The merge's own row-count check refused the plan — the guard worked, and what it caught was that the log was incomplete rather than that the merge was wrong. `numRecords` is now written and read |
 | **The hand-written Delta log was invalid, and this crate's own reader accepted it happily.** The `add` action's `partitionValues` field is non-nullable and was omitted entirely | The kernel, on the very first read. The log looked reasonable and round-tripped through this crate perfectly, because a reader ignores a field it never writes. Two implementations agreeing is worth nothing when one of them wrote both sides |
 | **A directory listing is not a file set, and both the planner and the read path were treating it as one.** Compaction only ever adds, so between a merge and the retirement of its inputs the directory holds both — the same rows twice, by design, for at least a full grace period | Writing the convergence test. Re-observing the directory each tick made the planner merge files an earlier merge had already superseded. Nothing is wrong on disk; the *readers* were wrong. The published tier now names its files individually, the live set is carried across ticks, and the negative case is a test: the same query against the directory returns the merged rows twice |
