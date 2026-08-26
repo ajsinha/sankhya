@@ -265,3 +265,62 @@ fn scanning_an_empty_tier_is_not_an_error() {
     assert_eq!(b.coverage(), None);
     assert_eq!(b.held_through(), Lsn::new(0));
 }
+
+#[test]
+fn a_tier_that_starts_mid_stream_does_not_claim_what_came_before() {
+    // Regression. The tier held only (700, 1000] but declared (0, 1000], because
+    // coverage was trimmed against the durable frontier alone and the frontier was
+    // still at the origin. The splice then found an exact cover that did not exist:
+    // positions 1..=700 would simply have been absent from the answer, with no error.
+    //
+    // This is the normal case, not an edge case -- a table onboarded from a running
+    // stream starts mid-stream by construction.
+    let mut b = buffer();
+    let (batch, coverage) = segment(700, 1_000);
+    b.append(batch, coverage);
+
+    assert_eq!(b.durable_through(), Lsn::new(0));
+    assert_eq!(b.held_from(), Lsn::new(700));
+
+    let declared = b.coverage().expect("the tier holds data");
+    assert_eq!(
+        declared.start_exclusive(),
+        Lsn::new(700),
+        "the tier claimed positions it never held"
+    );
+    assert_eq!(declared.end_inclusive(), Lsn::new(1_000));
+}
+
+#[test]
+fn a_mid_stream_tier_leaves_a_gap_the_planner_can_see() {
+    // The consequence of the fix, stated as behaviour: with nothing covering the space
+    // between, the query is refused rather than answered short.
+    let mut b = buffer();
+    let (batch, coverage) = segment(700, 1_000);
+    b.append(batch, coverage);
+
+    let published = TierRef::new("published", LsnRange::up_to(Lsn::new(300)));
+    let arrival = TierRef::new("arrival", b.coverage().expect("coverage"));
+
+    assert!(
+        plan_splice(&[published, arrival], Lsn::new(1_000)).is_err(),
+        "positions 301..=700 are held by nothing and the splice must refuse"
+    );
+}
+
+#[test]
+fn declared_coverage_matches_the_scan_for_a_mid_stream_tier() {
+    let mut b = buffer();
+    let (batch, coverage) = segment(700, 1_000);
+    b.append(batch, coverage);
+
+    let declared = b.coverage().expect("coverage");
+    let rows = rows_in(&b.scan(Lsn::new(1_000)).expect("scanning"));
+
+    assert_eq!(rows.len(), 300);
+    assert_eq!(
+        u64::try_from(rows.len()).expect("small"),
+        declared.end_inclusive().get() - declared.start_exclusive().get(),
+        "the tier declared a different span from the one it can produce"
+    );
+}

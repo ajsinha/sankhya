@@ -172,18 +172,44 @@ impl ArrivalBuffer {
             .map_or(self.durable_through, |s| s.coverage.end_inclusive())
     }
 
+    /// The earliest position this tier actually holds.
+    ///
+    /// Distinct from the durable frontier. A tier that started mid-stream — which is
+    /// the normal case for a table onboarded from a running stream — holds nothing
+    /// below its first segment, however far behind publication is.
+    #[must_use]
+    pub fn held_from(&self) -> Lsn {
+        self.segments
+            .front()
+            .map_or(self.durable_through, |s| s.coverage.start_exclusive())
+    }
+
     /// Coverage to offer the splice planner, or `None` when the tier adds nothing.
     ///
-    /// Trimmed to start at the durable frontier so it abuts the published tier exactly.
-    /// Returning the physical extent instead would overlap, and the planner rejects
-    /// overlapping tiers rather than guessing which one to believe.
+    /// Two separate trims apply, and conflating them is a bug this code has already
+    /// had once:
+    ///
+    /// - **Trimmed up to the durable frontier**, so the tier abuts the published tier
+    ///   exactly rather than overlapping it. The planner rejects overlapping tiers
+    ///   rather than guessing which one to believe.
+    /// - **Trimmed down to what is actually held.** A tier whose oldest segment starts
+    ///   above the frontier does *not* cover the space in between, and must not say it
+    ///   does. Declaring from the frontier regardless would make the splice a proof of
+    ///   nothing: the planner would find an exact cover, the query would be answered,
+    ///   and the positions in the gap would simply be missing from the result.
+    ///
+    /// The second case is not hypothetical. A table onboarded from a running stream
+    /// starts mid-stream by construction, and its arrival tier holds nothing before its
+    /// first captured transaction. Reporting that honestly is what makes the read path
+    /// refuse the query instead of answering it short.
     #[must_use]
     pub fn coverage(&self) -> Option<LsnRange> {
         let held = self.held_through();
-        if held <= self.durable_through {
+        let from = self.held_from().max(self.durable_through);
+        if held <= from {
             return None;
         }
-        LsnRange::new(self.durable_through, held)
+        LsnRange::new(from, held)
     }
 
     /// Append an applied batch.

@@ -2576,6 +2576,17 @@ dependencies = [
 [[package]]
 name = "sankhya-readpath"
 version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "datafusion",
+ "sankhya-plan",
+ "sankhya-table",
+ "sankhya-table-memory",
+ "sankhya-types",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "sankhya-rules"

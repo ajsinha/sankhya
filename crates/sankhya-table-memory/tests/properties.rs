@@ -59,6 +59,20 @@ fn plan() -> impl Strategy<Value = Vec<(u64, u64)>> {
     prop::collection::vec((1u64..12, 0u64..14), 1..12)
 }
 
+/// Where the stream begins.
+///
+/// Non-zero on purpose, and — crucially — **independent of where publication starts**.
+///
+/// An earlier version of this generator set the initial publication frontier equal to
+/// the origin, which meant the two could never diverge and a coverage defect survived
+/// the suite untouched. The real situation is that a table onboarded from a running
+/// stream begins at some position while publication is still at zero, so the tier holds
+/// nothing below its first segment *and* nothing is durable. Publication starts at zero
+/// here for exactly that reason.
+fn origin() -> impl Strategy<Value = u64> {
+    prop_oneof![Just(0u64), 1u64..500]
+}
+
 proptest! {
     /// Every position between the durable frontier and the target appears exactly once.
     ///
@@ -67,14 +81,14 @@ proptest! {
     /// target, with no duplicate and no gap. Either failure produces a wrong answer
     /// that nothing downstream can detect.
     #[test]
-    fn the_two_tiers_cover_every_position_exactly_once(steps in plan()) {
+    fn the_two_tiers_cover_every_position_exactly_once(steps in plan(), origin in origin()) {
         let mut b = ArrivalBuffer::new("arrival", schema(), MemoryBudget {
             soft_limit: usize::MAX,
             hard_limit: usize::MAX,
         });
 
         let mut frontier = 0u64;
-        let mut end = 0u64;
+        let mut end = origin;
 
         for (width, advance) in steps {
             let (batch, coverage) = segment(end, end + width);
@@ -85,14 +99,16 @@ proptest! {
             frontier = (frontier + advance).min(end);
             b.note_durable(Lsn::new(frontier));
 
-            // The published tier answers (0, frontier]; the arrival tier answers the
-            // rest. Together they must be exactly (0, end].
+            // The published tier answers (origin, frontier]; the arrival tier answers
+            // the rest. Together they must be exactly (origin, end] -- nothing below
+            // the origin ever existed.
             let from_arrival = scanned_positions(&b, Lsn::new(end));
-            let mut all: Vec<u64> = (1..=frontier).collect();
+            // Publication can only have covered positions that exist.
+            let mut all: Vec<u64> = (origin + 1..=frontier.max(origin)).collect();
             all.extend(from_arrival.iter().copied());
             all.sort_unstable();
 
-            let expected: Vec<u64> = (1..=end).collect();
+            let expected: Vec<u64> = (origin + 1..=end).collect();
             prop_assert_eq!(&all, &expected);
         }
     }
@@ -101,14 +117,14 @@ proptest! {
     ///
     /// Anything it did return would be double-counted against the published tier.
     #[test]
-    fn a_scan_never_returns_a_durable_position(steps in plan()) {
+    fn a_scan_never_returns_a_durable_position(steps in plan(), origin in origin()) {
         let mut b = ArrivalBuffer::new("arrival", schema(), MemoryBudget {
             soft_limit: usize::MAX,
             hard_limit: usize::MAX,
         });
 
         let mut frontier = 0u64;
-        let mut end = 0u64;
+        let mut end = origin;
 
         for (width, advance) in steps {
             let (batch, coverage) = segment(end, end + width);
@@ -119,10 +135,10 @@ proptest! {
 
             for position in scanned_positions(&b, Lsn::new(end)) {
                 prop_assert!(
-                    position > frontier,
+                    position > frontier.max(origin),
                     "position {} is at or below the durable frontier {}",
                     position,
-                    frontier
+                    frontier.max(origin)
                 );
             }
         }
@@ -133,14 +149,14 @@ proptest! {
     /// A tier that declares more than it holds makes the splice a lie; one that declares
     /// less makes the query refuse for no reason.
     #[test]
-    fn declared_coverage_matches_what_the_scan_returns(steps in plan()) {
+    fn declared_coverage_matches_what_the_scan_returns(steps in plan(), origin in origin()) {
         let mut b = ArrivalBuffer::new("arrival", schema(), MemoryBudget {
             soft_limit: usize::MAX,
             hard_limit: usize::MAX,
         });
 
         let mut frontier = 0u64;
-        let mut end = 0u64;
+        let mut end = origin;
 
         for (width, advance) in steps {
             let (batch, coverage) = segment(end, end + width);
@@ -153,9 +169,12 @@ proptest! {
             match b.coverage() {
                 None => prop_assert!(positions.is_empty()),
                 Some(range) => {
-                    prop_assert_eq!(range.start_exclusive(), Lsn::new(frontier));
+                    // Trimmed by *both* the durable frontier and what is actually held.
+                    // Asserting only the frontier is what let the defect through.
+                    let start = frontier.max(origin);
+                    prop_assert_eq!(range.start_exclusive(), Lsn::new(start));
                     prop_assert_eq!(range.end_inclusive(), Lsn::new(end));
-                    prop_assert_eq!(positions.len() as u64, end - frontier);
+                    prop_assert_eq!(positions.len() as u64, end - start);
                 }
             }
         }

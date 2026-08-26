@@ -48,6 +48,8 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | A write is visible before it is durable | The arrival tier answers from memory and drops out of the splice once published; the two tiers are shown to abut exactly with no change to the planner |
 | The arrival tier never loses or double-counts a position | Property tests over arbitrary interleavings of appends and publication: every position between the durable frontier and the target appears exactly once, and a scan never returns a position the published tier already holds |
 | Memory pressure cannot cost data | Nothing is released until publication covers it; a full tier refuses new work and names publication as the cause, and the refusal clears once publication catches up |
+| One SQL query is answered from memory and Parquet at once | 700 positions published and 300 still in memory sum to the whole thousand, with the 700-position overlap counted once; a pinned query sees only its target; provenance names both tiers and their intervals |
+| A gap between tiers refuses the query rather than answering it short | Verified for a genuine gap, for a target past every tier, and for a tier that started mid-stream |
 
 ---
 
@@ -73,6 +75,10 @@ Stated plainly, because a status document that omits this is marketing.
   a historical query skip the tier at no cost, and per-tenant sub-caps. Nothing yet
   wires the tier into the ingest path either, so read-your-own-writes still waits for
   publication in practice.
+- **The spliced read is a view, not a table provider.** It registers the selected tiers
+  and unions them in SQL, which is correct and demonstrably exact-once, but it is not
+  the SANKHYA-owned `TableProvider` of DEC-06 — there is no statistics catalogue, no
+  pruning from SANKHYA's own metadata, and no merge strategy beyond union.
 - **No catalog and no table provider.**
 - **No maintenance scheduler.** Compaction plans, executes and retires correctly, but
   nothing runs it on a timer, and nothing yet supplies the set of pinned snapshot
@@ -94,6 +100,8 @@ Recorded because the interesting information is usually in what went wrong.
 | The documentation-rot check found a stale version claim on its first run | Its own first execution |
 | **Zone offsets were stripped rather than applied, shifting a whole timestamp column by four hours** | End-to-end reconciliation against the source. Every value stayed internally consistent, so nothing looked wrong until the two sides were compared |
 | **Duplicate suppression worked per batch rather than per row, so a batch spanning the restart boundary republished its already-durable half** | Crash-safety tests sweeping every possible interruption point. A resent stream does not rebatch identically, which a single hand-picked crash point would not have revealed |
+| **The arrival tier declared coverage it did not hold.** A tier starting mid-stream reported from the durable frontier rather than from its own oldest segment, so it claimed every position before its first captured transaction | The first query spliced across two real tiers. The splice found an exact cover that did not exist, so the query would have been *answered* with the missing positions silently absent — the failure mode the splice exists to prevent, produced by the tier lying to it. This is the normal case rather than an edge case: a table onboarded from a running stream starts mid-stream by construction |
+| **The property test written to catch that defect did not catch it.** Its generator started the publication frontier equal to the stream's origin, so the two could never diverge, and its assertion encoded the buggy expectation | Deliberately reverting the fix and finding the suite still green. The generator now starts publication at zero independently of the origin, and fails within a second on the reverted code |
 | **The Parquet writer's default compression was never enabled.** The workspace pin omitted `zstd`, so every write on the default configuration panicked inside the column writer | The first crate to use the writer *without* also depending on DataFusion. Cargo unifies features across dependencies **and dev-dependencies**, and DataFusion — a dev-dependency of the writer's own crate — was quietly supplying the feature. The crate's entire test suite passed while the library was broken for every real consumer. Now guarded by `cargo xtask check-features`, which reads the manifest rather than the resolved graph, because the resolved graph is precisely what hides it |
 
 ---
