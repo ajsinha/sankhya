@@ -776,6 +776,27 @@ The kernel is a **dev-dependency**, used as an independent oracle: it reads the 
 
 One detail worth stating because getting it wrong is silent: a compaction's `remove` actions declare `dataChange: false`. Compaction rewrites files without changing rows, and a reader streaming changes from the table would otherwise see every compacted row as a deletion followed by a re-insertion — a flood of spurious changes proportional to how well maintenance is working.
 
+#### 9.1.5 Metadata-only coupling, and what it buys
+
+The provider is SANKHYA's own. The table format library says **which files exist and what is in them**; it does not read them, does not decode them, and does not appear in the execution plan. Scan execution is the query engine's Parquet source, unmodified.
+
+The reason is version skew, and it is concrete rather than stylistic. A table format library and a query engine move on independent schedules and both expose Arrow types in their signatures. Coupling to both *execution* surfaces makes every upgrade of either a coordinated upgrade of the pair, several times a year. Coupling to one for metadata and the other for execution means a format upgrade touches a file list and an engine upgrade touches a plan — neither is a negotiation.
+
+**The measurable consequence is that planning does no file I/O.** Row counts come from the log, which already records them. The alternative is one footer read per file before a single row is read — the small-file penalty of §9.1.2, moved somewhere compaction cannot help.
+
+| Files | Provider | Directory listing | |
+|---|---|---|---|
+| 50 | 0.54 ms | 1.15 ms | **2.2×** |
+| 200 | 0.63 ms | 3.02 ms | **4.8×** |
+| 800 | 1.37 ms | 10.33 ms | **7.5×** |
+
+The advantage widens with file count, which is the shape the claim predicts. Note that the provider is **not flat**: sixteen times the files costs about 2.5× more planning, because replaying the log grows with commit count. The cost has been moved from one seek per file to one sequential read of a log, not abolished — and it is the argument for log checkpoints, which are not built.
+
+Two details the provider gets right and a naive one would not:
+
+- **Statistics are marked exact only when nothing can be filtered out.** A query pinned below what the tiers hold has an upper bound, not a count. Reporting it as exact lets the optimizer order joins on a number that is simply wrong — a slow plan chosen confidently, which is harder to notice than a slow plan chosen for want of information.
+- **The commit-position column is read even when the query does not select it**, because the target filter is evaluated on it, and projected away afterwards. Reading at a pinned position genuinely costs a column the caller did not ask for; hiding that would be dishonest about the price of time travel.
+
 ### 9.2 Commit cadence scales with volume
 
 A fixed commit interval is wrong for small tables, where metadata then dominates the data itself. The cadence is derived rather than configured:

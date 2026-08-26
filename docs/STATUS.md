@@ -58,6 +58,8 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | Capture publishes into a table log | Each table gets its own log; every file is committed with its row count, the creating commit carries the schema, and a translation that is not exact refuses to publish rather than publishing something similar |
 | A restart resumes from the log, not from memory | File sequence and log version are both recovered from the table's whole commit history — not from the live set, so a compacted-away name is never reused while a reader may still resolve it |
 | The whole storage loop runs through the log | 24 fragments published and committed, compacted tick by tick with each tick one atomic version, then queried by a reader given nothing but the table root — same answer, fewer live files, every superseded file still on disk |
+| SANKHYA owns its table provider | Files and row counts come from the table log; scan execution is DataFusion's own Parquet source. Splices memory and files, refuses gaps at planning time, and refuses a file the log cannot state a row count for |
+| Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
 | The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 38 specific defects applied one at a time; all 38 fail the suite. Six did not when first run, and two catalogue entries turned out to be equivalent mutants that no test could ever have caught |
 
@@ -85,10 +87,15 @@ Stated plainly, because a status document that omits this is marketing.
   a historical query skip the tier at no cost, and per-tenant sub-caps. Nothing yet
   wires the tier into the ingest path either, so read-your-own-writes still waits for
   publication in practice.
-- **The spliced read is a view, not a table provider.** It registers the selected tiers
-  and unions them in SQL, which is correct and demonstrably exact-once, but it is not
-  the SANKHYA-owned `TableProvider` of DEC-06 — there is no statistics catalogue, no
-  pruning from SANKHYA's own metadata, and no merge strategy beyond union.
+- **No statistics beyond row counts.** The provider supplies exact row counts from the
+  log, which is enough for join ordering but not for file pruning. Column bounds, null
+  fractions and distinct-value sketches belong in a statistics catalogue that does not
+  exist yet.
+- **No caching.** Every plan replays the table log from the first commit, so planning
+  cost grows with commit count — slowly, but without bound. Log checkpoints and a
+  metadata cache are both unbuilt.
+- **No merge strategy beyond union.** Latest-version-per-key, which mutable tables need,
+  is not implemented; the provider unions its tiers.
 - **No catalog and no table provider.**
 - **No log checkpoints.** Replay reads every commit, so startup cost grows linearly with
   a table's commit count. Fine at the scale tested; not fine at a year of continuous
@@ -227,6 +234,26 @@ different answers; before that it was not evidence for either.
 
 The practical consequence is that fragmentation is an **interactive-latency** problem
 rather than a throughput one, which is the reason it is worth a first-class subsystem.
+
+### Query planning
+
+400 fragments and up, planned but not executed, best of three.
+
+| Files | Provider | Directory listing | |
+|---|---|---|---|
+| 50 | 0.54 ms | 1.15 ms | **2.2×** |
+| 200 | 0.63 ms | 3.02 ms | **4.8×** |
+| 800 | 1.37 ms | 10.33 ms | **7.5×** |
+
+The advantage widens with file count, which is what the metadata-only claim predicts:
+the provider reads no Parquet footers, so its cost does not scale with the number of
+files it is planning over.
+
+**It does not scale with nothing, though.** Sixteen times the files costs the provider
+about 2.5× more planning, because it replays the table log and the log grows with commit
+count. The cost has moved from one seek per file to one sequential read — which is a much
+better shape and is not the same as free. It is also the argument for log checkpoints,
+which are not built.
 
 ### Capture at scale
 

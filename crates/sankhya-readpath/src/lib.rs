@@ -38,7 +38,11 @@ use sankhya_types::{Lsn, LsnRange};
 use std::sync::Arc;
 
 /// The commit-position column every tier carries, and the one the target filters on.
-const COMMIT_LSN: &str = "_sankhya_commit_lsn";
+pub(crate) const COMMIT_LSN: &str = "_sankhya_commit_lsn";
+
+mod provider;
+
+pub use provider::{resolve, LoggedFile, SankhyaTable};
 
 /// Published files for one table, and what they cover.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -116,6 +120,12 @@ pub enum ReadError {
     /// No tier offered any coverage at all.
     NoTiers,
     Arrival(ScanError),
+    /// The table log could not be read or replayed.
+    ///
+    /// Refusing is correct: a log that cannot be replayed means the file set is
+    /// unknown, and falling back to a directory listing is precisely the mistake the
+    /// log exists to prevent.
+    Log(String),
     Engine(String),
 }
 
@@ -129,6 +139,10 @@ impl std::fmt::Display for ReadError {
                  an empty table or an unregistered one, not a failure to plan"
             ),
             Self::Arrival(e) => write!(f, "{e}"),
+            Self::Log(e) => write!(
+                f,
+                "the table log could not be replayed, so the file set is unknown: {e}"
+            ),
             Self::Engine(e) => write!(f, "the query engine rejected the spliced plan: {e}"),
         }
     }
@@ -139,6 +153,12 @@ impl std::error::Error for ReadError {}
 impl From<SpliceError> for ReadError {
     fn from(e: SpliceError) -> Self {
         Self::Splice(e)
+    }
+}
+
+impl From<sankhya_table_delta::CommitError> for ReadError {
+    fn from(e: sankhya_table_delta::CommitError) -> Self {
+        Self::Log(e.to_string())
     }
 }
 
