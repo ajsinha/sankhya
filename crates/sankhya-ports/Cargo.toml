@@ -14,3 +14,6 @@ layer = 0
 workspace = true
 
 [dependencies]
+sankhya-types = { path = "../sankhya-types" }
+sankhya-error = { path = "../sankhya-error" }
+async-trait   = { workspace = true }
