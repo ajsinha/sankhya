@@ -193,8 +193,10 @@ fn check_layers(root: &Path) -> bool {
                 ok = false;
                 continue;
             }
-            // Extension API sits at 1.5: usable from L2 upward, and depends only on L0/L1.
-            if dep.layer >= c.layer && c.layer != LAYER_TOOLING {
+            // Strictly upward is always wrong. Same-layer is permitted — several
+            // vocabulary crates legitimately build on one another — but only if the
+            // graph stays acyclic, which is checked separately below.
+            if dep.layer > c.layer && c.layer != LAYER_TOOLING {
                 eprintln!(
                     "  UPWARD DEP   {} (L{}) -> {} (L{}) : dependencies point downward only",
                     c.name, c.layer, d, dep.layer
@@ -203,8 +205,74 @@ fn check_layers(root: &Path) -> bool {
             }
         }
     }
-    println!("   {} crates, dependency direction {}", crates.len(), if ok { "OK" } else { "VIOLATED" });
+    if let Some(cycle) = find_cycle(&crates, &by_name) {
+        eprintln!("  CYCLE        {}", cycle.join(" -> "));
+        ok = false;
+    }
+
+    println!(
+        "   {} crates, dependency direction {}",
+        crates.len(),
+        if ok { "OK, acyclic" } else { "VIOLATED" }
+    );
     ok
+}
+
+/// Depth-first cycle detection over the internal dependency graph.
+///
+/// Same-layer dependencies are allowed, so acyclicity is no longer implied by the
+/// layer numbers alone.
+///
+/// In practice cargo rejects a cyclic *normal* dependency before this ever runs, so
+/// this is defence in depth rather than the primary gate. It stays because it costs
+/// nothing, it documents the invariant, and it still catches cycles that cargo
+/// tolerates — notably through dev-dependencies, which this check deliberately
+/// ignores for exactly that reason but which a future check may not.
+fn find_cycle(crates: &[Crate], by_name: &BTreeMap<&str, &Crate>) -> Option<Vec<String>> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Mark {
+        Open,
+        Done,
+    }
+    let mut marks: BTreeMap<&str, Mark> = BTreeMap::new();
+    let mut stack: Vec<String> = Vec::new();
+
+    fn visit<'a>(
+        name: &'a str,
+        by_name: &BTreeMap<&'a str, &'a Crate>,
+        marks: &mut BTreeMap<&'a str, Mark>,
+        stack: &mut Vec<String>,
+    ) -> Option<Vec<String>> {
+        match marks.get(name) {
+            Some(Mark::Done) => return None,
+            Some(Mark::Open) => {
+                let mut cycle = stack.clone();
+                cycle.push(name.to_string());
+                return Some(cycle);
+            }
+            None => {}
+        }
+        let Some(c) = by_name.get(name) else { return None };
+        marks.insert(c.name.as_str(), Mark::Open);
+        stack.push(name.to_string());
+        for d in &c.deps {
+            if let Some(dep) = by_name.get(d.as_str()) {
+                if let Some(cycle) = visit(dep.name.as_str(), by_name, marks, stack) {
+                    return Some(cycle);
+                }
+            }
+        }
+        stack.pop();
+        marks.insert(c.name.as_str(), Mark::Done);
+        None
+    }
+
+    for c in crates {
+        if let Some(cycle) = visit(c.name.as_str(), by_name, &mut marks, &mut stack) {
+            return Some(cycle);
+        }
+    }
+    None
 }
 
 fn code_lines(src: &str) -> usize {
