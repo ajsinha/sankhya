@@ -54,7 +54,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | The maintenance scheduler cannot destroy retained history | There is no erasure class to configure — the guard is on the type, and an exhaustive match makes adding a variant a compile error |
 | A fragmented warehouse is cleared by ticking, and converges | 60 fragments reduced by repeated ticks until nothing is left to do, with the row count unchanged; urgency maps onto the class ladder, so a degrading partition preempts and an ordinary one waits; one failing partition does not block the rest |
 | A query is unaffected by compaction running underneath it | The same aggregate before and after a merge, over the live set |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 20 specific defects applied one at a time; all 20 fail the suite. Three did not when the catalogue was first run |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 25 specific defects applied one at a time; all 25 fail the suite. Three did not when the catalogue was first run |
 
 ---
 

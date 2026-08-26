@@ -156,6 +156,36 @@ CATALOGUE = [
      "                    .unwrap_or(0)\n                    .cmp(&b.ticks_to_visible.unwrap_or(0))",
      "sankhya-maintenance"),
 
+    ("driver: treat a degrading partition as merely a performance problem",
+     "crates/sankhya-maintenance/src/driver.rs",
+     "            CompactionUrgency::Urgent => Some(Class::Availability),",
+     "            CompactionUrgency::Urgent => Some(Class::Performance),",
+     "sankhya-maintenance"),
+
+    ("driver: leave superseded inputs in the live set",
+     "crates/sankhya-maintenance/src/driver.rs",
+     "        live.retain(|f| !superseded.contains(std::ffi::OsStr::new(f.name.as_str())));",
+     "",
+     "sankhya-maintenance"),
+
+    ("driver: let a merge estimate round down to free",
+     "crates/sankhya-maintenance/src/driver.rs",
+     "        (bytes / self.bytes_per_tick.max(1)).max(1)",
+     "        bytes / self.bytes_per_tick.max(1)",
+     "sankhya-maintenance"),
+
+    ("driver: stop a tick at the first partition that fails",
+     "crates/sankhya-maintenance/src/driver.rs",
+     "            Err(e) => report\n                .failed\n                .push((pending.job.name.clone(), e.to_string())),",
+     "            Err(e) => return Err(e),",
+     "sankhya-maintenance"),
+
+    ("driver: reuse one output name for every tick",
+     "crates/sankhya-maintenance/src/driver.rs",
+     'let name = format!("compacted-{sequence:06}-{index:04}.parquet");',
+     'let name = format!("compacted-{index:04}.parquet");',
+     "sankhya-maintenance"),
+
     ("readpath: read every offered tier rather than the selected ones",
      "crates/sankhya-readpath/src/lib.rs",
      "    for tier in &splice.tiers {",
