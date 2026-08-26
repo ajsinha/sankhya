@@ -15,7 +15,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M0** Foundations, spikes, walking skeleton | 10–12 ew | **Complete**, merged to `main` |
 | **M1** Zero-configuration sync and read-your-own-writes | 14–18 ew | **Complete** |
 | **M2** Ingest correctness and durability | 24–28 ew | **Substantially complete** — batching invariants, source-safety ladder, reconciliation, idempotence, crash safety, schema evolution and the backfill handoff all exist and are tested. What remains is the slot *lifecycle* driver and the snapshot *reader* — the correctness contracts are in place, the machinery that runs them on a timer is not |
-| **M3** Query engine and storage performance | 28–34 ew | A vertical slice, plus asserted engine settings. No table provider, statistics catalogue, caching or compaction |
+| **M3** Query engine and storage performance | 28–34 ew | A vertical slice, asserted engine settings, and compaction policy. No table provider, statistics catalogue or caching |
 | **M4**–**M8** | — | Not started |
 
 ---
@@ -42,6 +42,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | A restart cannot duplicate data | Replay is filtered per row; every crash point across a constructed stream yields each row exactly once |
 | A schema change never corrupts data | Additive changes apply automatically; anything whose intent cannot be inferred quarantines, keeps consuming so the cursor advances, and requires an operator to adopt the new shape |
 | Backfill meets streaming with no gap and no overlap | Verified against a live slot; a late slot is shown to drop real positions into neither half |
+| Small-file accumulation is detected and planned against | Two independent triggers, bounded passes, coverage preserved exactly, and a plan that always reduces the file count |
 
 ---
 

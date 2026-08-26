@@ -2517,6 +2517,12 @@ dependencies = [
 [[package]]
 name = "sankhya-maintenance"
 version = "0.1.0"
+dependencies = [
+ "proptest",
+ "sankhya-error",
+ "sankhya-types",
+ "tempfile",
+]
 
 [[package]]
 name = "sankhya-mv"
