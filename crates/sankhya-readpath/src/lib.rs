@@ -41,10 +41,12 @@ use std::sync::Arc;
 pub(crate) const COMMIT_LSN: &str = "_sankhya_commit_lsn";
 
 mod budgeted;
+mod merge;
 mod predicate;
 mod provider;
 
 pub use budgeted::{BudgetedExec, Clock};
+pub use merge::{Capability, CapabilityError, ResolvedTable};
 pub use predicate::extract;
 pub use provider::{resolve, resolve_cached, LoggedFile, SankhyaTable};
 

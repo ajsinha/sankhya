@@ -89,29 +89,44 @@ the name for anything more would be a misuse of it.
 
 ---
 
-## Mutable tables return wrong answers
+## Mutable tables, resolved
 
-Capture records inserts, updates and deletes as rows. The read path **unions its tiers and
-stops there**. So a row that has been updated is returned twice — once as it was, once as
-it is.
+Capture records inserts, updates and deletes as rows. The read path used to union its
+tiers and stop, so a row that had been updated came back **twice** — once as it was, once
+as it is. `COUNT(*)` said two; `SUM` added the old value to the new one. Nothing in the
+result indicated it.
 
-Measured directly: one logical row, inserted and then updated, comes back as **two rows**.
-`COUNT(*)` says two. `SUM` adds the old value to the new one.
+It is resolved now, by declared capability rather than by heuristic:
 
-This is not a missing optimisation. It is a wrong answer, on the ordinary case of a table
-somebody updates, and nothing in the result indicates it. Every correctness property built
-so far — exactly-once capture, reconciliation against the source, splice coverage, the
-exactness gate — holds, and the answer is still wrong, because none of them is about
-*resolving* two versions of a row.
+- **Append-only** — union, as before. No deduplication, no sort, no key comparison. Most
+  high-volume tables are append-only, so most queries take this path and it must cost
+  nothing at all, not "a cheap check".
+- **Mutable** — the latest version of each key wins, and a key whose latest version is a
+  deletion is absent.
 
-Every test that reads captured data uses append-only fixtures. That is why this survived
-to be found by a deliberate probe rather than by the suite: the read path has never been
-asked a question about a row that changed.
+Expressed as a logical plan the optimizer can see through, rather than as an opaque
+physical operator that would have to re-implement every optimisation inside itself.
 
-What is needed is the merge strategy the architecture already specifies — union for
-append-only tables, latest-version-per-key for mutable ones, chosen by declared table
-capability rather than by heuristic. The pieces exist: rows carry their commit position
-and their operation, which is what a resolution needs.
+Three things this gets right that a first attempt would not:
+
+**The deletion filter runs after the resolution, not before.** Filtering tombstones first
+removes the deletion and lets the *previous* version win — so a deleted row returns
+holding the values it had before it was deleted. That is worse than the duplication it
+replaces, because it looks like data.
+
+**A key must be declared and must exist.** No key means no latest-version-per-key to
+resolve to, and defaulting to whole-row identity turns every update into a new row — the
+original defect, reached by a different route. A key naming a column that is not there is
+refused for the same reason.
+
+**Scanning a resolved table directly is refused.** The planner inlines the resolution and
+never calls `scan`, so nothing exercises that path — which is why it is worth a test. A
+fallback that quietly scanned the raw table would serve every version again, and the only
+symptom would be wrong numbers.
+
+**Why the suite never caught the original defect:** every test that read captured data used
+append-only fixtures. The read path had never been asked a question about a row that
+changed.
 
 ---
 
@@ -267,6 +282,7 @@ been done. Nothing yet consults the check.
 | Capability | Evidence |
 |---|---|
 | The optimizer plans on the catalogue rather than a guess | Bounds, null counts and cardinality reach it from SANKHYA's own statistics — cardinality marked *inexact*, because an optimizer told a count is exact may conclude a column is unique, and being wrong about that is a different plan rather than a slower one |
+| A row that has been updated is returned once, with its new value | By declared capability: union for append-only, latest-version-per-key for mutable, with a deletion suppressing the row rather than reverting it |
 | A settled partition is written in the order it declares | Compaction sorts, which is what turns row-group bounds into an index — **7.8×** on the query whose objective was being missed, and the only one of that objective's three named preconditions that turned out to matter |
 | A required setting is required because it was measured, not because it sounds right | Filter pushdown was asserted at startup for five milestones and is not any more — measured a cost at every selectivity, up to 2.6× on a full query |
 | The pinned dependency set compiles with no critical duplicates | `cargo xtask check-dupes`, [ADR-0001](adr/0001-dependency-pin-set.md) |
@@ -330,7 +346,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 121 specific defects applied one at a time; all 121 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 126 specific defects applied one at a time; all 126 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
 
 ---
 
@@ -368,8 +384,10 @@ Stated plainly, because a status document that omits this is marketing.
   Partitioning the scan and skipping the unnecessary position filter each closed part of
   the gap; what remains has not been explained, and guessing at it here would be worse
   than saying so.
-- **Mutable tables return wrong answers.** See below — this is a correctness defect, not
-  a missing optimisation, and it is the most serious thing outstanding.
+- **Nothing chooses a table's capability automatically.** The resolution is built and
+  tested; the caller declares whether a table is append-only or mutable, and capture does
+  not record what the source said. Onboarding knows the replica identity, which is where
+  that declaration should come from.
 - **The governor decides but governs nothing.** Admission and the pressure ladder are
   built and tested, and nothing calls either: no memory pool reports its occupancy, no
   subsystem publishes a signal, and no query passes through admission on its way to

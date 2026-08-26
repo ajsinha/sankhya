@@ -833,6 +833,36 @@ CATALOGUE = [
      "    const fn needs_target_filter(&self) -> bool {\n        false\n    }",
      "sankhya-readpath"),
 
+    ("merge: filter deletions before resolving instead of after",
+     "crates/sankhya-readpath/src/merge.rs",
+     "        let plan = scan\n            .distinct_on(on, select, Some(sort))?\n            // After the distinct, so a tombstone suppresses the row rather than being\n            // removed and letting the previous version win.\n            .filter(col(COMMIT_OP).not_eq(lit(DELETED)))?\n            .build()?;",
+     "        let plan = scan\n            .filter(col(COMMIT_OP).not_eq(lit(DELETED)))?\n            .distinct_on(on, select, Some(sort))?\n            .build()?;",
+     "sankhya-readpath"),
+
+    ("merge: keep the earliest version of a key instead of the latest",
+     "crates/sankhya-readpath/src/merge.rs",
+     "        sort.push(col(COMMIT_LSN).sort(false, false));",
+     "        sort.push(col(COMMIT_LSN).sort(true, false));",
+     "sankhya-readpath"),
+
+    ("merge: accept a key naming a column that does not exist",
+     "crates/sankhya-readpath/src/merge.rs",
+     "            if schema.index_of(name).is_err() {",
+     "            if false {",
+     "sankhya-readpath"),
+
+    ("merge: resolve a table that never came through capture",
+     "crates/sankhya-readpath/src/merge.rs",
+     "            if schema.index_of(required).is_err() {",
+     "            if false {",
+     "sankhya-readpath"),
+
+    ("merge: serve a raw scan when the planner does not inline the resolution",
+     "crates/sankhya-readpath/src/merge.rs",
+     "        Err(DataFusionError::Internal(",
+     "        return self.raw.scan(_state, _projection, _filters, _limit).await;\n        #[allow(unreachable_code)]\n        Err(DataFusionError::Internal(",
+     "sankhya-readpath"),
+
     ("readpath: read every offered tier rather than the selected ones",
      "crates/sankhya-readpath/src/lib.rs",
      "    for tier in &splice.tiers {",
