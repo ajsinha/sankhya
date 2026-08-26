@@ -58,10 +58,10 @@ stated concurrency for the rest, after two warm-up executions.
 
 | | Clients | Median | p95 | Nearest objective | |
 |---|---|---|---|---|---|
-| **Q1** pricing summary — full scan, eight aggregates | 4 | 497 ms | **565 ms** | `NFR-PERF-04` wide scan, < 3 s | **inside** |
-| **Q6** forecasting revenue — narrow selective filter | 8 | 323 ms | **351 ms** | `NFR-PERF-02` selective lookup, < 250 ms | **over** |
-| **Q3** shipping priority — three-way join, top-N | 8 | 751 ms | **770 ms** | `NFR-PERF-03` pivot, < 1 s | **inside** |
-| **Q5** local supplier volume — six-way join | 8 | 1144 ms | **1211 ms** | `NFR-PERF-03` pivot, < 1 s | **over** |
+| **Q1** pricing summary — full scan, eight aggregates | 4 | 518 ms | **577 ms** | `NFR-PERF-04` wide scan, < 3 s | **inside** |
+| **Q6** forecasting revenue — narrow selective filter | 8 | 332 ms | **360 ms** | `NFR-PERF-02` selective lookup, < 250 ms | **over** |
+| **Q3** shipping priority — three-way join, top-N | 8 | 757 ms | **776 ms** | `NFR-PERF-03` pivot, < 1 s | **inside** |
+| **Q5** local supplier volume — six-way join | 8 | 1161 ms | **1187 ms** | `NFR-PERF-03` pivot, < 1 s | **over** |
 
 **Two of the four are over.** Both deserve qualification, and neither qualification makes
 them met:
@@ -77,9 +77,57 @@ requirements', and it is approximate. What can be said without qualification is 
 there are now numbers against recognisable queries at a stated concurrency, and that two
 of them are the wrong side of the closest thing to a target this project has written down.
 
+**The first run of this measured the wrong thing**, and finding out why produced the
+correction below. It used a bare engine rather than this system's configured session, so
+the numbers described the engine's defaults. Running it properly made three of four
+queries *slower* — Q6 by 2.6× — which is how a setting that had been asserted as required
+since M3 began turned out to be a cost.
+
 **What this is not:** an audited TPC-H result. Scale factor 1 on a development machine,
 single node, four of twenty-two queries, no substitution rules, no refresh streams. Using
 the name for anything more would be a misuse of it.
+
+---
+
+## A required setting that was costing 2.6×
+
+`datafusion.execution.parquet.pushdown_filters` — late materialization — was in the list
+of settings asserted at startup. It is not any more, and the way it left the list is worth
+recording.
+
+It went in on reasoning: late materialization is widely described as the largest scan
+optimization available, and it defaults to off, so leaving it off is a large win silently
+forfeited. It was then measured at **1.02× — neutral** on a synthetic scan, and pinned
+anyway on the grounds that neutral is not harmful.
+
+Measured on TPC-H it is not neutral. It costs at every selectivity tried:
+
+| Rows surviving the filter | Off | On | |
+|---|---|---|---|
+| 1 in ~6,000,000 | 5.6 ms | 5.5 ms | 1.02× |
+| 1 in ~1,500 | 4.5 ms | 4.8 ms | 0.94× |
+| 1 in ~60 | 4.0 ms | 4.6 ms | 0.87× |
+| 1 in ~7 | 116.6 ms | 162.0 ms | **0.72×** |
+| all rows | 110.6 ms | 111.7 ms | 0.99× |
+
+With filter reordering compounding it, Q6 went from 351 ms to **917 ms** at eight clients.
+
+**Why it does not help is the useful part.** Late materialization saves decoding payload
+columns for rows a predicate eliminates — and on this data those rows were already
+eliminated by row-group and page statistics, before decoding began. That is why the
+selective queries above finish in four to six milliseconds. Pushdown cannot save work
+that is not being done; it adds per-row bookkeeping to the scan that remains. The cheaper
+mechanism had already won.
+
+It is left at the engine's default rather than pinned off, because the evidence supports
+*not always* rather than *never* — on data with no useful bounds it should look different,
+and the right form of that decision is per query from the statistics rather than pinned
+for everyone.
+
+**The pattern, which is the part worth keeping:** both errors came from asserting a
+mechanism with a good reputation on reasoning rather than on a measurement of this
+system's own data. The first measurement was too narrow to contradict the reasoning. The
+second was a workload somebody else designed, and did.
 
 ---
 
@@ -125,6 +173,7 @@ been done. Nothing yet consults the check.
 
 | Capability | Evidence |
 |---|---|
+| A required setting is required because it was measured, not because it sounds right | Filter pushdown was asserted at startup for five milestones and is not any more — measured a cost at every selectivity, up to 2.6× on a full query |
 | The pinned dependency set compiles with no critical duplicates | `cargo xtask check-dupes`, [ADR-0001](adr/0001-dependency-pin-set.md) |
 | PostgreSQL 17.11 builds from vendored, checksum-verified source | `vendor/postgresql/build.sh` |
 | The wire decoder handles a real replication stream | Conformance suite against captured bytes |

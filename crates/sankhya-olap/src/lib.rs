@@ -22,5 +22,6 @@ mod session;
 
 pub use exactness::{approximate_functions, check_exactness, Exactness, ExactnessError, Watermark};
 pub use session::{
-    apply_required_settings, session, verify_settings, RequiredSetting, SettingsError, REQUIRED,
+    apply_required_settings, session, verify_settings, RequiredSetting, SettingsError,
+    PUSHDOWN_FILTERS, REQUIRED,
 };

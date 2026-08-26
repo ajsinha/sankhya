@@ -16,17 +16,6 @@ pub struct RequiredSetting {
 /// The settings SANKHYA requires, each with the reason it matters.
 pub const REQUIRED: &[RequiredSetting] = &[
     RequiredSetting {
-        key: "datafusion.execution.parquet.pushdown_filters",
-        value: "true",
-        because: "late materialization — evaluating predicates inside the Parquet \
-                  decoder so payload columns are materialized only for surviving rows. \
-                  Defaults to false. MEASURED NEUTRAL (1.02x) on a 5M-row, 523 MiB \
-                  scan at 1-in-10,000 selectivity; see the pushdown_benefit test. It is \
-                  required anyway because it is not harmful, it is expected to matter on \
-                  wider payloads and higher selectivity, and a setting that is sometimes \
-                  free and sometimes valuable is worth pinning either way",
-    },
-    RequiredSetting {
         key: "datafusion.execution.parquet.reorder_filters",
         value: "true",
         because: "evaluating cheap, selective predicates first. Without it filters run \
@@ -71,6 +60,49 @@ pub fn apply_required_settings(mut config: SessionConfig) -> SessionConfig {
     }
     config
 }
+
+/// Filter pushdown, and why it is **not** in the list above.
+///
+/// # The reasoning it was added under
+///
+/// Late materialization — evaluating predicates inside the Parquet decoder so payload
+/// columns are materialized only for surviving rows — is described everywhere, including
+/// in this project's own architecture, as the single largest scan optimization available.
+/// It defaults to off. Leaving a large win switched off with no symptom but slowness is
+/// exactly the failure the assertion list exists to prevent, so it went in the list.
+///
+/// # What measurement found instead
+///
+/// It was measured neutral (1.02×) on a synthetic 5M-row scan, and pinned anyway on the
+/// grounds that neutral is not harmful. Measured again on TPC-H at scale factor 1, it is
+/// not neutral — it is a cost, at every selectivity tried:
+///
+/// | Rows surviving the filter | Off | On | |
+/// |---|---|---|---|
+/// | 1 in ~6,000,000 | 5.6 ms | 5.5 ms | 1.02× |
+/// | 1 in ~1,500 | 4.5 ms | 4.8 ms | 0.94× |
+/// | 1 in ~60 | 4.0 ms | 4.6 ms | 0.87× |
+/// | 1 in ~7 | 116.6 ms | 162.0 ms | **0.72×** |
+/// | all | 110.6 ms | 111.7 ms | 0.99× |
+///
+/// # Why it does not help, which matters more than that it does not
+///
+/// Late materialization saves the decode of payload columns for rows a predicate
+/// eliminates. On this data those rows have already been eliminated — by row-group and
+/// page statistics, before any decoding begins. The highly selective queries above
+/// complete in four to six milliseconds because pruning left almost nothing to read, and
+/// pushdown cannot save work that is not being done. What it adds is per-row bookkeeping
+/// on the scan that remains.
+///
+/// **So the two mechanisms are not complementary here; the cheaper one has already won.**
+/// That is a property of well-maintained statistics and sorted-enough data, which is what
+/// the rest of this system exists to produce. It would look different on data with no
+/// useful bounds, and that is where this setting should be reconsidered — per query,
+/// from the statistics, rather than pinned on for everyone.
+///
+/// It is left at the engine's default rather than pinned off, because pinning a setting
+/// off is still pinning it, and the evidence supports "not always" rather than "never".
+pub const PUSHDOWN_FILTERS: &str = "datafusion.execution.parquet.pushdown_filters";
 
 /// Read the settings back and confirm each one took effect.
 ///

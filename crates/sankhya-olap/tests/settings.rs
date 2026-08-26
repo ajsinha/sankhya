@@ -18,20 +18,35 @@ fn a_default_engine_is_not_configured_as_sankhya_requires() {
         "a stock engine unexpectedly satisfies SANKHYA's requirements; \
          if an upstream default has changed, the REQUIRED list should be revisited"
     );
+    let _ = &result;
 }
 
 #[test]
-fn filter_pushdown_is_off_by_default() {
-    // Named explicitly because it is the costly one: without it a selective query
-    // decodes every payload column for every row rather than only the survivors.
-    let plain = SessionContext::new();
-    let err = verify_settings(&plain).expect_err("should not be configured");
-    assert_eq!(err.key, "datafusion.execution.parquet.pushdown_filters");
-    assert_eq!(err.actual, "false", "the default is expected to be false");
+fn filter_pushdown_is_left_at_the_engines_default() {
+    // It was in the required list, on the reasoning that late materialization is the
+    // largest scan optimization available and defaults to off. Measurement disagreed:
+    // on TPC-H at scale factor 1 it costs at every selectivity tried, up to 39% — see
+    // `sankhya_olap::PUSHDOWN_FILTERS` for the numbers and for why.
+    //
+    // This asserts that it is *not* required, so putting it back is a deliberate act
+    // that has to reckon with the measurement rather than a plausible-sounding addition.
     assert!(
-        err.to_string().contains("late materialization"),
-        "the failure must say what is lost, not merely which key is wrong: {err}"
+        !REQUIRED
+            .iter()
+            .any(|s| s.key == sankhya_olap::PUSHDOWN_FILTERS),
+        "filter pushdown is required again; the measurement says it costs on every \
+         selectivity tried, so this needs new evidence rather than the old reasoning"
     );
+
+    // And it really is off unless somebody asks, so nothing is relying on it by accident.
+    let plain = SessionContext::new();
+    let entries = plain.copied_config().options().clone();
+    let entry = entries
+        .entries()
+        .into_iter()
+        .find(|e| e.key == sankhya_olap::PUSHDOWN_FILTERS)
+        .expect("the engine must still recognise the key");
+    assert_eq!(entry.value.as_deref(), Some("false"));
 }
 
 #[test]

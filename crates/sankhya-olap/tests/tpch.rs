@@ -12,10 +12,16 @@
 //!
 //! # What is being measured
 //!
-//! Data is generated at a stated scale factor, written as Parquet **through this
-//! system's own write path**, and read back through **this system's own table provider**.
-//! Nothing here uses the engine's built-in file reader, because that would measure the
-//! engine rather than the system built on it.
+//! Data is generated at a stated scale factor and written as Parquet **through this
+//! system's own write path**, then read back through **this system's own configured
+//! session** — the one that asserts filter pushdown, filter reordering and bloom filters
+//! at startup.
+//!
+//! The first version of this file used a bare `SessionContext`, which is to say it
+//! measured the engine's defaults rather than this system. Two of those defaults are off
+//! and switch off the mechanism they belong to, which is the exact reason the settings
+//! are asserted at startup in the first place. Benchmarking around that assertion made
+//! the numbers describe a system nobody runs.
 //!
 //! # Honesty about what this is not
 //!
@@ -224,7 +230,7 @@ async fn every_query_runs_and_returns_rows() {
     // measuring an error path.
     let dir = tempfile::tempdir().expect("a temp dir");
     let tables = generate(dir.path());
-    let ctx = SessionContext::new();
+    let ctx = sankhya_olap::session().expect("the required settings must apply");
     register(&ctx, dir.path(), &tables).await;
 
     for (name, what, sql) in queries() {
@@ -295,7 +301,7 @@ async fn measure_tpch_queries() {
         generation
     );
 
-    let ctx = SessionContext::new();
+    let ctx = sankhya_olap::session().expect("the required settings must apply");
     register(&ctx, dir.path(), &tables).await;
 
     for (name, what, sql) in queries() {
@@ -356,7 +362,7 @@ async fn measure_tpch_under_concurrency() {
     let scale = scale();
     let tables = generate_at(dir.path(), scale);
 
-    let ctx = Arc::new(SessionContext::new());
+    let ctx = Arc::new(sankhya_olap::session().expect("the required settings must apply"));
     register(&ctx, dir.path(), &tables).await;
 
     println!("scale factor {scale}, latencies in milliseconds");
@@ -418,6 +424,162 @@ async fn measure_tpch_under_concurrency() {
             at(0.5).as_secs_f64() * 1000.0,
             at(0.95).as_secs_f64() * 1000.0,
             samples.last().expect("samples").as_secs_f64() * 1000.0
+        );
+    }
+}
+
+/// Which of the asserted settings is responsible for what.
+///
+/// Run with `SANKHYA_TPCH_SCALE=1 cargo test -p sankhya-olap --test tpch --release --
+/// --ignored --nocapture attribute`.
+///
+/// The settings are asserted at startup as a group, on the reasoning that each switches
+/// off a mechanism it belongs to. That reasoning deserves a measurement per setting
+/// rather than per group, because a group that is net positive can still contain
+/// something that costs more than it saves.
+#[tokio::test]
+#[ignore = "a measurement, not an assertion"]
+async fn attribute_each_required_setting() {
+    use datafusion::prelude::SessionConfig;
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let scale = scale();
+    let tables = generate_at(dir.path(), scale);
+
+    // Every combination of the three, so an interaction between two of them is visible
+    // rather than attributed to whichever was toggled last.
+    let settings = [
+        "datafusion.execution.parquet.pushdown_filters",
+        "datafusion.execution.parquet.reorder_filters",
+        "datafusion.execution.parquet.bloom_filter_on_read",
+    ];
+
+    println!("scale factor {scale}, best of three, milliseconds");
+    print!("{:>28}", "pushdown/reorder/bloom");
+    for (name, _, _) in queries() {
+        print!("{name:>10}");
+    }
+    println!();
+
+    for mask in 0..8u8 {
+        let mut config = SessionConfig::new();
+        for (bit, key) in settings.iter().enumerate() {
+            let on = mask & (1 << bit) != 0;
+            config = config.set_str(key, if on { "true" } else { "false" });
+        }
+        let ctx = SessionContext::new_with_config(config);
+        register(&ctx, dir.path(), &tables).await;
+
+        let label = format!(
+            "{}/{}/{}",
+            if mask & 1 != 0 { "on " } else { "off" },
+            if mask & 2 != 0 { "on " } else { "off" },
+            if mask & 4 != 0 { "on " } else { "off" },
+        );
+        print!("{label:>28}");
+
+        for (_, _, sql) in queries() {
+            let mut best = std::time::Duration::MAX;
+            for _ in 0..3 {
+                let start = std::time::Instant::now();
+                let _ = ctx
+                    .sql(sql)
+                    .await
+                    .expect("planning")
+                    .collect()
+                    .await
+                    .expect("executing");
+                best = best.min(start.elapsed());
+            }
+            print!("{:>10.1}", best.as_secs_f64() * 1000.0);
+        }
+        println!();
+    }
+}
+
+/// Where filter pushdown earns its place, and where it does not.
+///
+/// Run with `SANKHYA_TPCH_SCALE=1 cargo test -p sankhya-olap --test tpch --release --
+/// --ignored --nocapture selectivity`.
+///
+/// Pushdown evaluates predicates inside the decoder so payload columns are materialized
+/// only for surviving rows. That bargain is obviously good when almost nothing survives and
+/// obviously bad when almost everything does — the bookkeeping is paid either way and the
+/// saving is proportional to what it avoids. What matters is where the crossover falls on
+/// real data, because "it depends" is not a setting.
+#[tokio::test]
+#[ignore = "a measurement, not an assertion"]
+async fn measure_pushdown_against_selectivity() {
+    use datafusion::prelude::SessionConfig;
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let scale = scale();
+    let tables = generate_at(dir.path(), scale);
+
+    // The same shape at four selectivities: a whole-table sum with a filter that keeps
+    // progressively less. The payload column is deliberately not the filter column, so
+    // there is something for late materialization to avoid fetching.
+    let cases: Vec<(&str, String)> = vec![
+        (
+            "one row in ~6,000,000",
+            "SELECT sum(l_extendedprice) FROM lineitem WHERE l_orderkey = 1 AND l_linenumber = 1"
+                .to_string(),
+        ),
+        (
+            "one row in ~1,500",
+            "SELECT sum(l_extendedprice) FROM lineitem WHERE l_orderkey < 1000".to_string(),
+        ),
+        (
+            "about one row in 60",
+            "SELECT sum(l_extendedprice) FROM lineitem WHERE l_quantity < 1.0".to_string(),
+        ),
+        (
+            "about one row in 7",
+            "SELECT sum(l_extendedprice) FROM lineitem WHERE l_shipdate >= date '1994-01-01' \
+             AND l_shipdate < date '1995-01-01'"
+                .to_string(),
+        ),
+        (
+            "every row",
+            "SELECT sum(l_extendedprice) FROM lineitem WHERE l_quantity > 0".to_string(),
+        ),
+    ];
+
+    println!("scale factor {scale}, best of three, milliseconds");
+    println!(
+        "{:>24}{:>10}{:>10}{:>10}",
+        "selectivity", "off", "on", "ratio"
+    );
+
+    for (label, sql) in cases {
+        let mut timings = Vec::new();
+        for on in [false, true] {
+            let config = SessionConfig::new().set_str(
+                "datafusion.execution.parquet.pushdown_filters",
+                if on { "true" } else { "false" },
+            );
+            let ctx = SessionContext::new_with_config(config);
+            register(&ctx, dir.path(), &tables).await;
+
+            let mut best = std::time::Duration::MAX;
+            for _ in 0..3 {
+                let start = std::time::Instant::now();
+                let _ = ctx
+                    .sql(&sql)
+                    .await
+                    .expect("planning")
+                    .collect()
+                    .await
+                    .expect("executing");
+                best = best.min(start.elapsed());
+            }
+            timings.push(best.as_secs_f64() * 1000.0);
+        }
+        println!(
+            "{label:>24}{:>10.1}{:>10.1}{:>10.2}",
+            timings[0],
+            timings[1],
+            timings[0] / timings[1]
         );
     }
 }

@@ -716,31 +716,45 @@ fraction gives twenty significant digits against sixteen; and text orders by the
 database's collation against byte order, so a paged or ranked result over text appears in
 a different order in the two tiers.
 
-### 8.6 The two silently-disabling defaults
+### 8.6 Defaults that switch off the mechanism they belong to — and one that should stay off
 
-Two settings in the stack have defaults that switch off the mechanism they belong to. Both cost nothing to set correctly and both cost roughly an order of magnitude at query time if left alone. They are recorded here as an architectural concern rather than a tuning note, because neither produces any symptom other than being slow.
+Some settings in the stack default to off and, when off, silently disable a mechanism. They produce no symptom but slowness, so they are asserted at startup rather than configured and trusted: an upstream default can change between versions and the resulting regression would be invisible.
 
 | Setting | Default | Consequence of leaving it |
 |---|---|---|
-| Query-engine **filter pushdown** and **filter reordering** | disabled | Predicates are not evaluated inside the Parquet decoder. **Measured neutral (1.02×) on one representative scan** — see the measurement note below — but pinned regardless |
-| Parquet writer **page row-count limit** | effectively unlimited | The page index stores bounds *per page*. With no row cap, a narrow column packs enormous row counts into a single page — a boolean can fit tens of millions of rows in one page — and the page index degenerates to one entry covering everything. **Page pruning silently does nothing** |
+| Parquet writer **page row-count limit** | effectively unlimited | The page index stores bounds *per page*. With no row cap, a narrow column packs enormous row counts into one page — a boolean can fit tens of millions — and the index degenerates to a single entry covering everything. **Page pruning silently does nothing.** Not yet measured; read the claim as unverified |
+| Parquet reader **bloom filters** | disabled | Equality predicates on high-cardinality columns cannot skip row groups that bounds cannot exclude. Measured neutral on TPC-H, which has no query of that shape — the mechanism is untested here rather than shown to be worthless |
+| Query-engine **filter reordering** | disabled | Filters run in written order, so an expensive predicate may be evaluated against rows a cheap one would have eliminated. Measured neutral on TPC-H |
 
-With a row cap in place, a typical row group yields dozens of pages per column, so a selective predicate skips almost all of them. The cost is disk only: the page index lives in its own section and is read on demand, so planning latency is unaffected.
+With a row cap in place a typical row group yields dozens of pages per column, so a selective predicate skips almost all of them. The cost is disk only: the page index lives in its own section and is read on demand.
 
-**Both are asserted at startup, not merely configured**, because an upstream default can change between versions and the resulting regression would be invisible.
+#### 8.6.1 Filter pushdown, which was required and should not have been
 
-**A measured correction.** An earlier draft of this document asserted that filter
-pushdown was worth roughly an order of magnitude. It was measured at **1.02×** on a
-five-million-row, 523 MiB scan at one-in-ten-thousand selectivity — essentially
-neutral. The first attempt at that measurement showed pushdown *slower* (0.74×), which
-turned out to be an artefact of a highly compressible payload: a repetitive string
-dictionary-encodes so well that decoding it is nearly free, so avoiding the decode
-saves nothing while the row-selection bookkeeping still costs.
+This is the second correction to this section and it goes further than the first.
 
-The setting remains required — neutral is not harmful, and the benefit is expected on
-wider payloads — but the justification now records what was measured. The page
-row-count limit has not yet been measured and its claim should be read as unverified
-until it has been.
+Late materialization — evaluating predicates inside the Parquet decoder so payload columns are materialized only for surviving rows — is widely described as the single largest scan optimization available, and it defaults to off. An earlier draft of this document said it was worth roughly an order of magnitude. Measured on a synthetic scan, it was **1.02× — neutral**. It was pinned on anyway, on the reasoning that neutral is not harmful and the benefit was expected on wider payloads.
+
+Measured on TPC-H at scale factor 1, it is not neutral. It is a cost, at every selectivity tried:
+
+| Rows surviving the filter | Off | On | |
+|---|---|---|---|
+| 1 in ~6,000,000 | 5.6 ms | 5.5 ms | 1.02× |
+| 1 in ~1,500 | 4.5 ms | 4.8 ms | 0.94× |
+| 1 in ~60 | 4.0 ms | 4.6 ms | 0.87× |
+| 1 in ~7 | 116.6 ms | 162.0 ms | **0.72×** |
+| all rows | 110.6 ms | 111.7 ms | 0.99× |
+
+On the full queries the effect is larger still, because filter reordering compounds it: with both on, Q6 goes from 351 ms to 917 ms at eight clients — **2.6× slower**.
+
+**The reason matters more than the number.** Late materialization saves the decode of payload columns for rows a predicate eliminates. On this data those rows have already been eliminated, by row-group and page statistics, before any decoding begins — which is why the highly selective queries above finish in four to six milliseconds. Pushdown cannot save work that is not being done; what it adds is per-row bookkeeping on the scan that remains.
+
+> **The two mechanisms are not complementary here. The cheaper one has already won.**
+
+That is a property of well-maintained statistics and sorted-enough data, which is what the rest of this system exists to produce. It would look different on data with no useful bounds — and that is where the setting should be reconsidered, **per query from the statistics**, rather than pinned on for everyone.
+
+It is therefore left at the engine's default rather than pinned off: pinning a setting off is still pinning it, and the evidence supports *not always* rather than *never*.
+
+**What this says about the practice, not the setting.** Both errors came from the same place — a mechanism with a good reputation, asserted on reasoning rather than on a measurement of this system's own data. The first measurement was too narrow to contradict the reasoning; the second was a recognisable workload and did. A setting worth asserting at startup is worth measuring on something somebody else designed.
 
 ---
 
