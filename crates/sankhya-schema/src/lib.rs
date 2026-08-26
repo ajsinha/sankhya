@@ -17,7 +17,12 @@
 #![doc(html_root_url = "https://docs.rs/sankhya-schema")]
 
 mod mapping;
+mod naming;
 mod model;
 
 pub use mapping::{MappingError, TypeMapping, map_source_type, numeric_modifier};
 pub use model::{Field, LogicalSchema, LogicalType, Precision};
+pub use naming::{
+    CollisionCheck, NameClass, NamingError, PathSegment, RESERVED_SEGMENTS, TableLocation,
+    segment_for,
+};

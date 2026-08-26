@@ -48,8 +48,14 @@ const DUP_ALLOWLIST: &[&str] = &[
 const DOMAIN_WORDS: &[&str] = &[
     "trade", "counterparty", "notional", "portfolio", "basel", "isin", "cusip",
     "ledger", "aml", "kyc", "ubo", "laundering", "desk", "book_id",
-    "shipment", "consignment", "patient", "claim", "diagnosis", "icd10",
+    "shipment", "consignment", "patient", "diagnosis", "icd10",
     "sensor_reading", "invoice", "sku",
+    // Entries must be DISTINCTIVELY domain-specific, never ordinary English that a
+    // domain also happens to use. "claim" was removed for exactly that reason: it is
+    // the natural verb for "these two tiers claim the same positions", and a lint that
+    // fires on ordinary prose gets worked around or switched off, which is worse than
+    // a narrower lint that is always obeyed. Prefer "claim_id" or "claims_line" if the
+    // insurance sense ever needs catching.
 ];
 
 fn main() -> ExitCode {

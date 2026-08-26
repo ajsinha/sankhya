@@ -84,7 +84,8 @@ Everything here runs without a database. The interesting parts:
 | `sankhya-types` | Summation is order-independent — the property that decides fixed-point over floating point |
 | `sankhya-cdc-model` | The wire decoder never panics on arbitrary input, and decodes a stream captured from a real server |
 | `sankhya-cdc-apply` | A transaction is never split across batches, however events interleave |
-| `sankhya-schema` | Every type either round-trips exactly or is refused with a reason |
+| `sankhya-schema` | Every type either round-trips exactly or is refused with a reason; a naming collision is refused rather than disambiguated |
+| `sankhya-plan` | A query is answered from tiers covering its span **exactly once** — neither double-counting nor losing rows |
 | `sankhya-datagen` | The generator is reproducible, which is what makes reconciliation meaningful |
 
 ---
@@ -200,7 +201,7 @@ that admits less.
 |---|---|
 | Analytical query engine | **Not built.** No SQL surface, no table provider, no storage layer |
 | The server binary | **A stub.** There is no daemon to run yet |
-| Automatic table onboarding | **In progress** — the type mapping and decoder exist; the pipeline that joins them does not |
+| Automatic table onboarding | **In progress** — the decoder, type mapping, naming and splice planner exist; the pipeline joining them does not |
 | Graph engine | Not started |
 | API surfaces | Not started |
 | Multi-tenancy and security | Not started |
