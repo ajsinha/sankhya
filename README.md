@@ -153,7 +153,22 @@ Spark, Trino, DuckDB, Snowflake and Athena read these tables **directly**, with 
 
 **Early implementation.** The architecture and requirements were reviewed and amended by a panel covering systems architecture, database internals, analytical query engines and Rust engineering practice. Foundations are now built and under test; the analytical engine is not.
 
-What works today: a verified dependency set that compiles, a `pgoutput` wire decoder validated against a real PostgreSQL 17.11 stream, an apply path whose transaction invariant is property-tested, a lossless type mapping checked against a real schema, mirror naming that refuses collisions rather than disambiguating them, a read-path splice planner proven to cover a query's span exactly once, a complete vertical slice in which a captured workload becomes Parquet and answers SQL with an exact decimal sum matching the source's own arithmetic, and read-your-own-writes — write a row, and the analytical query returns it milliseconds later. What does not: continuous multi-table operation, the catalog, the graph engine, the API surfaces, the server itself. [`docs/QUICKSTART.md`](docs/QUICKSTART.md) is explicit about the boundary.
+What works today, all of it exercised by tests rather than by a running process: a
+verified dependency set that compiles, a `pgoutput` wire decoder validated against a real
+PostgreSQL 17.11 stream, an apply path whose transaction invariant is property-tested,
+lossless type mapping, mirror naming that refuses collisions rather than disambiguating
+them, capture that reconciles against its source and survives a crash at any point,
+an **open table log** that the Delta kernel reads — so the open-storage claim is tested
+rather than asserted — **compaction** that plans, merges, commits and converges without
+changing a single answer, a **maintenance scheduler** that arbitrates it against the
+machine budget, and a **tiered read** that answers one SQL statement from memory and
+Parquet at once, or refuses when the tiers do not cover the query.
+
+What does not: the server itself, the streaming transport, the table provider, the
+statistics catalogue, the graph engine, the API surfaces, tenancy and security. The
+correctness contracts are built; the machinery that runs them continuously is not.
+[`docs/QUICKSTART.md`](docs/QUICKSTART.md) and [`docs/STATUS.md`](docs/STATUS.md) are
+explicit about the boundary, including the defects found along the way.
 
 Start here:
 
