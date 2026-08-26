@@ -151,12 +151,16 @@ Spark, Trino, DuckDB, Snowflake and Athena read these tables **directly**, with 
 
 ## Status
 
-**Design phase.** The architecture and requirements have been reviewed and amended by a panel covering systems architecture, database internals, analytical query engines and Rust engineering practice. No production code has been written yet — the documents below are the contract that the code will be built against.
+**Early implementation.** The architecture and requirements were reviewed and amended by a panel covering systems architecture, database internals, analytical query engines and Rust engineering practice. Foundations are now built and under test; the analytical engine is not.
+
+What works today: a verified dependency set that compiles, a `pgoutput` wire decoder validated against a real PostgreSQL 17.11 stream, an apply path whose transaction invariant is property-tested, a lossless type mapping checked against a real schema, mirror naming that refuses collisions rather than disambiguating them, a read-path splice planner proven to cover a query's span exactly once, a complete vertical slice in which a captured workload becomes Parquet and answers SQL with an exact decimal sum matching the source's own arithmetic, and read-your-own-writes — write a row, and the analytical query returns it milliseconds later. What does not: continuous multi-table operation, the catalog, the graph engine, the API surfaces, the server itself. [`docs/QUICKSTART.md`](docs/QUICKSTART.md) is explicit about the boundary.
 
 Start here:
 
 | Document | What it covers |
 |---|---|
+| [`docs/QUICKSTART.md`](docs/QUICKSTART.md) | Build it, load ten gigabytes, watch capture reconcile — and what does not work yet |
+| [`docs/STATUS.md`](docs/STATUS.md) | What is actually built today, what is not, and what broke along the way |
 | [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) | The amended, traceable functional and non-functional requirements |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture, crate decomposition, consistency and security models |
 | [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) | Milestones, work breakdown, sizing and acceptance gates |

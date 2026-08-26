@@ -1,6 +1,6 @@
 [package]
 name         = "sankhya-ingest"
-description  = "The capture pipeline runtime."
+description  = "The capture pipeline runtime: decode, onboard, batch, publish."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -14,3 +14,15 @@ layer = 3
 workspace = true
 
 [dependencies]
+sankhya-types     = { path = "../sankhya-types" }
+sankhya-error     = { path = "../sankhya-error" }
+sankhya-schema    = { path = "../sankhya-schema" }
+sankhya-cdc-model = { path = "../sankhya-cdc-model" }
+sankhya-cdc-apply = { path = "../sankhya-cdc-apply" }
+sankhya-table     = { path = "../sankhya-table" }
+sankhya-plan      = { path = "../sankhya-plan" }
+
+[dev-dependencies]
+tempfile   = { workspace = true }
+datafusion = { workspace = true }
+tokio      = { workspace = true }

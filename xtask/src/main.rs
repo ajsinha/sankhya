@@ -36,6 +36,10 @@ const DUP_ALLOWLIST: &[&str] = &[
     "rand_chacha",
     // toml's own datetime type, internal to manifest parsing in tooling.
     "toml_datetime", "toml_parser", "toml_writer", "serde_spanned",
+    // Pulled at two versions through the query engine's expression features. Both are
+    // internal hashing and bignum utilities; neither appears in any SANKHYA signature,
+    // so neither can cause the type incompatibility this gate exists to prevent.
+    "ahash", "num-bigint",
 ];
 
 /// Domain nouns that must not appear in core crates. The general-purpose claim is
@@ -48,8 +52,14 @@ const DUP_ALLOWLIST: &[&str] = &[
 const DOMAIN_WORDS: &[&str] = &[
     "trade", "counterparty", "notional", "portfolio", "basel", "isin", "cusip",
     "ledger", "aml", "kyc", "ubo", "laundering", "desk", "book_id",
-    "shipment", "consignment", "patient", "claim", "diagnosis", "icd10",
+    "shipment", "consignment", "patient", "diagnosis", "icd10",
     "sensor_reading", "invoice", "sku",
+    // Entries must be DISTINCTIVELY domain-specific, never ordinary English that a
+    // domain also happens to use. "claim" was removed for exactly that reason: it is
+    // the natural verb for "these two tiers claim the same positions", and a lint that
+    // fires on ordinary prose gets worked around or switched off, which is worse than
+    // a narrower lint that is always obeyed. Prefer "claim_id" or "claims_line" if the
+    // insurance sense ever needs catching.
 ];
 
 fn main() -> ExitCode {
@@ -71,13 +81,19 @@ fn main() -> ExitCode {
     if run_all || task == "check-dupes" {
         failed |= !check_dupes(&root);
     }
+    if run_all || task == "check-docs" {
+        failed |= !check_docs(&root);
+    }
     if !run_all
         && !matches!(
             task.as_str(),
-            "check-layers" | "check-loc" | "check-vocabulary" | "check-dupes"
+            "check-layers" | "check-loc" | "check-vocabulary" | "check-dupes" | "check-docs"
         )
     {
-        eprintln!("usage: cargo xtask [check-all|check-layers|check-loc|check-vocabulary|check-dupes]");
+        eprintln!(
+            "usage: cargo xtask \
+             [check-all|check-layers|check-loc|check-vocabulary|check-dupes|check-docs]"
+        );
         return ExitCode::from(2);
     }
 
@@ -441,4 +457,203 @@ fn check_dupes(root: &Path) -> bool {
         !seen.iter().any(|(n, v)| CRITICAL_FAMILY.contains(&n.as_str()) && v.len() > 1)
     );
     ok
+}
+
+
+/// Documentation rot, caught mechanically.
+///
+/// Prose drifts from code silently — nothing fails, nothing warns, and the gap is
+/// discovered by a reader who then stops trusting the rest of the document. These
+/// checks catch the mechanically checkable half: broken links, stale version claims,
+/// and documents that reference crates or decision records that do not exist.
+///
+/// The other half — whether the prose still *describes* what the code does — is not
+/// mechanically checkable and remains a review responsibility. Saying so here is
+/// deliberate: a check that implied otherwise would be worse than no check.
+fn check_docs(root: &Path) -> bool {
+    println!("== check-docs ==");
+    let mut ok = true;
+    let mut docs = Vec::new();
+    collect_markdown(root, &mut docs);
+
+    let pins = workspace_pins(root);
+    let crate_names: std::collections::BTreeSet<String> =
+        load_crates(root).into_iter().map(|c| c.name).collect();
+
+    let mut links = 0usize;
+    let mut versions = 0usize;
+
+    for doc in &docs {
+        let Ok(text) = std::fs::read_to_string(doc) else { continue };
+        let rel = doc.strip_prefix(root).unwrap_or(doc).display().to_string();
+        let dir = doc.parent().unwrap_or(root);
+
+        // (a) Relative links must resolve.
+        for target in markdown_link_targets(&text) {
+            if target.starts_with("http") || target.starts_with('#') || target.starts_with("mailto:")
+            {
+                continue;
+            }
+            let path = target.split('#').next().unwrap_or(&target);
+            if path.is_empty() {
+                continue;
+            }
+            let candidate = dir.join(path);
+            let alt = root.join(path);
+            if !candidate.exists() && !alt.exists() {
+                eprintln!("  BROKEN LINK  {rel}: {target}");
+                ok = false;
+            }
+            links += 1;
+        }
+
+        // (b) A pinned version quoted in prose must match the workspace pin.
+        //     The pin table is quoted in several documents; when it moves and the
+        //     prose does not, every number a reader checks is wrong.
+        for (name, pinned) in &pins {
+            for quoted in quoted_versions(&text, name) {
+                versions += 1;
+                if &quoted != pinned {
+                    eprintln!(
+                        "  STALE VERSION {rel}: says {name} {quoted}, workspace pins {pinned}"
+                    );
+                    ok = false;
+                }
+            }
+        }
+
+        // (c) A crate named in backticks must exist.
+        for referenced in backticked_crate_names(&text) {
+            if referenced.starts_with("sankhya-") && !crate_names.contains(&referenced) {
+                eprintln!("  MISSING CRATE {rel}: references `{referenced}`, which does not exist");
+                ok = false;
+            }
+        }
+    }
+
+    println!(
+        "   {} documents, {links} relative links, {versions} version claims checked",
+        docs.len()
+    );
+    ok
+}
+
+fn collect_markdown(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let p = e.path();
+        let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        if p.is_dir() {
+            if matches!(name, "target" | ".git" | ".build" | "vendor" | "spikes") {
+                continue;
+            }
+            collect_markdown(&p, out);
+        } else if name.ends_with(".md") {
+            out.push(p);
+        }
+    }
+}
+
+fn markdown_link_targets(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let bytes: Vec<char> = text.chars().collect();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == ']' && i + 1 < bytes.len() && bytes[i + 1] == '(' {
+            let mut j = i + 2;
+            let mut target = String::new();
+            while j < bytes.len() && bytes[j] != ')' {
+                target.push(bytes[j]);
+                j += 1;
+            }
+            if !target.is_empty() && !target.contains(' ') {
+                out.push(target);
+            }
+            i = j;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Versions quoted next to a crate name, in prose or in a table cell.
+fn quoted_versions(text: &str, crate_name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(i) = text[from..].find(crate_name) {
+        let at = from + i;
+        let before = text[..at].chars().next_back().unwrap_or(' ');
+        let rest = &text[at + crate_name.len()..];
+        let after = rest.chars().next().unwrap_or(' ');
+        let boundary = |c: char| !(c.is_alphanumeric() || c == '_' || c == '-');
+        if boundary(before) && boundary(after) {
+            // Accept "name 1.2.3", "name` 1.2.3", "name | 1.2.3", "name = "1.2.3"".
+            let window: String = rest.chars().take(24).collect();
+            if let Some(v) = leading_version(&window) {
+                out.push(v);
+            }
+        }
+        from = at + crate_name.len();
+    }
+    out
+}
+
+fn leading_version(window: &str) -> Option<String> {
+    let trimmed = window
+        .trim_start_matches(|c: char| matches!(c, '`' | ' ' | '|' | '=' | '"' | '*' | ':'));
+    let mut digits = String::new();
+    for c in trimmed.chars() {
+        if c.is_ascii_digit() || c == '.' {
+            digits.push(c);
+        } else {
+            break;
+        }
+    }
+    // Require at least major.minor.patch so "arrow 59" in prose is not treated as a
+    // precise claim.
+    (digits.matches('.').count() == 2 && digits.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        .then_some(digits)
+}
+
+fn backticked_crate_names(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find('`') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('`') else { break };
+        let inner = &after[..end];
+        if inner.starts_with("sankhya-")
+            && inner.chars().all(|c| c.is_ascii_lowercase() || c == '-' || c.is_ascii_digit())
+        {
+            out.push(inner.to_string());
+        }
+        rest = &after[end + 1..];
+    }
+    out
+}
+
+/// The exact-pinned versions from the workspace dependency table.
+fn workspace_pins(root: &Path) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let Ok(text) = std::fs::read_to_string(root.join("Cargo.toml")) else { return out };
+    let Ok(v) = toml::from_str::<toml::Table>(&text) else { return out };
+    let Some(deps) = v
+        .get("workspace")
+        .and_then(|w| w.get("dependencies"))
+        .and_then(toml::Value::as_table)
+    else {
+        return out;
+    };
+    for (name, spec) in deps {
+        let raw = match spec {
+            toml::Value::String(s) => Some(s.clone()),
+            toml::Value::Table(t) => t.get("version").and_then(|v| v.as_str()).map(str::to_string),
+            _ => None,
+        };
+        // Only exact pins are claims a document can be checked against.
+        if let Some(pinned) = raw.and_then(|r| r.strip_prefix('=').map(str::to_string)) {
+            out.insert(name.clone(), pinned);
+        }
+    }
+    out
 }

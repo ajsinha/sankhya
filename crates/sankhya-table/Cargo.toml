@@ -1,6 +1,6 @@
 [package]
 name         = "sankhya-table"
-description  = "TableFormat trait, capabilities, snapshot handles."
+description  = "Arrow encoding and the Parquet write path."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -14,3 +14,18 @@ layer = 2
 workspace = true
 
 [dependencies]
+sankhya-types     = { path = "../sankhya-types" }
+sankhya-error     = { path = "../sankhya-error" }
+sankhya-schema    = { path = "../sankhya-schema" }
+sankhya-cdc-apply = { path = "../sankhya-cdc-apply" }
+arrow             = { workspace = true }
+arrow-array       = { workspace = true }
+arrow-schema      = { workspace = true }
+parquet           = { workspace = true }
+
+[dev-dependencies]
+sankhya-cdc-model = { path = "../sankhya-cdc-model" }
+proptest   = { workspace = true }
+tempfile   = { workspace = true }
+datafusion = { workspace = true }
+tokio      = { workspace = true }

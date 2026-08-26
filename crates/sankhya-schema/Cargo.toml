@@ -1,6 +1,6 @@
 [package]
 name         = "sankhya-schema"
-description  = "Logical schema model and the source/Arrow/file type mapping."
+description  = "Logical schema model, type mapping, mirror naming and automatic onboarding."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -14,3 +14,10 @@ layer = 0
 workspace = true
 
 [dependencies]
+sankhya-types     = { path = "../sankhya-types" }
+sankhya-error     = { path = "../sankhya-error" }
+sankhya-cdc-model = { path = "../sankhya-cdc-model" }
+arrow-schema      = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
