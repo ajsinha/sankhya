@@ -31,6 +31,11 @@ const DUP_ALLOWLIST: &[&str] = &[
     "rand", "rand_core", "syn", "windows-sys", "r-efi", "wasi",
     "windows-targets", "windows_x86_64_gnu", "windows-link", "generic-array",
     "bitflags", "heck", "regex-automata", "regex-syntax", "socket2", "winnow",
+    // proptest pulls an older chacha; it is a dev dependency and never reaches a
+    // SANKHYA API boundary.
+    "rand_chacha",
+    // toml's own datetime type, internal to manifest parsing in tooling.
+    "toml_datetime", "toml_parser", "toml_writer", "serde_spanned",
 ];
 
 /// Domain nouns that must not appear in core crates. The general-purpose claim is
