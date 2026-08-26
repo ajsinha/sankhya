@@ -15,8 +15,31 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M0** Foundations, spikes, walking skeleton | 10–12 ew | **Complete**, merged to `main` |
 | **M1** Zero-configuration sync and read-your-own-writes | 14–18 ew | **Complete** |
 | **M2** Ingest correctness and durability | 24–28 ew | **Substantially complete** — batching invariants, source-safety ladder, reconciliation, idempotence, crash safety, schema evolution and the backfill handoff all exist and are tested. What remains is the slot *lifecycle* driver and the snapshot *reader* — the correctness contracts are in place, the machinery that runs them on a timer is not |
-| **M3** Query engine and storage performance | 28–34 ew | A vertical slice, asserted engine settings, compaction (policy, execution and retirement, with the small-file penalty measured), the arrival tier's retention contract, a query spliced across both tiers, and the maintenance scheduler's arbitration. No table provider, statistics catalogue or caching |
+| **M3** Query engine and storage performance | 28–34 ew | **Most of the work, none of the exit gates.** Built: the table provider, statistics (computed, persisted, used for pruning), the arrival tier, compaction end to end, the maintenance scheduler, the governor, exact order statistics, the metadata cache and log checkpoints. **Not met:** no benchmark numbers against a named public suite, no cancellation or deadlines, no counting allocator or spill isolation, no SQL-semantics corpus, no cross-engine difference list, and compaction is not demonstrated under *continuous* ingest. See below |
 | **M4**–**M8** | — | Not started |
+
+---
+
+## What M3 still owes
+
+Recorded separately from the list below because the work items are substantially built
+and it would be easy to read that as the milestone being finished. It is not, and these
+are its own stated exit criteria:
+
+| Gate | State |
+|---|---|
+| Performance objectives met in the pipeline, against named public-suite queries | **Not started.** Every measurement here is a microbenchmark of one mechanism. None is a recognised query at scale, and none is on reference hardware |
+| Cancellation demonstrated within its bound, including inside user code | **Not started.** There are no deadlines and no cancellation |
+| A hostile aggregation under a constrained memory limit is rejected rather than terminating the process | **Half.** Admission *decides* to reject; nothing enforces the decision. No counting allocator, no spill isolation |
+| Plan snapshots stable; the SQL-semantics corpus green | **Not started** |
+| Cross-engine semantic differences enumerated in a tested list | **Not started** |
+| Compaction holds file counts within policy under continuous ingest | **Half.** Convergence is tested; convergence *while ingest continues* is not |
+
+Smaller items inside the work breakdown that are also absent: delete resolution into
+plan-time row selections, file ordering by statistics for early termination, bloom
+filters, per-column encoding chosen from measured statistics, quantile sketches, the
+footer and byte-range and decoded-batch and result caches, leader election, and orphan
+cleanup.
 
 ---
 
