@@ -20,6 +20,9 @@ sankhya-table = { path = "../sankhya-table" }
 sankhya-table-delta = { path = "../sankhya-table-delta" }
 
 [dev-dependencies]
+sankhya-ingest = { path = "../sankhya-ingest" }
+sankhya-cdc-apply = { path = "../sankhya-cdc-apply" }
+sankhya-cdc-model = { path = "../sankhya-cdc-model" }
 serde_json = { workspace = true }
 proptest = { workspace = true }
 tempfile    = { workspace = true }

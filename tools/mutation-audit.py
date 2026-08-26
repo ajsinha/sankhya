@@ -477,8 +477,8 @@ CATALOGUE = [
 
     ("ingest: publish a file without the statistics it could have carried",
      "crates/sankhya-ingest/src/pipeline.rs",
-     "                &[DeltaAction::Add(DeltaAdd::with_statistics(\n                    file_name.clone(),\n                    report.bytes,\n                    0,\n                    &statistics,\n                ))],",
-     "                &[DeltaAction::Add(DeltaAdd::with_rows(\n                    file_name.clone(),\n                    report.bytes,\n                    0,\n                    u64::try_from(report.rows).unwrap_or(0),\n                ))],",
+     "            let action = DeltaAction::Add(DeltaAdd::with_statistics(\n                file_name.clone(),\n                report.bytes,\n                0,\n                &statistics,\n            ));",
+     "            let action = DeltaAction::Add(DeltaAdd::with_rows(\n                file_name.clone(),\n                report.bytes,\n                0,\n                u64::try_from(report.rows).unwrap_or(0),\n            ));",
      "sankhya-ingest"),
 
     ("log: replay by scanning the file list instead of indexing it",
@@ -690,6 +690,18 @@ CATALOGUE = [
      "        if let Err(stopped) = this.budget.check_periodically(this.batches, (this.clock)()) {",
      "        if let Err(stopped) = Ok::<(), Stopped>(()) {",
      "sankhya-readpath"),
+
+    ("ingest: fail a publish instead of rebasing on a version conflict",
+     "crates/sankhya-ingest/src/pipeline.rs",
+     "            Err(sankhya_table_delta::CommitError::VersionTaken(_)) => {\n                version = newest().map_or(version.saturating_add(1), |v| v.saturating_add(1));\n            }",
+     "            Err(sankhya_table_delta::CommitError::VersionTaken(v)) => {\n                return Err(Error::StorageUnavailable(format!(\"version {v} is taken\")));\n            }",
+     "sankhya-ingest"),
+
+    ("ingest: retry a failure that is not a version race",
+     "crates/sankhya-ingest/src/pipeline.rs",
+     "            Err(e) => return Err(Error::StorageUnavailable(e.to_string())),\n        }\n    }\n\n    Err(Error::StorageUnavailable(format!(",
+     "            Err(_) => continue,\n        }\n    }\n\n    Err(Error::StorageUnavailable(format!(",
+     "sankhya-ingest"),
 
     ("readpath: read every offered tier rather than the selected ones",
      "crates/sankhya-readpath/src/lib.rs",

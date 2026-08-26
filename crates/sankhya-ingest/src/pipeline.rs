@@ -9,10 +9,74 @@ use sankhya_schema::{
 use sankhya_table::{column_stats, encode_batch, write_parquet, WriterConfig};
 use sankhya_table_delta::{
     commit as delta_commit, create as delta_create, from_column_stats as delta_from_column_stats,
-    read_actions as delta_read_actions, schema_string as delta_schema_string,
-    Action as DeltaAction, AddFile as DeltaAdd, Metadata as DeltaMetadata,
+    newest_after as delta_newest, read_actions as delta_read_actions,
+    schema_string as delta_schema_string, Action as DeltaAction, AddFile as DeltaAdd,
+    Metadata as DeltaMetadata,
 };
 use sankhya_types::Lsn;
+
+/// How many times a publish will rebase before giving up.
+///
+/// Bounded so a runaway committer produces a diagnosable failure rather than a capture
+/// pipeline that appears to hang. Sixteen is far beyond any plausible contention: the
+/// only other committer is maintenance, which commits on a duty cycle.
+const REBASE_ATTEMPTS: usize = 16;
+
+/// A commit that succeeded, possibly after losing a version race.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Rebased {
+    pub version: u64,
+    /// How many versions were taken from under us before one stuck.
+    pub retries: usize,
+}
+
+/// Commit at `start`, moving to the next free version when something else took it.
+///
+/// # Why capture rebases rather than failing
+///
+/// Capture is not the only committer. Maintenance commits to the same log, so a
+/// compaction between two publishes takes the version capture was about to use. Failing
+/// there would mean a compaction can stop capture, which inverts the ordering rule: the
+/// source outranks maintenance, always.
+///
+/// Retrying is safe because nothing about the *file* depends on the version. Its name
+/// comes from the sequence, so the same already-written file is committed at whichever
+/// version turns out to be free.
+///
+/// Taking the two operations as closures is what makes the bound testable: a real
+/// runaway committer is hard to arrange and easy to describe.
+///
+/// # Errors
+///
+/// Returns an error if a commit fails for any reason other than the version being taken,
+/// or if `attempts` rebases were not enough.
+fn commit_rebasing<C, N>(
+    start: u64,
+    attempts: usize,
+    mut commit_at: C,
+    mut newest: N,
+) -> Result<Rebased>
+where
+    C: FnMut(u64) -> std::result::Result<u64, sankhya_table_delta::CommitError>,
+    N: FnMut() -> Option<u64>,
+{
+    let mut version = start;
+
+    for retries in 0..attempts {
+        match commit_at(version) {
+            Ok(_) => return Ok(Rebased { version, retries }),
+            Err(sankhya_table_delta::CommitError::VersionTaken(_)) => {
+                version = newest().map_or(version.saturating_add(1), |v| v.saturating_add(1));
+            }
+            Err(e) => return Err(Error::StorageUnavailable(e.to_string())),
+        }
+    }
+
+    Err(Error::StorageUnavailable(format!(
+        "could not commit after {attempts} rebases; something else is committing to this \
+         table faster than capture can follow"
+    )))
+}
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -90,6 +154,12 @@ pub struct TableState {
     pending_schema: Option<Onboarded>,
     /// Events discarded while quarantined, so the loss is visible rather than silent.
     dead_lettered: usize,
+    /// Times a publish lost a version race and had to rebase.
+    ///
+    /// Expected and healthy: maintenance commits to the same log, so a compaction
+    /// between two publishes takes the version capture was about to use. A count that
+    /// climbs steadily means something is committing far more often than it should.
+    rebases: usize,
     /// The next version to commit to this table's log.
     ///
     /// Zero means the table has no log yet, so the first publish also creates it. Held
@@ -111,6 +181,7 @@ impl TableState {
             batcher: Batcher::new(policy),
             sequence: 0,
             next_version: 0,
+            rebases: 0,
             quarantine: None,
             pending_schema: None,
             dead_lettered: 0,
@@ -528,18 +599,36 @@ impl Pipeline {
                 &column_stats(&batch),
             );
 
-            delta_commit(
-                &table_root,
+            // Rebase and retry on a version conflict, because capture is not the only
+            // committer.
+            //
+            // Maintenance commits to the same log -- a compaction between two publishes
+            // takes the version capture was about to use. That is the protocol working
+            // as designed, and failing here would mean a compaction could stop capture,
+            // which inverts the ordering rule: the source outranks maintenance, always.
+            //
+            // The retry is safe because nothing about the *file* depends on the version.
+            // Its name comes from the sequence, so the same already-written file is
+            // committed at whichever version turns out to be free.
+            let action = DeltaAction::Add(DeltaAdd::with_statistics(
+                file_name.clone(),
+                report.bytes,
+                0,
+                &statistics,
+            ));
+
+            match commit_rebasing(
                 state.next_version,
-                &[DeltaAction::Add(DeltaAdd::with_statistics(
-                    file_name.clone(),
-                    report.bytes,
-                    0,
-                    &statistics,
-                ))],
-            )
-            .map_err(|e| Error::StorageUnavailable(e.to_string()))?;
-            state.next_version = state.next_version.saturating_add(1);
+                REBASE_ATTEMPTS,
+                |version| delta_commit(&table_root, version, std::slice::from_ref(&action)),
+                || delta_newest(&table_root, None),
+            ) {
+                Ok(Rebased { version, retries }) => {
+                    state.next_version = version.saturating_add(1);
+                    state.rebases = state.rebases.saturating_add(retries);
+                }
+                Err(e) => return Err(e),
+            }
 
             state.published_through = plan.covers_through;
 
@@ -593,5 +682,97 @@ impl Pipeline {
     #[must_use]
     pub fn published_through(&self, relation_id: u32) -> Option<Lsn> {
         self.tables.get(&relation_id).map(|s| s.published_through)
+    }
+}
+
+#[cfg(test)]
+mod rebase_tests {
+    use super::{commit_rebasing, Rebased, REBASE_ATTEMPTS};
+    use sankhya_table_delta::CommitError;
+    use std::cell::Cell;
+
+    #[test]
+    fn a_free_version_commits_without_rebasing() {
+        let got = commit_rebasing(5, 4, |v| Ok(v), || None).expect("committing");
+        assert_eq!(
+            got,
+            Rebased {
+                version: 5,
+                retries: 0
+            }
+        );
+    }
+
+    #[test]
+    fn a_taken_version_moves_on_and_reports_the_retry() {
+        // The ordinary case: maintenance committed between two publishes.
+        let taken = Cell::new(true);
+        let got = commit_rebasing(
+            5,
+            4,
+            |v| {
+                if taken.replace(false) {
+                    return Err(CommitError::VersionTaken(v));
+                }
+                Ok(v)
+            },
+            || Some(9),
+        )
+        .expect("committing after one rebase");
+
+        assert_eq!(
+            got,
+            Rebased {
+                version: 10,
+                retries: 1
+            }
+        );
+    }
+
+    #[test]
+    fn a_runaway_committer_produces_a_diagnosable_failure_rather_than_a_hang() {
+        // The bound. Without it this loops forever, and a capture pipeline that appears
+        // to hang is far harder to diagnose than one that says what it could not do.
+        let attempts = Cell::new(0usize);
+        let err = commit_rebasing(
+            0,
+            4,
+            |v| {
+                attempts.set(attempts.get() + 1);
+                Err(CommitError::VersionTaken(v))
+            },
+            || Some(attempts.get() as u64),
+        )
+        .expect_err("it must give up");
+
+        assert_eq!(attempts.get(), 4, "it tried a different number of times");
+        assert!(format!("{err}").contains("faster than capture can follow"));
+    }
+
+    #[test]
+    fn a_failure_that_is_not_a_version_race_is_not_retried() {
+        // Rebasing helps with contention and nothing else. Retrying an unwritable
+        // directory sixteen times turns one error into sixteen and reports the last.
+        let attempts = Cell::new(0usize);
+        let err = commit_rebasing(
+            0,
+            8,
+            |_| {
+                attempts.set(attempts.get() + 1);
+                Err(CommitError::Io("the disk is full".to_string()))
+            },
+            || None,
+        )
+        .expect_err("it must not retry");
+
+        assert_eq!(attempts.get(), 1);
+        assert!(format!("{err}").contains("the disk is full"));
+    }
+
+    #[test]
+    fn the_bound_is_generous_enough_for_real_contention() {
+        // The only other committer is maintenance, on a duty cycle. A bound of one or
+        // two would turn ordinary contention into a capture failure.
+        assert!(REBASE_ATTEMPTS >= 8);
     }
 }
