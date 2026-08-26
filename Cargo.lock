@@ -20,6 +20,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
+name = "arrow-schema"
+version = "59.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6fed2ca0d1eade57e811cbe73b98ad50cc08a1183e13b2d2aa43a7df593f40e"
+
+[[package]]
 name = "async-trait"
 version = "0.1.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -735,6 +741,12 @@ version = "0.1.0"
 [[package]]
 name = "sankhya-schema"
 version = "0.1.0"
+dependencies = [
+ "arrow-schema",
+ "proptest",
+ "sankhya-error",
+ "sankhya-types",
+]
 
 [[package]]
 name = "sankhya-server"

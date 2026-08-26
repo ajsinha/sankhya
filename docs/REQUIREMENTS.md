@@ -1116,7 +1116,7 @@ All figures verified against crates.io, upstream repositories and issue trackers
 | `buoyant_kernel` | 0.25.1 | The kernel distribution `deltalake-core` actually depends on |
 | `iceberg` and catalog crates | 0.10.1 | Pre-1.0; `iceberg-datafusion` pins `datafusion ^53.1.0` |
 | `petgraph` | 0.8.3 | Last release 2025-09-30 |
-| `object_store` | 0.14.1 published; **0.13.2 is the line in use** | DataFusion 55 and `delta_kernel` both require 0.13 — see §7.1.1 |
+| `object_store` | **0.13.2** (0.14.1 is published but unused) | DataFusion 55 and `delta_kernel` both require the 0.13 line — see §7.1.1 |
 | `tokio-postgres` | 0.7.18 | **No logical replication support** |
 | `sqlx` | 0.9.0 | **No `CopyBoth` support** |
 | `postgresql_embedded` | 0.21.0 | Spawns a child process; `bundled` embeds the archive |

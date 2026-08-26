@@ -151,12 +151,15 @@ Spark, Trino, DuckDB, Snowflake and Athena read these tables **directly**, with 
 
 ## Status
 
-**Design phase.** The architecture and requirements have been reviewed and amended by a panel covering systems architecture, database internals, analytical query engines and Rust engineering practice. No production code has been written yet — the documents below are the contract that the code will be built against.
+**Early implementation.** The architecture and requirements were reviewed and amended by a panel covering systems architecture, database internals, analytical query engines and Rust engineering practice. Foundations are now built and under test; the analytical engine is not.
+
+What works today: a verified dependency set that compiles, a `pgoutput` wire decoder validated against a real PostgreSQL 17.11 stream, an apply path whose transaction invariant is property-tested, a lossless type mapping checked against a real schema, vendored PostgreSQL building from source, and a reproducible ten-table dataset loading 99.2 million rows. What does not: the query engine, the storage layer, the server itself. [`docs/QUICKSTART.md`](docs/QUICKSTART.md) is explicit about the boundary.
 
 Start here:
 
 | Document | What it covers |
 |---|---|
+| [`docs/QUICKSTART.md`](docs/QUICKSTART.md) | Build it, load ten gigabytes, watch capture reconcile — and what does not work yet |
 | [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) | The amended, traceable functional and non-functional requirements |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture, crate decomposition, consistency and security models |
 | [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) | Milestones, work breakdown, sizing and acceptance gates |
