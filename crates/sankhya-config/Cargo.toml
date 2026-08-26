@@ -1,0 +1,16 @@
+[package]
+name         = "sankhya-config"
+description  = "Typed configuration schema, validation and redaction."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 1
+
+[lints]
+workspace = true
+
+[dependencies]

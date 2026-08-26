@@ -1,0 +1,16 @@
+[package]
+name         = "sankhya-cli"
+description  = "Composition root — wiring only."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 5
+
+[lints]
+workspace = true
+
+[dependencies]

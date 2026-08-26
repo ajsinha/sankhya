@@ -1,0 +1,16 @@
+[package]
+name         = "sankhya-table-delta"
+description  = "TableFormat over delta_kernel. Metadata only; no bulk data crosses a version boundary."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 2
+
+[lints]
+workspace = true
+
+[dependencies]

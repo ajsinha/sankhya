@@ -1,0 +1,16 @@
+[package]
+name         = "sankhya-mv"
+description  = "Materialized view definition and incremental refresh."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 3
+
+[lints]
+workspace = true
+
+[dependencies]

@@ -1,0 +1,48 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo
+Cargo.lock.orig
+
+# LibreOffice / Office lock and temp files
+.~lock.*#
+~$*
+*.tmp
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# SANKHYA local runtime state (never commit data directories)
+/data/
+/.sankhya/
+*.log
+
+# Local config overrides and secrets
+config.local.toml
+.env
+.env.*
+!.env.example
+
+# Benchmark and profiling output
+/bench-results/
+perf.data*
+flamegraph.svg
+
+# Coverage
+/coverage/
+*.profraw
+lcov.info
+
+# Build scratch — vendored source is extracted and compiled here
+/.build/

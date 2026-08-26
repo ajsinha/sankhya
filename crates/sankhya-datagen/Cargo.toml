@@ -1,0 +1,27 @@
+[package]
+name         = "sankhya-datagen"
+description  = "Deterministic synthetic data generation with known ground truth."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 3
+
+[lints]
+workspace = true
+
+[dependencies]
+sankhya-types = { path = "../sankhya-types" }
+rand          = { workspace = true }
+rand_chacha   = { workspace = true }
+serde         = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[[bin]]
+name = "sankhya-datagen"
+path = "src/bin/datagen.rs"

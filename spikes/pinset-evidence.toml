@@ -1,0 +1,15 @@
+[package]
+name = "spike-pinset"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+datafusion    = { version = "55", default-features = false, features = ["parquet"] }
+arrow         = { version = "59" }
+arrow-array   = { version = "59" }
+arrow-schema  = { version = "59" }
+parquet       = { version = "59", default-features = false, features = ["arrow", "async"] }
+object_store  = { version = "0.13" }
+delta_kernel  = { version = "0.27", default-features = false, features = ["arrow-59"] }
+tokio         = { version = "1", features = ["rt-multi-thread", "macros"] }
