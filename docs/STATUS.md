@@ -64,10 +64,11 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | A skipped file never hides a matching row | Property-tested over arbitrary values and predicates, and again over *merged* statistics — compaction merges rather than recomputes, so a merge that narrowed a bound would produce a defect appearing only after maintenance ran |
 | Distinct-value counts are estimated well enough to order a join | Within 5% from 10 to 100,000 distinct values, exact under merge, and reproducible across processes — a per-process hash seed would make two nodes disagree about a plan and the disagreement would look like an optimizer bug |
 | An approximate function cannot answer an exact question by accident | Rejected at planning time, including inside a subquery or a `HAVING` clause; a permissive session still gets a watermark naming what it used |
+| Compaction computes the statistics the provider prunes on | Bounds, null counts, widths and a cardinality sketch, produced by the merge that was already reading the data — no separate analysis pass and nothing for an operator to remember to run |
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 60 specific defects applied one at a time; all 60 fail the suite. Eleven did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 62 specific defects applied one at a time; all 62 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
 
 ---
 
@@ -93,10 +94,10 @@ Stated plainly, because a status document that omits this is marketing.
   a historical query skip the tier at no cost, and per-tenant sub-caps. Nothing yet
   wires the tier into the ingest path either, so read-your-own-writes still waits for
   publication in practice.
-- **Nothing computes or persists statistics.** The provider consults them and prunes on
-  them, and the caller must supply them. Compaction reads every row already, so that is
-  where they should be computed — and it does not do it. Nor is there anywhere to store
-  them between processes.
+- **Statistics are not persisted.** Compaction computes them and the provider prunes on
+  them, but they live only in the compaction outcome — a restart loses them, and a file
+  published by capture rather than produced by a merge has none at all. There is nowhere
+  to store them and nothing to load them from.
 - **No caching.** Every plan replays the table log from the first commit, so planning
   cost grows with commit count — slowly, but without bound. Log checkpoints and a
   metadata cache are both unbuilt.
@@ -142,6 +143,7 @@ Recorded because the interesting information is usually in what went wrong.
 | **A restart would have overwritten a live file.** The pipeline's file sequence was in-memory state starting at zero, so a restarted capture wrote `00000000.parquet` over a file that was still live and still referenced | Committing to the log. The overwrite had always been possible, but nothing could see it: the file count does not change, no error is raised, and the rows in the overwritten file simply become different rows. It surfaced as a version conflict — the log refusing to create a table that already existed — and the overwrite was the real defect behind it |
 | **The test written for that overwrite could not detect it, twice over.** It asserted on file *names*, which an overwrite does not change; and its fixture published a single file per run, so resuming from the highest committed sequence and resuming from the lowest were the same number | The mutation audit, on two consecutive attempts. Now asserted on the log's own history — a path added twice *is* the overwrite — with a fixture that publishes at every transaction boundary, as continuous capture does |
 | **The log described where files were but not what was in them.** With no row counts, a compaction plan driven from the log could not state what it expected to merge | The first tick planned from the log rather than from a value threaded out of the writer. The merge's own row-count check refused the plan — the guard worked, and what it caught was that the log was incomplete rather than that the merge was wrong. `numRecords` is now written and read |
+| **Vectorised bounds became unsafe in the presence of NaN.** Arrow's aggregate kernels propagate NaN, so `max` over a column containing one returns NaN; the NaN guard then refused it and left whatever bound had been recorded so far — a maximum *below* the true maximum | The unit test written for the NaN guard, on its first run. The narrowed bound is the one direction that matters: a file holding 2.5 would be skipped for `f > 0` because its statistics claimed it topped out at −1.5, silently and undetectably. A NaN result now invalidates the fast path and the column is measured again skipping NaNs, so the cost falls only on columns that actually contain one |
 | **The hand-written Delta log was invalid, and this crate's own reader accepted it happily.** The `add` action's `partitionValues` field is non-nullable and was omitted entirely | The kernel, on the very first read. The log looked reasonable and round-tripped through this crate perfectly, because a reader ignores a field it never writes. Two implementations agreeing is worth nothing when one of them wrote both sides |
 | **A directory listing is not a file set, and both the planner and the read path were treating it as one.** Compaction only ever adds, so between a merge and the retirement of its inputs the directory holds both — the same rows twice, by design, for at least a full grace period | Writing the convergence test. Re-observing the directory each tick made the planner merge files an earlier merge had already superseded. Nothing is wrong on disk; the *readers* were wrong. The published tier now names its files individually, the live set is carried across ticks, and the negative case is a test: the same query against the directory returns the merged rows twice |
 | **The arrival tier declared coverage it did not hold.** A tier starting mid-stream reported from the durable frontier rather than from its own oldest segment, so it claimed every position before its first captured transaction | The first query spliced across two real tiers. The splice found an exact cover that did not exist, so the query would have been *answered* with the missing positions silently absent — the failure mode the splice exists to prevent, produced by the tier lying to it. This is the normal case rather than an edge case: a table onboarded from a running stream starts mid-stream by construction |
@@ -184,6 +186,12 @@ passed, because not one of them had a `WHERE` clause.
 A sixth: the test asserting that a disjunction is never split used `a = x OR a = y`,
 which the engine rewrites into an `IN` list before it reaches the code under test. The
 test exercised no disjunction at all.
+
+A seventh, and the most useful: statistics computation had no tests in its own crate at
+all. It was exercised only through an end-to-end test in a *different* crate, so
+`cargo test -p sankhya-table` covered none of it and the audit reported two survivors
+immediately. Writing the missing tests found the NaN bounds defect above on the first
+run.
 
 The catalogue also produced one **equivalent mutant** — a change to a duplicated guard
 that left the second copy still refusing, so behaviour was unchanged and no test could
@@ -275,6 +283,33 @@ about 2.5× more planning, because it replays the table log and the log grows wi
 count. The cost has moved from one seek per file to one sequential read — which is a much
 better shape and is not the same as free. It is also the argument for log checkpoints,
 which are not built.
+
+### Computing statistics at compaction
+
+5,000,000 rows across three columns, merged.
+
+| | |
+|---|---|
+| Merge including statistics | 357 ms |
+| The statistics alone | 83 ms — **23% of the merge** |
+| The same, before using vectorised kernels | 164 ms — 36% |
+
+**This corrected a claim.** The first version of the module said bounds came from Arrow's
+vectorised aggregates and were "close to free". They did not and were not: bounds were
+computed in a scalar loop costing 29% of the merge on its own, five times what the
+cardinality sketch costs. The comment was written before the measurement and was false
+when written.
+
+With the kernels actually used, bounds and widths are close to free and the remaining
+23% is almost entirely the sketch, which has to hash every value. That cost is paid
+because a cardinality estimate is the one statistic neither the file format nor the table
+log carries.
+
+23% on top of a merge is not nothing. It is still much cheaper than the alternative,
+which is a second full pass over storage — and it means statistics arrive without anyone
+running an analysis command, which matters on a system where tables onboard themselves
+from a replication stream and the tables nobody thought about are exactly the ones that
+would have none.
 
 ### File pruning
 

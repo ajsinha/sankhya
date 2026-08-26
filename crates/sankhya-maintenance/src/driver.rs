@@ -192,7 +192,7 @@ pub fn plan_tick(
 }
 
 /// What one tick did.
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, PartialEq, Debug, Default)]
 pub struct TickReport {
     pub merged: Vec<CompactionOutcome>,
     /// Merges that failed, with the reason. A failure does not stop the tick: the other

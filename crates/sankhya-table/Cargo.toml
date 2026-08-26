@@ -17,6 +17,7 @@ workspace = true
 sankhya-types     = { path = "../sankhya-types" }
 sankhya-error     = { path = "../sankhya-error" }
 sankhya-schema    = { path = "../sankhya-schema" }
+sankhya-stats     = { path = "../sankhya-stats" }
 sankhya-cdc-apply = { path = "../sankhya-cdc-apply" }
 arrow             = { workspace = true }
 arrow-array       = { workspace = true }

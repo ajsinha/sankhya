@@ -431,6 +431,18 @@ CATALOGUE = [
      "        !predicates.is_empty() && predicates.iter().all(|(column, predicate)| {",
      "sankhya-readpath"),
 
+    ("table: narrow a bound instead of widening it",
+     "crates/sankhya-table/src/stats.rs",
+     "            Some(std::cmp::Ordering::Greater) => Some(bound.clone()),",
+     "            Some(std::cmp::Ordering::Less) => Some(bound.clone()),",
+     "sankhya-table"),
+
+    ("table: record a NaN as a bound at compaction",
+     "crates/sankhya-table/src/stats.rs",
+     "    if matches!(&bound, Bound::Float(f) if f.is_nan()) {\n        return;\n    }",
+     "",
+     "sankhya-table"),
+
     ("readpath: read every offered tier rather than the selected ones",
      "crates/sankhya-readpath/src/lib.rs",
      "    for tier in &splice.tiers {",

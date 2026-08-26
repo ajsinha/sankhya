@@ -23,13 +23,15 @@
 use arrow_array::RecordBatch;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use sankhya_error::{Error, Result};
+use sankhya_stats::ColumnStats;
 use sankhya_types::Lsn;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::write::{write_parquet, WriterConfig};
 
 /// What a compaction produced.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct CompactionOutcome {
     /// The file written. Its inputs are still present.
     pub output: PathBuf,
@@ -41,6 +43,12 @@ pub struct CompactionOutcome {
     pub inputs_retained: Vec<PathBuf>,
     pub bytes_before: u64,
     pub covers_through: Lsn,
+    /// Statistics for the merged file, computed from the data the merge already read.
+    ///
+    /// Free in the sense that matters: no additional pass over storage. The alternative
+    /// is an analysis command someone has to run, which on a system that onboards tables
+    /// automatically means the tables nobody thought about have no statistics.
+    pub column_stats: BTreeMap<String, ColumnStats>,
 }
 
 impl CompactionOutcome {
@@ -152,6 +160,7 @@ pub fn compact_files(
     }
 
     Ok(CompactionOutcome {
+        column_stats: crate::stats::column_stats(&merged),
         output: report.path,
         rows: written_rows,
         bytes: written_bytes,

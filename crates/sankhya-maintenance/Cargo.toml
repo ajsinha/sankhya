@@ -25,6 +25,8 @@ tempfile    = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 sankhya-readpath = { path = "../sankhya-readpath" }
+sankhya-stats = { path = "../sankhya-stats" }
+sankhya-plan = { path = "../sankhya-plan" }
 sankhya-table-memory = { path = "../sankhya-table-memory" }
 datafusion   = { workspace = true }
 tokio        = { workspace = true }

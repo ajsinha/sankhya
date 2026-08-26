@@ -340,3 +340,66 @@ async fn measure_the_cost_of_small_files() {
         outcome.size_ratio()
     );
 }
+
+/// What statistics cost when computed where the data is already read.
+///
+/// Run with `cargo test -p sankhya-table --test compaction --release -- --ignored
+/// --nocapture measure_statistics`.
+///
+/// The claim is that compaction is the right place *because* it has already paid for a
+/// pass over the data. That is only worth saying if the marginal cost is small against
+/// the merge itself, which is what this measures rather than assumes.
+#[tokio::test]
+#[ignore = "a measurement, not an assertion"]
+async fn measure_what_statistics_cost_at_compaction() {
+    const FRAGMENTS: i64 = 200;
+    const ROWS_EACH: i64 = 25_000;
+
+    let src = tempfile::tempdir().expect("a temp dir");
+    let dst = tempfile::tempdir().expect("a temp dir");
+    let inputs = write_fragments(src.path(), FRAGMENTS, ROWS_EACH);
+
+    let mut merge_best = std::time::Duration::MAX;
+    let mut outcome = None;
+    for i in 0..3 {
+        let t = std::time::Instant::now();
+        outcome = Some(
+            compact_files(
+                &inputs,
+                dst.path(),
+                &format!("compacted-{i}.parquet"),
+                Lsn::new(9_999),
+                WriterConfig::default(),
+            )
+            .expect("compacting"),
+        );
+        merge_best = merge_best.min(t.elapsed());
+    }
+    let outcome = outcome.expect("at least one pass");
+
+    // The same statistics, computed on their own over the merged data.
+    let file = std::fs::File::open(&outcome.output).expect("opening");
+    let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)
+        .expect("reader")
+        .build()
+        .expect("building");
+    let batches: Vec<_> = reader.map(|b| b.expect("batch")).collect();
+    let schema = batches[0].schema();
+    let merged = arrow::compute::concat_batches(&schema, &batches).expect("concat");
+
+    let mut stats_best = std::time::Duration::MAX;
+    for _ in 0..3 {
+        let t = std::time::Instant::now();
+        let s = sankhya_table::column_stats(&merged);
+        std::hint::black_box(&s);
+        stats_best = stats_best.min(t.elapsed());
+    }
+
+    println!(
+        "{} rows: merge (incl. statistics) {:>9.2?}   statistics alone {:>9.2?}   {:.0}% of the merge",
+        outcome.rows,
+        merge_best,
+        stats_best,
+        stats_best.as_secs_f64() / merge_best.as_secs_f64() * 100.0
+    );
+}
