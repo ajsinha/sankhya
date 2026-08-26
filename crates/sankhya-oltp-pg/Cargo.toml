@@ -1,0 +1,16 @@
+[package]
+name         = "sankhya-oltp-pg"
+description  = "PostgreSQL lifecycle, supervision, pooling, migrations."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 2
+
+[lints]
+workspace = true
+
+[dependencies]

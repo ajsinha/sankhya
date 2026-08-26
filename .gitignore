@@ -43,3 +43,6 @@ flamegraph.svg
 /coverage/
 *.profraw
 lcov.info
+
+# Build scratch — vendored source is extracted and compiled here
+/.build/

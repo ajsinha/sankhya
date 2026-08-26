@@ -1,0 +1,16 @@
+[package]
+name         = "sankhya-telemetry"
+description  = "Tracing, metrics, supervised task spawning."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 2
+
+[lints]
+workspace = true
+
+[dependencies]

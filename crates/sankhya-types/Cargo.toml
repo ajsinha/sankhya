@@ -1,0 +1,16 @@
+[package]
+name         = "sankhya-types"
+description  = "Core vocabulary: identifiers, positions, money, time. No IO."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 0
+
+[lints]
+workspace = true
+
+[dependencies]

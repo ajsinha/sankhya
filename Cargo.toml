@@ -1,0 +1,81 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "packs/*", "xtask"]
+
+[workspace.package]
+version      = "0.1.0"
+edition      = "2021"
+rust-version = "1.90"
+license      = "Apache-2.0"
+repository   = "https://github.com/ajsinha/sankhya"
+authors      = ["SANKHYA contributors"]
+
+# ---------------------------------------------------------------------------
+# PIN SET — see docs/adr/0001-dependency-pin-set.md
+# Verified 2026-08-25: resolves and compiles with zero critical duplicates.
+# The arrow / parquet / datafusion / object_store family is EXACT-pinned.
+# Changing any of these is a project-level event, not a dependency bump.
+# ---------------------------------------------------------------------------
+[workspace.dependencies]
+arrow         = { version = "=59.2.0" }
+arrow-array   = { version = "=59.2.0" }
+arrow-schema  = { version = "=59.2.0" }
+arrow-ipc     = { version = "=59.2.0" }
+parquet       = { version = "=59.2.0", default-features = false, features = ["arrow", "async"] }
+object_store  = { version = "=0.13.2" }
+datafusion    = { version = "=55.0.0", default-features = false, features = ["parquet"] }
+delta_kernel  = { version = "=0.27.1", default-features = false, features = ["arrow-59"] }
+
+tokio         = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time", "fs", "process", "io-util", "net"] }
+tokio-util    = { version = "0.7" }
+futures       = { version = "0.3" }
+async-trait   = { version = "0.1" }
+
+thiserror     = { version = "2" }
+serde         = { version = "1", features = ["derive"] }
+serde_json    = { version = "1" }
+toml          = { version = "0.9" }
+
+tracing       = { version = "0.1" }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+rust_decimal  = { version = "1", features = ["serde"] }
+uuid          = { version = "1", features = ["v4", "v7", "serde"] }
+time          = { version = "0.3", features = ["formatting", "parsing", "macros"] }
+bytes         = { version = "1" }
+parking_lot   = { version = "0.12" }
+dashmap       = { version = "6" }
+rand          = { version = "0.9" }
+rand_chacha   = { version = "0.9" }
+
+# dev
+proptest      = { version = "1" }
+insta         = { version = "1" }
+criterion     = { version = "0.8" }
+tempfile      = { version = "3" }
+
+[workspace.lints.rust]
+unsafe_code                   = "forbid"
+unreachable_pub               = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+unwrap_used   = "deny"
+expect_used   = "deny"
+panic         = "deny"
+todo          = "deny"
+unimplemented = "deny"
+indexing_slicing = "deny"
+float_cmp     = "deny"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.bench]
+inherits      = "release"
+debug         = "line-tables-only"
+lto           = "thin"
+codegen-units = 1

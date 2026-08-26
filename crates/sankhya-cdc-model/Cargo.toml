@@ -1,0 +1,16 @@
+[package]
+name         = "sankhya-cdc-model"
+description  = "Change-event model and the pure replication-protocol decoder."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 0
+
+[lints]
+workspace = true
+
+[dependencies]

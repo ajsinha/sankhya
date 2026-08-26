@@ -1,0 +1,16 @@
+[package]
+name         = "sankhya-ext"
+description  = "The published extension API. The only crate with a stability commitment."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 15
+
+[lints]
+workspace = true
+
+[dependencies]
