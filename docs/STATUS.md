@@ -14,7 +14,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 |---|---|---|
 | **M0** Foundations, spikes, walking skeleton | 10–12 ew | **Complete**, merged to `main` |
 | **M1** Zero-configuration sync and read-your-own-writes | 14–18 ew | **Complete** |
-| **M2** Ingest correctness and durability | 24–28 ew | Largely complete — batching invariants, source-safety ladder, reconciliation, idempotence, crash safety and schema evolution all exist. Slot lifecycle and initial backfill do not |
+| **M2** Ingest correctness and durability | 24–28 ew | **Substantially complete** — batching invariants, source-safety ladder, reconciliation, idempotence, crash safety, schema evolution and the backfill handoff all exist and are tested. What remains is the slot *lifecycle* driver and the snapshot *reader* — the correctness contracts are in place, the machinery that runs them on a timer is not |
 | **M3** Query engine and storage performance | 28–34 ew | A vertical slice only |
 | **M4**–**M8** | — | Not started |
 
@@ -41,6 +41,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | Captured data provably matches the source | 3,000 rows digested independently on both sides, no discrepancies |
 | A restart cannot duplicate data | Replay is filtered per row; every crash point across a constructed stream yields each row exactly once |
 | A schema change never corrupts data | Additive changes apply automatically; anything whose intent cannot be inferred quarantines, keeps consuming so the cursor advances, and requires an operator to adopt the new shape |
+| Backfill meets streaming with no gap and no overlap | Verified against a live slot; a late slot is shown to drop real positions into neither half |
 
 ---
 
@@ -56,7 +57,9 @@ Stated plainly, because a status document that omits this is marketing.
 - **No slot lifecycle.** No creation policy and no position advancement. The
   source-safety ladder now exists and is tested against a real slot, but nothing drives
   it on a timer yet — it is a decision function without a caller.
-- **No backfill.** Only changes occurring after a slot exists are captured.
+- **No backfill reader.** The handoff *contract* is built and verified against a live
+  slot, but nothing yet reads the existing rows. Only changes after a slot exists are
+  captured.
 - **No arrival buffer.** The tiered read path is planned and property-tested but has
   only one tier to plan over, so read-your-own-writes currently waits for publication
   rather than for an in-memory tier. The waiting *contract* is right; the tier that
