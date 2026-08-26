@@ -110,7 +110,7 @@ impl Batcher {
         self.unresolvable
     }
 
-    /// Advance the notional clock. Injected rather than read, so batching behaviour is
+    /// Advance the logical clock. Injected rather than read, so batching behaviour is
     /// reproducible in tests.
     pub fn tick(&mut self) {
         self.age_ticks = self.age_ticks.saturating_add(1);
