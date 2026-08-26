@@ -62,6 +62,32 @@ impl PublishedTier {
     pub fn new(files: Vec<String>, coverage: LsnRange) -> Self {
         Self { files, coverage }
     }
+
+    /// The tier a table's log says is live.
+    ///
+    /// This is how a reader should normally obtain the file set. Paths in the log are
+    /// relative to the table root, as the protocol requires, and are resolved here so
+    /// the caller never has to know that.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the log cannot be read or is malformed. Refusing is correct:
+    /// a log that cannot be replayed means the file set is unknown, and guessing it from
+    /// the directory is precisely the mistake this type exists to prevent.
+    pub fn from_log(
+        table_root: &std::path::Path,
+        coverage: LsnRange,
+    ) -> Result<Self, sankhya_table_delta::CommitError> {
+        let live = sankhya_table_delta::live_files(table_root)?;
+        Ok(Self {
+            files: live
+                .files
+                .iter()
+                .map(|f| table_root.join(&f.path).to_string_lossy().into_owned())
+                .collect(),
+            coverage,
+        })
+    }
 }
 
 /// The tiers available to answer a query.

@@ -153,3 +153,38 @@ fn a_compaction_removal_does_not_look_like_a_deletion() {
     let deletion = RemoveFile::deleted("part-0000.parquet", 1);
     assert!(deletion.data_change);
 }
+
+#[test]
+fn the_kernel_accepts_the_statistics_this_crate_writes() {
+    // The statistics field is an encoded JSON string inside a JSON object, which is an
+    // easy shape to get subtly wrong -- and a reader that rejects the log over it
+    // rejects the whole table, not just the statistic.
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let root = dir.path();
+    table(root);
+    touch(root, "part-0000.parquet");
+
+    let mut actions = create(Metadata::new("t3", SCHEMA, 0));
+    actions.push(Action::Add(AddFile::with_rows(
+        "part-0000.parquet",
+        10,
+        0,
+        1_234,
+    )));
+    commit(root, 0, &actions).expect("committing");
+
+    let ours = live_files(root).expect("our reader");
+    assert_eq!(ours.files[0].rows(), Some(1_234));
+
+    let (version, paths) = kernel_files(root);
+    assert_eq!(version, 0);
+    assert_eq!(paths, vec!["part-0000.parquet".to_string()]);
+}
+
+#[test]
+fn an_absent_row_count_reads_as_unknown_not_as_zero() {
+    // Zero and unknown are different, and conflating them is how a compaction plan
+    // claims to merge nothing and then merges everything.
+    let add = AddFile::new("part-0000.parquet", 10, 0);
+    assert_eq!(add.rows(), None);
+}

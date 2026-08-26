@@ -36,6 +36,23 @@ pub struct AddFile {
     pub size: u64,
     #[serde(rename = "modificationTime")]
     pub modification_time: i64,
+    /// File-level statistics, as a JSON string, or absent.
+    ///
+    /// The protocol carries these as an encoded string rather than a nested object, so
+    /// a reader can skip parsing them entirely when it does not need them.
+    ///
+    /// Only `numRecords` is written. That is deliberate: it is the one statistic
+    /// *required* for the log to describe the table rather than merely locate it. A
+    /// planner reading the log has to know how many rows a file holds — without it, a
+    /// compaction plan cannot state what it expects to merge, and the check that the
+    /// merge produced what the plan said becomes uncheckable.
+    ///
+    /// Column bounds and null counts are not written. They would enable file pruning,
+    /// but wrong bounds silently drop rows from results, and bounds are exactly the kind
+    /// of thing that goes wrong quietly under type coercion. They belong with the
+    /// statistics catalogue, which can be rebuilt when it is wrong.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub stats: Option<String>,
     /// Whether the file's rows are part of the table.
     ///
     /// Always true here. The protocol permits false for files staged but not committed,
@@ -53,8 +70,38 @@ impl AddFile {
             partition_values: BTreeMap::new(),
             size,
             modification_time,
+            stats: None,
             data_change: true,
         }
+    }
+
+    /// The same, carrying the row count.
+    ///
+    /// Prefer this everywhere. A file in the log without a row count can be located but
+    /// not planned against.
+    #[must_use]
+    pub fn with_rows(
+        path: impl Into<String>,
+        size: u64,
+        modification_time: i64,
+        rows: u64,
+    ) -> Self {
+        Self {
+            stats: Some(format!(r#"{{"numRecords":{rows}}}"#)),
+            ..Self::new(path, size, modification_time)
+        }
+    }
+
+    /// The row count this file declares, if it declared one.
+    ///
+    /// Returns `None` both when statistics are absent and when they are present but do
+    /// not carry `numRecords`. The caller must not treat an unknown count as zero — a
+    /// plan built on that would claim to merge nothing and then merge everything.
+    #[must_use]
+    pub fn rows(&self) -> Option<u64> {
+        let stats = self.stats.as_ref()?;
+        let value: serde_json::Value = serde_json::from_str(stats).ok()?;
+        value.get("numRecords")?.as_u64()
     }
 }
 

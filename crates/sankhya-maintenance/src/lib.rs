@@ -37,8 +37,8 @@ pub use compaction::{
     plan_compaction, CompactionPlan, CompactionPolicy, CompactionUrgency, FileStat, PartitionState,
 };
 pub use driver::{
-    apply, execute_tick, plan_tick, retire_completed, DriverPolicy, PendingCompaction, TickPlan,
-    TickReport,
+    apply, commit_tick, execute_tick, plan_tick, retire_completed, DriverPolicy, PendingCompaction,
+    TickPlan, TickReport,
 };
 pub use execute::{retire_inputs, run_compaction, RetentionPolicy, RetirementOutcome};
 pub use schedule::{schedule, Class, Deferral, Job, Schedule, Scheduled, SystemState};

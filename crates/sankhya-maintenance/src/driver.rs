@@ -52,6 +52,7 @@
 
 use sankhya_error::Result;
 use sankhya_table::{CompactionOutcome, WriterConfig};
+use sankhya_table_delta::{commit, Action, AddFile, CommitError, RemoveFile, Version};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -275,6 +276,51 @@ pub fn apply(live: &mut Vec<FileStat>, report: &TickReport) {
             covers_through: outcome.covers_through,
         });
     }
+}
+
+/// Commit what a tick merged to the table log, as one atomic version.
+///
+/// Every merge in the tick becomes one `add` and one `remove` per input, in a single
+/// commit. Splitting them across versions would publish a state in which the same rows
+/// are live twice — briefly, and briefly is enough for a reader to see it.
+///
+/// The removals declare `dataChange: false`: compaction rewrites files without changing
+/// rows, and a reader streaming changes would otherwise see every compacted row as a
+/// deletion followed by a re-insertion.
+///
+/// # Errors
+///
+/// Returns an error if the version is already taken — the loser must re-read the log and
+/// rebase, because a compaction's decisions are exactly "which files to merge" and those
+/// were made against a state that no longer exists — or if the log cannot be written.
+pub fn commit_tick(
+    table_root: &Path,
+    version: Version,
+    report: &TickReport,
+    now: i64,
+) -> std::result::Result<Version, CommitError> {
+    let mut actions = Vec::new();
+
+    for outcome in &report.merged {
+        let name = |p: &Path| {
+            p.file_name().map_or_else(
+                || p.to_string_lossy().into_owned(),
+                |n| n.to_string_lossy().into_owned(),
+            )
+        };
+
+        actions.push(Action::Add(AddFile::with_rows(
+            name(&outcome.output),
+            outcome.bytes,
+            now,
+            outcome.rows,
+        )));
+        for input in &outcome.inputs_retained {
+            actions.push(Action::Remove(RemoveFile::rewritten(name(input), now)));
+        }
+    }
+
+    commit(table_root, version, &actions)
 }
 
 /// Retire inputs from merges completed on earlier ticks.
