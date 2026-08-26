@@ -14,3 +14,11 @@ layer = 0
 workspace = true
 
 [dependencies]
+serde        = { workspace = true }
+uuid         = { workspace = true }
+rust_decimal = { workspace = true }
+time         = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+serde_json = { workspace = true }
