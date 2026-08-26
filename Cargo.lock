@@ -2502,6 +2502,7 @@ name = "sankhya-ingest"
 version = "0.1.0"
 dependencies = [
  "datafusion",
+ "proptest",
  "sankhya-cdc-apply",
  "sankhya-cdc-model",
  "sankhya-error",

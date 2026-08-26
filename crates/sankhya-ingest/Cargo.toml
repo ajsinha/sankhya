@@ -23,6 +23,7 @@ sankhya-table     = { path = "../sankhya-table" }
 sankhya-plan      = { path = "../sankhya-plan" }
 
 [dev-dependencies]
+proptest   = { workspace = true }
 tempfile   = { workspace = true }
 datafusion = { workspace = true }
 tokio      = { workspace = true }

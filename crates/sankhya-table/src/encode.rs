@@ -277,26 +277,75 @@ fn parse_date(text: &str) -> Option<i32> {
     Some(days_from_civil(y, m, d))
 }
 
-/// Microseconds since the Unix epoch, from `YYYY-MM-DD HH:MM:SS[.ffffff][+ZZ]`.
+/// Microseconds since the Unix epoch.
+///
+/// Accepts `YYYY-MM-DD HH:MM:SS[.ffffff][±HH[:MM]|Z]`, in either space- or
+/// `T`-separated form.
+///
+/// # The offset must be applied, never discarded
+///
+/// The source renders a zoned timestamp in the server's own offset, so a value may
+/// arrive as `2026-08-26 00:27:11.367744-04`. Stripping the `-04` and treating the
+/// wall time as UTC shifts the entire column by four hours — and every value stays
+/// internally consistent, so nothing looks wrong until someone compares against the
+/// source.
+///
+/// An earlier version of this function did exactly that. It was caught by
+/// reconciliation against the source rather than by any test of this function alone,
+/// which is the argument for reconciling against an independent model in the first
+/// place.
 fn parse_timestamp_micros(text: &str) -> Option<i64> {
     let text = text.trim();
     let (date_part, rest) = text.split_once(' ').or_else(|| text.split_once('T'))?;
     let (y, m, d) = split_ymd(date_part)?;
 
-    // Strip an offset. Values are normalised to UTC by the source, so a trailing
-    // "+00" carries no additional information.
-    let time_part = rest
-        .split(['+', 'Z'])
-        .next()?
-        .trim_end_matches(|c: char| c == '-' || c.is_ascii_digit() && rest.contains('-') && false);
-    let time_part = match time_part.rfind('-') {
-        Some(i) if i > 7 => time_part.get(..i)?,
-        _ => time_part,
-    };
-
+    let (time_part, offset_micros) = split_offset(rest)?;
     let micros_of_day = parse_time_micros(time_part)?;
     let days = i64::from(days_from_civil(y, m, d));
-    Some(days.checked_mul(86_400_000_000)?.checked_add(micros_of_day)?)
+
+    days.checked_mul(86_400_000_000)?
+        .checked_add(micros_of_day)?
+        // The offset says how far local time is ahead of UTC, so UTC is the local
+        // reading minus the offset.
+        .checked_sub(offset_micros)
+}
+
+/// Separate the time portion from its trailing zone offset.
+///
+/// Returns the offset in microseconds, positive for zones ahead of UTC.
+fn split_offset(rest: &str) -> Option<(&str, i64)> {
+    if let Some(stripped) = rest.strip_suffix('Z') {
+        return Some((stripped, 0));
+    }
+
+    // Scan from the end for a sign that begins a zone offset. It cannot be confused
+    // with anything in the time itself, which contains only digits, colons and a dot.
+    let bytes = rest.as_bytes();
+    for (i, byte) in bytes.iter().enumerate().rev() {
+        if !matches!(byte, b'+' | b'-') {
+            continue;
+        }
+        let (time_part, offset_text) = rest.split_at(i);
+        let sign = if *byte == b'-' { -1i64 } else { 1i64 };
+        let digits = offset_text.get(1..)?;
+
+        let (hours, minutes) = match digits.split_once(':') {
+            Some((h, m)) => (h.parse::<i64>().ok()?, m.parse::<i64>().ok()?),
+            // A bare two- or four-digit form: "04" or "0430".
+            None if digits.len() <= 2 => (digits.parse::<i64>().ok()?, 0),
+            None => (
+                digits.get(..2)?.parse::<i64>().ok()?,
+                digits.get(2..)?.parse::<i64>().ok()?,
+            ),
+        };
+        if !(0..=14).contains(&hours) || !(0..60).contains(&minutes) {
+            return None;
+        }
+        return Some((time_part, sign * (hours * 3_600 + minutes * 60) * 1_000_000));
+    }
+
+    // No offset at all: an unzoned timestamp, already the value it says it is.
+    Some((rest, 0))
 }
 
 fn parse_time_micros(text: &str) -> Option<i64> {

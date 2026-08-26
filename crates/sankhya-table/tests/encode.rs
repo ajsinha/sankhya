@@ -179,6 +179,55 @@ fn dates_and_timestamps_agree_on_the_epoch() {
 }
 
 #[test]
+fn a_zone_offset_is_applied_not_discarded() {
+    // Regression: an earlier version stripped the offset and treated the wall time as
+    // UTC, shifting an entire column by the offset. Every value stayed internally
+    // consistent, so nothing looked wrong until it was compared against the source.
+    let s = schema(vec![("at", LogicalType::TimestampUtc, false)]);
+    let batch = encode_batch(&s, &[
+        row(vec![Some("2025-01-01 00:00:00+00")], 1),
+        row(vec![Some("2024-12-31 20:00:00-04")], 2),   // the same instant
+        row(vec![Some("2025-01-01 05:30:00+05:30")], 3), // and again
+        row(vec![Some("2025-01-01T00:00:00Z")], 4),      // and again
+    ])
+    .expect("encodes");
+
+    let column = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<TimestampMicrosecondArray>()
+        .expect("timestamps");
+
+    let expected = 1_735_689_600_000_000i64; // 2025-01-01T00:00:00Z
+    for i in 0..4 {
+        assert_eq!(
+            column.value(i),
+            expected,
+            "row {i} should be the same instant; the offset must be applied, not dropped"
+        );
+    }
+}
+
+#[test]
+fn an_absent_offset_is_treated_as_the_value_it_states() {
+    // An unzoned timestamp carries no offset to apply, so it must not be shifted.
+    let s = schema(vec![("at", LogicalType::TimestampLocal, false)]);
+    let batch = encode_batch(&s, &[row(vec![Some("2025-01-01 00:00:00")], 1)]).expect("encodes");
+    let column = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<TimestampMicrosecondArray>()
+        .expect("timestamps");
+    assert_eq!(column.value(0), 1_735_689_600_000_000);
+}
+
+#[test]
+fn an_implausible_offset_is_refused() {
+    let s = schema(vec![("at", LogicalType::TimestampUtc, false)]);
+    assert!(encode_batch(&s, &[row(vec![Some("2025-01-01 00:00:00+99")], 1)]).is_err());
+}
+
+#[test]
 fn sub_second_precision_survives() {
     let s = schema(vec![("at", LogicalType::TimestampUtc, false)]);
     let batch = encode_batch(&s, &[row(vec![Some("2025-01-01 00:00:00.123456+00")], 1)])

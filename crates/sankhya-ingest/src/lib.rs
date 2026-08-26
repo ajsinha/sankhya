@@ -22,5 +22,7 @@
 #![doc(html_root_url = "https://docs.rs/sankhya-ingest")]
 
 mod pipeline;
+mod reconcile;
 
 pub use pipeline::{Pipeline, PipelineStats, PublishedFile, TableState};
+pub use reconcile::{Discrepancy, Reconciliation, RowDigest, TableDigest};
