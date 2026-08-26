@@ -774,6 +774,14 @@ The kernel is a **dev-dependency**, used as an independent oracle: it reads the 
 
 **The oracle earned its place on its first run.** The log this system wrote was invalid: the `add` action's `partitionValues` field is non-nullable and had been omitted. It round-tripped through SANKHYA's own reader perfectly, because a reader ignores a field it never writes. Two implementations agreeing is worth nothing when the same author wrote both sides.
 
+**Bounds and null counts are written into the log**, alongside the row count. This reverses an earlier decision in this document, and the reversal is worth recording rather than quietly making.
+
+They were withheld on the grounds that a wrong bound silently drops rows and that bounds go wrong quietly under type coercion. That is true, and it is why every bound written comes from code that refuses to produce one it cannot justify: an unrecognised type gets no bound, an unorderable value gets no bound, a merge that would narrow a bound drops it instead, and a value the protocol cannot represent exactly — a non-finite float, bytes that are not text — is omitted rather than approximated.
+
+What the original reasoning did not weigh is the cost of withholding them. **An external engine can prune only on what the log tells it.** Keeping bounds private to SANKHYA means every other reader scans everything, which undercuts the reason for choosing an open format at all. The bar is higher now rather than lower: a malformed statistic costs *other people* answers, in engines that cannot be fixed from here.
+
+The cardinality sketch stays out, because the protocol has nowhere to put it. A column read back from the log therefore reports zero distinct values, which is a trap for whatever reads that figure first.
+
 One detail worth stating because getting it wrong is silent: a compaction's `remove` actions declare `dataChange: false`. Compaction rewrites files without changing rows, and a reader streaming changes from the table would otherwise see every compacted row as a deletion followed by a re-insertion — a flood of spurious changes proportional to how well maintenance is working.
 
 #### 9.1.5 Metadata-only coupling, and what it buys

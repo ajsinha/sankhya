@@ -41,16 +41,23 @@ pub struct AddFile {
     /// The protocol carries these as an encoded string rather than a nested object, so
     /// a reader can skip parsing them entirely when it does not need them.
     ///
-    /// Only `numRecords` is written. That is deliberate: it is the one statistic
-    /// *required* for the log to describe the table rather than merely locate it. A
-    /// planner reading the log has to know how many rows a file holds — without it, a
-    /// compaction plan cannot state what it expects to merge, and the check that the
-    /// merge produced what the plan said becomes uncheckable.
+    /// `numRecords` is required: without it the log describes where a file is but not
+    /// what is in it, a compaction plan cannot state what it expects to merge, and the
+    /// check that the merge produced what the plan said becomes uncheckable.
     ///
-    /// Column bounds and null counts are not written. They would enable file pruning,
-    /// but wrong bounds silently drop rows from results, and bounds are exactly the kind
-    /// of thing that goes wrong quietly under type coercion. They belong with the
-    /// statistics catalogue, which can be rebuilt when it is wrong.
+    /// `minValues`, `maxValues` and `nullCount` are written where they are known.
+    ///
+    /// **This reverses an earlier decision, deliberately.** They were withheld on the
+    /// grounds that a wrong bound silently drops rows and bounds go wrong quietly under
+    /// type coercion — which is true, and is why every bound written here comes from
+    /// code that refuses to produce one it cannot justify: an unrecognised type gets no
+    /// bound, an unorderable value gets no bound, and a merge that would narrow a bound
+    /// drops it instead.
+    ///
+    /// Withholding them had a cost that the original reasoning did not weigh: an
+    /// external engine reading these tables can prune only on what the log tells it.
+    /// Keeping bounds private to SANKHYA means every other reader scans everything,
+    /// which undercuts the reason for using an open format at all.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub stats: Option<String>,
     /// Whether the file's rows are part of the table.
@@ -90,6 +97,29 @@ impl AddFile {
             stats: Some(format!(r#"{{"numRecords":{rows}}}"#)),
             ..Self::new(path, size, modification_time)
         }
+    }
+
+    /// The same, carrying everything known about the file.
+    #[must_use]
+    pub fn with_statistics(
+        path: impl Into<String>,
+        size: u64,
+        modification_time: i64,
+        stats: &crate::stats::FileStatistics,
+    ) -> Self {
+        Self {
+            // An unencodable statistics document leaves the file with none rather than
+            // failing the commit. The file is still correct and still readable; only
+            // pruning is lost, which costs a scan.
+            stats: stats.encode().ok(),
+            ..Self::new(path, size, modification_time)
+        }
+    }
+
+    /// Everything the log records about this file's contents, if anything.
+    #[must_use]
+    pub fn statistics(&self) -> Option<crate::stats::FileStatistics> {
+        crate::stats::FileStatistics::decode(self.stats.as_ref()?).ok()
     }
 
     /// The row count this file declares, if it declared one.

@@ -64,11 +64,12 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | A skipped file never hides a matching row | Property-tested over arbitrary values and predicates, and again over *merged* statistics — compaction merges rather than recomputes, so a merge that narrowed a bound would produce a defect appearing only after maintenance ran |
 | Distinct-value counts are estimated well enough to order a join | Within 5% from 10 to 100,000 distinct values, exact under merge, and reproducible across processes — a per-process hash seed would make two nodes disagree about a plan and the disagreement would look like an optimizer bug |
 | An approximate function cannot answer an exact question by accident | Rejected at planning time, including inside a subquery or a `HAVING` clause; a permissive session still gets a watermark naming what it used |
+| Statistics survive a restart and other engines can read them | Bounds and null counts are written into the table log itself, so a fresh process prunes exactly as a warm one does — and the kernel reads a log carrying them |
 | Compaction computes the statistics the provider prunes on | Bounds, null counts, widths and a cardinality sketch, produced by the merge that was already reading the data — no separate analysis pass and nothing for an operator to remember to run |
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 62 specific defects applied one at a time; all 62 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 65 specific defects applied one at a time; all 65 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
 
 ---
 
@@ -94,10 +95,12 @@ Stated plainly, because a status document that omits this is marketing.
   a historical query skip the tier at no cost, and per-tenant sub-caps. Nothing yet
   wires the tier into the ingest path either, so read-your-own-writes still waits for
   publication in practice.
-- **Statistics are not persisted.** Compaction computes them and the provider prunes on
-  them, but they live only in the compaction outcome — a restart loses them, and a file
-  published by capture rather than produced by a merge has none at all. There is nowhere
-  to store them and nothing to load them from.
+- **Capture publishes without statistics.** Compaction commits bounds and null counts;
+  the publish path commits only a row count. So a freshly captured file is never pruned
+  until maintenance has been over it, which is safe and slower than it needs to be.
+- **The cardinality sketch is not persisted.** The protocol has nowhere to put it, so a
+  column read back from the log reports zero distinct values. Nothing currently reads
+  that figure, but it is a trap for whatever does first.
 - **No caching.** Every plan replays the table log from the first commit, so planning
   cost grows with commit count — slowly, but without bound. Log checkpoints and a
   metadata cache are both unbuilt.
@@ -114,11 +117,9 @@ Stated plainly, because a status document that omits this is marketing.
 - **No log checkpoints.** Replay reads every commit, so startup cost grows linearly with
   a table's commit count. Fine at the scale tested; not fine at a year of continuous
   capture.
-- **No checkpoints, deletion vectors, column mapping, partition values, or column-level
-  statistics in the log.** Row counts are written, because a file that cannot be planned
-  against is only located rather than described. Bounds and null counts are not: wrong
-  bounds silently drop rows from results, and they belong with the statistics catalogue,
-  which can be rebuilt when it is wrong. A reader requiring any of them refuses these tables, which is the correct
+- **No checkpoints, deletion vectors, column mapping or partition values in the log.**
+  Row counts, bounds and null counts are written; everything else the protocol permits is
+  not, and a reader requiring any of it refuses these tables. A reader requiring any of them refuses these tables, which is the correct
   outcome — refusing is visible, and a partially-implemented protocol feature is not.
 - **Nothing calls the maintenance loop on a timer.** The tick is built and tested end to
   end, but a caller has to invoke it, supply the live set and supply the pinned snapshot

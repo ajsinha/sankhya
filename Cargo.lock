@@ -3178,6 +3178,7 @@ dependencies = [
  "sankhya-table-delta",
  "sankhya-table-memory",
  "sankhya-types",
+ "serde_json",
  "tempfile",
  "tokio",
 ]
@@ -3305,6 +3306,7 @@ dependencies = [
  "delta_kernel",
  "delta_kernel_default_engine",
  "sankhya-error",
+ "sankhya-stats",
  "sankhya-types",
  "serde",
  "serde_json",

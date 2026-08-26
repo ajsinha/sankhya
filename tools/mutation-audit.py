@@ -246,8 +246,8 @@ CATALOGUE = [
 
     ("driver: commit a merge without its row count",
      "crates/sankhya-maintenance/src/driver.rs",
-     "        actions.push(Action::Add(AddFile::with_rows(\n            name(&outcome.output),\n            outcome.bytes,\n            now,\n            outcome.rows,\n        )));",
-     "        actions.push(Action::Add(AddFile::new(\n            name(&outcome.output),\n            outcome.bytes,\n            now,\n        )));",
+     "            sankhya_table_delta::from_column_stats(outcome.rows, &outcome.column_stats);",
+     "            sankhya_table_delta::from_column_stats(0, &outcome.column_stats);",
      "sankhya-maintenance"),
 
     ("ingest: commit to the log before the file is written",
@@ -442,6 +442,24 @@ CATALOGUE = [
      "    if matches!(&bound, Bound::Float(f) if f.is_nan()) {\n        return;\n    }",
      "",
      "sankhya-table"),
+
+    ("delta-stats: write a bound the protocol cannot carry",
+     "crates/sankhya-table-delta/src/stats.rs",
+     "        Bound::Float(v) if v.is_finite() => serde_json::Number::from_f64(*v).map(Into::into),\n        Bound::Float(_) => None,",
+     "        Bound::Float(v) => serde_json::Number::from_f64(*v)\n            .map(Into::into)\n            .or(Some(serde_json::Value::from(0.0))),",
+     "sankhya-table-delta"),
+
+    ("delta-stats: lose the null count on the way back from the log",
+     "crates/sankhya-table-delta/src/stats.rs",
+     "                nulls: stats.null_count.get(name).copied().unwrap_or(0),",
+     "                nulls: 0,",
+     "sankhya-table-delta"),
+
+    ("driver: commit a merge without the bounds it computed",
+     "crates/sankhya-maintenance/src/driver.rs",
+     "        actions.push(Action::Add(AddFile::with_statistics(\n            name(&outcome.output),\n            outcome.bytes,\n            now,\n            &statistics,\n        )));",
+     "        actions.push(Action::Add(AddFile::with_rows(\n            name(&outcome.output),\n            outcome.bytes,\n            now,\n            outcome.rows,\n        )));",
+     "sankhya-maintenance"),
 
     ("readpath: read every offered tier rather than the selected ones",
      "crates/sankhya-readpath/src/lib.rs",

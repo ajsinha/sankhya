@@ -188,3 +188,88 @@ fn an_absent_row_count_reads_as_unknown_not_as_zero() {
     let add = AddFile::new("part-0000.parquet", 10, 0);
     assert_eq!(add.rows(), None);
 }
+
+#[test]
+fn the_kernel_accepts_bounds_and_null_counts() {
+    // Bounds were withheld from the log originally on the grounds that a wrong bound
+    // silently drops rows. Now that they are written, they are read by another engine
+    // rather than only by this one -- so a malformed statistics document costs *other
+    // people* answers, which is a stronger reason to check than the original was to
+    // abstain.
+    use sankhya_stats::{Bound, ColumnStats};
+    use std::collections::BTreeMap;
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let root = dir.path();
+    table(root);
+    touch(root, "part-0000.parquet");
+
+    let mut columns: BTreeMap<String, ColumnStats> = BTreeMap::new();
+    columns.insert(
+        "id".to_string(),
+        ColumnStats {
+            rows: 100,
+            nulls: 3,
+            min: Some(Bound::Int(-5)),
+            max: Some(Bound::Int(900)),
+            ..ColumnStats::default()
+        },
+    );
+    columns.insert(
+        "amount".to_string(),
+        ColumnStats {
+            rows: 100,
+            nulls: 0,
+            min: Some(Bound::Float(0.5)),
+            max: Some(Bound::Float(99.25)),
+            ..ColumnStats::default()
+        },
+    );
+
+    let statistics = sankhya_table_delta::from_column_stats(100, &columns);
+    let mut actions = create(Metadata::new("t4", SCHEMA, 0));
+    actions.push(Action::Add(AddFile::with_statistics(
+        "part-0000.parquet",
+        10,
+        0,
+        &statistics,
+    )));
+    commit(root, 0, &actions).expect("committing");
+
+    // Our own reader.
+    let ours = live_files(root).expect("our reader");
+    let recovered =
+        sankhya_table_delta::to_column_stats(&ours.files[0].statistics().expect("statistics"));
+    assert_eq!(recovered["id"].min, Some(Bound::Int(-5)));
+    assert_eq!(recovered["id"].nulls, 3);
+    assert_eq!(recovered["amount"].max, Some(Bound::Float(99.25)));
+
+    // And the kernel's.
+    let (version, paths) = kernel_files(root);
+    assert_eq!(version, 0);
+    assert_eq!(paths, vec!["part-0000.parquet".to_string()]);
+}
+
+#[test]
+fn a_bound_the_protocol_cannot_carry_is_omitted_rather_than_approximated() {
+    // An infinity has no JSON number, and bytes that are not text have no JSON string.
+    // Omitting the bound costs a scan; writing something close costs an answer, in
+    // engines that cannot be fixed from here.
+    use sankhya_stats::Bound;
+
+    assert_eq!(
+        sankhya_table_delta::encode_bound(&Bound::Float(f64::INFINITY)),
+        None
+    );
+    assert_eq!(
+        sankhya_table_delta::encode_bound(&Bound::Float(f64::NAN)),
+        None
+    );
+    assert_eq!(
+        sankhya_table_delta::encode_bound(&Bound::Bytes(vec![0xff, 0xfe])),
+        None
+    );
+
+    assert!(sankhya_table_delta::encode_bound(&Bound::Int(7)).is_some());
+    assert!(sankhya_table_delta::encode_bound(&Bound::Float(1.5)).is_some());
+}

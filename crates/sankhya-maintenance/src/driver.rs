@@ -309,11 +309,16 @@ pub fn commit_tick(
             )
         };
 
-        actions.push(Action::Add(AddFile::with_rows(
+        // Everything the merge learned, written where other engines can read it too.
+        // Statistics that live only in this process are lost on restart and are useless
+        // to anyone else reading the table.
+        let statistics =
+            sankhya_table_delta::from_column_stats(outcome.rows, &outcome.column_stats);
+        actions.push(Action::Add(AddFile::with_statistics(
             name(&outcome.output),
             outcome.bytes,
             now,
-            outcome.rows,
+            &statistics,
         )));
         for input in &outcome.inputs_retained {
             actions.push(Action::Remove(RemoveFile::rewritten(name(input), now)));

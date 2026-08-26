@@ -38,9 +38,11 @@
 
 mod log;
 mod schema;
+mod stats;
 
 pub use log::{
     commit, create, live_files, read_actions, Action, AddFile, CommitError, Format, LiveSet,
     Metadata, RemoveFile, Version,
 };
 pub use schema::{schema_string, UnsupportedType};
+pub use stats::{decode_bound, encode_bound, from_column_stats, to_column_stats, FileStatistics};

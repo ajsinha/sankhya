@@ -434,11 +434,22 @@ pub fn resolve(
                             file.path
                         ))
                     })?;
-                    files.push(LoggedFile::new(
-                        table_root.join(&file.path).to_string_lossy().into_owned(),
-                        file.size,
-                        rows,
-                    ));
+                    // Bounds and null counts come from the log, so a restart does not
+                    // lose them and a query planned by a fresh process prunes exactly as
+                    // one planned by a warm one.
+                    let catalogue = file
+                        .statistics()
+                        .map(|s| sankhya_table_delta::to_column_stats(&s))
+                        .unwrap_or_default();
+
+                    files.push(
+                        LoggedFile::new(
+                            table_root.join(&file.path).to_string_lossy().into_owned(),
+                            file.size,
+                            rows,
+                        )
+                        .with_stats(catalogue),
+                    );
                 }
             }
             "arrival" => {
