@@ -3137,6 +3137,14 @@ name = "sankhya-ext"
 version = "0.1.0"
 
 [[package]]
+name = "sankhya-governor"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "sankhya-types",
+]
+
+[[package]]
 name = "sankhya-graph"
 version = "0.1.0"
 

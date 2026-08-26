@@ -50,6 +50,10 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | Memory pressure cannot cost data | Nothing is released until publication covers it; a full tier refuses new work and names publication as the cause, and the refusal clears once publication catches up |
 | One SQL query is answered from memory and Parquet at once | 700 positions published and 300 still in memory sum to the whole thousand, with the 700-position overlap counted once; a pinned query sees only its target; provenance names both tiers and their intervals |
 | A gap between tiers refuses the query rather than answering it short | Verified for a genuine gap, for a target past every tier, and for a tier that started mid-stream |
+| A query the system cannot afford never starts | Admission estimates from plan cardinality and queues or refuses; the queue is bounded, so a refusal arrives immediately rather than after a timeout |
+| A client can tell a permanent refusal from a temporary one | "Too large for the pool" and "too large right now" are distinct answers with a `retryable` flag — collapsing them is how a client retries forever |
+| One tenant cannot starve another, or take an idle pool | A floor is honoured under global pressure; a cap binds even when nothing else is running |
+| Pressure escalates through one ladder, evaluated centrally | Five rungs from a typed signal bus; the last one — the only one that loses continuity — is reachable by the two source signals and nothing else, property-tested |
 | Maintenance work is arbitrated against one budget across both sides | Strict class ladder; safety and availability work preempts queries and ignores the duty cycle, everything below it does not; a job that cannot checkpoint is refused rather than started; waiting never promotes a job out of its class |
 | The maintenance scheduler cannot destroy retained history | There is no erasure class to configure — the guard is on the type, and an exhaustive match makes adding a variant a compile error |
 | A fragmented warehouse is cleared by ticking, and converges | 60 fragments reduced by repeated ticks until nothing is left to do, with the row count unchanged; urgency maps onto the class ladder, so a degrading partition preempts and an ordinary one waits; one failing partition does not block the rest |
@@ -72,7 +76,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 71 specific defects applied one at a time; all 71 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 81 specific defects applied one at a time; all 81 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
 
 ---
 
@@ -107,6 +111,15 @@ Stated plainly, because a status document that omits this is marketing.
   per-query one — but it is the last unbounded thing on the read path.
 - **No merge strategy beyond union.** Latest-version-per-key, which mutable tables need,
   is not implemented; the provider unions its tiers.
+- **The governor decides but governs nothing.** Admission and the pressure ladder are
+  built and tested, and nothing calls either: no memory pool reports its occupancy, no
+  subsystem publishes a signal, and no query passes through admission on its way to
+  running. They are decision functions without callers, like the maintenance scheduler
+  was before the driver.
+- **No counting allocator, no spill isolation, no deadline propagation.** The
+  architecture requires all three around admission: true accounting outside the engine's
+  own pool, spill on a different filesystem from the write-ahead log, and cancellation
+  that takes effect within a bounded time. None exists.
 - **Exact order statistics buffer their input.** Selection is linear rather than
   `n log n`, so it beats sorting, but every observation must be resident. `FR-QUERY-08`
   asks for a bounded-memory algorithm over large inputs and this is not one. Exact and
