@@ -774,6 +774,12 @@ The kernel is a **dev-dependency**, used as an independent oracle: it reads the 
 
 **The oracle earned its place on its first run.** The log this system wrote was invalid: the `add` action's `partitionValues` field is non-nullable and had been omitted. It round-tripped through SANKHYA's own reader perfectly, because a reader ignores a field it never writes. Two implementations agreeing is worth nothing when the same author wrote both sides.
 
+**The log is checkpointed.** Every ten versions the reconciled state is written as a single Parquet file with a `_last_checkpoint` pointer, and readers start from it. This is worth ten times the read cost at fifty thousand commits, and the beneficiary is mostly *other engines* — they have no cache and start cold on every query, so without a checkpoint an external reader opens one file per commit before it reads a row.
+
+A checkpoint holds exactly what replay produces, which makes it safe in a specific way: **it can always be discarded.** A missing file, a corrupt pointer, or one left behind by a table dropped and recreated at the same path all fall back to the log and cost a replay rather than an answer. Nothing is permitted to depend on a checkpoint being present or even parseable — which is what makes writing the format by hand a defensible risk rather than a reckless one.
+
+Writing it is a *maintenance* job, not part of committing. A commit that had to checkpoint could fail for a reason that does not matter.
+
 **Bounds and null counts are written into the log**, alongside the row count. This reverses an earlier decision in this document, and the reversal is worth recording rather than quietly making.
 
 They were withheld on the grounds that a wrong bound silently drops rows and that bounds go wrong quietly under type coercion. That is true, and it is why every bound written comes from code that refuses to produce one it cannot justify: an unrecognised type gets no bound, an unorderable value gets no bound, a merge that would narrow a bound drops it instead, and a value the protocol cannot represent exactly — a non-finite float, bytes that are not text — is omitted rather than approximated.

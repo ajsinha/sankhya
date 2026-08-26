@@ -557,6 +557,36 @@ CATALOGUE = [
      "        !matches!(self, Self::Sacrifice)",
      "sankhya-governor"),
 
+    ("checkpoint: trust a pointer to a checkpoint file that is not there",
+     "crates/sankhya-table-delta/src/checkpoint.rs",
+     "    if !checkpoint_path(table_root, version).exists() {\n        return None;\n    }",
+     "",
+     "sankhya-table-delta"),
+
+    ("checkpoint: trust a checkpoint from a table that was rebuilt",
+     "crates/sankhya-table-delta/src/checkpoint.rs",
+     "    if !commit_path(table_root, version).exists() {\n        return None;\n    }",
+     "",
+     "sankhya-table-delta"),
+
+    ("checkpoint: write the pointer before the checkpoint file",
+     "crates/sankhya-table-delta/src/checkpoint.rs",
+     "    std::fs::rename(&staging, &path)\n        .map_err(|e| CommitError::Io(format!(\"publishing {}: {e}\", path.display())))?;",
+     "",
+     "sankhya-table-delta"),
+
+    ("checkpoint: include files that were removed",
+     "crates/sankhya-table-delta/src/checkpoint.rs",
+     "            if !adds.is_valid(row) {\n                continue;\n            }",
+     "",
+     "sankhya-table-delta"),
+
+    ("driver: checkpoint a brand-new table on its first commit",
+     "crates/sankhya-maintenance/src/driver.rs",
+     "    let since = version.saturating_sub(latest_checkpoint(table_root).unwrap_or(0));",
+     "    let since = latest_checkpoint(table_root).map_or(version + 1, |last| version - last);",
+     "sankhya-maintenance"),
+
     ("readpath: read every offered tier rather than the selected ones",
      "crates/sankhya-readpath/src/lib.rs",
      "    for tier in &splice.tiers {",

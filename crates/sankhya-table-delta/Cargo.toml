@@ -20,6 +20,9 @@ sankhya-stats = { path = "../sankhya-stats" }
 serde         = { workspace = true, features = ["derive"] }
 serde_json    = { workspace = true }
 arrow-schema  = { workspace = true }
+arrow-array   = { workspace = true }
+arrow-buffer  = { workspace = true }
+parquet       = { workspace = true }
 
 # Test-only, deliberately.
 #
@@ -35,4 +38,3 @@ delta_kernel_default_engine = { workspace = true }
 tempfile                    = { workspace = true }
 tokio                       = { workspace = true }
 url                         = "2"
-arrow-array                 = { workspace = true }

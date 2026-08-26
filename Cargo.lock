@@ -3311,9 +3311,11 @@ name = "sankhya-table-delta"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
+ "arrow-buffer",
  "arrow-schema",
  "delta_kernel",
  "delta_kernel_default_engine",
+ "parquet",
  "sankhya-error",
  "sankhya-stats",
  "sankhya-types",

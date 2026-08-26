@@ -286,14 +286,14 @@ impl fmt::Display for CommitError {
 
 impl std::error::Error for CommitError {}
 
-fn log_dir(table_root: &Path) -> PathBuf {
+pub(crate) fn log_dir(table_root: &Path) -> PathBuf {
     table_root.join("_delta_log")
 }
 
 /// The protocol's file naming: twenty digits, zero-padded, so lexical order is version
 /// order. Listing the directory and sorting by name is therefore a correct replay
 /// order, which is the property the padding exists for.
-fn commit_path(table_root: &Path, version: Version) -> PathBuf {
+pub(crate) fn commit_path(table_root: &Path, version: Version) -> PathBuf {
     log_dir(table_root).join(format!("{version:020}.json"))
 }
 
@@ -505,7 +505,22 @@ impl LiveSet {
 ///
 /// Returns an error if the log cannot be read or is malformed.
 pub fn live_files(table_root: &Path) -> Result<LiveSet, CommitError> {
-    advance(table_root, &LiveSet::default())
+    // Start from a checkpoint if there is a usable one, and from nothing if there is not.
+    //
+    // Every failure here falls back to a full replay rather than surfacing, because a
+    // checkpoint carries no information the log does not. That is what makes a checkpoint
+    // safe to write by hand: the worst a bad one can do is be ignored.
+    let base = crate::checkpoint::latest_checkpoint(table_root)
+        .and_then(|version| {
+            let files = crate::checkpoint::read_checkpoint(table_root, version).ok()?;
+            Some(LiveSet {
+                files,
+                version: Some(version),
+            })
+        })
+        .unwrap_or_default();
+
+    advance(table_root, &base)
 }
 
 /// The live set as of the newest commit, starting from a known earlier one.

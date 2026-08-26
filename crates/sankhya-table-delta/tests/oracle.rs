@@ -273,3 +273,158 @@ fn a_bound_the_protocol_cannot_carry_is_omitted_rather_than_approximated() {
     assert!(sankhya_table_delta::encode_bound(&Bound::Int(7)).is_some());
     assert!(sankhya_table_delta::encode_bound(&Bound::Float(1.5)).is_some());
 }
+
+#[test]
+fn the_kernel_reads_a_checkpoint_this_crate_wrote() {
+    // A checkpoint is a Parquet file of nested structs, maps and lists, written by hand
+    // against a protocol this crate does not own. Of everything here it is the most
+    // likely to be subtly wrong, and the least likely for our own reader to notice --
+    // because our own reader would be parsing exactly what our own writer produced.
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let root = dir.path();
+    table(root);
+
+    let metadata = Metadata::new("t5", SCHEMA, 0);
+    let mut actions = create(metadata.clone());
+    for i in 0..6 {
+        let name = format!("part-{i:04}.parquet");
+        touch(root, &name);
+        actions.push(Action::Add(AddFile::with_rows(name, 100, 0, 50)));
+    }
+    commit(root, 0, &actions).expect("committing");
+
+    let live = live_files(root).expect("our reader");
+    assert_eq!(live.files.len(), 6);
+
+    let report = sankhya_table_delta::write_checkpoint(root, &live, &metadata, 1, 2)
+        .expect("writing a checkpoint");
+    assert_eq!(report.version, 0);
+    assert_eq!(report.actions, 8, "protocol, metadata, and six files");
+    assert!(report.path.exists());
+
+    // The kernel must resolve the same table through the checkpoint it now finds.
+    let (version, mut paths) = kernel_files(root);
+    assert_eq!(version, 0);
+    let mut expected: Vec<String> = (0..6).map(|i| format!("part-{i:04}.parquet")).collect();
+    expected.sort();
+    paths.sort();
+    assert_eq!(paths, expected);
+}
+
+#[test]
+fn the_kernel_reads_commits_made_after_a_checkpoint() {
+    // A checkpoint is a starting point, not an answer. A reader that stopped there would
+    // serve a table frozen at the moment it was written.
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let root = dir.path();
+    table(root);
+
+    let metadata = Metadata::new("t6", SCHEMA, 0);
+    let mut actions = create(metadata.clone());
+    for i in 0..4 {
+        let name = format!("part-{i:04}.parquet");
+        touch(root, &name);
+        actions.push(Action::Add(AddFile::with_rows(name, 100, 0, 50)));
+    }
+    commit(root, 0, &actions).expect("committing");
+
+    let live = live_files(root).expect("reading");
+    sankhya_table_delta::write_checkpoint(root, &live, &metadata, 1, 2).expect("checkpointing");
+
+    // Two more commits: one adds, one compacts the originals away.
+    touch(root, "part-0004.parquet");
+    commit(
+        root,
+        1,
+        &[Action::Add(AddFile::with_rows(
+            "part-0004.parquet",
+            100,
+            0,
+            50,
+        ))],
+    )
+    .expect("committing");
+
+    touch(root, "merged.parquet");
+    let mut compaction = vec![Action::Add(AddFile::with_rows(
+        "merged.parquet",
+        400,
+        1,
+        200,
+    ))];
+    for i in 0..4 {
+        compaction.push(Action::Remove(sankhya_table_delta::RemoveFile::rewritten(
+            format!("part-{i:04}.parquet"),
+            1,
+        )));
+    }
+    commit(root, 2, &compaction).expect("committing");
+
+    let ours = live_files(root).expect("our reader");
+    let mut expected = ours
+        .paths()
+        .iter()
+        .map(|p| (*p).to_string())
+        .collect::<Vec<_>>();
+    expected.sort();
+    assert_eq!(expected, vec!["merged.parquet", "part-0004.parquet"]);
+
+    let (version, mut paths) = kernel_files(root);
+    assert_eq!(version, 2);
+    paths.sort();
+    assert_eq!(paths, expected);
+}
+
+#[test]
+fn the_checkpoint_is_actually_used_and_not_merely_tolerated() {
+    // Both checkpoint tests above pass whether the kernel reads the checkpoint or
+    // ignores it and replays the log, because either route reaches the same answer.
+    // That is exactly the shape of a test that proves nothing.
+    //
+    // So: write a checkpoint, then delete the commits it covers. The protocol permits
+    // that after a checkpoint, and it leaves the checkpoint as the *only* record of
+    // those files. A reader that resolves the table now has certainly read it.
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let root = dir.path();
+    table(root);
+
+    let metadata = Metadata::new("t7", SCHEMA, 0);
+    let mut actions = create(metadata.clone());
+    for i in 0..5 {
+        let name = format!("part-{i:04}.parquet");
+        touch(root, &name);
+        actions.push(Action::Add(AddFile::with_rows(name, 100, 0, 50)));
+    }
+    commit(root, 0, &actions).expect("committing");
+
+    touch(root, "part-0005.parquet");
+    commit(
+        root,
+        1,
+        &[Action::Add(AddFile::with_rows(
+            "part-0005.parquet",
+            100,
+            0,
+            50,
+        ))],
+    )
+    .expect("committing");
+
+    let live = live_files(root).expect("reading");
+    assert_eq!(live.files.len(), 6);
+    sankhya_table_delta::write_checkpoint(root, &live, &metadata, 1, 2).expect("checkpointing");
+
+    // Remove the commits the checkpoint subsumes, keeping the one it names.
+    std::fs::remove_file(root.join("_delta_log").join("00000000000000000000.json"))
+        .expect("removing commit 0");
+
+    // Without the checkpoint, version 1 alone names only one file. With it, six.
+    let (version, paths) = kernel_files(root);
+    assert_eq!(version, 1);
+    assert_eq!(
+        paths.len(),
+        6,
+        "the kernel resolved {} files, so it did not read the checkpoint: {paths:?}",
+        paths.len()
+    );
+}

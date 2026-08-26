@@ -68,6 +68,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | A skipped file never hides a matching row | Property-tested over arbitrary values and predicates, and again over *merged* statistics — compaction merges rather than recomputes, so a merge that narrowed a bound would produce a defect appearing only after maintenance ran |
 | Distinct-value counts are estimated well enough to order a join | Within 5% from 10 to 100,000 distinct values, exact under merge, and reproducible across processes — a per-process hash seed would make two nodes disagree about a plan and the disagreement would look like an optimizer bug |
 | An approximate function cannot answer an exact question by accident | Rejected at planning time, including inside a subquery or a `HAVING` clause; a permissive session still gets a watermark naming what it used |
+| A cold reader starts from a checkpoint, and any reader may ignore one | **10×** at fifty thousand commits; the kernel reads a checkpoint this system wrote by hand, and is proven to *use* it rather than tolerate it — the commits it covers are deleted and the table still resolves |
 | A warm process pays for what changed, not for the whole history | Table file sets are cached and resumed; the cache cannot go stale because it never trusts its own version, and asking costs one filesystem probe rather than a directory listing |
 | Log replay scales linearly with a table's history | Guarded by measuring the *ratio* between two sizes rather than a clock, so it means the same on any machine — and proven to fail on the quadratic implementation it replaced |
 | A file is prunable from the moment it is published | Capture computes statistics from the batch it just encoded — the same data, already in memory — so a file does not wait for maintenance to become skippable |
@@ -76,7 +77,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 81 specific defects applied one at a time; all 81 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 86 specific defects applied one at a time; all 86 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test |
 
 ---
 
@@ -105,10 +106,10 @@ Stated plainly, because a status document that omits this is marketing.
 - **The cardinality sketch is not persisted.** The protocol has nowhere to put it, so a
   column read back from the log reports zero distinct values. Nothing currently reads
   that figure, but it is a trap for whatever does first.
-- **No log checkpoints.** A *cold* process still replays the whole log: 140 ms at fifty
-  thousand commits, dominated by opening one file per commit rather than by anything an
-  algorithm can fix. A warm process pays 1.2 ms, so this is a startup cost rather than a
-  per-query one — but it is the last unbounded thing on the read path.
+- **No multi-part or V2 checkpoints, and no log cleanup.** A checkpoint is written as a
+  single file, which is fine into the millions of live files and not beyond; and nothing
+  deletes the commits a checkpoint subsumes, so the log directory grows without bound even
+  though nothing reads most of it.
 - **No merge strategy beyond union.** Latest-version-per-key, which mutable tables need,
   is not implemented; the provider unions its tiers.
 - **The governor decides but governs nothing.** Admission and the pressure ladder are
@@ -329,6 +330,33 @@ of separate commits and passed against the very implementation it was written to
 the quadratic term is per action, not per commit, so file I/O buried it. Concentrating
 the actions into ten commits separates them: 16.1× for four times the files against about
 4× for the fixed version.
+
+### Checkpointing the log
+
+A cold reader — an external engine, or a process that has just started.
+
+| Commits | Replay | From a checkpoint | | Checkpoint size |
+|---|---|---|---|---|
+| 1,000 | 1.90 ms | 0.39 ms | **5×** | 32 KiB |
+| 10,000 | 28.7 ms | 3.21 ms | **9×** | 269 KiB |
+| 50,000 | 141 ms | 13.9 ms | **10×** | 1.3 MiB |
+
+This is the number that matters to **other engines**, which have no cache and start cold
+every time. A Spark job reading a fifty-thousand-commit table opened fifty thousand files
+before reading a row.
+
+The kernel reads a checkpoint this system writes by hand — nested structs, maps and lists
+in Parquet, against a protocol it does not own. And it is shown to *use* it rather than
+merely tolerate it: the commits the checkpoint covers are deleted, leaving it as the only
+record of those files, and the table still resolves. Without that step both checkpoint
+tests would have passed whether the kernel read the file or ignored it and replayed,
+which is precisely the shape of a test that proves nothing.
+
+**Nothing depends on a checkpoint being present, correct, or parseable.** It holds exactly
+what replay produces, so every failure — a missing file, a corrupt pointer, one left
+behind by a table that was dropped and recreated — falls back to the log and costs a
+replay rather than an answer. That is what makes it defensible to write this by hand: the
+worst a bad checkpoint can do is be ignored.
 
 ### Caching a table's file set
 

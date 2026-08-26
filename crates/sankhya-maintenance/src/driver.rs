@@ -52,7 +52,10 @@
 
 use sankhya_error::Result;
 use sankhya_table::{CompactionOutcome, WriterConfig};
-use sankhya_table_delta::{commit, Action, AddFile, CommitError, RemoveFile, Version};
+use sankhya_table_delta::{
+    commit, latest_checkpoint, live_files, write_checkpoint, Action, AddFile, CheckpointReport,
+    CommitError, Metadata as DeltaMetadata, RemoveFile, Version,
+};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -326,6 +329,47 @@ pub fn commit_tick(
     }
 
     commit(table_root, version, &actions)
+}
+
+/// How often a table's log is collapsed into a checkpoint.
+///
+/// Ten commits is the protocol's usual convention and is not arbitrary: the checkpoint
+/// costs one write proportional to the *live file count*, while skipping it costs every
+/// cold reader one file open per commit. Ten keeps the write rare and the replay short.
+pub const CHECKPOINT_INTERVAL: u64 = 10;
+
+/// Write a checkpoint if enough commits have accumulated since the last one.
+///
+/// Returns `None` when none was due. A checkpoint is derived state — it holds exactly
+/// what replay produces — so failing to write one is a missed optimisation and never a
+/// correctness problem. That is why this is a maintenance job rather than part of
+/// committing: a commit that had to checkpoint could fail for a reason that does not
+/// matter.
+///
+/// # Errors
+///
+/// Returns an error if a checkpoint was due and could not be written. The log is
+/// untouched either way.
+pub fn checkpoint_if_due(
+    table_root: &Path,
+    metadata: &DeltaMetadata,
+    interval: u64,
+) -> std::result::Result<Option<CheckpointReport>, CommitError> {
+    let live = live_files(table_root)?;
+    let Some(version) = live.version else {
+        return Ok(None);
+    };
+
+    // A table with no checkpoint is measured from version zero rather than treated as
+    // infinitely overdue. Otherwise a brand-new table checkpoints on its first commit,
+    // writing a file to summarise a log of one — which costs a write and saves nobody
+    // anything.
+    let since = version.saturating_sub(latest_checkpoint(table_root).unwrap_or(0));
+    if since < interval {
+        return Ok(None);
+    }
+
+    write_checkpoint(table_root, &live, metadata, 1, 2).map(Some)
 }
 
 /// Retire inputs from merges completed on earlier ticks.

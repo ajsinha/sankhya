@@ -37,11 +37,13 @@
 #![doc(html_root_url = "https://docs.rs/sankhya-table-delta")]
 
 mod cache;
+mod checkpoint;
 mod log;
 mod schema;
 mod stats;
 
 pub use cache::{LogCache, Outcome};
+pub use checkpoint::{latest_checkpoint, read_checkpoint, write_checkpoint, CheckpointReport};
 pub use log::{
     advance, commit, commits, create, live_files, newest_after, read_actions, read_actions_after,
     Action, AddFile, CommitError, Format, LiveSet, Metadata, RemoveFile, Replay, Version,

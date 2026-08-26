@@ -186,3 +186,67 @@ async fn statistics_round_trip_through_the_log_unchanged() {
     // not read the resulting zero as "no distinct values".
     assert_eq!(amount.distinct_estimate(), 0);
 }
+
+#[tokio::test]
+async fn maintenance_checkpoints_a_log_once_it_has_grown() {
+    // Checkpointing is a maintenance job rather than part of committing, because a
+    // checkpoint holds exactly what replay produces: failing to write one is a missed
+    // optimisation, and a commit that could fail for that reason would be worse than the
+    // problem.
+    use sankhya_maintenance::{checkpoint_if_due, CHECKPOINT_INTERVAL};
+    use sankhya_table_delta::latest_checkpoint;
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let root = dir.path();
+    let metadata = Metadata::new("orders", DELTA_SCHEMA, 0);
+    commit(root, 0, &create(metadata.clone())).expect("creating");
+
+    // Nothing due yet.
+    assert!(checkpoint_if_due(root, &metadata, CHECKPOINT_INTERVAL)
+        .expect("checking")
+        .is_none());
+    assert_eq!(latest_checkpoint(root), None);
+
+    for v in 1..CHECKPOINT_INTERVAL {
+        commit(
+            root,
+            v,
+            &[Action::Add(AddFile::with_rows(
+                format!("part-{v:04}.parquet"),
+                100,
+                0,
+                50,
+            ))],
+        )
+        .expect("committing");
+    }
+    assert!(
+        checkpoint_if_due(root, &metadata, CHECKPOINT_INTERVAL)
+            .expect("checking")
+            .is_none(),
+        "one commit short should not be due"
+    );
+
+    commit(
+        root,
+        CHECKPOINT_INTERVAL,
+        &[Action::Add(AddFile::with_rows("last.parquet", 100, 0, 50))],
+    )
+    .expect("committing");
+
+    let report = checkpoint_if_due(root, &metadata, CHECKPOINT_INTERVAL)
+        .expect("checking")
+        .expect("a checkpoint is due");
+    assert_eq!(report.version, CHECKPOINT_INTERVAL);
+    assert_eq!(latest_checkpoint(root), Some(CHECKPOINT_INTERVAL));
+
+    // And immediately after, nothing is due again.
+    assert!(checkpoint_if_due(root, &metadata, CHECKPOINT_INTERVAL)
+        .expect("checking")
+        .is_none());
+
+    // The table reads the same either way.
+    let live = live_files(root).expect("reading");
+    assert_eq!(live.files.len() as u64, CHECKPOINT_INTERVAL);
+    assert_eq!(live.version, Some(CHECKPOINT_INTERVAL));
+}
