@@ -14,7 +14,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 |---|---|---|
 | **M0** Foundations, spikes, walking skeleton | 10–12 ew | **Complete**, merged to `main` |
 | **M1** Zero-configuration sync and read-your-own-writes | 14–18 ew | **Complete** |
-| **M2** Ingest correctness and durability | 24–28 ew | Partly — batching invariants and reconciliation-by-test exist; slot lifecycle, backfill and the escalation ladder do not |
+| **M2** Ingest correctness and durability | 24–28 ew | In progress — batching invariants and the source-safety ladder exist; slot lifecycle, backfill and fault injection do not |
 | **M3** Query engine and storage performance | 28–34 ew | A vertical slice only |
 | **M4**–**M8** | — | Not started |
 
@@ -37,6 +37,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | Several tables capture independently from one interleaved stream | 4 tables, each reconciling against the source |
 | Capture holds up at scale | 1,000,000 rows across all 10 tables at ~285k rows/s, every table reconciling |
 | A session sees its own write analytically | Wrote, capture caught up in 6 ms, the query returned the row |
+| Capture cannot endanger its own source | Five-rung ladder escalating strictly below the database's own limit, validated against a real slot |
 
 ---
 
@@ -49,9 +50,9 @@ Stated plainly, because a status document that omits this is marketing.
   replication connection. The decoder and pipeline are transport-agnostic by design, but
   the transport itself is unwritten. Note that neither mainstream Rust PostgreSQL client
   supports the replication protocol, so this is real work rather than a wiring exercise.
-- **No slot lifecycle.** No creation policy, no position advancement, no lag monitoring,
-  and **none of the source-safety escalation ladder** — which is the single most
-  important operational safeguard in the design.
+- **No slot lifecycle.** No creation policy and no position advancement. The
+  source-safety ladder now exists and is tested against a real slot, but nothing drives
+  it on a timer yet — it is a decision function without a caller.
 - **No backfill.** Only changes occurring after a slot exists are captured.
 - **No arrival buffer.** The tiered read path is planned and property-tested but has
   only one tier to plan over, so read-your-own-writes currently waits for publication

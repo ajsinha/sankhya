@@ -2452,6 +2452,11 @@ dependencies = [
 [[package]]
 name = "sankhya-cdc-pg"
 version = "0.1.0"
+dependencies = [
+ "proptest",
+ "sankhya-error",
+ "sankhya-types",
+]
 
 [[package]]
 name = "sankhya-cli"

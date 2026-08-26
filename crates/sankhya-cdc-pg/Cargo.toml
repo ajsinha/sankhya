@@ -1,6 +1,6 @@
 [package]
 name         = "sankhya-cdc-pg"
-description  = "Logical replication transport and slot lifecycle."
+description  = "Slot lifecycle, lag measurement and the source-safety escalation ladder."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -14,3 +14,8 @@ layer = 2
 workspace = true
 
 [dependencies]
+sankhya-types = { path = "../sankhya-types" }
+sankhya-error = { path = "../sankhya-error" }
+
+[dev-dependencies]
+proptest = { workspace = true }
