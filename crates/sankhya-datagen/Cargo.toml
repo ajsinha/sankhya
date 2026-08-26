@@ -14,3 +14,14 @@ layer = 3
 workspace = true
 
 [dependencies]
+sankhya-types = { path = "../sankhya-types" }
+rand          = { workspace = true }
+rand_chacha   = { workspace = true }
+serde         = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[[bin]]
+name = "sankhya-datagen"
+path = "src/bin/datagen.rs"
