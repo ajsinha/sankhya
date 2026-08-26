@@ -14,7 +14,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 |---|---|---|
 | **M0** Foundations, spikes, walking skeleton | 10–12 ew | **Complete**, merged to `main` |
 | **M1** Zero-configuration sync and read-your-own-writes | 14–18 ew | **Complete** |
-| **M2** Ingest correctness and durability | 24–28 ew | In progress — batching invariants, the source-safety ladder, reconciliation, idempotence and crash safety exist; slot lifecycle, backfill and schema evolution do not |
+| **M2** Ingest correctness and durability | 24–28 ew | Largely complete — batching invariants, source-safety ladder, reconciliation, idempotence, crash safety and schema evolution all exist. Slot lifecycle and initial backfill do not |
 | **M3** Query engine and storage performance | 28–34 ew | A vertical slice only |
 | **M4**–**M8** | — | Not started |
 
@@ -40,6 +40,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | Capture cannot endanger its own source | Five-rung ladder escalating strictly below the database's own limit, validated against a real slot |
 | Captured data provably matches the source | 3,000 rows digested independently on both sides, no discrepancies |
 | A restart cannot duplicate data | Replay is filtered per row; every crash point across a constructed stream yields each row exactly once |
+| A schema change never corrupts data | Additive changes apply automatically; anything whose intent cannot be inferred quarantines, keeps consuming so the cursor advances, and requires an operator to adopt the new shape |
 
 ---
 
