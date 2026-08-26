@@ -3266,6 +3266,14 @@ name = "sankhya-server"
 version = "0.1.0"
 
 [[package]]
+name = "sankhya-stats"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "sankhya-types",
+]
+
+[[package]]
 name = "sankhya-table"
 version = "0.1.0"
 dependencies = [

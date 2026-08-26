@@ -364,6 +364,45 @@ CATALOGUE = [
      "    Ok(Watermark::default())",
      "sankhya-olap"),
 
+    ("stats: skip a file whose bounds are unknown",
+     "crates/sankhya-stats/src/prune.rs",
+     "fn compare_min(stats: &ColumnStats, target: &Bound) -> Option<Ordering> {\n    stats.min.as_ref()?.compare(target)",
+     "fn compare_min(stats: &ColumnStats, target: &Bound) -> Option<Ordering> {\n    let Some(min) = stats.min.as_ref() else { return Some(Ordering::Greater) };\n    min.compare(target)",
+     "sankhya-stats"),
+
+    ("stats: treat an inclusive bound as exclusive when skipping",
+     "crates/sankhya-stats/src/prune.rs",
+     "        Predicate::LessOrEqual(target) => {\n            matches!(compare_min(stats, target), Some(Ordering::Greater))\n        }",
+     "        Predicate::LessOrEqual(target) => matches!(\n            compare_min(stats, target),\n            Some(Ordering::Greater | Ordering::Equal)\n        ),",
+     "sankhya-stats"),
+
+    ("stats: inherit one side's bounds when the other is unbounded",
+     "crates/sankhya-stats/src/column.rs",
+     "            match (mine, theirs) {\n                (Some(a), Some(b)) => Bound::min_of(&a, &b),\n                _ => None,\n            }",
+     "            match (mine, theirs) {\n                (Some(a), Some(b)) => Bound::min_of(&a, &b),\n                (Some(a), None) => Some(a),\n                (None, b) => b,\n            }",
+     "sankhya-stats"),
+
+    ("stats: record a NaN as a bound",
+     "crates/sankhya-stats/src/column.rs",
+     "        if matches!(&bound, Bound::Float(f) if f.is_nan()) {\n            return;\n        }",
+     "",
+     "sankhya-stats"),
+
+    # Both guard sites -- min and max. Replacing one leaves the other refusing, which is
+    # an equivalent mutant.
+    ("stats: merge incomparable bounds instead of refusing",
+     "crates/sankhya-stats/src/column.rs",
+     "                return Err(MergeError::IncomparableBounds);",
+     "                self.min = None;",
+     "sankhya-stats",
+     2),
+
+    ("stats: drop the small-cardinality correction",
+     "crates/sankhya-stats/src/sketch.rs",
+     "        if raw <= 2.5 * m && zeros > 0 {",
+     "        if false {",
+     "sankhya-stats"),
+
     ("readpath: read every offered tier rather than the selected ones",
      "crates/sankhya-readpath/src/lib.rs",
      "    for tier in &splice.tiers {",

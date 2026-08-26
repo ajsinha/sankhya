@@ -1,0 +1,20 @@
+[package]
+name         = "sankhya-stats"
+description  = "Mergeable per-column statistics, and the pruning decisions they may be trusted for."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 1
+
+[lints]
+workspace = true
+
+[dependencies]
+sankhya-types = { path = "../sankhya-types" }
+
+[dev-dependencies]
+proptest = { workspace = true }

@@ -838,6 +838,29 @@ The gap the file format does not fill is **distinct-value counts**, which the op
 
 This is what makes join ordering work on arbitrary user schemas where nobody has run an analysis command.
 
+#### 9.5.1 The rule statistics live under
+
+**A statistic may make a query slower. It may never make a query wrong.**
+
+This is what justifies keeping statistics *out* of the table log. The log says which files a table consists of, and getting that wrong makes queries fail or double-count, so it is written conservatively and never guessed at. Statistics are different in one respect that changes everything: they are **rebuildable**. A wrong statistic can be recomputed from the data, and until it is, the worst outcome should be a slow plan.
+
+That is only true if the asymmetry is enforced rather than intended:
+
+- **Bounds may skip a file only when they prove nothing in it can match.** Anything uncertain — an absent bound, a type that does not line up, a comparison that cannot be made — means the file is read. A needless read costs time; a wrong skip costs an answer, and nothing downstream can detect it.
+- **Unknown is not unbounded.** An absent bound means "may match anything", and filling it in with a default turns a missing statistic into a wrong one.
+- **A merge may not narrow a bound.** Where both sides hold values and either lacks a bound, the merged bound is absent — inheriting one side's bound would claim a limit the other may exceed. This matters because compaction *merges* statistics rather than recomputing them, so a defect here appears only after maintenance has run, on data that was correct when it was written.
+- **Distinct-value estimates never touch pruning.** They are approximate by construction, so no decision that changes an answer may depend on one however convenient it looks.
+
+The safety property is property-tested directly — if `can_skip` returns true, no value in the file satisfies the predicate — and separately over merged statistics. The converse is deliberately *not* asserted: an implementation that never skipped anything would be slow and correct, and only one direction is a defect.
+
+#### 9.5.2 The cardinality estimate
+
+Distinct-value counts are what neither the file format nor the table log carries, and they are what the optimizer needs to order joins on schemas where nobody has run an analysis command.
+
+The estimate is a HyperLogLog sketch: 4,096 registers per column, merging by register-wise maximum so a merged file's sketch equals the sketch of its inputs' union exactly — which is what makes statistics maintainable at compaction with no value re-read. Accuracy measured within 5% from 10 to 100,000 distinct values.
+
+Two properties matter more than accuracy. The sketch **merges exactly**, so maintenance never degrades it. And the hash is **fixed and process-independent**: a seed that varies per process would make two nodes disagree about a plan, and that disagreement would present as a bug in the optimizer rather than as what it is.
+
 ### 9.6 Bloom filters
 
 Bloom filters help only for equality predicates on columns where bounds-based pruning fails — that is, high-distinct-value columns not used as the sort key, where every file's range spans the whole domain.

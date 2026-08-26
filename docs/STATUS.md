@@ -61,10 +61,12 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | SANKHYA owns its table provider | Files and row counts come from the table log; scan execution is DataFusion's own Parquet source. Splices memory and files, refuses gaps at planning time, and refuses a file the log cannot state a row count for |
 | Order statistics are exact and the convention is named | Three conventions, shown to disagree at the 99th percentile — which is the only place anyone asks for one. An unorderable value is refused rather than placed somewhere; an empty input is refused rather than answered with zero |
 | The quantile of a sum is not computed as the sum of quantiles | Demonstrated with numbers: two exposures whose worst cases fall in different scenarios give −100 combined and −190 under the naive composition |
+| A skipped file never hides a matching row | Property-tested over arbitrary values and predicates, and again over *merged* statistics — compaction merges rather than recomputes, so a merge that narrowed a bound would produce a defect appearing only after maintenance ran |
+| Distinct-value counts are estimated well enough to order a join | Within 5% from 10 to 100,000 distinct values, exact under merge, and reproducible across processes — a per-process hash seed would make two nodes disagree about a plan and the disagreement would look like an optimizer bug |
 | An approximate function cannot answer an exact question by accident | Rejected at planning time, including inside a subquery or a `HAVING` clause; a permissive session still gets a watermark naming what it used |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 50 specific defects applied one at a time; all 50 fail the suite. Eight did not when first run; three catalogue entries turned out to be equivalent mutants no test could ever have caught, and chasing the third produced a documentation correction rather than a new test |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 56 specific defects applied one at a time; all 56 fail the suite. Ten did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, and chasing one of those produced a documentation correction rather than a new test |
 
 ---
 
@@ -90,10 +92,11 @@ Stated plainly, because a status document that omits this is marketing.
   a historical query skip the tier at no cost, and per-tenant sub-caps. Nothing yet
   wires the tier into the ingest path either, so read-your-own-writes still waits for
   publication in practice.
-- **No statistics beyond row counts.** The provider supplies exact row counts from the
-  log, which is enough for join ordering but not for file pruning. Column bounds, null
-  fractions and distinct-value sketches belong in a statistics catalogue that does not
-  exist yet.
+- **The statistics catalogue is not wired into the provider.** Bounds, null fractions,
+  average widths and distinct-value sketches all exist and merge correctly, and
+  `can_skip` is property-tested — but nothing computes them at compaction, nothing
+  persists them, and the provider does not consult them. The pruning decision is built;
+  the pipeline that would feed it is not.
 - **No caching.** Every plan replays the table log from the first commit, so planning
   cost grows with commit count — slowly, but without bound. Log checkpoints and a
   metadata cache are both unbuilt.

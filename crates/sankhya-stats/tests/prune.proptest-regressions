@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 9aec86704b9da6157a3df78af1ae071ccbc3c62c8b3a5276055dc0b1123e83a8 # shrinks to left = [Some(0)], right = []
+cc 5536e9701d2917da4bd790b9ad2b9dd4ace2247c7868acfc3658c9b49104ede1 # shrinks to values = [Some(-24)], predicate = LessOrEqual(Int(-24))
+cc d7709e076a43b290882e8baf42caa106c5edaa0d35cdc7d5907eda3266bc4a1f # shrinks to left = [Some(-30)], right = [], predicate = LessOrEqual(Int(-30))
