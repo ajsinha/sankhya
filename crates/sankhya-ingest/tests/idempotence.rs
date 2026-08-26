@@ -129,11 +129,22 @@ fn a_restart_resumes_without_duplicating() {
     let files = resumed.publish(true).expect("publishes");
     let rows: usize = files.iter().map(|f| f.rows).sum();
 
+    // Only the transaction past the recovered position survives filtering. The two
+    // replayed transactions are dropped row by row.
+    //
+    // This assertion originally read 17 — every row in the batch — which encoded the
+    // very defect the crash tests later exposed: a resent stream does not rebatch
+    // identically, so a single batch routinely spans both already-published and new
+    // positions, and skipping only wholly-old batches republishes the old half.
     assert_eq!(
-        rows, 17,
-        "the replayed range must not be republished, but the new work must be: \
-         expected the 5 + 5 replayed rows to be skipped in favour of a single batch \
-         covering through 300"
+        rows, 7,
+        "the replayed rows must be filtered out individually, leaving only the \
+         transaction past the recovered position"
+    );
+    assert_eq!(
+        resumed.stats().rows_skipped_as_duplicate,
+        10,
+        "and the filtered rows must be counted, so a persistent replay is visible"
     );
     assert_eq!(resumed.published_through(RELATION), Some(Lsn::new(300)));
 }

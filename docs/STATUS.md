@@ -14,7 +14,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 |---|---|---|
 | **M0** Foundations, spikes, walking skeleton | 10–12 ew | **Complete**, merged to `main` |
 | **M1** Zero-configuration sync and read-your-own-writes | 14–18 ew | **Complete** |
-| **M2** Ingest correctness and durability | 24–28 ew | In progress — batching invariants, the source-safety ladder and reconciliation exist; slot lifecycle, backfill and fault injection do not |
+| **M2** Ingest correctness and durability | 24–28 ew | In progress — batching invariants, the source-safety ladder, reconciliation, idempotence and crash safety exist; slot lifecycle, backfill and schema evolution do not |
 | **M3** Query engine and storage performance | 28–34 ew | A vertical slice only |
 | **M4**–**M8** | — | Not started |
 
@@ -39,7 +39,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | A session sees its own write analytically | Wrote, capture caught up in 6 ms, the query returned the row |
 | Capture cannot endanger its own source | Five-rung ladder escalating strictly below the database's own limit, validated against a real slot |
 | Captured data provably matches the source | 3,000 rows digested independently on both sides, no discrepancies |
-| A restart cannot duplicate data | Replayed ranges are skipped and counted; new work past the published position is never skipped |
+| A restart cannot duplicate data | Replay is filtered per row; every crash point across a constructed stream yields each row exactly once |
 
 ---
 
@@ -77,6 +77,7 @@ Recorded because the interesting information is usually in what went wrong.
 | The layer rule forbade same-layer dependencies, which was wrong rather than strict | A vocabulary crate legitimately building on another |
 | The documentation-rot check found a stale version claim on its first run | Its own first execution |
 | **Zone offsets were stripped rather than applied, shifting a whole timestamp column by four hours** | End-to-end reconciliation against the source. Every value stayed internally consistent, so nothing looked wrong until the two sides were compared |
+| **Duplicate suppression worked per batch rather than per row, so a batch spanning the restart boundary republished its already-durable half** | Crash-safety tests sweeping every possible interruption point. A resent stream does not rebatch identically, which a single hand-picked crash point would not have revealed |
 
 ---
 

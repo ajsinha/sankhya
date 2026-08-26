@@ -1,6 +1,6 @@
 //! Pipeline state and the publish cycle.
 
-use sankhya_cdc_apply::{BatchPolicy, Batcher};
+use sankhya_cdc_apply::{BatchPolicy, Batcher, MutationPlan};
 use sankhya_cdc_model::{Decoder, Message, RelationDescriptor};
 use sankhya_error::{Error, Result};
 use sankhya_schema::{Onboarded, OnboardingWarning, onboard_relation};
@@ -34,12 +34,19 @@ pub struct PipelineStats {
     /// Non-zero is a defect condition, not a tolerable loss. Surfaced rather than
     /// absorbed so it cannot pass unnoticed.
     pub unresolvable: usize,
-    /// Batches skipped because their range was already published.
+    /// Batches skipped entirely because every row in them was already published.
     ///
     /// Expected and healthy after a restart — this is what converts at-least-once
     /// delivery into exactly-once effect. A count that keeps rising during steady
     /// operation, however, means something is replaying that should not be.
     pub batches_skipped_as_duplicate: usize,
+    /// Individual rows dropped from a batch that spanned the published boundary.
+    ///
+    /// Counted separately from whole skipped batches because the two mean different
+    /// things: a skipped batch is a clean replay, while a partially filtered batch is
+    /// the ordinary case after a restart, where the resent stream rebatches across the
+    /// boundary.
+    pub rows_skipped_as_duplicate: usize,
     /// The highest position wholly published across every table.
     pub applied_through: Lsn,
 }
@@ -239,21 +246,46 @@ impl Pipeline {
                 continue;
             }
 
-            // Idempotence, and the reason it is checked here rather than trusted.
+            // Idempotence, at ROW granularity rather than batch granularity.
             //
             // Delivery is at-least-once: after a crash the source resends everything
-            // since the last confirmed position, so a batch already published will
-            // arrive again. Publishing it a second time would duplicate every row in
-            // it, and row counts alone would still look plausible against a source
-            // that had itself grown.
+            // since the last confirmed position, so already-published work arrives
+            // again. Publishing it twice duplicates rows, and row counts alone still
+            // look plausible against a source that has itself grown.
             //
-            // The check is a comparison of positions rather than of content, because
-            // positions are monotonic and content is not.
-            if plan.covers_through <= state.published_through {
+            // Filtering must be per row, not per batch. A resent stream does not
+            // rebatch identically — the restarted pipeline sees a different message
+            // boundary — so a batch routinely spans both already-published and new
+            // positions. Skipping only wholly-old batches would republish every row
+            // in such a batch, which is exactly what the crash tests found.
+            //
+            // The comparison is of positions rather than of content, because positions
+            // are monotonic and content is not.
+            let floor = state.published_through;
+            let before = plan.mutations.len();
+            let mutations: Vec<_> = plan
+                .mutations
+                .into_iter()
+                .filter(|m| m.commit_lsn > floor)
+                .collect();
+
+            if mutations.is_empty() {
                 self.stats.batches_skipped_as_duplicate =
                     self.stats.batches_skipped_as_duplicate.saturating_add(1);
                 continue;
             }
+            if mutations.len() < before {
+                // A partial replay: some of this batch was already durable.
+                self.stats.rows_skipped_as_duplicate = self
+                    .stats
+                    .rows_skipped_as_duplicate
+                    .saturating_add(before - mutations.len());
+            }
+            let plan = MutationPlan {
+                mutations,
+                covers_through: plan.covers_through,
+                transaction_count: plan.transaction_count,
+            };
 
             let batch = encode_batch(&state.onboarded.schema, &plan.mutations)
                 .map_err(|e| Error::InvariantViolated(format!("encoding a batch: {e}")))?;
