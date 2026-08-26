@@ -28,9 +28,14 @@ A SURVIVOR is a gap in the tests, not necessarily a bug in the code.
 Safety
 ------
 
-Mutations edit source files in place. The script refuses to run on a dirty tree, so
-`git checkout` is always a correct restore, and it restores from the in-memory original
-after every mutation as well as verifying the tree is clean at the end.
+Mutations edit source files in place. Each file is read before it is edited and rewritten
+from that copy in a `finally`, and every file the run touched is verified byte-identical
+at the end.
+
+The check is on the files this run mutates, not on the whole tree. An earlier version
+refused to run on any uncommitted change, which sounded safer and was worse: it forced a
+commit before every audit, so the history filled with placeholder commits and the audit
+became something done *after* deciding the work was finished rather than before.
 
 Usage
 -----
@@ -289,23 +294,19 @@ CATALOGUE = [
 ]
 
 
+def digest(path):
+    import hashlib
+
+    with open(path, "rb") as handle:
+        return hashlib.sha256(handle.read()).hexdigest()
+
+
 def regression_files():
     return set(glob.glob(os.path.join(ROOT, "crates", "*", "tests",
                                       "*.proptest-regressions")))
 
 
-def tree_is_clean():
-    p = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT,
-                       capture_output=True, text=True)
-    return p.stdout.strip() == ""
-
-
 def main():
-    if not tree_is_clean():
-        print("refusing to run on a dirty tree: mutations edit source files in place, "
-              "and a clean tree is what makes the restore trustworthy")
-        return 2
-
     pattern = sys.argv[1] if len(sys.argv) > 1 else ""
     entries = [e for e in CATALOGUE if pattern in e[0]]
     if not entries:
@@ -318,6 +319,13 @@ def main():
     # committing them would make every future run replay a case that proves nothing, and
     # would quietly dilute the real regressions in the same files.
     pre_existing = regression_files()
+
+    # Every file this run will edit, as it was before the run.
+    before = {}
+    for entry in entries:
+        path = os.path.join(ROOT, entry[1])
+        if os.path.exists(path):
+            before[path] = digest(path)
 
     survivors, missing = [], []
     for entry in entries:
@@ -353,9 +361,11 @@ def main():
     for path in regression_files() - pre_existing:
         os.remove(path)
 
-    if not tree_is_clean():
-        print("\nthe tree is dirty after the run; restore it with `git checkout -- .` "
-              "before trusting anything below")
+    changed = [p for p, d in before.items() if digest(p) != d]
+    if changed:
+        print("\nthese files were not restored and the results below cannot be trusted:")
+        for path in changed:
+            print(f"  {os.path.relpath(path, ROOT)}")
         return 2
 
     print()
