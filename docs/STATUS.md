@@ -57,7 +57,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | The live set is durable and readable by other engines | SANKHYA writes the Delta transaction log itself, and `delta_kernel` — a dev-dependency used as an independent oracle — reads it and agrees about the schema, version and live files, including across a compaction where four superseded fragments are still on disk |
 | The whole storage loop runs through the log | 24 fragments published and committed, compacted tick by tick with each tick one atomic version, then queried by a reader given nothing but the table root — same answer, fewer live files, every superseded file still on disk |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 25 specific defects applied one at a time; all 25 fail the suite. Three did not when the catalogue was first run |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 33 specific defects applied one at a time; all 33 fail the suite. Five did not when first run, and one entry turned out to be an equivalent mutant that no test could ever have caught |
 
 ---
 
@@ -149,9 +149,19 @@ each one and reports whether anything fails. It refuses to run on a dirty tree, 
 flags a catalogue entry that no longer matches the source — a stale entry proves nothing
 while looking like coverage, which is the failure mode the tool exists to find.
 
+A fourth was found the same way, later: the driver's compaction removals were checked
+only through the constructors they *could* have called, not through what the driver
+actually committed. Swapping one for the other went unnoticed.
+
+The catalogue also produced one **equivalent mutant** — a change to a duplicated guard
+that left the second copy still refusing, so behaviour was unchanged and no test could
+possibly have caught it. That is worth recording rather than quietly deleting: an entry
+that can never fail trains you to read "SURVIVED" as noise, which is the one habit that
+makes the whole exercise worthless.
+
 **The general lesson, recorded because it applies to every test not yet audited:** a test
 written to catch a defect is not evidence that it catches it. Until it has been run
-against that defect, it should be assumed to be in the same state as the three above.
+against that defect, it should be assumed to be in the same state as the four above.
 
 ---
 

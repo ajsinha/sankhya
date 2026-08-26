@@ -47,6 +47,12 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # (label, file, find, replace, crate whose tests should catch it)
+#
+# An optional sixth element is how many occurrences to replace; it defaults to one.
+# Needed where a guard is deliberately duplicated: removing either copy alone leaves the
+# other still refusing, so the mutation is *equivalent* -- behaviour is unchanged and no
+# test can possibly catch it. An entry that can never fail is worse than no entry,
+# because it trains you to read "SURVIVED" as noise.
 CATALOGUE = [
     ("splice: accept an off-by-one gap between tiers",
      "crates/sankhya-plan/src/splice.rs",
@@ -204,9 +210,10 @@ CATALOGUE = [
     # never fail is noise that trains you to ignore survivors.
     ("log: allow a second commit to overwrite an existing version",
      "crates/sankhya-table-delta/src/log.rs",
-     "    if path.exists() {\n        return Err(CommitError::VersionTaken(version));\n    }",
-     "",
-     "sankhya-table-delta"),
+     "    if path.exists() {",
+     "    if false {",
+     "sankhya-table-delta",
+     2),
 
     ("log: skip a malformed line instead of reporting it",
      "crates/sankhya-table-delta/src/log.rs",
@@ -283,7 +290,9 @@ def main():
     pre_existing = regression_files()
 
     survivors, missing = [], []
-    for label, relpath, find, repl, crate in entries:
+    for entry in entries:
+        label, relpath, find, repl, crate = entry[:5]
+        count = entry[5] if len(entry) > 5 else 1
         path = os.path.join(ROOT, relpath)
         original = open(path).read()
         if find not in original:
@@ -293,7 +302,7 @@ def main():
             missing.append(label)
             continue
 
-        open(path, "w").write(original.replace(find, repl, 1))
+        open(path, "w").write(original.replace(find, repl, count))
         try:
             p = subprocess.run(["cargo", "test", "-p", crate, "--quiet"],
                                cwd=ROOT, capture_output=True, text=True, timeout=1800)
