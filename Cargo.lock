@@ -3168,6 +3168,20 @@ name = "sankhya-graph-algo"
 version = "0.1.0"
 
 [[package]]
+name = "sankhya-graph-sql"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "async-trait",
+ "datafusion",
+ "parking_lot",
+ "sankhya-graph",
+ "sankhya-graph-algo",
+ "tokio",
+]
+
+[[package]]
 name = "sankhya-ingest"
 version = "0.1.0"
 dependencies = [

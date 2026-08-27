@@ -1,0 +1,26 @@
+[package]
+name         = "sankhya-graph-sql"
+description  = "Graph primitives exposed as SQL table functions."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 4
+
+[lints]
+workspace = true
+
+[dependencies]
+sankhya-graph      = { path = "../sankhya-graph" }
+sankhya-graph-algo = { path = "../sankhya-graph-algo" }
+datafusion         = { workspace = true }
+arrow-array        = { workspace = true }
+arrow-schema       = { workspace = true }
+async-trait        = "0.1"
+parking_lot        = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
