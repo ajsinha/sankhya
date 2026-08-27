@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 sankhya-types       = { path = "../sankhya-types" }
+sankhya-version     = { path = "../sankhya-version" }
 sankhya-error       = { path = "../sankhya-error" }
 sankhya-math        = { path = "../sankhya-math" }
 sankhya-table-delta = { path = "../sankhya-table-delta" }

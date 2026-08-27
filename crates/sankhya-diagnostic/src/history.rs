@@ -30,6 +30,7 @@
 //! a harmless truncation into an outage of the tool you reach for during an outage.
 
 use crate::projection::{Observation, Trend};
+use sankhya_version::{Compatibility, DIAGNOSTIC_HISTORY};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::{File, OpenOptions};
@@ -44,6 +45,14 @@ pub const OBSERVATIONS_KEPT: usize = 200;
 
 /// The file name, under the data directory.
 pub const HISTORY_FILE: &str = "diagnostic-history.tsv";
+
+/// The header a history file opens with.
+///
+/// A comment line, so an operator running `head` on the file learns what it is, and so a
+/// build reading a file from a newer release refuses **by name** rather than by discovering
+/// that a column it expected is a different shape. A file with no header is format 1: the
+/// header was added after the format existed, and its absence means the original.
+pub const HISTORY_HEADER_PREFIX: &str = "# sankhya diagnostic history, format ";
 
 /// What a measure is called, for storage: the check and what it was about.
 ///
@@ -69,17 +78,32 @@ impl Measure {
 }
 
 /// The observations kept from previous runs.
-#[derive(Clone, PartialEq, Debug, Default)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct History {
     series: BTreeMap<Measure, Vec<Observation>>,
     /// Lines that could not be read. Reported, not raised.
     damaged_lines: usize,
+    /// The format this file is in.
+    format: u32,
     /// How many lines the file holds, including those since dropped by the bound.
     ///
     /// Tracked rather than inferred from the file size, which was the first attempt and was
     /// wrong: line lengths vary by an order of magnitude with the length of a table name, so
     /// a byte threshold either fires constantly on long names or never fires on short ones.
     lines_on_disk: usize,
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self {
+            series: BTreeMap::new(),
+            damaged_lines: 0,
+            // A history nobody has read yet is in the format this build writes. Deriving
+            // `Default` would have made it zero, which is not a format any file is in.
+            format: DIAGNOSTIC_HISTORY.current,
+            lines_on_disk: 0,
+        }
+    }
 }
 
 impl History {
@@ -113,6 +137,26 @@ impl History {
 
         let mut history = Self::new();
         for line in BufReader::new(file).lines() {
+            if let Ok(text) = &line {
+                if let Some(version) = text.strip_prefix(HISTORY_HEADER_PREFIX) {
+                    let found: u32 = version.trim().parse().unwrap_or(1);
+                    history.format = found;
+                    // Checked before a single observation is read. Otherwise a future format
+                    // is discovered as a column that will not parse, counted as damage, and
+                    // reported as a corrupt file — sending an operator to look for a bad
+                    // disk when the answer is to upgrade.
+                    if let Compatibility::Refused { why } = DIAGNOSTIC_HISTORY.admits(found) {
+                        return Err(HistoryError::FromTheFuture {
+                            path: path.clone(),
+                            why,
+                        });
+                    }
+                    continue;
+                }
+                if text.starts_with('#') {
+                    continue;
+                }
+            }
             let Ok(line) = line else {
                 // An I/O failure part-way through. Everything read so far is still valid
                 // and still useful, which is the argument for keeping it.
@@ -157,6 +201,12 @@ impl History {
         self.series.keys()
     }
 
+    /// Which format the file on disk is in.
+    #[must_use]
+    pub const fn format(&self) -> u32 {
+        self.format
+    }
+
     /// How many lines could not be read.
     ///
     /// Surfaced so a report can say so. A history quietly losing every second line still
@@ -193,6 +243,7 @@ impl History {
         observation: Observation,
     ) -> Result<(), HistoryError> {
         let path = data_dir.join(HISTORY_FILE);
+        let fresh = !path.exists();
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -201,6 +252,16 @@ impl History {
                 path: path.clone(),
                 why: error.to_string(),
             })?;
+        if fresh {
+            // Only on a new file. Appending a header to an existing one would put it in the
+            // middle, where it is neither a header nor an observation.
+            writeln!(file, "{HISTORY_HEADER_PREFIX}{}", DIAGNOSTIC_HISTORY.current).map_err(
+                |error| HistoryError::Unwritable {
+                    path: path.clone(),
+                    why: error.to_string(),
+                },
+            )?;
+        }
         // One write, so the line is as close to atomic as a filesystem will give without a
         // journal of our own. A short write still leaves a torn line, which is why the
         // reader tolerates one.
@@ -228,7 +289,7 @@ impl History {
     pub fn compact(&self, data_dir: &Path) -> Result<(), HistoryError> {
         let path = data_dir.join(HISTORY_FILE);
         let temporary = data_dir.join(format!("{HISTORY_FILE}.new"));
-        let mut buffer = String::new();
+        let mut buffer = format!("{HISTORY_HEADER_PREFIX}{}\n", DIAGNOSTIC_HISTORY.current);
         for (measure, observations) in &self.series {
             for observation in observations {
                 buffer.push_str(&format(measure, observation));
@@ -296,6 +357,16 @@ fn parse(line: &str) -> Option<(Measure, Observation)> {
 /// Why the history could not be used.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum HistoryError {
+    /// Written by a newer release.
+    ///
+    /// Its own variant rather than one more `Unreadable`, because the action differs
+    /// entirely: this one says upgrade the binary, and the others say look at the disk.
+    FromTheFuture {
+        /// Which file.
+        path: PathBuf,
+        /// What to do.
+        why: String,
+    },
     /// The file exists and cannot be read.
     Unreadable {
         /// Which file.
@@ -315,6 +386,9 @@ pub enum HistoryError {
 impl fmt::Display for HistoryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::FromTheFuture { path, why } => {
+                write!(f, "{}: {why}", path.display())
+            }
             Self::Unreadable { path, why } => write!(
                 f,
                 "the diagnostic history at {} could not be read ({why}); without it every \

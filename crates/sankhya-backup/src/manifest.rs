@@ -39,6 +39,7 @@
 use sankhya_ingest::TableDigest;
 use sankhya_table_delta::Version;
 use sankhya_types::Lsn;
+use sankhya_version::{Compatibility, BACKUP_MANIFEST};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -149,6 +150,15 @@ pub struct KeyGeneration {
 /// A backup, as recorded.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct Manifest {
+    /// Which version of this file's own format.
+    ///
+    /// First in the struct so it is first in the JSON, and read before anything else is
+    /// understood. That ordering is the point: an artefact from a newer release otherwise
+    /// fails somewhere in the middle of parsing, with an error about an unexpected type at
+    /// line 14 — which an operator reads as corruption and acts on as corruption, when the
+    /// answer is "upgrade the binary".
+    #[serde(default = "one")]
+    pub format: u32,
     /// Which backup.
     pub id: BackupId,
     /// When it was taken, in microseconds from the epoch.
@@ -168,6 +178,14 @@ pub struct Manifest {
     pub keys: KeyGeneration,
     /// Until when the snapshots this references are protected from expiry.
     pub protect_until: i64,
+}
+
+/// The format of a manifest written before manifests carried one.
+///
+/// `serde(default)` rather than a required field, so a manifest written by the release that
+/// predates this one still reads. Version 1 is what those files are.
+const fn one() -> u32 {
+    1
 }
 
 impl Manifest {
@@ -212,6 +230,7 @@ impl Manifest {
             .unwrap_or(Lsn::new(0));
 
         Ok(Self {
+            format: BACKUP_MANIFEST.current,
             id: BackupId::new(),
             taken_at,
             source_restores_to: source.restores_to,
@@ -267,11 +286,55 @@ impl Manifest {
     ///
     /// # Errors
     ///
-    /// When the text is not a manifest.
-    pub fn from_json(text: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(text)
+    /// [`UnreadableManifest::FromTheFuture`] when the file was written by a newer release,
+    /// checked **before** the rest is parsed. Otherwise the failure surfaces as whichever
+    /// field happened to change shape, and the operator is sent to look for corruption.
+    pub fn from_json(text: &str) -> Result<Self, UnreadableManifest> {
+        let stamped: Stamp = serde_json::from_str(text)
+            .map_err(|error| UnreadableManifest::Malformed(error.to_string()))?;
+        match BACKUP_MANIFEST.admits(stamped.format) {
+            Compatibility::Refused { why } => Err(UnreadableManifest::FromTheFuture(why)),
+            _ => serde_json::from_str(text)
+                .map_err(|error| UnreadableManifest::Malformed(error.to_string())),
+        }
     }
 }
+
+/// Just the version, read first and on its own.
+///
+/// A separate lenient type rather than reading `Manifest` and inspecting its `format`: the
+/// whole point is to learn the version *without* having successfully parsed everything else,
+/// and parsing the full struct to find out is precisely the failure being avoided.
+#[derive(Deserialize)]
+struct Stamp {
+    #[serde(default = "one")]
+    format: u32,
+}
+
+/// Why a manifest could not be read.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum UnreadableManifest {
+    /// Written by a newer release.
+    FromTheFuture(String),
+    /// Not a manifest, or damaged.
+    Malformed(String),
+}
+
+impl fmt::Display for UnreadableManifest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::FromTheFuture(why) => f.write_str(why),
+            Self::Malformed(why) => write!(
+                f,
+                "this file is not a readable backup manifest ({why}). Its format version was \
+                 legible, so this is damage or the wrong file rather than a version this \
+                 build is too old for."
+            ),
+        }
+    }
+}
+
+impl std::error::Error for UnreadableManifest {}
 
 /// Why a backup could not be bound to a consistent point.
 #[derive(Clone, PartialEq, Eq, Debug)]

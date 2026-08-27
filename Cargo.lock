@@ -3301,6 +3301,7 @@ dependencies = [
  "sankhya-table",
  "sankhya-table-delta",
  "sankhya-types",
+ "sankhya-version",
  "serde",
  "serde_json",
  "tempfile",
@@ -3376,6 +3377,7 @@ dependencies = [
  "sankhya-math",
  "sankhya-table-delta",
  "sankhya-types",
+ "sankhya-version",
  "serde_json",
  "tempfile",
 ]
@@ -3736,6 +3738,10 @@ dependencies = [
  "time",
  "uuid",
 ]
+
+[[package]]
+name = "sankhya-version"
+version = "0.1.0"
 
 [[package]]
 name = "schannel"
@@ -4909,6 +4915,7 @@ version = "0.1.0"
 dependencies = [
  "sankhya-error",
  "sankhya-metrics",
+ "sankhya-version",
  "serde",
  "serde_json",
  "toml",

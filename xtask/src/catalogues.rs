@@ -35,6 +35,8 @@ pub const ERRORS_DOC: &str = "docs/ERRORS.md";
 pub const RUNBOOKS: &str = "docs/runbooks";
 /// Where the generated platform matrix lives.
 pub const PLATFORMS_DOC: &str = "docs/PLATFORMS.md";
+/// Where the generated version and rollback table lives.
+pub const VERSIONS_DOC: &str = "docs/VERSIONS.md";
 
 /// The header every generated file carries.
 ///
@@ -200,6 +202,88 @@ pub fn platforms_markdown() -> String {
     out
 }
 
+/// The on-disk formats and what rolling back does to them.
+#[must_use]
+pub fn versions_markdown() -> String {
+    use sankhya_version::{Rollback, FORMATS};
+    let mut out = generated_header("crates/sankhya-version/src/lib.rs");
+    out.push_str("# SANKHYA — Versions and rollback\n\n");
+    out.push_str("Four things version independently, and every artefact this system writes ");
+    out.push_str("says which format it is in.\n\n");
+    out.push_str("## The four axes\n\n");
+    out.push_str("`FR-OPS-11` requires them managed independently, and *independently* is ");
+    out.push_str("the load-bearing word. One product version covering all four means every ");
+    out.push_str("change to any of them is a change to all of them — so an upgrade that ");
+    out.push_str("only touches the wire protocol reads as a storage-format change and gets ");
+    out.push_str("the caution one deserves, and, worse, the reverse: a genuine storage ");
+    out.push_str("break hides inside a release that looked like a wire change.\n\n");
+    out.push_str("| Axis | What moves it |\n|---|---|\n");
+    out.push_str("| internal schema | This system's own on-disk artefacts — the table below |\n");
+    out.push_str("| database major version | PostgreSQL. Moving it needs `pg_upgrade` and both binaries present |\n");
+    out.push_str("| table format protocol | The Delta reader and writer versions. `FR-OPS-12`: a table whose protocol this build does not fully support is **read-only**, never written |\n");
+    out.push_str("| wire API | The PostgreSQL wire protocol and Flight SQL |\n\n");
+
+    out.push_str("## On-disk formats\n\n");
+    out.push_str("| Format | Where | Writes | Reads from | Rollback |\n|---|---|---|---|---|\n");
+    for declared in FORMATS.iter().copied() {
+        let rollback = match declared.rollback {
+            Rollback::Safe => "**safe** — the previous release reads it unchanged".to_string(),
+            Rollback::Tolerated { ignoring } => format!("tolerated — {ignoring}"),
+            Rollback::OneWay { because } => format!("**ONE-WAY** — {because}"),
+        };
+        let _ = writeln!(
+            out,
+            "| {} | `{}` | {} | {} | {rollback} |",
+            declared.name, declared.path, declared.current, declared.oldest_readable
+        );
+    }
+    out.push('\n');
+
+    out.push_str("## What a reader does with an artefact it did not write\n\n");
+    out.push_str("| It found | What happens |\n|---|---|\n");
+    out.push_str("| A newer format | **Refused, by name.** Not attempted |\n");
+    out.push_str("| An older but supported format | Read, and **not written back** |\n");
+    out.push_str("| Older than the floor | Refused. Migrate it with a release that still understood it |\n");
+    out.push_str("| The current format | Read and written |\n\n");
+    out.push_str("**A parse error and \"this is from the future\" are different facts, and ");
+    out.push_str("only one of them says what to do.** An artefact from a newer release read ");
+    out.push_str("by an older one otherwise fails somewhere in the middle of parsing — an ");
+    out.push_str("unknown field, a number that will not fit — and the error reads as ");
+    out.push_str("*corruption*. An operator goes looking for a damaged disk. The answer was ");
+    out.push_str("\"upgrade the binary\", and nothing in front of them said so.\n\n");
+    out.push_str("So the version sits first in every file, is read before anything else is ");
+    out.push_str("understood, and a refusal names both versions.\n\n");
+
+    out.push_str("## Rolling back\n\n");
+    out.push_str("**Backwards is the direction that decides whether you can roll back.** A ");
+    out.push_str("new release reading old data is the easy direction and the one everybody ");
+    out.push_str("tests. Whether the *old* release can read what the new one wrote is the ");
+    out.push_str("question, and the moment to answer it is not after the upgrade.\n\n");
+    out.push_str("The procedure, when every format above says **safe**:\n\n");
+    out.push_str("1. **Stop the new binary.** It drains in-flight connections; see the ");
+    out.push_str("termination grace in `packaging/`.\n");
+    out.push_str("2. **Prove the backup first.** `sankhya-server drill`. A rollback with an ");
+    out.push_str("unproven backup is two unknowns at once.\n");
+    out.push_str("3. **Start the previous binary against the same data directory.** No ");
+    out.push_str("migration step, because none of these formats moved.\n");
+    out.push_str("4. **Run `sankhya-server doctor`.** It reads every artefact and reports ");
+    out.push_str("what it could not — which is how a format problem surfaces as a sentence ");
+    out.push_str("rather than as a failed query later.\n\n");
+    out.push_str("When any format says **ONE-WAY**, steps 3 and 4 do not apply and the only ");
+    out.push_str("route back is a restore. That is why the column exists: the decision has ");
+    out.push_str("to be visible *before* the upgrade, not discovered during the rollback.\n\n");
+    out.push_str("## What is not tested\n\n");
+    out.push_str("**Running the previous binary.** One release exists, so there is no ");
+    out.push_str("earlier one to run. What is tested is the thing that does not need it: a ");
+    out.push_str("corpus of artefacts as earlier releases wrote them, checked into the ");
+    out.push_str("repository and read by every build. A fixture is an old binary's ");
+    out.push_str("behaviour preserved — and unlike the binary it never stops building and is ");
+    out.push_str("legible in a diff. The fixtures are hand-written rather than generated, ");
+    out.push_str("because a generated fixture regenerates when the format changes, agrees ");
+    out.push_str("with the current code by construction, and proves nothing.\n");
+    out
+}
+
 /// The error catalogue, as a document.
 #[must_use]
 pub fn errors_markdown() -> String {
@@ -316,6 +400,7 @@ pub fn runbook_of(error: &Error) -> String {
 pub fn write(root: &Path) -> std::io::Result<()> {
     std::fs::write(root.join(METRICS_DOC), metrics_markdown())?;
     std::fs::write(root.join(PLATFORMS_DOC), platforms_markdown())?;
+    std::fs::write(root.join(VERSIONS_DOC), versions_markdown())?;
     std::fs::write(root.join(ERRORS_DOC), errors_markdown())
 }
 
@@ -328,6 +413,7 @@ pub fn check(root: &Path) -> bool {
     ok &= up_to_date(root, METRICS_DOC, &metrics_markdown());
     ok &= up_to_date(root, ERRORS_DOC, &errors_markdown());
     ok &= up_to_date(root, PLATFORMS_DOC, &platforms_markdown());
+    ok &= up_to_date(root, VERSIONS_DOC, &versions_markdown());
     ok &= every_metric_is_recorded(root);
     ok &= every_pageable_thing_has_a_runbook(root);
 

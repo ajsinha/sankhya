@@ -1362,6 +1362,80 @@ CATALOGUE = [
      "    for object in requires.shared_objects.iter().take(0) {",
      "xtask"),
 
+    ("version: read an artefact from a newer release instead of refusing it",
+     "crates/sankhya-version/src/lib.rs",
+     "        if found > self.current {",
+     "        if false {",
+     "sankhya-version"),
+
+    ("version: read an artefact older than the supported floor",
+     "crates/sankhya-version/src/lib.rs",
+     "        if found < self.oldest_readable {",
+     "        if false {",
+     "sankhya-version"),
+
+    ("version: write back an older format instead of degrading to read-only",
+     "crates/sankhya-version/src/lib.rs",
+     "        if found < self.current {",
+     "        if false {",
+     "sankhya-version"),
+
+    ("version: call a one-way upgrade reversible",
+     "crates/sankhya-version/src/lib.rs",
+     "        !matches!(self.rollback, Rollback::OneWay { .. })",
+     "        true",
+     "sankhya-version"),
+
+    ("backup: parse the whole manifest before looking at its version",
+     "crates/sankhya-backup/src/manifest.rs",
+     "        let stamped: Stamp = serde_json::from_str(text)",
+     "        let stamped: Manifest = serde_json::from_str(text)",
+     "sankhya-backup"),
+
+    ("backup: report a manifest from the future as damage",
+     "crates/sankhya-backup/src/manifest.rs",
+     "            Compatibility::Refused { why } => Err(UnreadableManifest::FromTheFuture(why)),",
+     "            Compatibility::Refused { why } => Err(UnreadableManifest::Malformed(why)),",
+     "sankhya-backup"),
+
+    ("backup: treat an unstamped manifest as format zero rather than the original",
+     "crates/sankhya-backup/src/manifest.rs",
+     "const fn one() -> u32 {\n    1\n}",
+     "const fn one() -> u32 {\n    0\n}",
+     "sankhya-backup"),
+
+    # The whole guard, not just its condition. `if false` on an `if let` leaves the binding
+    # unused and the mutation does not compile -- and a mutation that does not compile tests
+    # nothing while looking in the catalogue exactly like one that does.
+    ("diagnostic: read a history from a newer release anyway",
+     "crates/sankhya-diagnostic/src/history.rs",
+     """                    if let Compatibility::Refused { why } = DIAGNOSTIC_HISTORY.admits(found) {
+                        return Err(HistoryError::FromTheFuture {
+                            path: path.clone(),
+                            why,
+                        });
+                    }""",
+     "",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: write the format header onto every append",
+     "crates/sankhya-diagnostic/src/history.rs",
+     "        let fresh = !path.exists();",
+     "        let fresh = true;",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: drop the format header when compacting",
+     "crates/sankhya-diagnostic/src/history.rs",
+     '        let mut buffer = format!("{HISTORY_HEADER_PREFIX}{}\\n", DIAGNOSTIC_HISTORY.current);',
+     "        let mut buffer = String::new();",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: count a comment line as damage",
+     "crates/sankhya-diagnostic/src/history.rs",
+     "                if text.starts_with('#') {\n                    continue;\n                }",
+     "",
+     "sankhya-diagnostic"),
+
 ]
 
 

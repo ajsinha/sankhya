@@ -33,6 +33,60 @@ neither tells you what runs today. Where the two disagree, this one is right.
 
 ## M6, in progress
 
+### §10.6 — Versions, and the difference between damage and the future
+
+**Three on-disk formats were added this session and none of them carried a version.** The
+backup manifest, the restore-drill evidence and the diagnostic history. That is the gap
+`§10.6` exists to close, and it was made in `§10.1` and `§10.3` — which is how these gaps are
+usually made: a format is invented to solve a problem, and versioning it is not part of the
+problem.
+
+**A parse error and "this is from the future" are different facts, and only one says what to
+do.** An artefact written by a newer release, read by an older one, fails somewhere in the
+middle of parsing — an unknown field, a number that will not fit, a restructured object. The
+error reads `invalid type: string, expected u64 at line 14 column 9`, and an operator reads
+that as **corruption**. They go looking for a damaged disk, a truncated write, a bad copy. The
+answer was "upgrade the binary", and nothing in front of them said so.
+
+So every format now carries its version **first in the file**, read before anything else is
+understood, and a future version is refused by name — with both numbers and an instruction.
+The ordering is the whole point: a version buried at the end of a JSON object is a version you
+learn only after successfully parsing everything you were trying to avoid parsing.
+
+**The four axes, and why independence is load-bearing.** `FR-OPS-11` requires the internal
+schema, the database major version, the table protocol and the wire APIs to version
+independently. One product version covering all four means every change to any of them is a
+change to all of them: an upgrade touching only the wire protocol reads as a storage-format
+change and gets the caution one deserves — and, worse, the reverse, a genuine storage break
+hiding inside a release that looked like a wire change.
+
+**Backwards is the direction that decides whether you can roll back.** A new release reading
+old data is the easy direction and the one everybody tests. Whether the *old* release can read
+what the new one wrote is the question, and after the upgrade is not the moment to answer it.
+So every format declares its rollback consequence — `safe`, `tolerated`, or **`ONE-WAY`** — and
+that column exists so the decision is visible *before* the upgrade rather than discovered
+during the rollback.
+
+**A corpus, because a fixture is an old binary's behaviour preserved.** Testing an upgrade
+properly means running release *n−1* against release *n*'s data. One release exists, so there
+is no earlier binary to run — and there does not need to be. What is needed is an earlier
+binary's **output**: artefacts as previous releases wrote them, checked in and read by every
+build. Unlike a binary, a fixture never stops building, never needs a toolchain that has been
+removed, and is legible in a diff.
+
+The fixtures are **hand-written rather than generated**, deliberately. A generated fixture
+regenerates when the format changes, agrees with the current code by construction, and proves
+nothing at all.
+
+**What is not tested:** running the previous binary, because there is not one. That is the
+honest limit of `§10.6` until a second release exists — and it is also what unblocks `M5`'s
+carried-forward client/server version matrix.
+
+[`VERSIONS.md`](VERSIONS.md) is generated from the declarations, including the rollback
+procedure.
+
+---
+
 ### §10.4 — Packaging, and the two numbers nobody relates
 
 **The drain did not exist.** `serve_until` returned the moment shutdown resolved; its spawned
@@ -918,7 +972,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 202 specific defects applied one at a time; all 202 fail the suite. Twenty-two did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, three entries were inert until corrected — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 213 specific defects applied one at a time; all 213 fail the suite. Twenty-three did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, four entries were inert until corrected — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -1412,9 +1466,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,276 tests, none of which needs a database
+cargo test --workspace           # 1,296 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 202 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 213 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 
