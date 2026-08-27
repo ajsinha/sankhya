@@ -3369,6 +3369,15 @@ name = "sankhya-config"
 version = "0.1.0"
 
 [[package]]
+name = "sankhya-cube"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "sankhya-cube-algo",
+ "sankhya-error",
+]
+
+[[package]]
 name = "sankhya-cube-algo"
 version = "0.1.0"
 

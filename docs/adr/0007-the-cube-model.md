@@ -78,6 +78,29 @@ no time-to-live to tune, and no window during which a stale answer is served.
 That changes what materialisation *is*. It is not a second copy of the truth. It is a
 **cache**, and being wrong about what to cache costs latency rather than correctness.
 
+**Amended 2026-08-27, while building `sankhya-cube`.** That guarantee has a precondition the
+first version of this section did not state: the definition version must actually *move* when
+the definition does. A version somebody edits by hand does not. It is a field, a review that
+has to catch it when the field is missed, and then a cuboid built under the old meaning of a
+measure being served against the new one — a real number, computed correctly, from a
+definition that no longer exists. The snapshot half of the key is derived from the log and
+cannot be forgotten; the definition half had no such protection.
+
+So it is derived too. `Cube::version` is a fingerprint of the validated content, computed at
+validation and available no other way. Change a measure's rule and the key changes; reformat
+the file and it does not. There is no field to forget.
+
+Two properties of that fingerprint are load-bearing rather than incidental. Fields are
+**length-prefixed**, or a dimension named `ab` on column `c` hashes identically to one named
+`a` on column `bc` and two different cubes share a materialisation key. And **level order is
+preserved while roll-up edges are sorted**, because levels are coarse-to-fine and reordering
+them reorders a drill-down, whereas a hierarchy is a set of edges and rebuilding every cuboid
+because somebody sorted a config file is a cost against no risk.
+
+The fingerprint is `FNV-1a`, which defends against accident and not against a constructed
+collision. That is written down in the module too: a hash in a cache key invites the
+cryptographic assumption, and here the assumption is wrong.
+
 **So the mode is a per-cuboid decision, and it is configurable at three levels:**
 
 | Level | Who sets it | What it controls |

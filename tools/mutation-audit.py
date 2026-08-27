@@ -1652,6 +1652,56 @@ CATALOGUE = [
      "        let unique: Vec<String> = dimensions",
      "sankhya-cube-algo"),
 
+    # --- the cube definition: the refusal that stops wrong numbers ---------
+
+    ("cube: default an undeclared measure to summation instead of refusing",
+     "crates/sankhya-cube/src/validate.rs",
+     "        if let Err(undeclared) = measure.covers(&declared) {",
+     "        if let Err(undeclared) = Ok::<(), sankhya_cube_algo::Undeclared>(()) {",
+     "sankhya-cube"),
+
+    ("cube: report only the first rejection, so a fix takes one build each",
+     "crates/sankhya-cube/src/validate.rs",
+     "    out.sort();\n    out.dedup();\n    out\n}",
+     "    out.sort();\n    out.dedup();\n    out.into_iter().take(1).collect()\n}",
+     "sankhya-cube"),
+
+    ("cube: accept a cyclic hierarchy at definition time",
+     "crates/sankhya-cube/src/validate.rs",
+     "            if let Err(Cyclic { cycle }) = hierarchy.validate() {",
+     "            if let Err(Cyclic { cycle }) = Ok::<(), Cyclic>(()) {",
+     "sankhya-cube"),
+
+    ("cube: let a validated cube be built from a rejected definition",
+     "crates/sankhya-cube/src/model.rs",
+     "        if !rejections.is_empty() {",
+     "        if rejections.is_empty() && !rejections.is_empty() {",
+     "sankhya-cube"),
+
+    ("cube: ignore a measure's aggregation rules when fingerprinting the definition",
+     "crates/sankhya-cube/src/version.rs",
+     "            feed(&mut h, rule.rule.as_str().as_bytes());",
+     "",
+     "sankhya-cube"),
+
+    ("cube: fingerprint fields without a length prefix, so two cubes share a key",
+     "crates/sankhya-cube/src/version.rs",
+     "    for byte in (bytes.len() as u64).to_le_bytes() {\n        *h = (*h ^ u64::from(byte)).wrapping_mul(PRIME);\n    }",
+     "",
+     "sankhya-cube"),
+
+    ("cube: fingerprint levels as a set, losing the drill-down order",
+     "crates/sankhya-cube/src/version.rs",
+     "        for level in &dimension.levels {",
+     "        for level in { let mut s: Vec<&crate::model::Level> = dimension.levels.iter().collect(); s.sort_by(|a, b| a.name.cmp(&b.name)); s } {",
+     "sankhya-cube"),
+
+    ("cube: skip the stray-rule check, so a misspelling reads as one problem",
+     "crates/sankhya-cube/src/validate.rs",
+     "            if !names.contains(rule.dimension) {",
+     "            if false {",
+     "sankhya-cube"),
+
 ]
 
 

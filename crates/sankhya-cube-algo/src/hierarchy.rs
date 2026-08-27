@@ -34,7 +34,7 @@ use std::fmt;
 /// padding the short branch to match invents members that do not exist. They then appear in
 /// results, in member counts, and in drill-downs, and a user asked why a division shows up at
 /// four levels of the tree has been handed an implementation detail as their problem.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Hierarchy {
     /// Child to parents. **Parents**, plural: a shared member has more than one.
     parents: BTreeMap<String, BTreeSet<String>>,

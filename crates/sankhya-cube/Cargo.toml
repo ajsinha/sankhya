@@ -1,0 +1,21 @@
+[package]
+name         = "sankhya-cube"
+description  = "The declared cube definition: validated once, versioned by its own content."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 3
+
+[lints]
+workspace = true
+
+[dependencies]
+sankhya-cube-algo = { path = "../sankhya-cube-algo" }
+sankhya-error     = { path = "../sankhya-error" }
+
+[dev-dependencies]
+proptest = { workspace = true }
