@@ -16,12 +16,17 @@
 
 #![doc(html_root_url = "https://docs.rs/sankhya-schema")]
 
+mod datedate;
 mod evolve;
 mod mapping;
 mod model;
 mod naming;
 mod onboard;
 
+pub use datedate::{
+    civil_from_days, is_reserved, AxisError, DateAxis, DateSource, Granularity, DATA_DATE_COLUMN,
+    GRANULARITY_KEY, RESERVED_PREFIX, SOURCE_KEY,
+};
 pub use evolve::{apply_compatible, classify_change, widened_decimal, Compatibility, SchemaChange};
 pub use mapping::{map_source_type, numeric_modifier, MappingError, TypeMapping};
 pub use model::{Field, LogicalSchema, LogicalType, Precision};
