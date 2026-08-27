@@ -3094,6 +3094,14 @@ version = "0.1.0"
 [[package]]
 name = "sankhya-api-pg"
 version = "0.1.0"
+dependencies = [
+ "bytes",
+ "sankhya-authz",
+ "sankhya-error",
+ "sankhya-session",
+ "sankhya-types",
+ "uuid",
+]
 
 [[package]]
 name = "sankhya-audit"

@@ -13,6 +13,8 @@
 
 #![doc(html_root_url = "https://docs.rs/sankhya-error")]
 
+pub mod protocol;
+
 use std::fmt;
 use std::time::Duration;
 
