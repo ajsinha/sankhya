@@ -1820,6 +1820,50 @@ CATALOGUE = [
      "            if let Some(slot) = moved.get_mut(axis) {\n                *slot = parents(member).unwrap_or_else(|| \"unknown\".to_string());\n            }",
      "sankhya-cube"),
 
+    # --- completeness: a filtered total wearing a complete one's clothes ---
+
+    ("cube: report an aggregate over no rows at all as complete",
+     "crates/sankhya-cube/src/complete.rs",
+     "        if considered == 0 {\n            return None;\n        }",
+     "        if considered == 0 {\n            return Some(1.0);\n        }",
+     "sankhya-cube"),
+
+    ("cube: call an aggregate over nothing complete",
+     "crates/sankhya-cube/src/complete.rs",
+     "        self.withheld == 0 && self.contributed > 0",
+     "        self.withheld == 0",
+     "sankhya-cube"),
+
+    ("cube: combine completeness by keeping one side and ignoring the other",
+     "crates/sankhya-cube/src/complete.rs",
+     "            contributed: self.contributed.saturating_add(other.contributed),\n            withheld: self.withheld.saturating_add(other.withheld),",
+     "            contributed: self.contributed,\n            withheld: self.withheld,",
+     "sankhya-cube"),
+
+    ("cube: accept a completeness threshold that is not a fraction",
+     "crates/sankhya-cube/src/complete.rs",
+     "        if !fraction.is_finite() || !(0.0..=1.0).contains(&fraction) {",
+     "        if false {",
+     "sankhya-cube"),
+
+    ("cube: reject a threshold that is exactly met",
+     "crates/sankhya-cube/src/complete.rs",
+     "            .is_some_and(|seen| seen >= self.at_least)",
+     "            .is_some_and(|seen| seen > self.at_least)",
+     "sankhya-cube"),
+
+    ("cube: return a partial total when the threshold is not met",
+     "crates/sankhya-cube/src/complete.rs",
+     "        if threshold.met_by(&self.completeness) {\n            return Ok(&self.value);\n        }",
+     "        if true {\n            return Ok(&self.value);\n        }",
+     "sankhya-cube"),
+
+    ("cube: drop completeness when a value is mapped",
+     "crates/sankhya-cube/src/complete.rs",
+     "            completeness: self.completeness,\n        }\n    }\n}",
+     "            completeness: Completeness::complete(self.completeness.contributed()),\n        }\n    }\n}",
+     "sankhya-cube"),
+
 ]
 
 
