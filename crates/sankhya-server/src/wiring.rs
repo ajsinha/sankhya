@@ -280,7 +280,8 @@ impl Handler for Server {
         // work to another worker first, which is why the server needs a multi-threaded
         // runtime and would deadlock on a current-thread one.
         let outcome = tokio::task::block_in_place(|| {
-            self.runtime.block_on(run(&context, sql, Self::MAX_RESULT_ROWS))
+            self.runtime
+                .block_on(run(&context, sql, Self::MAX_RESULT_ROWS))
         });
 
         // Audited whichever way it went. A log that records only successes cannot show an
@@ -364,7 +365,11 @@ pub fn permissive_policy(tenant: &TenantId, tables: &[CatalogTable]) -> PolicySe
 /// query see the same table.
 pub async fn start(
     settings: Settings,
-) -> std::io::Result<(Arc<Server>, sankhya_api_pg::listener::PgListener, Vec<String>)> {
+) -> std::io::Result<(
+    Arc<Server>,
+    sankhya_api_pg::listener::PgListener,
+    Vec<String>,
+)> {
     let (found, unopenable) = crate::warehouse::discover(&settings.warehouse);
     let cache = sankhya_table_delta::LogCache::new();
     let (servable, unreadable) = crate::warehouse::servable(&found, settings.read_as_of, &cache);

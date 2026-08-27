@@ -3368,6 +3368,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "sankhya-publish"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "parquet",
+ "sankhya-stats",
+ "sankhya-table",
+ "sankhya-table-delta",
+ "sankhya-types",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "sankhya-readpath"
 version = "0.1.0"
 dependencies = [

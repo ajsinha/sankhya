@@ -202,6 +202,33 @@ not exist, which is deliberate: saying "you may not read that" would confirm it 
 policy row predicate is conjoined where no provider can decline it, so a tautology in the
 query cannot widen it. Both are tested end to end.
 
+### Publishing a table from outside
+
+An external system publishes through **this system's library**, not by assembling the
+format itself:
+
+```bash
+cargo build --release -p sankhya-publish
+./target/release/sankhya-publish verify ./warehouse/sales/orders
+```
+
+The format is open and documented — external engines read it directly, and the library is
+in this repository under the same licence for anyone who wants to see exactly what it does.
+What the library provides is not secrecy but **correctness by construction**: there is no
+way to call it that produces a file without statistics, a schema that does not round-trip,
+or an action missing a field the format requires.
+
+The reason is asymmetry. A *reader* that misunderstands the format is wrong for itself,
+recoverably. A *writer* that misunderstands it corrupts the table for everyone,
+permanently, and undetectably — because the writer's own reader shares the
+misunderstanding. This system made exactly that mistake once, writing its own format with
+the specification open; see the defect table in [`STATUS.md`](STATUS.md).
+
+`verify` does not assume the library was used, because a recommendation is not an
+invariant. It reports *what* is wrong rather than *whether*, and distinguishes a finding
+that makes queries **slow** from one that makes them **wrong** — exit 0 clean, 1 slow, 2
+wrong, so a build gate can fail on one and not the other.
+
 To create a warehouse to try this against:
 
 ```bash

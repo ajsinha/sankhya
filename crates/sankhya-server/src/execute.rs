@@ -29,7 +29,7 @@ use sankhya_authz::policy::{Action, PolicySet, TableRef};
 use sankhya_authz::principal::Principal;
 use sankhya_catalog::guard::Guard;
 use sankhya_catalog::secured::SecuredTable;
-use sankhya_error::protocol::{statuses_for, sqlstate};
+use sankhya_error::protocol::{sqlstate, statuses_for};
 use std::sync::Arc;
 
 /// A table this server can serve, and the provider behind it.
@@ -193,11 +193,26 @@ fn render_value(array: &dyn Array, row: usize) -> String {
                 "f".to_string()
             }
         }
-        DataType::Int64 => array.as_primitive::<types::Int64Type>().value(row).to_string(),
-        DataType::Int32 => array.as_primitive::<types::Int32Type>().value(row).to_string(),
-        DataType::UInt64 => array.as_primitive::<types::UInt64Type>().value(row).to_string(),
-        DataType::Float64 => array.as_primitive::<types::Float64Type>().value(row).to_string(),
-        DataType::Float32 => array.as_primitive::<types::Float32Type>().value(row).to_string(),
+        DataType::Int64 => array
+            .as_primitive::<types::Int64Type>()
+            .value(row)
+            .to_string(),
+        DataType::Int32 => array
+            .as_primitive::<types::Int32Type>()
+            .value(row)
+            .to_string(),
+        DataType::UInt64 => array
+            .as_primitive::<types::UInt64Type>()
+            .value(row)
+            .to_string(),
+        DataType::Float64 => array
+            .as_primitive::<types::Float64Type>()
+            .value(row)
+            .to_string(),
+        DataType::Float32 => array
+            .as_primitive::<types::Float32Type>()
+            .value(row)
+            .to_string(),
         DataType::Utf8 => array.as_string::<i32>().value(row).to_string(),
         DataType::LargeUtf8 => array.as_string::<i64>().value(row).to_string(),
         DataType::Timestamp(TimeUnit::Microsecond, _) => array

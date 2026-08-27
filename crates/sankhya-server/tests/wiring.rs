@@ -59,8 +59,7 @@ fn write_table(warehouse: &std::path::Path, schema_name: &str, table_name: &str)
     let root = warehouse.join(schema_name).join(table_name);
     std::fs::create_dir_all(&root).expect("creating the table directory");
 
-    let delta_schema =
-        sankhya_table_delta::schema_string(&table_schema()).expect("representable");
+    let delta_schema = sankhya_table_delta::schema_string(&table_schema()).expect("representable");
     commit(
         &root,
         0,
@@ -124,16 +123,23 @@ fn settings(require_password: bool, warehouse: &std::path::Path) -> Settings {
 ///
 /// The `TempDir` is returned alongside because dropping it deletes the warehouse, and a
 /// server whose files vanish mid-test fails in a way that looks like a bug in the server.
-fn server_over(policy_for: impl Fn(&[sankhya_api_pg::catalog::CatalogTable]) -> PolicySet)
-    -> (Server, tempfile::TempDir) {
+fn server_over(
+    policy_for: impl Fn(&[sankhya_api_pg::catalog::CatalogTable]) -> PolicySet,
+) -> (Server, tempfile::TempDir) {
     let dir = warehouse_with_a_table();
     let (found, refused) = warehouse::discover(dir.path());
-    assert!(refused.is_empty(), "the fixture table must open: {refused:?}");
+    assert!(
+        refused.is_empty(),
+        "the fixture table must open: {refused:?}"
+    );
     assert_eq!(found.len(), 1, "one table was written");
 
     let cache = sankhya_table_delta::LogCache::new();
     let (servable, unreadable) = warehouse::servable(&found, Lsn::new(u64::MAX), &cache);
-    assert!(unreadable.is_empty(), "the fixture table must read: {unreadable:?}");
+    assert!(
+        unreadable.is_empty(),
+        "the fixture table must read: {unreadable:?}"
+    );
 
     let tables = warehouse::describe(&found);
     let policy = policy_for(&tables);
@@ -219,7 +225,6 @@ async fn a_table_granted_to_another_tenant_is_not_listed() {
     ));
     assert!(server(policy).0.visible_tables().is_empty());
 }
-
 
 #[tokio::test(flavor = "multi_thread")]
 async fn everything_that_happens_is_audited_and_the_chain_verifies() {
@@ -373,7 +378,11 @@ async fn a_query_cannot_widen_its_own_policy_filter() {
     let result = server
         .query("SELECT id FROM example WHERE id > 0 OR 1 = 1")
         .expect("valid");
-    assert_eq!(result.rows.len(), 1, "a tautology must not widen the policy");
+    assert_eq!(
+        result.rows.len(),
+        1,
+        "a tautology must not widen the policy"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

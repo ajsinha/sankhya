@@ -167,9 +167,9 @@ pub fn servable(
 /// The catalogue description of a discovered table, for a schema browser.
 #[must_use]
 pub fn describe(tables: &[FoundTable]) -> Vec<sankhya_api_pg::catalog::CatalogTable> {
+    use arrow_schema::DataType;
     use sankhya_api_pg::catalog::{CatalogColumn, CatalogTable};
     use sankhya_api_pg::message::oid;
-    use arrow_schema::DataType;
 
     tables
         .iter()

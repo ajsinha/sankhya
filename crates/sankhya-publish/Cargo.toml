@@ -1,0 +1,31 @@
+[package]
+name         = "sankhya-publish"
+description  = "The supported path for writing an external table: publish, and verify what was published."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 3
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "sankhya-publish"
+path = "src/main.rs"
+
+[dependencies]
+sankhya-types       = { path = "../sankhya-types" }
+sankhya-table       = { path = "../sankhya-table" }
+sankhya-table-delta = { path = "../sankhya-table-delta" }
+sankhya-stats       = { path = "../sankhya-stats" }
+arrow-array         = { workspace = true }
+arrow-schema        = { workspace = true }
+parquet             = { workspace = true }
+serde_json          = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

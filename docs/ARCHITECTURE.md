@@ -412,6 +412,67 @@ It is more work for the publisher and it is the right shape: the cost of the gua
 paid by whoever wants the guarantee, rather than by every loader whether they need it or
 not.
 
+#### 5.6.6 Open to read, tooled to write
+
+`CON-08` requires that analytical storage be directly readable by external engines with no
+process of this system involved. That constraint is about **reading**, and the asymmetry is
+deliberate.
+
+A reader that misunderstands the format produces wrong answers *for itself*, immediately and
+recoverably. A writer that misunderstands the format corrupts the table *for everyone*,
+permanently, and usually undetectably — because the writer's own reader shares its
+misunderstanding and is perfectly happy.
+
+This is not a hypothetical. It happened here, to this system, writing its own format with
+the specification open:
+
+> The `add` action's `partitionValues` field is non-nullable and was omitted entirely. The
+> log looked reasonable and round-tripped through this crate perfectly, because a reader
+> ignores a field it never writes. An independent implementation rejected it on the very
+> first read.
+
+If a team writing the format on purpose, with the spec in front of them and a test suite
+around them, produced an invalid log — then an external team writing it under deadline, as
+a means to an end, will too. And their tables will be read by this system, which will not
+notice, exactly as this system did not notice its own.
+
+So external publication is **supported through this system's own publishing library**, not
+through whatever the publisher assembles. The library is the path that:
+
+- writes every required field of every action, including the ones a reader that never
+  writes them will silently tolerate;
+- records column statistics, without which file pruning degrades to a full scan that is
+  correct and slow, and nothing says why;
+- refuses a schema this system cannot round-trip exactly, rather than publishing something
+  merely similar;
+- declares the table's class, so it is a fact in the log rather than an assumption;
+- commits atomically, so a concurrent publisher cannot interleave two versions.
+
+**The format stays open and documented.** Nobody is prevented from writing it, and the
+library exists in the same repository under the same licence for anyone who wants to see
+exactly what it does. What changes is which path is *supported*, and therefore which path
+carries the guarantees.
+
+#### 5.6.7 Trust, but verify anyway
+
+A table can still arrive written by something else — by an older version of the library, by
+a script somebody wrote before the library existed, by a vendor who did not ask. Making the
+library the supported path is a recommendation, and a recommendation is not an invariant.
+
+So the reader does not assume the library was used. A table's log is **verifiable** against
+the invariants the library maintains, and the verification reports what is wrong rather than
+whether it is wrong: which action is missing which field, which files have no statistics,
+whether the declared schema round-trips.
+
+That distinction matters operationally. "This table is invalid" sends someone to open a
+support ticket. "Fourteen files in this table have no column statistics, so every query
+against it scans all of them" sends them to fix it.
+
+The verification is separate from reading, and reading does not require it — a table that
+fails verification may still be perfectly readable, just slower or less safe than it should
+be. Coupling them would mean a table that is 99% fine could not be read at all, which
+serves nobody.
+
 ### 5.7 Routing
 
 The routing decision is a pure function of query shape, read mode, session pin, **table
@@ -1684,6 +1745,8 @@ The trade-off, stated plainly: scale-up gives lower latency, far simpler failure
 | `DEC-27` | A table's class is declared in its own log; absence means external | §5.6.3 |
 | `DEC-28` | A strongly-consistent read of an external table is refused, never degraded | §5.6.3, §5.7.2 |
 | `DEC-29` | The tier is never part of a table's name; freshness is a request mode | §5.7.3 |
+| `DEC-30` | Open to read, tooled to write: external publication goes through this system's library | §5.6.6 |
+| `DEC-31` | A table's log is verifiable, and verification is separate from reading | §5.6.7 |
 
 ---
 
