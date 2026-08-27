@@ -267,8 +267,8 @@ that admits less.
 | Query governance | **Working.** Deadlines and cancellation bounded at one batch per partition; admission control that refuses an aggregation too large to run rather than letting it take the process down, and says whether retrying could ever help |
 | Graph engine | **Working.** A typed, time-aware adjacency hydrated from published tables — no second store, no graph write path, an edge exists because a row exists. Traversal, weighted and k-shortest loopless paths, simple cycles, components, centrality, communities and multiplicative influence, each bounded and each reporting its own truncation. Five SQL table functions make them joinable against ordinary tables. Nothing drives hydration on a timer |
 | The extension mechanism | **Working.** SANKHYA's own function traits rather than the engine's, so a pack survives the engine changing underneath it. Two reference packs from unrelated industries and one deliberately hostile pack whose every attempt is refused with a named error. A declarative tier expresses a pack as a file rather than a crate. No loader is wired into a running process, because there is not one |
-| API surfaces | Not started |
-| Multi-tenancy and security | Not started |
+| API surfaces | **Not started.** M5 §9.6. Read modes, session tokens and snapshot leases are built as components; no process listens on a socket, so nothing can connect to them yet |
+| Multi-tenancy and security | **Working as components, not as a running system.** One principal type established at the edge; a pure policy component whose every decision is a function of its inputs; a `Guard` that cannot be constructed except from an allowed decision, so a provider cannot be built without one. Row predicates are enforced above the scan where no provider can decline them, and their presence in the *final physical plan* is asserted. Per-tenant graph epochs, quotas with typed errors, a hash-chained audit and envelope encryption with rotation that never touches data |
 
 The honest summary is that the **correctness contracts are built and tested and the
 machinery that runs them continuously is not**. Every capability above is exercised by

@@ -1,6 +1,6 @@
 [package]
-name         = "sankhya-governor"
-description  = "Admission control and the pressure escalation ladder."
+name         = "sankhya-audit"
+description  = "Hash-chained audit of authorization decisions and the data versions they saw."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -8,14 +8,17 @@ license.workspace      = true
 repository.workspace   = true
 
 [package.metadata.sankhya]
-layer = 1
+layer = 2
 
 [lints]
 workspace = true
 
 [dependencies]
 sankhya-types = { path = "../sankhya-types" }
+sankhya-authz = { path = "../sankhya-authz" }
+sha2          = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
 
 [dev-dependencies]
 uuid = { workspace = true }
-proptest = { workspace = true }

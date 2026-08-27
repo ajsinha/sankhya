@@ -431,6 +431,137 @@ CATALOGUE = [
     # arm afterwards: the generic binary arm below matches every operator, so anything
     # added after it is unreachable and the mutation is inert. That mistake cost a round
     # of "the test does not cover this" before the mutation was checked by hand.
+    # --- audit: a chain that cannot detect tampering is decoration ---
+
+    ("audit: stop checking that each record carries the previous digest",
+     "crates/sankhya-audit/src/chain.rs",
+     "            if record.previous != expected_previous {\n                return Err(Broken::LinkMismatch { at: position });\n            }",
+     "",
+     "sankhya-audit"),
+
+    ("audit: stop recomputing the digest, so an altered record verifies",
+     "crates/sankhya-audit/src/chain.rs",
+     "            if record.compute_digest() != record.digest {\n                return Err(Broken::Altered { at: position });\n            }",
+     "",
+     "sankhya-audit"),
+
+    ("audit: stop checking the sequence, so a reordered log verifies",
+     "crates/sankhya-audit/src/chain.rs",
+     "            if record.sequence != position {\n                return Err(Broken::OutOfOrder {\n                    at: position,\n                    claims: record.sequence,\n                });\n            }",
+     "",
+     "sankhya-audit"),
+
+    ("audit: match history by subject alone, returning another tenant's records",
+     "crates/sankhya-audit/src/chain.rs",
+     "            .filter(|r| r.tenant == tenant && r.subject == subject)",
+     "            .filter(|r| r.subject == subject)",
+     "sankhya-audit"),
+
+    ("audit: leave the row filter out of the record",
+     "crates/sankhya-audit/src/chain.rs",
+     "            row_filter,\n            column_masks: masks",
+     "            row_filter: None,\n            column_masks: masks",
+     "sankhya-audit"),
+
+    # --- enforcement: the predicate must reach the plan whatever the provider does ---
+
+    ("secured: trust the provider's pushdown instead of enforcing the predicate",
+     "crates/sankhya-catalog/src/secured.rs",
+     "        if exact {\n            // A limit must still not be pushed past the predicate unless the provider\n            // applies the predicate before counting, which `Exact` is precisely the promise\n            // of. So it may go down.\n            return self.inner.scan(state, projection, &all, limit).await;\n        }",
+     "        if true {\n            return self.inner.scan(state, projection, &all, limit).await;\n        }",
+     "sankhya-catalog"),
+
+    ("secured: push the limit below the security filter",
+     "crates/sankhya-catalog/src/secured.rs",
+     "        let scan = self.inner.scan(state, widened.as_ref(), &all, None).await?;",
+     "        let scan = self.inner.scan(state, widened.as_ref(), &all, limit).await?;",
+     "sankhya-catalog"),
+
+    ("secured: do not widen the projection, so the predicate cannot bind",
+     "crates/sankhya-catalog/src/secured.rs",
+     "        let widened = widen_projection(projection, &needed, &table_schema);",
+     "        let widened = projection.cloned();",
+     "sankhya-catalog"),
+
+    ("guard: hand out a guard for a denied decision",
+     "crates/sankhya-catalog/src/guard.rs",
+     "        let Decision::Allowed {\n            row_filter,\n            column_masks,\n        } = decision\n        else {\n            return None;\n        };",
+     "        let (row_filter, column_masks) = match decision {\n            Decision::Allowed { row_filter, column_masks } => (row_filter, column_masks),\n            Decision::Denied { .. } => (&None, &BTreeMap::new()),\n        };",
+     "sankhya-catalog"),
+
+    ("guard: take the storage prefix from somewhere other than the tenant",
+     "crates/sankhya-catalog/src/guard.rs",
+     "        sankhya_authz::principal::storage_prefix(&self.tenant)",
+     '        format!("{}/", self.subject)',
+     "sankhya-catalog"),
+
+    # --- policy: the component where a surviving mutant is a breach, not a weak test ---
+
+    ("policy: stop comparing the tenant, so a rule reaches across tenants",
+     "crates/sankhya-authz/src/policy.rs",
+     "                r.tenant == *principal.tenant()\n                    && r.table == *table",
+     "                r.table == *table",
+     "sankhya-authz"),
+
+    ("policy: let grants outvote an explicit denial",
+     "crates/sankhya-authz/src/policy.rs",
+     "        if let Some(denial) = applicable.iter().find(|r| r.effect == Effect::Deny) {",
+     "        if let Some(denial) = applicable.iter().find(|r| r.effect == Effect::Allow) {",
+     "sankhya-authz"),
+
+    ("policy: treat the absence of a grant as permission",
+     "crates/sankhya-authz/src/policy.rs",
+     "        if grants.is_empty() {\n            return Decision::Denied {\n                reason: DenialReason::NoGrant,\n            };\n        }",
+     "        if false {\n            return Decision::Denied {\n                reason: DenialReason::NoGrant,\n            };\n        }",
+     "sankhya-authz"),
+
+    ("policy: stop checking the role, so any principal matches any rule",
+     "crates/sankhya-authz/src/policy.rs",
+     "                    && principal.has_role(&r.role)",
+     "",
+     "sankhya-authz"),
+
+    ("policy: stop checking the action, so a read grant permits a delete",
+     "crates/sankhya-authz/src/policy.rs",
+     "                    && r.action == action\n",
+     "",
+     "sankhya-authz"),
+
+    ("policy: combine row filters with AND, so a second role narrows the first",
+     "crates/sankhya-authz/src/policy.rs",
+     '                        .join(" OR "),',
+     '                        .join(" AND "),',
+     "sankhya-authz"),
+
+    ("policy: emit a filter even when an unrestricted grant applies",
+     "crates/sankhya-authz/src/policy.rs",
+     "        let row_filter = if grants.iter().any(|r| r.row_filter.is_none()) {",
+     "        let row_filter = if grants.iter().all(|r| r.row_filter.is_none()) {",
+     "sankhya-authz"),
+
+    ("policy: mask a column any grant masks, so a role can take visibility away",
+     "crates/sankhya-authz/src/policy.rs",
+     "                let masked_by_all = grants.iter().all(|r| r.column_masks.contains_key(column));",
+     "                let masked_by_all = grants.iter().any(|r| r.column_masks.contains_key(column));",
+     "sankhya-authz"),
+
+    ("policy: list a table the principal cannot actually read",
+     "crates/sankhya-authz/src/policy.rs",
+     "                r.effect == Effect::Allow\n                    && matches!(\n                        self.decide(principal, &r.table, Action::Read),\n                        Decision::Allowed { .. }\n                    )",
+     "                r.effect == Effect::Allow",
+     "sankhya-authz"),
+
+    # Deliberately absent: "accept a tenant identifier that can traverse a path".
+    # There is nothing to mutate. The identifier is a UUID, so a path separator cannot
+    # occur in it — the property is held by construction rather than by a check, and a
+    # mutation audit can only remove checks.
+
+    ("principal: distinguish 'no rule' from 'a rule forbids you' in the message",
+     "crates/sankhya-authz/src/policy.rs",
+     "            Self::NoGrant | Self::ExplicitDeny { .. } => {\n                f.write_str(\"this principal is not permitted to perform this action\")\n            }",
+     "            Self::NoGrant => f.write_str(\"no rule grants this\"),\n            Self::ExplicitDeny { .. } => f.write_str(\"a rule forbids this\"),",
+     "sankhya-authz"),
+
     ("predicate: split a disjunction and apply one side",
      "crates/sankhya-readpath/src/predicate.rs",
      "            op: Operator::And,",

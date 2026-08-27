@@ -17,7 +17,8 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M2** Ingest correctness and durability | 24–28 ew | **Substantially complete** — batching invariants, source-safety ladder, reconciliation, idempotence, crash safety, schema evolution and the backfill handoff all exist and are tested. What remains is the slot *lifecycle* driver and the snapshot *reader* — the correctness contracts are in place, the machinery that runs them on a timer is not |
 | **M3** Query engine and storage performance | 28–34 ew | **Complete**, all six exit criteria met — closed 2026-08-26. One criterion was corrected first: it required cancellation inside user code, which does not exist until M4, and that clause moved to M4. Parts of the work breakdown remain unbuilt and are listed under *M3, closed* below |
 | **M4** Graph engine and the extension mechanism | 26–32 ew | **Complete.** Every exit criterion met; see below |
-| **M5**–**M8** | — | Not started |
+| **M5** Tenancy, security and API surfaces | 22–28 ew | **In progress.** §9.1–9.5 and §9.7 complete; §9.6, the API surfaces, not started |
+| **M6**–**M8** | — | Not started |
 
 ---
 
@@ -585,9 +586,15 @@ Stated plainly, because a status document that omits this is marketing.
 - **Nothing calls the maintenance loop on a timer.** The tick is built and tested end to
   end, but a caller has to invoke it, supply the live set and supply the pinned snapshot
   positions retirement checks against.
-- **No API surfaces, no multi-tenancy, no security.** The graph engine and the extension
-  mechanism are built; nothing drives graph hydration on a timer and no process loads a
-  pack bundle, because there is no running process yet.
+- **No API surfaces.** M5 §9.6 is the section that would produce something to connect to,
+  and it is not built. Read modes, session tokens and snapshot leases exist as components;
+  nothing listens on a socket.
+- **Security is built as components, not as a running system.** The policy decision, the
+  `Guard` that cannot be forged, the enforcement above the scan, per-tenant graph epochs,
+  quotas, the audit chain and envelope encryption are all present and tested. None of them
+  is wired into a process, because there is no process.
+- Nothing drives graph hydration on a timer and no process loads a pack bundle, for the
+  same reason.
 
 ---
 

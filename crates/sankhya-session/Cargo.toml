@@ -1,6 +1,6 @@
 [package]
-name         = "sankhya-authz"
-description  = "Authentication and authorization."
+name         = "sankhya-session"
+description  = "Read modes, session tokens, and snapshot pinning with bounded leases."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -15,9 +15,7 @@ workspace = true
 
 [dependencies]
 sankhya-types = { path = "../sankhya-types" }
-sankhya-error = { path = "../sankhya-error" }
-
+sankhya-authz = { path = "../sankhya-authz" }
 
 [dev-dependencies]
-uuid     = { workspace = true }
-proptest = { workspace = true }
+uuid = { workspace = true }
