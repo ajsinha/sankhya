@@ -586,18 +586,20 @@ Stated plainly, because a status document that omits this is marketing.
 - **Nothing calls the maintenance loop on a timer.** The tick is built and tested end to
   end, but a caller has to invoke it, supply the live set and supply the pinned snapshot
   positions retirement checks against.
-- **The server runs and does not execute statements.** Real `psql` connects,
-  authenticates, and gets answers to catalogue queries from a policy-filtered table list.
-  A `SELECT` against a real table is refused by name: the read path is built and tested but
-  is not connected to the front door. An empty result would look like a table with no rows
-  and a plausible zero would look like an answer, so neither is returned.
+- **The server runs and executes statements.** Real `psql` connects, authenticates, runs
+  catalogue queries and ordinary SQL — aggregation, expressions, null semantics — against a
+  policy-wrapped provider. The table it serves is an **in-memory placeholder**: what is
+  proven is the path, not the data. Connecting the M3 read path to real Delta tables
+  replaces one function.
+- **The security path is now reachable.** A table the principal may not read is never
+  registered, so naming it fails to resolve rather than confirming it exists; a policy row
+  predicate is enforced where no provider can decline it, and a tautology cannot widen it.
+  Both were provable in unit tests before and unreachable through the server — an
+  unreachable enforcement point is one nobody has confirmed is on the path.
 - **One API surface of four.** The wire protocol works. Arrow Flight SQL, the gRPC control
   plane and the REST gateway are not built.
-- **Most security components are not yet reachable through the server.** Authentication,
-  policy-filtered catalogue listing, quotas and the audit chain are wired in. The `Guard`,
-  the enforcement above the scan, per-tenant graph epochs and envelope encryption are built
-  and tested but have no path through the front door, because the front door does not reach
-  the read path yet.
+- **Per-tenant graph epochs and envelope encryption are still unreachable through the
+  server.** Built and tested; nothing wires them to the front door.
 - Nothing drives graph hydration on a timer and no process loads a pack bundle.
 
 ---

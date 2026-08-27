@@ -3409,6 +3409,9 @@ dependencies = [
 name = "sankhya-server"
 version = "0.1.0"
 dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "datafusion",
  "parking_lot",
  "sankhya-api-pg",
  "sankhya-audit",
@@ -3416,6 +3419,7 @@ dependencies = [
  "sankhya-catalog",
  "sankhya-error",
  "sankhya-governor",
+ "sankhya-readpath",
  "sankhya-session",
  "sankhya-types",
  "tokio",

@@ -25,9 +25,11 @@ use sankhya_api_pg::session::{Handler, QueryFailure, QueryResult};
 use sankhya_audit::chain::{Chain, Entry, RecordedDecision};
 use sankhya_authz::policy::{Action, PolicySet, TableRef};
 use sankhya_authz::principal::{Authentication, Principal, Role, TenantId};
-use sankhya_error::protocol::statuses_for_unauthenticated;
+use sankhya_error::protocol::{statuses_for_denied, statuses_for_unauthenticated};
 use sankhya_governor::quota::{Quota, Quotas};
 use std::sync::Arc;
+
+use crate::execute::{run, session_for, ServableTable};
 
 /// How the server was configured.
 #[derive(Clone, Debug)]
@@ -52,13 +54,40 @@ pub struct Server {
     quotas: Quotas,
     audit: parking_lot::Mutex<Chain>,
     tables: Vec<CatalogTable>,
+    /// What actually answers a scan, alongside the catalogue's description of it.
+    ///
+    /// Separate from `tables` because the two answer different questions: one is what a
+    /// schema browser is told, the other is what a query reads. Keeping them together would
+    /// invite a table that is described but not readable, or readable but not described.
+    servable: Vec<ServableTable>,
     clock: parking_lot::Mutex<i64>,
+    /// Runs the async query path from the synchronous handler trait.
+    ///
+    /// The wire protocol handler is synchronous because the protocol is a conversation of
+    /// small messages and making every method async would infect the whole state machine
+    /// for one call. This is where the two worlds meet, and doing it in one place is what
+    /// keeps the protocol code free of it.
+    runtime: tokio::runtime::Handle,
 }
 
 impl Server {
     /// Assemble a server.
+    ///
+    /// Must be called from inside a Tokio runtime: the synchronous protocol handler needs a
+    /// handle to reach the asynchronous query path.
     #[must_use]
     pub fn new(settings: Settings, policy: PolicySet, tables: Vec<CatalogTable>) -> Self {
+        Self::with_tables(settings, policy, tables, Vec::new())
+    }
+
+    /// Assemble a server that can actually answer queries.
+    #[must_use]
+    pub fn with_tables(
+        settings: Settings,
+        policy: PolicySet,
+        tables: Vec<CatalogTable>,
+        servable: Vec<ServableTable>,
+    ) -> Self {
         let mut quotas = Quotas::new();
         quotas.set(settings.tenant, Quota::generous());
         Self {
@@ -67,9 +96,17 @@ impl Server {
             quotas,
             audit: parking_lot::Mutex::new(Chain::new()),
             tables,
+            servable,
             clock: parking_lot::Mutex::new(0),
+            runtime: tokio::runtime::Handle::current(),
         }
     }
+
+    /// How many rows one statement may return over this protocol.
+    ///
+    /// The simple-query flow has no way to say "there are more", so this is a hard bound
+    /// and hitting it is an error rather than a truncated result presented as complete.
+    const MAX_RESULT_ROWS: usize = 10_000;
 
     /// How the server is configured, for a startup log.
     ///
@@ -205,34 +242,44 @@ impl Handler for Server {
             });
         }
 
-        // Audited before the outcome is known, and audited whatever the outcome is. A log
-        // that records only what succeeded cannot show an attempt to reach something
-        // forbidden, which is the pattern an investigation looks for.
-        if let Some(principal) = self.principal("query") {
-            self.record(
-                &principal,
-                TableRef::new("", statement_shape(sql)),
-                Action::Read,
-                false,
-            );
+        let Some(principal) = self.principal("query") else {
+            return Err(refusal(
+                statuses_for_unauthenticated().sqlstate.as_str(),
+                "no principal is established for this connection",
+            ));
+        };
+
+        // Only the tables this principal may read are registered, so a query naming one
+        // they may not fails to resolve — indistinguishable from naming one that does not
+        // exist, which is the right answer rather than an accident. Saying "you may not
+        // read that" would confirm it exists.
+        let (context, registered) = session_for(&principal, &self.policy, &self.servable)?;
+        if registered == 0 && !self.servable.is_empty() {
+            return Err(refusal(
+                statuses_for_denied().sqlstate.as_str(),
+                "this principal may not read any table",
+            ));
         }
 
-        // There is no engine behind this yet, and saying so is better than any of the
-        // alternatives. An empty result would look like a table with no rows; a plausible
-        // zero would look like an answer.
-        Err(QueryFailure {
-            sqlstate: "0A000".to_string(),
-            message: format!(
-                "this server answers catalogue queries and does not yet execute statements: \
-                 {sql}"
-            ),
-            detail: Some(
-                "The read path exists and is tested; it is not connected to this front door \
-                 yet. Catalogue queries — version(), the schema and table lists, settings — \
-                 are answered."
-                    .to_string(),
-            ),
-        })
+        // `block_in_place` rather than a bare `block_on`. This method is called from inside
+        // a Tokio task — the connection's — and blocking that thread directly panics,
+        // because the thread is driving the runtime. `block_in_place` hands the runtime's
+        // work to another worker first, which is why the server needs a multi-threaded
+        // runtime and would deadlock on a current-thread one.
+        let outcome = tokio::task::block_in_place(|| {
+            self.runtime.block_on(run(&context, sql, Self::MAX_RESULT_ROWS))
+        });
+
+        // Audited whichever way it went. A log that records only successes cannot show an
+        // attempt to reach something forbidden, which is the pattern an investigation is
+        // usually looking for.
+        self.record(
+            &principal,
+            TableRef::new("", statement_shape(sql)),
+            Action::Read,
+            outcome.is_ok(),
+        );
+        outcome
     }
 
     fn visible_tables(&self) -> Vec<CatalogTable> {
@@ -311,6 +358,43 @@ pub fn example_tables() -> Vec<CatalogTable> {
     }]
 }
 
+/// In-memory data for the example table, so the front door has something real to answer.
+///
+/// A placeholder for the catalogue the coordinator will own, and small enough that nobody
+/// will mistake it for the real thing. What it proves is not the data but the *path*: a
+/// statement arrives over the wire, is authorised, planned against a policy-wrapped
+/// provider, executed, and rendered back.
+#[must_use]
+pub fn example_servable(tables: &[CatalogTable]) -> Vec<ServableTable> {
+    use arrow_array::{Int64Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+
+    tables
+        .iter()
+        .filter(|table| table.name == "example")
+        .filter_map(|table| {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("label", DataType::Utf8, true),
+            ]));
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![
+                    Arc::new(Int64Array::from(vec![1, 2, 3])),
+                    Arc::new(StringArray::from(vec![Some("north"), None, Some("south")])),
+                ],
+            )
+            .ok()?;
+            let provider =
+                datafusion::datasource::MemTable::try_new(schema, vec![vec![batch]]).ok()?;
+            Some(ServableTable {
+                reference: TableRef::new(&table.schema, &table.name),
+                provider: Arc::new(provider),
+            })
+        })
+        .collect()
+}
+
 /// A policy granting a reader access to everything in `tables`.
 #[must_use]
 pub fn permissive_policy(tenant: &TenantId, tables: &[CatalogTable]) -> PolicySet {
@@ -331,6 +415,7 @@ pub async fn start(
     let tables = example_tables();
     let policy = permissive_policy(&settings.tenant, &tables);
     let listener = sankhya_api_pg::listener::PgListener::bind(&settings.listen).await?;
-    let server = Arc::new(Server::new(settings, policy, tables));
+    let servable = example_servable(&tables);
+    let server = Arc::new(Server::with_tables(settings, policy, tables, servable));
     Ok((server, listener))
 }

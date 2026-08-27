@@ -18,6 +18,10 @@ sankhya-api-pg   = { path = "../sankhya-api-pg" }
 sankhya-authz    = { path = "../sankhya-authz" }
 sankhya-audit    = { path = "../sankhya-audit" }
 sankhya-catalog  = { path = "../sankhya-catalog" }
+sankhya-readpath = { path = "../sankhya-readpath" }
+datafusion       = { workspace = true }
+arrow-array      = { workspace = true }
+arrow-schema     = { workspace = true }
 sankhya-governor = { path = "../sankhya-governor" }
 sankhya-session  = { path = "../sankhya-session" }
 sankhya-types    = { path = "../sankhya-types" }

@@ -184,11 +184,12 @@ reference node. Cancellation is bounded, a hostile aggregation is refused rather
 taking the process down, and the places where this engine and PostgreSQL disagree are
 enumerated in a test — which found three ways the analytical tier returns a wrong number.
 
-**The server runs.** A wire-protocol front door that real `psql` connects to, which
-authenticates, answers catalogue queries from a policy-filtered table list, and hash-chains
-what it did into a tamper-evident audit. It does **not** execute statements yet — the read
-path is built and tested but is not connected to the front door, and a `SELECT` gets a named
-refusal saying exactly that, because an empty result would look like a table with no rows.
+**The server runs and answers queries.** Real `psql` connects, authenticates, and runs
+ordinary SQL — aggregation, expressions, null semantics — against a provider wrapped in its
+policy decision. A table the caller may not read is never registered, so naming it fails to
+resolve rather than confirming it exists; a policy row predicate is enforced where no
+provider can decline it. Everything it did is recorded in a tamper-evident hash chain. The
+table it serves is an in-memory placeholder: what is proven is the path, not the data.
 
 What does not exist: the streaming transport, Arrow Flight SQL, the gRPC control plane and
 the REST gateway. Also unbuilt inside work already counted: bloom filters, table

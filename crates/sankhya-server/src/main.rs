@@ -19,6 +19,7 @@
 // print to its own console is not much of a binary.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+mod execute;
 mod wiring;
 
 use sankhya_authz::principal::TenantId;
