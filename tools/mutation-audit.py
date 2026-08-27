@@ -431,6 +431,38 @@ CATALOGUE = [
     # arm afterwards: the generic binary arm below matches every operator, so anything
     # added after it is unreachable and the mutation is inert. That mistake cost a round
     # of "the test does not cover this" before the mutation was checked by hand.
+    # --- enforcement: the predicate must reach the plan whatever the provider does ---
+
+    ("secured: trust the provider's pushdown instead of enforcing the predicate",
+     "crates/sankhya-catalog/src/secured.rs",
+     "        if exact {\n            // A limit must still not be pushed past the predicate unless the provider\n            // applies the predicate before counting, which `Exact` is precisely the promise\n            // of. So it may go down.\n            return self.inner.scan(state, projection, &all, limit).await;\n        }",
+     "        if true {\n            return self.inner.scan(state, projection, &all, limit).await;\n        }",
+     "sankhya-catalog"),
+
+    ("secured: push the limit below the security filter",
+     "crates/sankhya-catalog/src/secured.rs",
+     "        let scan = self.inner.scan(state, widened.as_ref(), &all, None).await?;",
+     "        let scan = self.inner.scan(state, widened.as_ref(), &all, limit).await?;",
+     "sankhya-catalog"),
+
+    ("secured: do not widen the projection, so the predicate cannot bind",
+     "crates/sankhya-catalog/src/secured.rs",
+     "        let widened = widen_projection(projection, &needed, &table_schema);",
+     "        let widened = projection.cloned();",
+     "sankhya-catalog"),
+
+    ("guard: hand out a guard for a denied decision",
+     "crates/sankhya-catalog/src/guard.rs",
+     "        let Decision::Allowed {\n            row_filter,\n            column_masks,\n        } = decision\n        else {\n            return None;\n        };",
+     "        let (row_filter, column_masks) = match decision {\n            Decision::Allowed { row_filter, column_masks } => (row_filter, column_masks),\n            Decision::Denied { .. } => (&None, &BTreeMap::new()),\n        };",
+     "sankhya-catalog"),
+
+    ("guard: take the storage prefix from somewhere other than the tenant",
+     "crates/sankhya-catalog/src/guard.rs",
+     'format!("{}/", self.tenant.as_str())',
+     'format!("{}/", self.subject)',
+     "sankhya-catalog"),
+
     # --- policy: the component where a surviving mutant is a breach, not a weak test ---
 
     ("policy: stop comparing the tenant, so a rule reaches across tenants",
