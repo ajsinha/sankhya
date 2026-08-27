@@ -14,3 +14,15 @@ layer = 4
 workspace = true
 
 [dependencies]
+sankhya-types   = { path = "../sankhya-types" }
+sankhya-error   = { path = "../sankhya-error" }
+sankhya-authz   = { path = "../sankhya-authz" }
+sankhya-session = { path = "../sankhya-session" }
+bytes           = { workspace = true }
+tokio           = { workspace = true }
+tracing         = { workspace = true }
+
+[dev-dependencies]
+uuid = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+

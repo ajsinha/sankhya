@@ -2196,6 +2196,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "matchers"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
+dependencies = [
+ "regex-automata",
+]
+
+[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3094,6 +3103,16 @@ version = "0.1.0"
 [[package]]
 name = "sankhya-api-pg"
 version = "0.1.0"
+dependencies = [
+ "bytes",
+ "sankhya-authz",
+ "sankhya-error",
+ "sankhya-session",
+ "sankhya-types",
+ "tokio",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "sankhya-audit"
@@ -3389,6 +3408,21 @@ dependencies = [
 [[package]]
 name = "sankhya-server"
 version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "sankhya-api-pg",
+ "sankhya-audit",
+ "sankhya-authz",
+ "sankhya-catalog",
+ "sankhya-error",
+ "sankhya-governor",
+ "sankhya-session",
+ "sankhya-types",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
 
 [[package]]
 name = "sankhya-session"
@@ -4155,17 +4189,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-serde"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "704b1aeb7be0d0a84fc9828cae51dab5970fee5088f83d1dd7ee6f6246fc6ff1"
+dependencies = [
+ "serde",
+ "tracing-core",
+]
+
+[[package]]
 name = "tracing-subscriber"
 version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
 dependencies = [
+ "matchers",
  "nu-ansi-term",
+ "once_cell",
+ "regex-automata",
+ "serde",
+ "serde_json",
  "sharded-slab",
  "smallvec",
  "thread_local",
+ "tracing",
  "tracing-core",
  "tracing-log",
+ "tracing-serde",
 ]
 
 [[package]]

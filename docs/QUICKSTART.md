@@ -149,7 +149,31 @@ scale-factor-1 dataset and needs a machine that is not otherwise busy.
 
 ---
 
-## 4. Start a database and load data
+## 4. Start the server and connect to it
+
+```bash
+cargo build --release -p sankhya-server
+SANKHYA_NO_PASSWORD=1 SANKHYA_LISTEN=127.0.0.1:5433 ./target/release/sankhya-server
+```
+
+In another shell, with any PostgreSQL client:
+
+```bash
+psql -h 127.0.0.1 -p 5433 -U you -d acme -c "SELECT version();"
+psql -h 127.0.0.1 -p 5433 -U you -d acme -c "\dt"
+```
+
+`SANKHYA_NO_PASSWORD` is spelled as an opt-*out* so the insecure choice has to be made
+deliberately, and the startup line says `NO AUTHENTICATION` in capitals when it is in force.
+
+**Statements are refused, deliberately and by name.** The read path exists and is tested;
+it is not connected to this front door yet. A `SELECT` against a real table returns an error
+saying so, because an empty result would look like a table with no rows and a plausible zero
+would look like an answer.
+
+---
+
+## 5. Start a database and load data
 
 ```bash
 # Initialise a throwaway cluster configured for logical replication
@@ -204,7 +228,7 @@ shaped around that industry pass every test.
 
 ---
 
-## 5. Watch capture work
+## 6. Watch capture work
 
 ```bash
 export SANKHYA_PG_BIN=$PWD/.build/pg-install/bin
@@ -239,7 +263,7 @@ reported. See [`adr/0002-async-commit-and-decoding-visibility.md`](adr/0002-asyn
 
 ---
 
-## 6. Tidy up
+## 7. Tidy up
 
 ```bash
 $PGBIN/pg_ctl -D .build/pg stop -m fast
@@ -258,7 +282,7 @@ that admits less.
 
 | | Status |
 |---|---|
-| The server binary | **A stub.** There is no daemon to run, and no listener. Everything below is exercised through tests rather than through a running process |
+| The server binary | **It runs, and `psql` connects to it.** A wire-protocol front door that authenticates, answers catalogue queries from a policy-filtered table list, and hash-chains what it did into an audit. **It does not execute statements yet** — the read path is built and tested but not connected to the front door, and a statement gets a named refusal saying exactly that rather than an empty result |
 | Streaming transport | **Not built.** Changes are drained through a SQL function rather than a replication connection. Neither mainstream Rust PostgreSQL client supports the replication protocol, so this is real work rather than wiring |
 | Automatic table onboarding | **Working across many tables.** Schema, write strategy and path are derived from the replication stream alone; several tables capture independently from one interleaved stream and each reconciles against the source. Nothing drives it on a timer |
 | Storage and the table log | **Working.** Each table gets its own Delta log; capture commits every file it publishes, and a restart recovers its position from that log rather than from memory. The Delta kernel reads these tables, which is what makes the open-storage claim testable rather than aspirational |
@@ -267,7 +291,7 @@ that admits less.
 | Query governance | **Working.** Deadlines and cancellation bounded at one batch per partition; admission control that refuses an aggregation too large to run rather than letting it take the process down, and says whether retrying could ever help |
 | Graph engine | **Working.** A typed, time-aware adjacency hydrated from published tables — no second store, no graph write path, an edge exists because a row exists. Traversal, weighted and k-shortest loopless paths, simple cycles, components, centrality, communities and multiplicative influence, each bounded and each reporting its own truncation. Five SQL table functions make them joinable against ordinary tables. Nothing drives hydration on a timer |
 | The extension mechanism | **Working.** SANKHYA's own function traits rather than the engine's, so a pack survives the engine changing underneath it. Two reference packs from unrelated industries and one deliberately hostile pack whose every attempt is refused with a named error. A declarative tier expresses a pack as a file rather than a crate. No loader is wired into a running process, because there is not one |
-| API surfaces | **Not started.** M5 §9.6. Read modes, session tokens and snapshot leases are built as components; no process listens on a socket, so nothing can connect to them yet |
+| API surfaces | **The wire protocol works; the rest is not started.** Real `psql` connects, authenticates, runs catalogue queries and recovers from errors. Arrow Flight SQL, the gRPC control plane and the REST gateway are not built |
 | Multi-tenancy and security | **Working as components, not as a running system.** One principal type established at the edge; a pure policy component whose every decision is a function of its inputs; a `Guard` that cannot be constructed except from an allowed decision, so a provider cannot be built without one. Row predicates are enforced above the scan where no provider can decline them, and their presence in the *final physical plan* is asserted. Per-tenant graph epochs, quotas with typed errors, a hash-chained audit and envelope encryption with rotation that never touches data |
 
 The honest summary is that the **correctness contracts are built and tested and the
