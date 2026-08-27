@@ -202,6 +202,33 @@ not exist, which is deliberate: saying "you may not read that" would confirm it 
 policy row predicate is conjoined where no provider can decline it, so a tautology in the
 query cannot widen it. Both are tested end to end.
 
+### Vector columns and their kernels
+
+A column can hold a vector per row — an embedding, a factor vector, a time-series window —
+as `FixedSizeList<Float64, N>`, and the kernels are ordinary SQL functions:
+
+```sql
+SELECT title, vec_cosine_similarity(embedding, :query) AS score
+FROM documents
+ORDER BY score DESC
+LIMIT 10;
+```
+
+`vec_dot`, `vec_euclidean`, `vec_cosine_similarity`, `vec_cosine_distance`, `vec_norm_l1`,
+`vec_norm_l2`, `vec_sum`, `vec_mean`.
+
+**Every reducing kernel is bit-deterministic.** A dot product is a floating-point sum, and a
+sum whose order depends on how the query was partitioned returns a different number when the
+machine is busier. These go through the same compensated, order-fixed summation the rest of
+the system uses, so two runs of the same ranking produce the same order rather than a
+similar one. See [ADR-0005](adr/0005-array-columns-and-numeric-kernels.md) for why that
+ruled out both Polars and a native BLAS.
+
+Two costs worth knowing: **an array column cannot be pruned** — a minimum and maximum of a
+vector prune nothing — so a table of embeddings prunes on `sank_data_date` and its scalar
+columns only. And **an array cannot be a key column**, because array equality as row identity
+is a bad idea and is refused rather than supported badly.
+
 ### Publishing a table from outside
 
 An external system publishes through **this system's library**, not by assembling the

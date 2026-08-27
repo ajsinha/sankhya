@@ -62,10 +62,40 @@ fn type_name(data_type: &DataType) -> Option<String> {
         // nanosecond column would lose three digits and a millisecond column would gain
         // three zeroes of false precision. Both are refused.
         DataType::Timestamp(TimeUnit::Microsecond, _) => "timestamp".to_string(),
+        // An array column. The element type is written inline, so the JSON is the
+        // protocol's own `array` shape and any engine that reads the format reads this.
+        //
+        // A `FixedSizeList` writes the same JSON as a `List`, because the protocol has no
+        // fixed-length array. The *values* therefore round-trip exactly; the length
+        // constraint is ours, carried in field metadata, and an external reader that
+        // ignores it sees a correct variable-length array rather than something wrong.
+        DataType::List(field) | DataType::LargeList(field) | DataType::FixedSizeList(field, _) => {
+            let element = type_name(field.data_type())?;
+            // Only arrays of scalars. An array whose element is itself an array is
+            // expressible in the protocol and is refused at both ends, because a kernel
+            // taking a flat slice cannot be given one. Refusing it only on read would be
+            // worse than either consistent choice: this writer would produce tables its own
+            // reader rejects.
+            if element.starts_with('{') {
+                return None;
+            }
+            return Some(format!(
+                r#"{{"type":"array","elementType":{},"containsNull":{}}}"#,
+                serde_json::to_string(&element).unwrap_or_else(|_| "\"\"".to_string()),
+                field.is_nullable()
+            ));
+        }
         _ => return None,
     };
     Some(name)
 }
+
+/// The metadata key carrying a fixed-length array's dimension.
+///
+/// The protocol has no fixed-length array, so the constraint lives here. An external reader
+/// that ignores it sees a correct variable-length array; this system's reader restores the
+/// fixed width, which is what lets a kernel take a flat slice with a known stride.
+pub const FIXED_LENGTH_KEY: &str = "sankhya.fixedLength";
 
 fn field_json(field: &Field) -> Result<String, UnsupportedType> {
     let name = type_name(field.data_type()).ok_or_else(|| UnsupportedType {
@@ -73,11 +103,24 @@ fn field_json(field: &Field) -> Result<String, UnsupportedType> {
         arrow_type: format!("{}", field.data_type()),
     })?;
 
+    // An array's type is a JSON object; every scalar's is a string.
+    let rendered = if name.starts_with('{') {
+        name
+    } else {
+        serde_json::to_string(&name).unwrap_or_else(|_| "\"\"".to_string())
+    };
+
+    let metadata = match field.data_type() {
+        DataType::FixedSizeList(_, width) => format!(r#"{{"{FIXED_LENGTH_KEY}":"{width}"}}"#),
+        _ => "{}".to_string(),
+    };
+
     Ok(format!(
-        r#"{{"name":{},"type":{},"nullable":{},"metadata":{{}}}}"#,
+        r#"{{"name":{},"type":{},"nullable":{},"metadata":{}}}"#,
         serde_json::to_string(field.name()).unwrap_or_else(|_| "\"\"".to_string()),
-        serde_json::to_string(&name).unwrap_or_else(|_| "\"\"".to_string()),
-        field.is_nullable()
+        rendered,
+        field.is_nullable(),
+        metadata
     ))
 }
 
@@ -95,6 +138,54 @@ pub fn schema_string(schema: &Schema) -> Result<String, UnsupportedType> {
         r#"{{"type":"struct","fields":[{}]}}"#,
         fields?.join(",")
     ))
+}
+
+/// Rebuild an array type, restoring the fixed width if the field declares one.
+///
+/// A field carrying `sankhya.fixedLength` becomes a `FixedSizeList`, so a kernel can take a
+/// flat slice with a known stride. One that does not becomes a `List`, which is what an
+/// array written by anything else is.
+fn array_type(
+    field_name: &str,
+    object: &serde_json::Map<String, serde_json::Value>,
+    metadata: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Result<DataType, UnsupportedType> {
+    let element = object
+        .get("elementType")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| UnsupportedType {
+            field: field_name.to_string(),
+            arrow_type: "an array with no element type".to_string(),
+        })?;
+
+    // Only arrays of scalars. An array of arrays is expressible in the protocol and is
+    // refused here rather than half-supported: a kernel taking a flat slice cannot be given
+    // one, and pretending otherwise would fail somewhere far from the schema.
+    let inner = arrow_type(element).ok_or_else(|| UnsupportedType {
+        field: field_name.to_string(),
+        arrow_type: format!("an array of {element}"),
+    })?;
+
+    let contains_null = object
+        .get("containsNull")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let item = std::sync::Arc::new(Field::new("item", inner, contains_null));
+
+    let width = metadata
+        .get(FIXED_LENGTH_KEY)
+        .and_then(|value| match value {
+            serde_json::Value::String(text) => text.parse::<i32>().ok(),
+            serde_json::Value::Number(number) => {
+                number.as_i64().and_then(|n| i32::try_from(n).ok())
+            }
+            _ => None,
+        });
+
+    Ok(match width {
+        Some(width) if width > 0 => DataType::FixedSizeList(item, width),
+        _ => DataType::List(item),
+    })
 }
 
 /// The Arrow type a log's type name denotes.
@@ -150,6 +241,8 @@ pub fn schema_from_string(json: &str) -> Result<Schema, UnsupportedType> {
         type_name: serde_json::Value,
         #[serde(default = "default_true")]
         nullable: bool,
+        #[serde(default)]
+        metadata: std::collections::BTreeMap<String, serde_json::Value>,
     }
     #[derive(serde::Deserialize)]
     struct DeltaSchema {
@@ -168,17 +261,29 @@ pub fn schema_from_string(json: &str) -> Result<Schema, UnsupportedType> {
         .fields
         .into_iter()
         .map(|field| {
-            // A nested type arrives as an object rather than a string. Refusing it by name
-            // is better than the alternatives: skipping it hides a column, and guessing a
-            // flat type for it produces a table other engines read confidently and wrongly.
-            let name = field.type_name.as_str().ok_or_else(|| UnsupportedType {
-                field: field.name.clone(),
-                arrow_type: field.type_name.to_string(),
-            })?;
-            let data_type = arrow_type(name).ok_or_else(|| UnsupportedType {
-                field: field.name.clone(),
-                arrow_type: name.to_string(),
-            })?;
+            // A type arrives either as a string (a scalar) or as an object (an array).
+            // Anything else — a struct, a map — is refused by name: skipping it hides a
+            // column, and guessing a flat type produces a table other engines read
+            // confidently and wrongly.
+            let data_type = match &field.type_name {
+                serde_json::Value::String(name) => {
+                    arrow_type(name).ok_or_else(|| UnsupportedType {
+                        field: field.name.clone(),
+                        arrow_type: name.clone(),
+                    })?
+                }
+                serde_json::Value::Object(object)
+                    if object.get("type").and_then(serde_json::Value::as_str) == Some("array") =>
+                {
+                    array_type(&field.name, object, &field.metadata)?
+                }
+                other => {
+                    return Err(UnsupportedType {
+                        field: field.name.clone(),
+                        arrow_type: other.to_string(),
+                    })
+                }
+            };
             Ok(Field::new(field.name, data_type, field.nullable))
         })
         .collect();

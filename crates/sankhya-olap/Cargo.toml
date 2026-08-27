@@ -14,7 +14,10 @@ layer = 3
 workspace = true
 
 [dependencies]
-sankhya-types = { path = "../sankhya-types" }
+sankhya-types   = { path = "../sankhya-types" }
+sankhya-numeric = { path = "../sankhya-numeric" }
+arrow-array     = { workspace = true }
+arrow-schema    = { workspace = true }
 sankhya-error = { path = "../sankhya-error" }
 datafusion    = { workspace = true }
 
@@ -23,7 +26,6 @@ arrow = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 sankhya-table = { path = "../sankhya-table" }
-sankhya-types = { path = "../sankhya-types" }
 sankhya-table-delta = { path = "../sankhya-table-delta" }
 sankhya-readpath = { path = "../sankhya-readpath" }
 parquet = { workspace = true }

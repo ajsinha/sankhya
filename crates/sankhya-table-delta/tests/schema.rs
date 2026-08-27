@@ -203,10 +203,13 @@ fn a_type_this_reader_does_not_know_is_named_rather_than_skipped() {
 
 #[test]
 fn a_nested_type_is_refused_by_name_rather_than_guessed_at() {
-    // A nested type arrives as an object rather than a string. Guessing a flat type for it
-    // produces a table other engines read confidently and wrongly.
+    // A struct arrives as an object and is not something this system reads. Guessing a flat
+    // type for it produces a table other engines read confidently and wrongly.
+    //
+    // This test used an array as its example until ADR-0005, when arrays became supported.
+    // A struct is the remaining case.
     let json = r#"{"type":"struct","fields":[
-        {"name":"nested","type":{"type":"array","elementType":"long"},"nullable":true,"metadata":{}}
+        {"name":"nested","type":{"type":"struct","fields":[]},"nullable":true,"metadata":{}}
     ]}"#;
     let Err(unsupported) = sankhya_table_delta::schema_from_string(json) else {
         panic!("a nested type must be refused");
@@ -220,4 +223,131 @@ fn a_schema_that_is_not_valid_json_is_refused_with_what_the_parser_said() {
         panic!("malformed JSON must be refused");
     };
     assert!(unsupported.field.contains("schema itself"));
+}
+
+// --- array columns (ADR-0005) ---------------------------------------------
+
+use std::sync::Arc;
+
+#[test]
+fn a_fixed_length_vector_round_trips_including_its_width() {
+    // The width is what lets a kernel take a flat slice with a known stride, so losing it
+    // turns every vector column into a variable-length one that has to be walked.
+    let original = Schema::new(vec![Field::new(
+        "embedding",
+        DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 384),
+        false,
+    )]);
+
+    let json = schema_string(&original).expect("an array of doubles is representable");
+    assert!(json.contains(r#""type":"array""#), "{json}");
+    assert!(json.contains(r#""elementType":"double""#), "{json}");
+    assert!(
+        json.contains("sankhya.fixedLength"),
+        "the width must be recorded: {json}"
+    );
+
+    let read_back = sankhya_table_delta::schema_from_string(&json).expect("readable");
+    assert_eq!(read_back, original, "the round trip must restore the width");
+}
+
+#[test]
+fn an_external_reader_sees_an_ordinary_array_where_we_see_a_fixed_one() {
+    // The protocol has no fixed-length array, so the constraint is ours. What matters is
+    // that the *values* round-trip exactly: an engine ignoring our metadata gets a correct
+    // variable-length array rather than something wrong.
+    let fixed = Schema::new(vec![Field::new(
+        "v",
+        DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 8),
+        false,
+    )]);
+    let json = schema_string(&fixed).expect("representable");
+
+    // Strip the metadata the way an engine that does not know about it would.
+    let without = json.replace(r#""sankhya.fixedLength":"8""#, "");
+    let read_back = sankhya_table_delta::schema_from_string(&without).expect("still readable");
+    assert_eq!(
+        read_back.field(0).data_type(),
+        &DataType::List(Arc::new(Field::new("item", DataType::Float64, false))),
+        "without the width it is a plain array, which is correct rather than wrong"
+    );
+}
+
+#[test]
+fn a_variable_length_array_round_trips_as_one() {
+    let original = Schema::new(vec![Field::new(
+        "readings",
+        DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
+        true,
+    )]);
+    let json = schema_string(&original).expect("representable");
+    assert!(json.contains(r#""containsNull":true"#), "{json}");
+    assert_eq!(
+        sankhya_table_delta::schema_from_string(&json).expect("readable"),
+        original
+    );
+}
+
+#[test]
+fn an_array_of_arrays_is_refused_rather_than_half_supported() {
+    // Expressible in the protocol, and refused here: a kernel taking a flat slice cannot be
+    // given one, and pretending otherwise fails somewhere far from the schema. A matrix is
+    // a flat fixed-size array with a shape, not a nested one.
+    let nested = Schema::new(vec![Field::new(
+        "matrix",
+        DataType::List(Arc::new(Field::new(
+            "item",
+            DataType::List(Arc::new(Field::new("item", DataType::Float64, false))),
+            false,
+        ))),
+        false,
+    )]);
+    assert!(schema_string(&nested).is_err());
+
+    let json = r#"{"type":"struct","fields":[{"name":"m","type":{"type":"array",
+        "elementType":{"type":"array","elementType":"double"}},"nullable":false,
+        "metadata":{}}]}"#;
+    let Err(refused) = sankhya_table_delta::schema_from_string(json) else {
+        panic!("an array of arrays must be refused");
+    };
+    assert_eq!(refused.field, "m");
+}
+
+#[test]
+fn an_array_of_a_type_this_system_cannot_represent_is_refused_by_name() {
+    let json = r#"{"type":"struct","fields":[{"name":"odd","type":{"type":"array",
+        "elementType":"interval"},"nullable":true,"metadata":{}}]}"#;
+    let Err(refused) = sankhya_table_delta::schema_from_string(json) else {
+        panic!("an array of an unknown type must be refused");
+    };
+    assert_eq!(refused.field, "odd");
+    assert!(
+        refused.arrow_type.contains("interval"),
+        "{}",
+        refused.arrow_type
+    );
+}
+
+#[test]
+fn arrays_of_other_scalars_work_too() {
+    // Doubles are the case that motivated this, and nothing about the mapping is specific
+    // to them.
+    for element in [
+        DataType::Int64,
+        DataType::Float32,
+        DataType::Utf8,
+        DataType::Boolean,
+    ] {
+        let schema = Schema::new(vec![Field::new(
+            "v",
+            DataType::FixedSizeList(Arc::new(Field::new("item", element.clone(), false)), 4),
+            false,
+        )]);
+        let json = schema_string(&schema).expect("representable");
+        assert_eq!(
+            sankhya_table_delta::schema_from_string(&json).expect("readable"),
+            schema,
+            "{element} did not round-trip"
+        );
+    }
 }

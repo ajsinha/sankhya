@@ -21,6 +21,11 @@
 
 mod quantile;
 mod reduce;
+pub mod vector;
 
 pub use quantile::{quantile, quantile_of_sum, Convention, QuantileError};
 pub use reduce::{combine_partials, deterministic_sum};
+pub use vector::{
+    add, cosine_distance, cosine_similarity, divide, dot, euclidean, matvec, mean, multiply,
+    norm_l1, norm_l2, row_of, scale, subtract, sum, VectorError,
+};
