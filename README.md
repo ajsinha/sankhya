@@ -192,8 +192,11 @@ never registered, so naming it fails to resolve rather than confirming it exists
 row predicate is enforced where no provider can decline it. Everything it did is recorded in
 a tamper-evident hash chain.
 
-What does not exist: the streaming transport, Arrow Flight SQL, the gRPC control plane and
-the REST gateway. Also unbuilt inside work already counted: bloom filters, table
+**Arrow Flight SQL** streams results as Arrow batches over gRPC, so a bulk extract stays
+columnar from the Parquet page to the client's buffer — the wire protocol is a row protocol
+and converts at the last step, which is the whole cost of a large extract.
+
+What does not exist: the streaming transport, the gRPC control plane and the REST gateway. Also unbuilt inside work already counted: bloom filters, table
 partitioning, the result cache, leader election, a timer that drives graph hydration, and
 a measured graph benchmark — the graph primitives are correct against brute force and
 bounded by construction, but they have not been timed at scale, and that M4 criterion is
