@@ -22,7 +22,8 @@ The [quickstart](QUICKSTART.md) gets a server running. This shows what to do wit
 7. [Graph traversal from SQL](#7-graph-traversal-from-sql)
 8. [Security, and what it refuses](#8-security-and-what-it-refuses)
 9. [Verifying and repairing a table](#9-verifying-and-repairing-a-table)
-10. [What is not built](#10-what-is-not-built)
+10. [The diagnostic](#10-the-diagnostic)
+11. [What is not built](#11-what-is-not-built)
 
 ---
 
@@ -478,7 +479,126 @@ directory, at three in the morning.
 
 ---
 
-## 10. What is not built
+## 10. The diagnostic
+
+```
+sankhya-server doctor
+```
+
+It reads the warehouse directly and does **not** start the server. That is deliberate: the
+day you want a diagnostic is frequently the day the server will not start, and a diagnostic
+that needs a healthy server to report an unhealthy one is decoration.
+
+### What it prints
+
+```
+SANKHYA doctor 0.1.0
+  warehouse /srv/sankhya/warehouse
+  1 table(s)
+
+  [warning] table sales.orders — 900 live files; at the current rate, about 1 day.
+         Compact it: `sankhya maintenance compact --table sales.orders`. If this recurs,
+         the maintenance duty cycle is too low for this table's write rate — raising it is
+         the durable fix and compacting by hand is not.
+
+1 check(s) clean, 1 finding(s) of which 1 have a date, 0 check(s) could not run
+```
+
+Two things in that line are the whole design.
+
+**"about 1 day", not "900 files."** `FR-OPS-17` asks for the time until a problem becomes
+user-visible rather than its current value, on the grounds that *"compaction debt is 400 GB"*
+is far less actionable than *"query latency on this table will double in about nine days"*.
+
+**"of which 1 have a date."** Which brings us to the part that surprises people.
+
+### The first run gives you no dates, and says so
+
+A time cannot be computed from one sample. "900 files" and "growing by 100 files a day" are
+different kinds of fact and only the second yields a date. So the first run of `doctor` on a
+new installation looks like this:
+
+```
+  [note] table sales.orders — 990 live files; no projection is possible from 1
+         observation(s): a time needs a rate, and a rate needs at least 2.
+```
+
+It reports the value, refuses the date, and names what is missing. The alternative — a
+projection invented from one sample — is a number with a date attached, and a date is
+exactly what gets believed and scheduled around.
+
+**Run it on a schedule.** Hourly from cron is what makes the projections real:
+
+```cron
+17 * * * * SANKHYA_WAREHOUSE=/srv/sankhya/warehouse /usr/local/bin/sankhya-server doctor
+```
+
+Observations are appended to `.sankhya/diagnostic-history.tsv` beside the warehouse — plain
+tab-separated text, so `tail` answers "what did it see last night?" without any tooling. It
+is bounded, and it is deliberately *not* a table in the system being diagnosed.
+
+### The four answers, and why there are four
+
+| Answer | Meaning |
+|---|---|
+| **Already** | Past the threshold now. An incident, not a warning |
+| **Crossing** | A date, with a confidence. Two observations give `Weak` and say so in the text; five or more give `Firm` |
+| **Receding** | Moving away from the threshold, or flat. **Not reported** — a large number that is shrinking needs no attention, and reporting it teaches an operator to skim |
+| **Beyond / Unknown** | It will not say. See below |
+
+It refuses to give a date in four distinct situations, and each refusal names itself:
+
+- **Too few observations.** Fewer than two. The first run, always.
+- **Not linear.** The measurements do not follow a line closely enough. A sawtooth — debt
+  accumulating and being compacted away — fits a line badly *by construction*, and a date
+  drawn through one reports where in the cycle the samples happened to fall.
+- **Beyond the horizon.** It crosses on this trend, but further out than the observation
+  window supports. Four days of samples projecting six months ahead is arithmetic, not
+  evidence. The horizon is three times the observed span.
+- **No elapsed time.** Every observation shares an instant.
+
+A measure that is *near* the threshold still speaks up without a date, at `note` severity —
+silence at 990 of 1,000 files reads as health, and it is not.
+
+### Findings are ordered by *when*, not by *how bad*
+
+A `note` that becomes an outage tomorrow is printed above a `critical` that has been stable
+for a month. Severity orders a list by how loudly each item shouts; time orders it by which
+one has to be dealt with first. Reading top-down should be reading a schedule.
+
+### "Could not run" is its own section, and its own exit status
+
+```
+Could not run:
+  [compaction-debt] table sales.archive: log version 7 is malformed
+```
+
+A table nobody could look at and a table that is fine both produce no findings. If they land
+in the same empty list, the report says "all clear" about something it never examined.
+
+| Exit | Meaning |
+|---|---|
+| `0` | Clean |
+| `1` | Findings |
+| `2` | At least one check could not run |
+
+The third status exists so a monitoring system cannot treat "I could not look" as "nothing
+found".
+
+### What it checks today
+
+| Check | Threshold | Status |
+|---|---|---|
+| `compaction-debt` | 1,000 live files per table | Built |
+| `storage-headroom` | free space reaching zero | Built as a check; nothing feeds it observations yet, because reading free space needs a platform call this workspace's `forbid(unsafe_code)` will not permit. The caller passes the number in |
+| `replication-lag` | a freshness objective the caller supplies | Built as a check; not yet wired, because nothing in this process advances a replication position |
+
+`FR-OPS-16` lists more — conformance, replica identity, archival consistency. Those are not
+built, and [`STATUS.md`](STATUS.md) is the authoritative list.
+
+---
+
+## 11. What is not built
 
 Stated explicitly, because a guide that implies more than exists is worse than one that
 admits less. [`STATUS.md`](STATUS.md) is the authoritative version.
@@ -490,6 +610,7 @@ admits less. [`STATUS.md`](STATUS.md) is the authoritative version.
 | **Graph hydration on a timer** | Not built. An epoch is built when something builds it |
 | **The pack loader in the server** | Not built. Packs load into a registry; nothing in the running process does that |
 | **Partitioning, bloom filters, the result cache** | Not built. The date axis and its declaration exist; nothing yet writes partitioned directories |
+| **Most of `FR-OPS-16`'s checks** | Not built. `doctor` covers compaction debt end to end; storage headroom and replication lag exist as checks with nothing feeding them |
 | **QR, SVD, eigendecomposition** | Deliberately absent. They are where an in-house implementation is worse than none — a subtly wrong SVD produces plausible singular values |
 
 ---

@@ -3350,6 +3350,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sankhya-diagnostic"
+version = "0.1.0"
+dependencies = [
+ "sankhya-error",
+ "sankhya-math",
+ "sankhya-table-delta",
+ "sankhya-types",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "sankhya-error"
 version = "0.1.0"
 dependencies = [
@@ -3587,6 +3599,7 @@ dependencies = [
  "sankhya-audit",
  "sankhya-authz",
  "sankhya-catalog",
+ "sankhya-diagnostic",
  "sankhya-error",
  "sankhya-governor",
  "sankhya-graph",

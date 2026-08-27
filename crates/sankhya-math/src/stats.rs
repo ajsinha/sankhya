@@ -253,9 +253,18 @@ pub fn linear_fit(x: &[f64], y: &[f64]) -> Result<LinearFit, VectorError> {
     // pass over the residuals.
     let r_squared = match correlation(x, y) {
         Ok(r) => r * r,
-        // A constant response has no variation to explain. Zero is the honest figure: the
-        // fit explains none of a variance that is itself zero.
-        Err(VectorError::ZeroMagnitude) => 0.0,
+        // A constant response. The correlation is 0/0 and undefined, but the *fit* is not
+        // ambiguous at all: the slope is zero, the intercept is the constant, and every
+        // residual is exactly zero. A horizontal line through a horizontal series is a
+        // perfect fit, so this is one.
+        //
+        // An earlier version returned zero here on the reasoning that the fit explains none
+        // of the variance. Arithmetically that is defensible --- there is no variance to
+        // explain --- but it reads as "these points are not described by a line", which is
+        // the opposite of the truth, and a caller asking r² how straight a series is gets
+        // told a flat one is as crooked as noise. `x` is already known to vary, so this arm
+        // is reachable only for constant `y`.
+        Err(VectorError::ZeroMagnitude) => 1.0,
         Err(other) => return Err(other),
     };
     Ok(LinearFit {

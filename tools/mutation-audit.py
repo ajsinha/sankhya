@@ -1011,6 +1011,96 @@ CATALOGUE = [
      'format!("SELECT * FROM {t} WHERE {COMMIT_LSN} <= {}", target.get())',
      'format!("SELECT * FROM {t}")',
      "sankhya-readpath"),
+
+    # Anchored on the line above, because the identical guard appears in `line()` first and
+    # an unanchored find patches that one instead -- where it is equivalent, since a fit
+    # through one point fails anyway. The entry SURVIVED for exactly that reason, which is
+    # the failure mode this catalogue's own header warns about.
+    ("diagnostic: project a date from a single observation",
+     "crates/sankhya-diagnostic/src/projection.rs",
+     """        if self.observations.len() < MINIMUM_OBSERVATIONS {
+            return Projection::Unknown {""",
+     """        if false {
+            return Projection::Unknown {""",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: read the direction of concern from the slope",
+     "crates/sankhya-diagnostic/src/projection.rs",
+     """        let already = match concern {
+            Concern::RisingTo => latest.value >= threshold,
+            Concern::FallingTo => latest.value <= threshold,
+        };""",
+     """        let already = match self.line().map_or(true, |fit| fit.slope >= 0.0) {
+            true => latest.value >= threshold,
+            false => latest.value <= threshold,
+        };""",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: project a date through a sawtooth",
+     "crates/sankhya-diagnostic/src/projection.rs",
+     "        if fit.r_squared < LINEAR_ENOUGH && self.observations.len() > MINIMUM_OBSERVATIONS {",
+     "        if false {",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: ask the direction before the fit, so a sawtooth reads as receding",
+     "crates/sankhya-diagnostic/src/projection.rs",
+     "        const LINEAR_ENOUGH: f64 = 0.80;",
+     "        const LINEAR_ENOUGH: f64 = 0.0;",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: extrapolate arbitrarily far past the observed window",
+     "crates/sankhya-diagnostic/src/projection.rs",
+     "        if seconds > horizon_seconds {",
+     "        if false {",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: sort findings by severity rather than by when",
+     "crates/sankhya-diagnostic/src/check.rs",
+     "        self.findings.sort_by_key(Finding::urgency);",
+     "        self.findings.sort_by(|a, b| b.severity.cmp(&a.severity));",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: go silent when near the line with no rate yet",
+     "crates/sankhya-diagnostic/src/check.rs",
+     "    if !matches!(projection, Projection::Unknown { .. }) {\n        return false;\n    }",
+     "    if true {\n        return false;\n    }",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: count a table that could not be read as a clean one",
+     "crates/sankhya-diagnostic/src/collect.rs",
+     'Err(why) => report.skipped(COMPACTION_DEBT, format!("table {}: {why}", table.name)),',
+     "Err(_) => report.clean(COMPACTION_DEBT),",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: report before recording, so every date is one run stale",
+     "crates/sankhya-diagnostic/src/collect.rs",
+     "                let observation = Observation::new(now, files as f64);",
+     "                let observation = Observation::new(now, f64::from(0u8));",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: accept a NaN from the history file",
+     "crates/sankhya-diagnostic/src/history.rs",
+     "    if !value.is_finite() {\n        return None;\n    }",
+     "    if false {\n        return None;\n    }",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: let a tab in a subject forge a field",
+     "crates/sankhya-diagnostic/src/history.rs",
+     "        measure.subject.replace('\\t', \" \"),",
+     "        measure.subject,",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: treat a damaged history line as if it had parsed",
+     "crates/sankhya-diagnostic/src/history.rs",
+     "                None => history.damaged_lines += 1,",
+     "                None => {}",
+     "sankhya-diagnostic"),
+
+    ("math: call a constant series a bad linear fit",
+     "crates/sankhya-math/src/stats.rs",
+     "        Err(VectorError::ZeroMagnitude) => 1.0,",
+     "        Err(VectorError::ZeroMagnitude) => 0.0,",
+     "sankhya-math"),
 ]
 
 

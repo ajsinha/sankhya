@@ -1685,6 +1685,26 @@ Distinct startup, liveness and readiness signals. **Readiness accounts for pipel
 
 A separate status endpoint reports the full version matrix: binary, database, schema, table protocol, policy bundle, pack versions.
 
+### 17.2a The diagnostic reports a time, which forces it to keep a history
+
+`FR-OPS-17` requires the diagnostic to report **time until a problem becomes user-visible** rather than its current value: *"compaction debt is 400 GB"* is far less actionable than *"query latency on this table will double in about nine days"*.
+
+The architectural consequence is the part worth stating, because it is not in the requirement and it is easy to build around: **a time cannot be computed from one sample.** It needs a rate; a rate needs observations separated in time; and observations separated in time need somewhere to live between runs. A diagnostic that computes projections beautifully and keeps no history satisfies the requirement in code and never once in operation, because every run is the first run.
+
+So the diagnostic owns a small, append-only observation history, and three properties of it are deliberate:
+
+- **It is beside the warehouse, not inside it.** The warehouse is the thing being diagnosed, and may be on storage that is full or unwritable — which may itself be the finding.
+- **It is not a table in this system.** A diagnostic that needs a healthy database to report an unhealthy one is decoration. For the same reason `doctor` reads the warehouse directly rather than starting the server.
+- **It is text, and damage is expected.** A process killed mid-append leaves a torn line. That line is skipped and counted, and the count is reported. Refusing to start over a truncated line would remove the tool at the moment somebody reaches for it; hiding the count would let a history quietly losing half its lines still produce confident dates.
+
+**`Unknown` is a first-class outcome.** The diagnostic names what it is missing — too few observations, a poor linear fit, a crossing beyond what the observation window supports — rather than producing a date it cannot justify. This is uncomfortable on a first run and it is the correct discomfort: a projection invented from one sample is a number with a date attached, and a date is precisely what gets believed and scheduled around.
+
+**Findings are ordered by *when*, not by severity.** Severity orders a list by how loudly each item shouts; time orders it by which one must be dealt with first, and those are different orders. A warning that becomes an outage tomorrow outranks an error that has been stable for a month. An operator reading top-down should be reading a schedule.
+
+**"Could not run" is structurally separate from "found nothing", including in the exit status.** Both produce an empty finding list, and they are opposite facts. A monitoring system that treats "I could not look" as "nothing found" reports all-clear for a subsystem nobody examined — which is the specific failure the whole design is arranged against.
+
+See [`GUIDE.md` §10](GUIDE.md#10-the-diagnostic) for the operator-facing behaviour.
+
 ### 17.3 Backup and recovery
 
 Three artifacts must agree: the transactional backup, the table snapshots, and the key generation. A backup produces a **manifest binding all three to a consistent point**, verified on restore. Three backups that do not agree with each other are worse than one.
@@ -1794,6 +1814,10 @@ The trade-off, stated plainly: scale-up gives lower latency, far simpler failure
 | `DEC-33` | One date axis on every table: `sank_data_date`, of type `DATE` | [ADR-0004](adr/0004-the-date-axis.md) |
 | `DEC-34` | The date is declared per table, never defaulted per row | [ADR-0004](adr/0004-the-date-axis.md) |
 | `DEC-35` | Array columns as `FixedSizeList`; kernels in-house because they must be deterministic | [ADR-0005](adr/0005-array-columns-and-numeric-kernels.md) |
+| `DEC-36` | The diagnostic keeps its own observation history, outside the system it diagnoses | §17.2a |
+| `DEC-37` | A projection is refused by name rather than invented; `Unknown` is an outcome, not an error | §17.2a |
+| `DEC-38` | Findings sort by when they bite, not by severity | §17.2a |
+| `DEC-39` | "Could not run" is separate from "found nothing", down to the exit status | §17.2a |
 
 ---
 

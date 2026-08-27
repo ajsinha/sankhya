@@ -18,8 +18,79 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M3** Query engine and storage performance | 28–34 ew | **Complete**, all six exit criteria met — closed 2026-08-26. One criterion was corrected first: it required cancellation inside user code, which does not exist until M4, and that clause moved to M4. Parts of the work breakdown remain unbuilt and are listed under *M3, closed* below |
 | **M4** Graph engine and the extension mechanism | 26–32 ew | **Complete.** Every exit criterion met; see below |
 | **M5** Tenancy, security and API surfaces | 22–28 ew | **Closed.** Four of five exit criteria met; the fifth needs a second server version to exist. Two of four API surfaces built — the wire protocol and Flight SQL. The control plane and its gateway are **deferred to M6**, because what they expose is built there |
-| **M6** Operability, packaging and hardening | — | **Next.** A server process exists ahead of schedule; the rest is not started |
+| **M6** Operability, packaging and hardening | — | **In progress.** The server process and §10.1's diagnostic are built; §10.2–10.8 are not started |
 | **M7**–**M8** | — | Not started |
+
+---
+
+## M6, in progress
+
+### §10.1 — The diagnostic
+
+`sankhya-server doctor`. Walks the warehouse, records what it sees, and reports findings
+ordered by *when* rather than by how bad.
+
+`FR-OPS-17` is the requirement, and it has a consequence it does not state:
+
+> The diagnostic SHALL report **time until a problem becomes user-visible**, not merely its
+> current value.
+
+**A time cannot be computed from one sample.** It needs a rate, a rate needs observations
+over time, and observations over time need somewhere to keep them between runs. That second
+half is easy to miss — the projection arithmetic looks like the hard part and is not. A
+diagnostic with the arithmetic and no history satisfies the requirement on paper and never
+once in practice, because every run is the first run.
+
+So the crate has two halves. `projection.rs` turns a series into a date or a named refusal;
+`history.rs` is an append-only text file beside the warehouse that makes a second run
+possible. It is deliberately not a table in the system being diagnosed: a diagnostic that
+cannot run when the database is unhealthy is a diagnostic that cannot run on the day it is
+needed.
+
+**What it refuses to do, and why each refusal is its own outcome:**
+
+| Refusal | The failure it prevents |
+|---|---|
+| Fewer than two observations | A date invented from one sample is a number with a calendar entry attached |
+| A poor linear fit | A sawtooth — debt accumulating and being compacted away — fits a line badly *by construction*, and a date through one reports where in the cycle the samples fell |
+| Beyond the horizon | Four days of samples projecting six months out is arithmetic, not evidence. The horizon is three times the observed span |
+| No elapsed time | Every observation shares an instant |
+
+A measure *near* the threshold with no rate yet still speaks up, undated, at `note`
+severity. Silence at 990 of 1,000 files reads as health, and it is not.
+
+**Four defects found while building it, three by running it rather than by testing it:**
+
+- **The direction of concern was read from the slope.** It cannot be: a measure falling
+  while the threshold sits above it is receding, and the slope-based reading called it
+  already-crossed. Which direction is trouble is the caller's fact, not the data's.
+- **Linearity was asked after direction.** A sawtooth averages to roughly no slope, so the
+  direction test reached first and answered *receding* — an affirmative all-clear drawn from
+  data that supports no conclusion at all. The order is now load-bearing and is tested.
+- **`linear_fit` called a constant series a bad fit.** `r²` is 0/0 there, and the code
+  returned zero on the reasoning that the fit explains none of the variance. Arithmetically
+  defensible; it reads as "these points are not described by a line" about the straightest
+  series there is. A horizontal line through a horizontal series is a perfect fit, so it now
+  returns one. This was a real defect in `sankhya-math`, found by its first caller who cared.
+- **"1 days".** A `contains` assertion hid it — `"about 1 days"` contains `"about 1 day"`.
+  Found by reading the output, and the test now pins the whole phrase.
+
+**And two catalogue entries that could never have failed.** One mutation was anchored on a
+guard whose text appears twice, so it patched the harmless copy in `line()` and reported
+SURVIVED; another claimed `{}` rounds `f64` where `{:?}` does not, which is false — both
+round-trip, and the real reason to prefer `{:?}` is that `1e-300` under `{}` is 302
+characters. The first was re-anchored; the second was deleted, along with the code comment
+making the same false claim.
+
+**What is checked today:** compaction debt, end to end. Storage headroom and replication lag
+exist as checks with nothing feeding them observations — free space needs a platform call
+`forbid(unsafe_code)` will not permit, so the caller that has one passes the number in, and
+nothing in this process advances a replication position. The rest of `FR-OPS-16` —
+conformance, replica identity, archival consistency — is not built.
+
+Exit status is `0` clean, `1` findings, `2` a check could not run. The third exists because
+a monitoring system treating "I could not look" as "nothing found" is the failure this whole
+crate is arranged against.
 
 ---
 
@@ -573,7 +644,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 147 specific defects applied one at a time; all 147 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 160 specific defects applied one at a time; all 160 fail the suite. Sixteen did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, two entries were inert until corrected — the second was anchored on a guard that appears twice, so it patched the harmless copy — and chasing two others produced documentation corrections rather than new tests. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -1067,9 +1138,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,121 tests, none of which needs a database
+cargo test --workspace           # 1,177 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 147 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 160 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

@@ -8,17 +8,21 @@
 //! # What this server currently is
 //!
 //! A wire-protocol front door that authenticates a connection, answers catalogue queries
-//! from a policy-filtered table list, records what it did in a hash-chained audit, and
-//! **refuses statements with a named error** because no query engine is behind it yet.
+//! from a policy-filtered table list, executes SQL against the tables discovered in the
+//! warehouse, and records what it did in a hash-chained audit.
 //!
-//! That last part is deliberate and is stated in the refusal itself. The read path exists
-//! and is tested; connecting it is the next step. A server that returned empty results
-//! instead would look like a database with no data in it.
+//! # Subcommands
+//!
+//! With no arguments it serves. `doctor` instead runs the operator diagnostic against the
+//! warehouse and exits --- see [`doctor`], and note that it deliberately does not start the
+//! server, because the day you want a diagnostic is often the day the server will not
+//! start.
 
 // The composition root is the one place a `main` may exist, and a binary that cannot
 // print to its own console is not much of a binary.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+mod doctor;
 mod execute;
 mod warehouse;
 mod wiring;
@@ -59,6 +63,33 @@ fn settings() -> Settings {
     }
 }
 
+/// Where the diagnostic keeps its observation history.
+///
+/// Beside the warehouse by default rather than inside it: the warehouse is the thing being
+/// diagnosed and may be on storage that is full, unwritable, or the subject of the finding.
+fn data_dir(warehouse: &std::path::Path) -> std::path::PathBuf {
+    std::env::var("SANKHYA_DATA_DIR").map_or_else(
+        |_| {
+            warehouse
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .join(".sankhya")
+        },
+        std::path::PathBuf::from,
+    )
+}
+
+/// The current time in microseconds, or zero if the clock is before the epoch.
+///
+/// Read once, at the top of a run, so every observation in one run shares a timestamp.
+fn now_micros() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|since| i64::try_from(since.as_micros()).ok())
+        .unwrap_or(0)
+}
+
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     tracing_subscriber::fmt()
@@ -69,6 +100,15 @@ async fn main() -> std::io::Result<()> {
         .init();
 
     let settings = settings();
+
+    // Subcommands before the server starts, because `doctor` must work when `start` would
+    // not. One argument is the whole surface for now; more of them want a parser, and a
+    // hand-rolled parser is how a flag comes to mean two things.
+    if std::env::args().nth(1).as_deref() == Some("doctor") {
+        let data = data_dir(&settings.warehouse);
+        std::process::exit(doctor::doctor(&settings.warehouse, &data, now_micros()));
+    }
+
     let (server, listener, complaints) = start(settings).await?;
 
     // Printed rather than only logged: an operator starting this by hand needs to see the

@@ -14,6 +14,7 @@ layer = 5
 workspace = true
 
 [dependencies]
+sankhya-diagnostic = { path = "../sankhya-diagnostic" }
 sankhya-api-pg   = { path = "../sankhya-api-pg" }
 sankhya-authz    = { path = "../sankhya-authz" }
 sankhya-audit    = { path = "../sankhya-audit" }

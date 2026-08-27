@@ -46,9 +46,9 @@ cargo xtask check-all
 
 That runs every repository invariant: the layer graph, the file-length ceiling, the
 domain-vocabulary prohibition, the duplicate-dependency gate, the documentation checks,
-the feature pins, clippy under the workspace's denied lints, and the mutation
-catalogue's agreement with the source. **Each is proven to fail when violated**, not
-merely to pass.
+the feature pins, clippy under the workspace's denied lints, the mutation catalogue's
+agreement with the source, and every counted figure the documentation claims. **Each is
+proven to fail when violated**, not merely to pass.
 
 ---
 
@@ -78,7 +78,7 @@ availability event.
 ## 3. Run the tests
 
 ```bash
-cargo test --workspace          # 1,121 tests, none of which needs a database
+cargo test --workspace          # 1,177 tests, none of which needs a database
 ```
 
 Everything here runs without a database, in well under a minute. Nothing is mocked: the
@@ -120,6 +120,7 @@ TPC-H data is generated rather than fixtured.
 | `sankhya-olap` `tests/exactness.rs` | An approximate answer is labelled approximate. A sketch-derived count never presents itself as exact |
 | `sankhya-governor` | Deadlines and cancellation are bounded at one batch per partition; an aggregation too large to run is refused up front, and the refusal says whether retrying could ever help |
 | `sankhya-math` | Reductions are deterministic regardless of partition order — the analytical counterpart to the `sankhya-types` property |
+| `sankhya-diagnostic` | A projection is never invented from one sample, never drawn through a sawtooth, and never extrapolated further than the observation window supports. Findings sort by *when*, not by how bad. A check that could not run is never counted as one that found nothing |
 
 ### The checks that are not tests
 
@@ -127,22 +128,26 @@ Three gates catch things a test suite structurally cannot. All three fail the bu
 
 ```bash
 cargo xtask check-all            # every repository invariant — see below
-python3 tools/mutation-audit.py  # 147 deliberate defects, applied one at a time
+python3 tools/mutation-audit.py  # 160 deliberate defects, applied one at a time
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
 ```
 
-**`check-all`** runs eight invariants: the layer graph is acyclic and points the right
+**`check-all`** runs nine invariants: the layer graph is acyclic and points the right
 way, no file exceeds the length ceiling, no core crate names a domain concept, the
 dependency set has no critical duplicates, the documentation's links and version claims
 resolve and its status lines agree, test-only dependencies really are test-only, clippy
-is clean under the workspace's denied lints across every target, and no mutation is left
-applied to the source. Each is proven to fail when violated, not merely to pass.
+is clean under the workspace's denied lints across every target, no mutation is left
+applied to the source, and every figure a document claims — test counts, catalogue sizes —
+still matches what the repository actually holds. Each is proven to fail when violated, not
+merely to pass.
 
 **The mutation audit** is the answer to "the tests pass, but do they test anything?" It
-applies 147 specific defects one at a time and requires the suite to fail on each. Thirteen
-did not, the first time it ran. Expect it to take a while — it is 147 sequential
-`cargo test` runs, and it edits your source files as it goes, restoring each one after.
-Run it on a clean tree.
+applies 160 specific defects one at a time and requires the suite to fail on each. Sixteen
+did not, the first time each was run — the most recent three were written for the
+diagnostic, and one of those turned out to be pointing at the wrong copy of a duplicated
+guard, which is precisely the silent-pass this tool exists to catch. Expect it to take a
+while — it is 160 sequential `cargo test` runs, and it edits your source files as it goes,
+restoring each one after. Run it on a clean tree.
 
 **`check-performance`** is deliberately outside `check-all`: it generates a
 scale-factor-1 dataset and needs a machine that is not otherwise busy.
@@ -409,7 +414,51 @@ reported. See [`adr/0002-async-commit-and-decoding-visibility.md`](adr/0002-asyn
 
 ---
 
-## 7. Tidy up
+## 7. Check the health of a warehouse
+
+```bash
+./target/release/sankhya-server doctor
+```
+
+It reads the warehouse directly and does not start the server, because the day you want a
+diagnostic is often the day the server will not start.
+
+```
+SANKHYA doctor 0.1.0
+  warehouse ./warehouse
+  1 table(s)
+
+  [note] table sales.orders — 990 live files; no projection is possible from 1
+         observation(s): a time needs a rate, and a rate needs at least 2.
+
+0 check(s) clean, 1 finding(s) of which 0 have a date, 0 check(s) could not run
+```
+
+**That is the correct output for a first run, and it is the whole point.** `FR-OPS-17` asks
+for the time until a problem bites rather than its current value — and a time cannot be
+computed from one sample. So the first run reports the value, refuses the date, and names
+what is missing. Run it again after some load and it will tell you when:
+
+```
+  [warning] table sales.orders — 900 live files; at the current rate, about 1 day.
+         Compact it: `sankhya maintenance compact --table sales.orders`. …
+```
+
+Put it in cron — hourly is enough — and the projections become real:
+
+```cron
+17 * * * * SANKHYA_WAREHOUSE=/srv/sankhya/warehouse /usr/local/bin/sankhya-server doctor
+```
+
+Exit status is `0` clean, `1` findings, `2` a check could not run. The third exists so a
+monitoring system cannot read "I could not look" as "nothing found".
+
+Full detail, including why it refuses to project through a sawtooth, is in
+[`GUIDE.md` §10](GUIDE.md#10-the-diagnostic).
+
+---
+
+## 8. Tidy up
 
 ```bash
 $PGBIN/pg_ctl -D .build/pg stop -m fast
@@ -437,6 +486,7 @@ that admits less.
 | Mathematics | **Working.** Vectors and matrices as columns, and the kernels over them: elementwise, dot, norms, distances, statistics, calculus, and linear algebra through LU. Every reduction is bit-deterministic. Callable from SQL as `vec_*` and `mat_*`, with constructors that let a matrix be built and operated on without being stored. No QR, SVD or eigendecomposition |
 | Publishing and repair | **Working.** A library and command-line tool for writing an external table, and a verifier that does not assume it was used. Repair fixes only what can be derived from evidence and refuses anything needing a guess |
 | Query governance | **Working.** Deadlines and cancellation bounded at one batch per partition; admission control that refuses an aggregation too large to run rather than letting it take the process down, and says whether retrying could ever help |
+| The diagnostic | **Working for one check.** `doctor` walks the warehouse, records what it sees, and projects a date for compaction debt once it has two runs to compare. Storage headroom and replication lag are built as checks with nothing feeding them observations. The rest of `FR-OPS-16` — conformance, replica identity, archival consistency — is not built |
 | Graph engine | **Working.** A typed, time-aware adjacency hydrated from published tables — no second store, no graph write path, an edge exists because a row exists. Traversal, weighted and k-shortest loopless paths, simple cycles, components, centrality, communities and multiplicative influence, each bounded and each reporting its own truncation. Five SQL table functions make them joinable against ordinary tables. Nothing drives hydration on a timer |
 | The extension mechanism | **Working.** SANKHYA's own function traits rather than the engine's, so a pack survives the engine changing underneath it. Two reference packs from unrelated industries and one deliberately hostile pack whose every attempt is refused with a named error. A declarative tier expresses a pack as a file rather than a crate. **The loader is not wired into the server**: a running process exists, and nothing in it loads a bundle |
 | API surfaces | **Two of four.** Real `psql` connects, authenticates, runs catalogue queries and recovers from errors. **Arrow Flight SQL** streams results as Arrow batches over gRPC, with authorization at planning and a ticket bound to the tenant it was issued to. The gRPC control plane and the REST gateway are not built |
