@@ -6,6 +6,7 @@
 //! to unwind, and invisible in review.
 
 mod catalogues;
+mod logging;
 mod package;
 
 use std::collections::BTreeMap;
@@ -171,6 +172,9 @@ fn main() -> ExitCode {
             }
         }
     }
+    if run_all || task == "check-logging" {
+        failed |= !logging::check(&root);
+    }
     if run_all || task == "check-package" {
         failed |= !package::check(&root);
     }
@@ -197,6 +201,7 @@ fn main() -> ExitCode {
                 | "check-lints"
                 | "check-mutations"
                 | "check-doc-numbers"
+                | "check-logging"
                 | "check-package"
                 | "check-catalogues"
                 | "write-catalogues"
@@ -207,7 +212,7 @@ fn main() -> ExitCode {
             "usage: cargo xtask \
              [check-all|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
              |check-features|check-lints|check-mutations|check-doc-numbers\
-             |check-catalogues|write-catalogues|check-package|check-performance]"
+             |check-catalogues|write-catalogues|check-logging|check-package|check-performance]"
         );
         return ExitCode::from(2);
     }

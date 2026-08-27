@@ -434,8 +434,23 @@ And two tests that did not test what they claimed: a cardinality-budget test usi
 with no labels, and a refusal-classification test reaching only one of the three states the
 table covers. Both were found by the mutation catalogue, not by reading.
 
-**What is not built:** distributed tracing spans, and the pre-release log scrape for the
-tenant-data prohibition. `FR-OPS-16`'s remaining checks --- conformance, replica identity,
+**The tenant-data prohibition is now checked rather than asserted.** `ARCHITECTURE` §17.1
+forbids caller data in any log line; metric labels were already structural and logs had only
+the sentence. `cargo xtask check-logging` closes it — and it is aimed at the case nobody
+writes deliberately: **`#[instrument]` records every argument of the function it decorates**,
+so three words on `fn query(&self, sql: &str)` put every statement any client sends into the
+log, predicate values included, with nothing at the call site saying so. There is no
+suppression comment, because a prohibition with an escape hatch becomes a prohibition with
+escapes in it.
+
+Its own mutations then showed the word-boundary logic was **entirely unexercised**: every
+test was rejected by plain substring absence, so neither half of the boundary was ever
+reached. `%sql` is a real substring of `%sqlx`, and the leading and trailing checks reject
+different things — one constructed case each. Third time this milestone a survivor exposed a
+test passing for a reason unrelated to its name, which is the specific value of mutation
+testing over coverage: both lines were covered throughout.
+
+**What is not built:** distributed tracing spans. `FR-OPS-16`'s remaining checks --- conformance, replica identity,
 archival consistency --- belong to §10.1 and are not built either.
 
 ---
@@ -1059,7 +1074,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 231 specific defects applied one at a time; all 231 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 234 specific defects applied one at a time; all 234 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -1553,9 +1568,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,335 tests, none of which needs a database
+cargo test --workspace           # 1,343 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 231 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 234 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

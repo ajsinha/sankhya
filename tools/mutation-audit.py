@@ -1544,6 +1544,24 @@ CATALOGUE = [
      '        path: "/health",\n        shape: Shape::Document,\n        authenticated: true,',
      "sankhya-api-rest"),
 
+    ("logging: stop catching an interpolated statement",
+     "xtask/src/logging.rs",
+     "    if !MACROS.iter().any(|macro_name| line.contains(macro_name)) {",
+     "    if true {",
+     "xtask"),
+
+    ("logging: allow #[instrument] to record every argument",
+     "xtask/src/logging.rs",
+     "    !trimmed.contains(\"skip_all\") && !trimmed.contains(\"skip(\")",
+     "    false",
+     "xtask"),
+
+    ("logging: ignore the word boundary after a forbidden field name",
+     "xtask/src/logging.rs",
+     "        let after_ok = !haystack",
+     "        let after_ok = true || !haystack",
+     "xtask"),
+
 ]
 
 

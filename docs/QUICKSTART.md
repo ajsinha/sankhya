@@ -86,7 +86,7 @@ availability event.
 ## 3. Run the tests
 
 ```bash
-cargo test --workspace          # 1,335 tests, none of which needs a database
+cargo test --workspace          # 1,343 tests, none of which needs a database
 ```
 
 Everything here runs without a database, in well under a minute. Nothing is mocked: the
@@ -142,12 +142,12 @@ Three gates catch things a test suite structurally cannot. All three fail the bu
 
 ```bash
 cargo xtask check-all            # every repository invariant — see below
-python3 tools/mutation-audit.py  # 231 deliberate defects, applied one at a time
+python3 tools/mutation-audit.py  # 234 deliberate defects, applied one at a time
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
 SANKHYA_RELEASE=1 cargo xtask check-package   # the release artifact's platform baseline
 ```
 
-**`check-all`** runs ten invariants: the layer graph is acyclic and points the right
+**`check-all`** runs eleven invariants: the layer graph is acyclic and points the right
 way, no file exceeds the length ceiling, no core crate names a domain concept, the
 dependency set has no critical duplicates, the documentation's links and version claims
 resolve and its status lines agree, test-only dependencies really are test-only, clippy
@@ -158,11 +158,11 @@ document claims — test counts, catalogue sizes — still matches what the repo
 merely to pass.
 
 **The mutation audit** is the answer to "the tests pass, but do they test anything?" It
-applies 231 specific defects one at a time and requires the suite to fail on each. Twenty-nine
+applies 234 specific defects one at a time and requires the suite to fail on each. Twenty-nine
 did not, the first time each was run — the most recent three were written for the
 diagnostic, and one of those turned out to be pointing at the wrong copy of a duplicated
 guard, which is precisely the silent-pass this tool exists to catch. Expect it to take a
-while — it is 231 sequential `cargo test` runs, and it edits your source files as it goes,
+while — it is 234 sequential `cargo test` runs, and it edits your source files as it goes,
 restoring each one after. Run it on a clean tree.
 
 **`check-performance`** is deliberately outside `check-all`: it generates a
