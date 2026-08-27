@@ -473,6 +473,49 @@ fails verification may still be perfectly readable, just slower or less safe tha
 be. Coupling them would mean a table that is 99% fine could not be read at all, which
 serves nobody.
 
+#### 5.6.8 Repair, and the far larger set of things it refuses to do
+
+Verification finds what is wrong. Repair is the obvious next question and the dangerous one:
+a tool that *guesses* is worse than no tool at all.
+
+The failure mode this system is most concerned with is an answer that is wrong and looks
+right. A repair tool that invents a plausible value writes exactly that into the table
+permanently — and worse than permanently, with an operator's confidence attached, because a
+tool said it was fixed. Nobody re-checks a table a tool reported as repaired.
+
+So the rule is: **derive, never guess.** Every repair takes its value from evidence that
+already exists.
+
+| Finding | Repairable | From what |
+|---|---|---|
+| No column statistics | **Yes** | Reading the file. The file *is* the truth; nothing is invented |
+| No row count | **Yes** | The Parquet footer records it |
+| No schema | **No** | A table with a column added after its files were written would infer a schema missing it, and an empty table has nothing to infer from |
+| A key column that does not exist | **No** | Only a person knows whether it was renamed, was a typo, or the table should not be keyed. Guessing wrong silently resolves distinct rows into one |
+| A type that does not round-trip | **No** | Changing it means rewriting every file, which is a migration; and choosing the replacement is a decision about what the data means |
+| A missing required field in a committed action | **No** | Fixing it means rewriting a committed version, and this tool only appends |
+
+A refusal is not a shrug. Each one says *why* it cannot be derived and *what a person has to
+decide*, because "cannot repair" sends someone to open a ticket while "decide whether the
+column was renamed or the declaration was a typo" sends them to fix it.
+
+Three properties make the tool safe to point at a production warehouse.
+
+**It never deletes.** A repair that removes data is not a repair. Nothing removes a file, an
+action, or a version.
+
+**It repairs by appending.** The log is append-only, so a repair writes a *new version*
+superseding the broken one. The broken commit stays exactly as it was — readable for
+forensics, revertible, and time travel to before the repair still works. A tool that
+rewrote history would destroy the evidence of what it was fixing.
+
+**It plans before it acts, and does nothing by default.** The plan is printable and
+reviewable, and the commonest way to run a repair tool is by accident, on the wrong
+directory, at three in the morning. Acting because it was invoked is a liability.
+
+Finally, the outcome is **re-verified rather than assumed**. A repair tool that reports
+success without looking is one nobody should trust, including the people who wrote it.
+
 ### 5.7 Routing
 
 The routing decision is a pure function of query shape, read mode, session pin, **table
@@ -1747,6 +1790,7 @@ The trade-off, stated plainly: scale-up gives lower latency, far simpler failure
 | `DEC-29` | The tier is never part of a table's name; freshness is a request mode | §5.7.3 |
 | `DEC-30` | Open to read, tooled to write: external publication goes through this system's library | §5.6.6 |
 | `DEC-31` | A table's log is verifiable, and verification is separate from reading | §5.6.7 |
+| `DEC-32` | Repair derives, never guesses; it never deletes and only appends | §5.6.8 |
 
 ---
 

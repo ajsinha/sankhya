@@ -229,6 +229,23 @@ invariant. It reports *what* is wrong rather than *whether*, and distinguishes a
 that makes queries **slow** from one that makes them **wrong** — exit 0 clean, 1 slow, 2
 wrong, so a build gate can fail on one and not the other.
 
+If a table is deficient — published by something that did not record statistics, say — it
+can be repaired:
+
+```bash
+./target/release/sankhya-publish repair ./warehouse/sales/orders          # shows a plan
+./target/release/sankhya-publish repair ./warehouse/sales/orders --apply  # carries it out
+```
+
+Repair **derives, never guesses**. Statistics are recomputed by reading the file, because
+the file is the truth. Anything needing a guess — a missing schema, a key column that does
+not exist — is refused with what a person has to decide, because a tool that invents a
+plausible value writes it into the table permanently, with an operator's confidence attached.
+
+It never deletes, and it appends a new version rather than rewriting a committed one: the
+broken commit stays exactly as it was, so the repair is auditable and revertible and time
+travel to before it still works.
+
 To create a warehouse to try this against:
 
 ```bash
