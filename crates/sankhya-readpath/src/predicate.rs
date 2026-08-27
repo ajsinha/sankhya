@@ -84,7 +84,7 @@ fn comparison(left: &Expr, op: Operator, right: &Expr) -> Option<(String, Predic
     // wrong skip rather than a missed one.
     let (column, bound, op) = match (left, right) {
         (Expr::Column(c), other) => (c, literal(other)?, op),
-        (other, Expr::Column(c)) => (c, literal(other)?, op),
+        (other, Expr::Column(c)) => (c, literal(other)?, flip(op)?),
         _ => return None,
     };
 

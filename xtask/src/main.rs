@@ -146,6 +146,9 @@ fn main() -> ExitCode {
     if run_all || task == "check-lints" {
         failed |= !check_lints(&root);
     }
+    if run_all || task == "check-mutations" {
+        failed |= !check_mutations(&root);
+    }
     // Deliberately not in `check-all`: it generates a scale-factor-1 dataset and runs
     // for minutes, and it needs a machine that is not otherwise busy. It belongs to the
     // performance pipeline, which runs it on its own.
@@ -162,13 +165,14 @@ fn main() -> ExitCode {
                 | "check-docs"
                 | "check-features"
                 | "check-lints"
+                | "check-mutations"
                 | "check-performance"
         )
     {
         eprintln!(
             "usage: cargo xtask \
              [check-all|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
-             |check-features|check-lints|check-performance]"
+             |check-features|check-lints|check-mutations|check-performance]"
         );
         return ExitCode::from(2);
     }
@@ -1015,6 +1019,46 @@ fn check_lints(root: &Path) -> bool {
         }
         Err(error) => {
             eprintln!("   FAILED: could not run clippy: {error}");
+            false
+        }
+    }
+}
+
+/// Every mutation-catalogue entry still matches the source it names.
+///
+/// This is the catalogue's staleness check without the audit that follows it: no
+/// compilation, no test run, milliseconds. It is separate from the audit precisely so it
+/// can be cheap enough to gate every build.
+///
+/// It catches two failures that a diff review does not. A refactor moves the code an
+/// entry names, and the entry goes on reporting a pass while proving nothing --- four
+/// entries had drifted this way. And an audit run killed hard enough to defeat its
+/// in-flight record leaves a deliberate defect applied in the tree; one such defect
+/// reached a commit here, a comparison that stopped flipping `5 < x` into `x > 5`, which
+/// makes the reader skip files that do hold matching rows. Both are invisible in the
+/// working tree and neither announces itself.
+fn check_mutations(root: &Path) -> bool {
+    println!("== check-mutations");
+    let output = Command::new("python3")
+        .current_dir(root)
+        .args(["tools/mutation-audit.py", "--check"])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            println!("   every catalogue entry matches its source");
+            true
+        }
+        Ok(output) => {
+            eprintln!("   FAILED: the catalogue and the source disagree");
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines().take(20) {
+                eprintln!("     {line}");
+            }
+            false
+        }
+        Err(error) => {
+            eprintln!("   FAILED: could not run the mutation audit: {error}");
             false
         }
     }

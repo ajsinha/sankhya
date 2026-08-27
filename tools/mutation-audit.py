@@ -145,8 +145,8 @@ CATALOGUE = [
 
     ("arrival: release a segment publication has not covered",
      "crates/sankhya-table-memory/src/lib.rs",
-     "            if front.coverage.end_inclusive() <= self.durable_through {",
-     "            if true {",
+     "            if front.coverage.end_inclusive() > self.durable_through {",
+     "            if false {",
      "sankhya-table-memory"),
 
     ("arrival: let memory pressure evict the oldest segment",
@@ -223,7 +223,7 @@ CATALOGUE = [
 
     ("log: let an add of an existing path duplicate it",
      "crates/sankhya-table-delta/src/log.rs",
-     "                Action::Add(add) => match self.position.get(&add.path) {\n                    Some(index) => self.files[*index] = Some(add),\n                    None => {\n                        self.position.insert(add.path.clone(), self.files.len());\n                        self.files.push(Some(add));\n                    }\n                },",
+     "                Action::Add(add) => match self.position.get(&add.path).copied() {\n                    Some(index) => {\n                        if let Some(slot) = self.files.get_mut(index) {\n                            *slot = Some(add);\n                        }\n                    }\n                    None => {\n                        self.position.insert(add.path.clone(), self.files.len());\n                        self.files.push(Some(add));\n                    }\n                },",
      "                Action::Add(add) => {\n                    self.position.insert(add.path.clone(), self.files.len());\n                    self.files.push(Some(add));\n                }",
      "sankhya-table-delta"),
 
@@ -354,8 +354,8 @@ CATALOGUE = [
 
     ("quantile: sum across the wrong element, so vectors stop lining up by scenario",
      "crates/sankhya-numeric/src/quantile.rs",
-     "vectors.iter().map(|v| v[element]).collect()",
-     "vectors.iter().map(|v| v[0]).collect()",
+     ".filter_map(|v| v.get(element).copied())",
+     ".filter_map(|v| v.get(0).copied())",
      "sankhya-numeric"),
 
     # Deliberately absent: "sum in arrival order rather than a canonical one".
@@ -493,7 +493,7 @@ CATALOGUE = [
 
     ("log: replay by scanning the file list instead of indexing it",
      "crates/sankhya-table-delta/src/log.rs",
-     "                Action::Add(add) => match self.position.get(&add.path) {\n                    Some(index) => self.files[*index] = Some(add),\n                    None => {\n                        self.position.insert(add.path.clone(), self.files.len());\n                        self.files.push(Some(add));\n                    }\n                },",
+     "                Action::Add(add) => match self.position.get(&add.path).copied() {\n                    Some(index) => {\n                        if let Some(slot) = self.files.get_mut(index) {\n                            *slot = Some(add);\n                        }\n                    }\n                    None => {\n                        self.position.insert(add.path.clone(), self.files.len());\n                        self.files.push(Some(add));\n                    }\n                },",
      "                Action::Add(add) => {\n                    if let Some(existing) =\n                        self.files.iter_mut().flatten().find(|f| f.path == add.path)\n                    {\n                        *existing = add;\n                    } else {\n                        self.files.push(Some(add));\n                    }\n                }",
      "sankhya-table-delta"),
 
@@ -968,7 +968,43 @@ def regression_files():
                                       "*.proptest-regressions")))
 
 
+def check_only():
+    """Verify every catalogue entry still matches its source, without running anything.
+
+    Two different failures land here, and both are silent otherwise. A refactor moves the
+    code an entry names, and the entry then proves nothing while still reporting a pass.
+    Or a run was killed hard enough to defeat the in-flight record -- `kill -9`, a lost
+    machine -- and a deliberate defect is still sitting in the tree, ready to be
+    committed. Neither shows up in a diff anyone reads. This costs milliseconds and no
+    compilation, so it can gate every build rather than only a full audit.
+    """
+    absent = []
+    for entry in CATALOGUE:
+        label, relpath, find = entry[0], entry[1], entry[2]
+        path = os.path.join(ROOT, relpath)
+        try:
+            with open(path) as handle:
+                source = handle.read()
+        except OSError:
+            absent.append((label, relpath, "file is missing"))
+            continue
+        if find not in source:
+            absent.append((label, relpath, "the text it names is not there"))
+    for label, relpath, why in absent:
+        print(f"{'UNMATCHED':10} {label}\n{'':10} {relpath}: {why}")
+    if absent:
+        print(f"\n{len(absent)} of {len(CATALOGUE)} catalogue entries do not match the "
+              f"source. Either the code moved and the entry needs updating, or a killed "
+              f"run left its mutation applied -- check `git diff` before anything else.")
+        return 1
+    print(f"all {len(CATALOGUE)} catalogue entries match the source")
+    return 0
+
+
 def main():
+    if "--check" in sys.argv[1:]:
+        return check_only()
+
     if not take_lock():
         return 2
 

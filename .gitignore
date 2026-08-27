@@ -46,3 +46,7 @@ lcov.info
 
 # Build scratch — vendored source is extracted and compiled here
 /.build/
+
+# Python bytecode from the tooling in tools/
+__pycache__/
+*.pyc

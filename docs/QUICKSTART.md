@@ -45,8 +45,10 @@ cargo xtask check-all
 ```
 
 That runs every repository invariant: the layer graph, the file-length ceiling, the
-domain-vocabulary prohibition, the duplicate-dependency gate, and the documentation
-checks. **All five are proven to fail when violated**, not merely to pass.
+domain-vocabulary prohibition, the duplicate-dependency gate, the documentation checks,
+the feature pins, clippy under the workspace's denied lints, and the mutation
+catalogue's agreement with the source. **Each is proven to fail when violated**, not
+merely to pass.
 
 ---
 
