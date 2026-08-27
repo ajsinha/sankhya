@@ -49,6 +49,7 @@
 
 use crate::cells::{Address, Cells, Contributions};
 use sankhya_cube_algo::measure::{Measure, Rule};
+use sankhya_math::Exact;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -286,7 +287,7 @@ pub fn roll_up(
     // Gather each coarser cell's contributions, tagged with where the rolled-away member
     // sits, so a positional rule reduces along the dimension rather than along whatever
     // order the addresses happened to be visited in.
-    let mut gathered: BTreeMap<Address, Vec<(usize, f64)>> = BTreeMap::new();
+    let mut gathered: BTreeMap<Address, Vec<(usize, Exact)>> = BTreeMap::new();
     for address in cells.addresses() {
         let member = address.get(axis).map_or("", String::as_str);
         let at = if positional {
@@ -311,9 +312,15 @@ pub fn roll_up(
             .filter(|(index, _)| *index != axis)
             .map(|(_, member)| member.clone())
             .collect();
+        // The cell's exact sum when it holds one, so a partial aggregate rolls up further
+        // without being rounded a second time.
         let slot = gathered.entry(coarser).or_default();
-        for value in contributions.values() {
-            slot.push((at, *value));
+        if contributions.rule_used().is_some() {
+            slot.push((at, contributions.exact_sum()));
+        } else {
+            for value in contributions.values() {
+                slot.push((at, Exact::of(&[*value])));
+            }
         }
     }
 
@@ -331,10 +338,22 @@ pub fn roll_up(
         if positional {
             values.sort_by_key(|(at, _)| *at);
         }
-        let ordered: Vec<f64> = values.into_iter().map(|(_, value)| value).collect();
+        if rule == Rule::Sum {
+            // Exactly, and stored unrounded. Rounding here is what makes an answer from a
+            // materialised cuboid differ from the same answer computed from the base ---
+            // see the module comment on `crate::cells`.
+            let mut exact = Exact::zero();
+            for (_, contribution) in &values {
+                exact.combine(contribution);
+            }
+            let _ = out.add_reduced(coarser, rule, exact);
+            continue;
+        }
         let mut contributions = Contributions::none();
-        for value in ordered {
-            contributions.push(value);
+        for (_, contribution) in values {
+            // A non-summing rule reduces over the facts themselves, so the expansion is
+            // flattened back to the value it represents.
+            contributions.push(contribution.to_f64());
         }
         if let Some(reduced) = contributions.reduce(rule) {
             let _ = out.add(coarser, reduced);
@@ -416,7 +435,7 @@ pub fn consolidate_along(
     // Two passes, because merged cells must reduce once over the union rather than combine
     // two partial answers. For a sum the two agree; for a mean, a maximum or a closing
     // balance they do not.
-    let mut gathered: BTreeMap<Address, Contributions> = BTreeMap::new();
+    let mut gathered: BTreeMap<Address, Vec<Exact>> = BTreeMap::new();
     for address in cells.addresses() {
         let mut moved = address.clone();
         if let Some(member) = address.get(axis) {
@@ -430,13 +449,29 @@ pub fn consolidate_along(
             continue;
         };
         let slot = gathered.entry(moved).or_default();
-        for value in contributions.values() {
-            slot.push(*value);
+        if contributions.rule_used().is_some() {
+            slot.push(contributions.exact_sum());
+        } else {
+            for value in contributions.values() {
+                slot.push(Exact::of(&[*value]));
+            }
         }
     }
 
     let mut out = Cells::over(cells.dimensions().to_vec());
-    for (moved, contributions) in gathered {
+    for (moved, partials) in gathered {
+        if rule == Rule::Sum {
+            let mut exact = Exact::zero();
+            for partial in &partials {
+                exact.combine(partial);
+            }
+            let _ = out.add_reduced(moved, rule, exact);
+            continue;
+        }
+        let mut contributions = Contributions::none();
+        for partial in partials {
+            contributions.push(partial.to_f64());
+        }
         if let Some(reduced) = contributions.reduce(rule) {
             let _ = out.add(moved, reduced);
         }

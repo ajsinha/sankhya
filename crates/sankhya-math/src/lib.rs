@@ -57,7 +57,7 @@ pub mod vector;
 
 pub use matrix::MatrixError;
 pub use quantile::{quantile, quantile_of_sum, Convention, QuantileError};
-pub use reduce::{combine_partials, deterministic_sum};
+pub use reduce::{combine_partials, deterministic_sum, Exact};
 pub use stats::{LinearFit, Population};
 pub use vector::{
     add, cosine_distance, cosine_similarity, divide, dot, euclidean, matvec, mean, multiply,

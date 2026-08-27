@@ -101,6 +101,26 @@ The fingerprint is `FNV-1a`, which defends against accident and not against a co
 collision. That is written down in the module too: a hash in a cache key invites the
 cryptographic assumption, and here the assumption is wrong.
 
+**Amended again 2026-08-27, while building `sankhya-cube`'s materialisation.** Exit criterion
+3a asks that every query return bit-identical results with materialisation on and off. It did
+not, and the reason is not a defect in any one place — it is arithmetic.
+
+A cube rolls up in stages: sum by month, then sum the months. Every stage rounds, and
+`round(round(a + b) + round(c + d))` is not `round(a + b + c + d)`. Fixing the *order* of
+summation, which `deterministic_sum` does, makes one reduction reproducible; it does nothing
+about **associativity**, and a materialised cuboid is precisely a re-association of the same
+addition. The measured difference was one ULP, which is the worst possible size: large enough
+that two reports disagree by a penny, small enough that nobody can point at a defect.
+
+So a materialised aggregate **stores its value unrounded**, as a Shewchuk expansion — a list
+of non-overlapping doubles whose sum is exact. Adding is exact, combining two expansions is
+exact, and rounding happens once, when somebody reads the number. Any grouping of the same
+values then gives the identical `f64`, which is what criterion 3a actually requires.
+
+The cost is a few doubles per cell and a pass over them per addition. It buys the one
+property a cache must have: not changing the answer. A cube that is faster and different is
+not a faster cube.
+
 **So the mode is a per-cuboid decision, and it is configurable at three levels:**
 
 | Level | Who sets it | What it controls |

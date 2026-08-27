@@ -1762,8 +1762,8 @@ CATALOGUE = [
 
     ("cube: pad an address of the wrong width instead of refusing it",
      "crates/sankhya-cube/src/cells.rs",
-     "        if address.len() != self.dimensions.len() {",
-     "        if false {",
+     "        if address.len() != self.dimensions.len() {\n            return Err(WrongWidth {",
+     "        if false {\n            return Err(WrongWidth {",
      "sankhya-cube"),
 
     ("cube: give a non-composing measure a value from its partial aggregates",
@@ -1862,6 +1862,86 @@ CATALOGUE = [
      "crates/sankhya-cube/src/complete.rs",
      "            completeness: self.completeness,\n        }\n    }\n}",
      "            completeness: Completeness::complete(self.completeness.contributed()),\n        }\n    }\n}",
+     "sankhya-cube"),
+
+    # --- exact summation, and where an answer comes from -------------------
+
+    ("math: round an exact sum at every step instead of once at the end",
+     "crates/sankhya-math/src/reduce.rs",
+     "            let (high, low) = two_sum(carry, *component);\n            if is_nonzero(low) {\n                next.push(low);\n            }",
+     "            let (high, low) = two_sum(carry, *component);\n            if false {\n                next.push(low);\n            }",
+     "sankhya-math"),
+
+    ("math: drop the error term from a two-sum, making the expansion merely careful",
+     "crates/sankhya-math/src/reduce.rs",
+     "    let error = (a - a_virtual) + (b - b_virtual);",
+     "    let error = 0.0;",
+     "sankhya-math"),
+
+    ("math: hide a non-finite value inside an exact sum",
+     "crates/sankhya-math/src/reduce.rs",
+     "        if !value.is_finite() {",
+     "        if false {",
+     "sankhya-math"),
+
+    ("math: keep zero components, so an expansion grows without bound",
+     "crates/sankhya-math/src/reduce.rs",
+     "        if is_nonzero(carry) {\n            next.push(carry);\n        }",
+     "        next.push(carry);",
+     "sankhya-math"),
+
+    ("cube: store a materialised partial rounded, so the fast path drifts from the slow one",
+     "crates/sankhya-cube/src/navigate.rs",
+     "            let _ = out.add_reduced(coarser, rule, exact);\n            continue;",
+     "            let _ = out.add(coarser, exact.to_f64());\n            continue;",
+     "sankhya-cube"),
+
+    ("cube: roll a partial aggregate up as its rounded value",
+     "crates/sankhya-cube/src/navigate.rs",
+     "        if contributions.rule_used().is_some() {\n            slot.push((at, contributions.exact_sum()));",
+     "        if contributions.rule_used().is_some() {\n            slot.push((at, Exact::of(&[contributions.exact_sum().to_f64()])));",
+     "sankhya-cube"),
+
+    ("cube: let a reduced cell answer with whatever rule is asked for",
+     "crates/sankhya-cube/src/cells.rs",
+     "        if self.reduced_under.is_some() {",
+     "        if false {",
+     "sankhya-cube"),
+
+    ("cube: name a materialised table without length-prefixing its dimensions",
+     "crates/sankhya-cube/src/materialise.rs",
+     "            out.push_str(&format!(\"_{}_{dimension}\", dimension.len()));",
+     "            out.push_str(&format!(\"_{dimension}\"));",
+     "sankhya-cube"),
+
+    ("cube: leave the snapshot out of a materialisation key",
+     "crates/sankhya-cube/src/materialise.rs",
+     "            self.definition,\n            self.snapshot",
+     "            self.definition,\n            0",
+     "sankhya-cube"),
+
+    ("cube: let a session widen materialisation past what is configured",
+     "crates/sankhya-cube/src/materialise.rs",
+     "            Session::PinnedOnly => available\n                .iter()\n                .filter(|cuboid| self.pinned.contains(cuboid))\n                .collect(),",
+     "            Session::PinnedOnly => available.iter().collect(),",
+     "sankhya-cube"),
+
+    ("cube: honour a session that asks for no materialisation by using it anyway",
+     "crates/sankhya-cube/src/materialise.rs",
+     "            Session::Off => Vec::new(),",
+     "            Session::Off => available.iter().collect(),",
+     "sankhya-cube"),
+
+    ("cube: answer from an ancestor the measure does not permit",
+     "crates/sankhya-cube/src/materialise.rs",
+     "        if !permits(candidate, query, measure) {\n            continue;\n        }",
+     "",
+     "sankhya-cube"),
+
+    ("cube: choose an ancestor by iteration order rather than by width",
+     "crates/sankhya-cube/src/materialise.rs",
+     "            (candidate.width(), candidate.dimensions())\n                < (current.width(), current.dimensions())",
+     "            candidate.width() < current.width()",
      "sankhya-cube"),
 
 ]

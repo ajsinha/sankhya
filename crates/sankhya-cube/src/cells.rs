@@ -34,7 +34,7 @@
 //! accuracy, and neither substitutes for the other.
 
 use sankhya_cube_algo::measure::Rule;
-use sankhya_math::deterministic_sum;
+use sankhya_math::{deterministic_sum, Exact};
 use std::collections::BTreeMap;
 
 /// Where a cell sits: one member per dimension, in the cube's dimension order.
@@ -51,6 +51,16 @@ pub type Address = Vec<String>;
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct Contributions {
     values: Vec<f64>,
+    /// Set when this cell holds an aggregate rather than raw facts.
+    ///
+    /// A reduced cell answers with the rule it was reduced under, whatever rule is asked
+    /// for. That is not the accessor being lax --- the value was produced by the measure's
+    /// declared rule, and there is no second reading of it. Asking a rolled-up sum for its
+    /// maximum is a category error, and answering it with the maximum of the expansion
+    /// components would be a number with no meaning at all.
+    reduced_under: Option<Rule>,
+    /// The unrounded total, when this cell holds a reduced sum.
+    exact: Option<Exact>,
 }
 
 impl Contributions {
@@ -63,6 +73,40 @@ impl Contributions {
     /// Add a fact.
     pub fn push(&mut self, value: f64) {
         self.values.push(value);
+    }
+
+    /// A cell holding an aggregate that has already been reduced, kept unrounded.
+    #[must_use]
+    pub fn reduced(rule: Rule, exact: Exact) -> Self {
+        Self {
+            values: vec![exact.to_f64()],
+            reduced_under: Some(rule),
+            exact: Some(exact),
+        }
+    }
+
+    /// The rule this cell was reduced under, if it holds an aggregate.
+    #[must_use]
+    pub const fn rule_used(&self) -> Option<Rule> {
+        self.reduced_under
+    }
+
+    /// The unrounded total, when this cell holds a reduced sum.
+    ///
+    /// This is what a materialised cuboid must store. Storing `to_f64()` instead rounds at
+    /// every level of the roll-up, and the fast path then disagrees with the slow one.
+    #[must_use]
+    pub const fn exact(&self) -> Option<&Exact> {
+        self.exact.as_ref()
+    }
+
+    /// The exact sum of this cell's facts, unrounded.
+    #[must_use]
+    pub fn exact_sum(&self) -> Exact {
+        match &self.exact {
+            Some(exact) => exact.clone(),
+            None => Exact::of(&self.values),
+        }
     }
 
     /// How many facts.
@@ -93,8 +137,17 @@ impl Contributions {
         if self.values.is_empty() {
             return None;
         }
+        // A reduced cell answers with the rule that produced it. See `reduced_under`.
+        if self.reduced_under.is_some() {
+            return match &self.exact {
+                Some(exact) => Some(exact.to_f64()),
+                None => self.values.first().copied(),
+            };
+        }
         match rule {
             Rule::Sum => Some(deterministic_sum(&self.values)),
+            // `Exact` is used when a cell is *reduced*; a raw cell of facts is summed in
+            // canonical order, which is the reproducible reading of one reduction.
             Rule::First => self.values.first().copied(),
             Rule::Last => self.values.last().copied(),
             Rule::Max => self.extreme(true),
@@ -162,18 +215,42 @@ impl Cells {
         &self.dimensions
     }
 
-    /// Record a fact at an address.
+    /// Record an already-reduced aggregate at an address, unrounded.
     ///
     /// # Errors
-    /// [`WrongWidth`] when the address does not name one member per dimension. Silently
-    /// padding or truncating would put facts in a cell nobody addressed.
-    pub fn add(&mut self, address: Address, value: f64) -> Result<(), WrongWidth> {
+    /// [`WrongWidth`], as [`Cells::add`].
+    pub fn add_reduced(
+        &mut self,
+        address: Address,
+        rule: Rule,
+        exact: Exact,
+    ) -> Result<(), WrongWidth> {
+        self.check_width(&address)?;
+        self.cells.insert(address, Contributions::reduced(rule, exact));
+        Ok(())
+    }
+
+    /// Whether an address names one member per dimension.
+    ///
+    /// One copy, called by both writers. Two copies of a guard is one copy nothing tests,
+    /// and the untested one is where a mutation survives.
+    fn check_width(&self, address: &[String]) -> Result<(), WrongWidth> {
         if address.len() != self.dimensions.len() {
             return Err(WrongWidth {
                 expected: self.dimensions.len(),
                 found: address.len(),
             });
         }
+        Ok(())
+    }
+
+    /// Record a fact at an address.
+    ///
+    /// # Errors
+    /// [`WrongWidth`] when the address does not name one member per dimension. Silently
+    /// padding or truncating would put facts in a cell nobody addressed.
+    pub fn add(&mut self, address: Address, value: f64) -> Result<(), WrongWidth> {
+        self.check_width(&address)?;
         self.cells.entry(address).or_default().push(value);
         Ok(())
     }

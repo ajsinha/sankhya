@@ -186,6 +186,33 @@ fn merging_cells_reduces_once_over_the_union_not_over_partial_answers() {
     );
 }
 
+#[test]
+fn a_reduced_cell_answers_with_the_rule_that_produced_it() {
+    // The value was produced by the measure's declared rule and there is no second reading
+    // of it. Asking a rolled-up sum for its maximum is a category error, and answering with
+    // the maximum of an expansion's components would be a number with no meaning at all.
+    let rolled = roll_up(&cube(), "entity", &AMOUNT, Ordered::Unstated).expect("additive");
+    let expected = rolled.get(&address(&["jan"]), Rule::Sum);
+    assert_eq!(expected, Some(3.0));
+
+    // `Rule::None` is the one that shows the difference. The others agree by accident,
+    // because a reduced cell holds a single value and every rule over one value is that
+    // value. A non-composing rule would make the cell vanish — and a cell that already
+    // carries its answer does not depend on what rule the reader happens to name.
+    for asked in [Rule::Max, Rule::Min, Rule::First, Rule::Last, Rule::Mean, Rule::None] {
+        assert_eq!(
+            rolled.get(&address(&["jan"]), asked),
+            expected,
+            "a reduced cell changed its answer when asked for {asked}"
+        );
+    }
+    assert_eq!(
+        rolled.contributions(&address(&["jan"])).and_then(|c| c.rule_used()),
+        Some(Rule::Sum),
+        "and it says which rule it used"
+    );
+}
+
 // --- slice --------------------------------------------------------------
 
 #[test]

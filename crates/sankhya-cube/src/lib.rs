@@ -41,6 +41,7 @@
 pub mod cells;
 pub mod complete;
 pub mod consolidate;
+pub mod materialise;
 pub mod model;
 pub mod navigate;
 pub mod validate;
@@ -50,5 +51,6 @@ pub use model::{Definition, Dimension, Level, Cube};
 pub use cells::{Address, Cells, Contributions};
 pub use complete::{Assessed, Completeness, Insufficient, Threshold};
 pub use consolidate::{consolidate, Consolidation, Incomplete};
+pub use materialise::{plan, Key, Plan, Policy, Session};
 pub use navigate::{dice, pivot, roll_up, slice, Ordered, Refused};
 pub use validate::Rejection;
