@@ -22,8 +22,10 @@
 
 pub mod ancestor;
 pub mod hierarchy;
+pub mod lattice;
 pub mod measure;
 
 pub use ancestor::{answerable_from, rolled_away, Answerable};
 pub use hierarchy::{Cyclic, Hierarchy};
+pub use lattice::{benefit, select, Chosen, Cost, Cuboid, Lattice};
 pub use measure::{Along, Measure, Rule, Undeclared};

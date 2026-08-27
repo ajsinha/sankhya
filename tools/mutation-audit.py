@@ -1616,6 +1616,42 @@ CATALOGUE = [
      "            None => {\n                #[allow(unused)]\n                return Answerable::No {\n                    measure: measure.name.to_string(),\n                    dimension: (*dimension).to_string(),\n                    rule: Rule::None,\n                };\n                #[allow(unreachable_code)]\n                return Answerable::Undeclared {",
      "sankhya-cube-algo"),
 
+    ("cube: count benefit without asking whether the measure permits the roll-up",
+     "crates/sankhya-cube-algo/src/lattice.rs",
+     "        if !candidate.answers(query, measure) {\n            continue;\n        }",
+     "        if rolled_away(&query.dimensions(), &candidate.dimensions()).is_none() {\n            continue;\n        }",
+     "sankhya-cube-algo"),
+
+    ("cube: credit every candidate with the full saving, ignoring what is already held",
+     "crates/sankhya-cube-algo/src/lattice.rs",
+     "        let current = already\n            .iter()\n            .map(|c| &c.cuboid)\n            .chain(std::iter::once(base))",
+     "        let current = []\n            .iter()\n            .map(|c: &Chosen| &c.cuboid)\n            .chain(std::iter::once(base))",
+     "sankhya-cube-algo"),
+
+    ("cube: select past the budget",
+     "crates/sankhya-cube-algo/src/lattice.rs",
+     "            if spent.saturating_add(price) > budget_rows {\n                continue;\n            }",
+     "",
+     "sankhya-cube-algo"),
+
+    ("cube: buy a cuboid that gains nothing",
+     "crates/sankhya-cube-algo/src/lattice.rs",
+     "            if gain == 0 {\n                continue;\n            }",
+     "",
+     "sankhya-cube-algo"),
+
+    ("cube: compare benefit per row with integer division",
+     "crates/sankhya-cube-algo/src/lattice.rs",
+     "    u128::from(benefit) * u128::from(than_cost.max(1))\n        > u128::from(than_benefit) * u128::from(cost.max(1))",
+     "    benefit / cost.max(1) > than_benefit / than_cost.max(1)",
+     "sankhya-cube-algo"),
+
+    ("cube: treat two cuboids naming the same dimensions as different",
+     "crates/sankhya-cube-algo/src/lattice.rs",
+     "        let unique: BTreeSet<String> = dimensions",
+     "        let unique: Vec<String> = dimensions",
+     "sankhya-cube-algo"),
+
 ]
 
 
