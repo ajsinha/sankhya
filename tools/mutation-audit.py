@@ -1944,6 +1944,44 @@ CATALOGUE = [
      "            candidate.width() < current.width()",
      "sankhya-cube"),
 
+    # --- the write-back overlay: keeping a what-if distinguishable ---------
+
+    ("cube: serve an overlaid figure without saying which scenario it came from",
+     "crates/sankhya-cube/src/overlay.rs",
+     "            overlay: Some(self.name.clone()),",
+     "            overlay: None,",
+     "sankhya-cube"),
+
+    ("cube: apply an overlay written against a different cube definition",
+     "crates/sankhya-cube/src/overlay.rs",
+     "        if definition != self.definition {",
+     "        if false {",
+     "sankhya-cube"),
+
+    ("cube: show unadjusted children beneath an adjusted total",
+     "crates/sankhya-cube/src/overlay.rs",
+     "                Allocation::Refuse => {\n                    return Err(NotApplicable::FinerThanWritten {\n                        overlay: self.name.clone(),\n                        written_at: entry.grain.clone(),\n                        asked_at: dimensions.clone(),\n                    })\n                }",
+     "                Allocation::Refuse => continue,",
+     "sankhya-cube"),
+
+    ("cube: divide an allocation equally when there is nothing to be proportional to",
+     "crates/sankhya-cube/src/overlay.rs",
+     "    if beneath.is_empty() || total == 0.0 {",
+     "    if false {",
+     "sankhya-cube"),
+
+    ("cube: add an overlay entry into a total it is not part of",
+     "crates/sankhya-cube/src/overlay.rs",
+     "            if finer.is_empty() {\n                // The cube is *coarser* than the entry. Adding a leaf figure into a total\n                // it is not part of would double-count, so it is left alone.\n                continue;\n            }",
+     "",
+     "sankhya-cube"),
+
+    ("cube: collapse a delta into a replacement, losing what the planner meant",
+     "crates/sankhya-cube/src/overlay.rs",
+     "        Adjustment::Delta(by) => existing.unwrap_or(0.0) + by,",
+     "        Adjustment::Delta(by) => by,",
+     "sankhya-cube"),
+
 ]
 
 

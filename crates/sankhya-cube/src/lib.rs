@@ -44,6 +44,7 @@ pub mod consolidate;
 pub mod materialise;
 pub mod model;
 pub mod navigate;
+pub mod overlay;
 pub mod validate;
 pub mod version;
 
@@ -53,4 +54,5 @@ pub use complete::{Assessed, Completeness, Insufficient, Threshold};
 pub use consolidate::{consolidate, Consolidation, Incomplete};
 pub use materialise::{plan, Key, Plan, Policy, Session};
 pub use navigate::{dice, pivot, roll_up, slice, Ordered, Refused};
+pub use overlay::{Adjustment, Allocation, Applied, NotApplicable, Overlay};
 pub use validate::Rejection;
