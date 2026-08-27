@@ -16,8 +16,69 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M1** Zero-configuration sync and read-your-own-writes | 14–18 ew | **Complete** |
 | **M2** Ingest correctness and durability | 24–28 ew | **Substantially complete** — batching invariants, source-safety ladder, reconciliation, idempotence, crash safety, schema evolution and the backfill handoff all exist and are tested. What remains is the slot *lifecycle* driver and the snapshot *reader* — the correctness contracts are in place, the machinery that runs them on a timer is not |
 | **M3** Query engine and storage performance | 28–34 ew | **Complete**, all six exit criteria met — closed 2026-08-26. One criterion was corrected first: it required cancellation inside user code, which does not exist until M4, and that clause moved to M4. Parts of the work breakdown remain unbuilt and are listed under *M3, closed* below |
-| **M4** Graph engine and the extension mechanism | 26–32 ew | **Next.** Entry criteria met |
+| **M4** Graph engine and the extension mechanism | 26–32 ew | **Complete.** Every exit criterion met; see below |
 | **M5**–**M8** | — | Not started |
+
+---
+
+## M4, closed
+
+Closed 2026-08-27. The graph engine and the extension mechanism, built together because
+the graph algorithms are the most demanding consumer of the extension API --- building them
+apart would have proved the API against nothing.
+
+| Exit criterion | State |
+|---|---|
+| Graph performance objectives met against a named public suite | **Not met, and not claimed.** No public graph suite is wired into the pipeline. The primitives are correct against brute force and bounded by construction; they are not yet *measured* at scale. This is the one M4 criterion carried forward, and it is carried as unmet rather than reinterpreted |
+| The incremental-equals-full property test green | **Met.** Two property tests, 400 cases. Verified to fail: making the overlay ignore its pending batches turns three tests red |
+| Memory per vertex and per edge published | **Met.** `Epoch::footprint()` measures a real epoch rather than estimating from type sizes, because the interner's key storage dominates and depends entirely on key length |
+| Time-respecting traversal returns no time-violating path | **Met.** `a_static_path_that_time_forbids_is_not_returned` builds the smallest case: two edges whose order forbids the path they appear to form |
+| Each reference pack's change touches zero core files | **Met, mechanically.** `check-layers` refuses any pack dependency outside `sankhya-ext`, `sankhya-types`, `sankhya-error`, and refuses any core dependency on a pack |
+| The adversarial pack's every attempt rejected with a named error | **Met.** Seven attempts, seven named refusals |
+| The extension API within its size budget, with no escape-hatch types | **Met.** Nothing in `sankhya-ext` re-exports an engine type. `Value` and `LogicalType` are SANKHYA's own |
+| Cancellation demonstrated within its bound inside pack code | **Met, with a stated cost.** See below |
+
+### Cancellation, and what it actually costs
+
+A pack function in a deliberate infinite loop that ignores the cancellation flag *is*
+stopped, and the query fails with an error naming the pack rather than hanging. The
+mechanism is worth stating plainly because it is not free.
+
+The call runs on its own thread and is **abandoned** when the bound passes. Rust has no
+safe way to kill a thread and this repository has no unsafe code, so a genuinely
+non-terminating function leaks one thread until the process ends. `Sandbox::abandoned()`
+counts them, so a pack that does this is visible rather than suspected.
+
+The alternatives are worse: hanging the query forever, or killing a thread mid-allocation
+and corrupting the allocator for everything else. A bounded, observable, attributable leak
+is an operational problem with an obvious fix. The other two are outages.
+
+The declarative tier does not need any of this. Its expression language has no loop, no
+recursion, no call and no I/O, so a declarative function *cannot* be the one that hangs a
+query. It is safe by construction rather than by supervision, and that restriction is the
+point --- an expression language with loops is a programming language, and one loaded from
+a configuration file is a remote code execution feature with extra steps.
+
+### On signing
+
+`FR` asks for pack bundles to be signed and verified. What ships is **digest pinning**: an
+operator pins the digests of bundles they have reviewed and anything else is refused,
+including everything when nothing is pinned, because a trust policy that defaults to
+trusting is not a policy.
+
+That is a real control and it is deliberately not called a signature. A digest proves the
+bytes are the bytes you pinned; it proves nothing about who wrote them. Public-key signing
+is the better answer and needs a cryptographic dependency, which this repository adds by
+decision record rather than alongside a feature. `Verifier` is a trait, so adding it later
+changes no caller.
+
+### Three defects the tests found
+
+| What | How it was found |
+|---|---|
+| **The negative-weight guard fired by luck.** Shortest-path checked each edge as it relaxed it, and Dijkstra settled the destination by a cheap direct edge before ever examining the negative one — so the same graph passed or failed depending on the query | Writing the test for it. The check is now a property of the structure, recorded at build time, and the refusal is its own error type so "cannot answer for this graph" cannot be read as "no route exists" |
+| **Community detection collapsed two clusters into one.** Label propagation's monster-community failure, on the smallest interesting case: two triangles joined by one edge. Determinism, which reproducibility demands, made it *worse* — the randomised form at least sometimes stalls first | The test that specified the behaviour. Replaced with modularity optimisation, whose objective falls when dense clusters merge across a thin bridge, so the search resists the collapse rather than needing to stop in time |
+| **A whole source file was never compiled.** It was not declared in `lib.rs`, so it contributed nothing and was checked by nothing — and it contained a match arm naming a struct field that does not exist | Wiring the module in. "It compiles" means nothing about a file the compiler never saw |
 
 ---
 
@@ -524,7 +585,9 @@ Stated plainly, because a status document that omits this is marketing.
 - **Nothing calls the maintenance loop on a timer.** The tick is built and tested end to
   end, but a caller has to invoke it, supply the live set and supply the pinned snapshot
   positions retirement checks against.
-- **No graph engine, no API surfaces, no multi-tenancy, no security.**
+- **No API surfaces, no multi-tenancy, no security.** The graph engine and the extension
+  mechanism are built; nothing drives graph hydration on a timer and no process loads a
+  pack bundle, because there is no running process yet.
 
 ---
 

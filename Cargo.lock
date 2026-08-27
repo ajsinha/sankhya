@@ -2345,12 +2345,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
+name = "pack-adversarial"
+version = "0.1.0"
+dependencies = [
+ "sankhya-ext",
+]
+
+[[package]]
 name = "pack-ref-logistics"
 version = "0.1.0"
+dependencies = [
+ "sankhya-ext",
+]
 
 [[package]]
 name = "pack-ref-telemetry"
 version = "0.1.0"
+dependencies = [
+ "sankhya-ext",
+]
 
 [[package]]
 name = "parking_lot"
@@ -3142,6 +3155,13 @@ dependencies = [
 [[package]]
 name = "sankhya-ext"
 version = "0.1.0"
+dependencies = [
+ "pack-adversarial",
+ "pack-ref-logistics",
+ "pack-ref-telemetry",
+ "sankhya-error",
+ "sankhya-types",
+]
 
 [[package]]
 name = "sankhya-governor"
@@ -3154,10 +3174,32 @@ dependencies = [
 [[package]]
 name = "sankhya-graph"
 version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "parking_lot",
+ "proptest",
+ "sankhya-error",
+ "sankhya-graph-algo",
+]
 
 [[package]]
 name = "sankhya-graph-algo"
 version = "0.1.0"
+
+[[package]]
+name = "sankhya-graph-sql"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "async-trait",
+ "datafusion",
+ "parking_lot",
+ "sankhya-graph",
+ "sankhya-graph-algo",
+ "tokio",
+]
 
 [[package]]
 name = "sankhya-ingest"
@@ -3242,6 +3284,16 @@ dependencies = [
 [[package]]
 name = "sankhya-oltp-pg"
 version = "0.1.0"
+
+[[package]]
+name = "sankhya-pack"
+version = "0.1.0"
+dependencies = [
+ "sankhya-ext",
+ "serde",
+ "tempfile",
+ "toml",
+]
 
 [[package]]
 name = "sankhya-plan"

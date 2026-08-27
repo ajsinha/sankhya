@@ -1,6 +1,6 @@
 [package]
-name         = "pack-ref-logistics"
-description  = "Reference domain pack. Deliberately non-financial. Must require zero core changes."
+name         = "pack-adversarial"
+description  = "A deliberately hostile pack. Every attempt it makes must be rejected with a named error."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -15,4 +15,3 @@ workspace = true
 
 [dependencies]
 sankhya-ext = { path = "../../crates/sankhya-ext" }
-
