@@ -18,10 +18,14 @@
 #![doc(html_root_url = "https://docs.rs/sankhya-olap")]
 
 mod exactness;
+pub mod matrices;
 mod session;
 pub mod vectors;
 
 pub use exactness::{approximate_functions, check_exactness, Exactness, ExactnessError, Watermark};
+pub use matrices::{
+    functions as matrix_functions, register as register_matrix_functions, tensor_metadata,
+};
 pub use session::{
     apply_required_settings, session, verify_settings, RequiredSetting, SettingsError,
     PUSHDOWN_FILTERS, REQUIRED,

@@ -19,10 +19,12 @@
 
 #![doc(html_root_url = "https://docs.rs/sankhya-numeric")]
 
+pub mod matrix;
 mod quantile;
 mod reduce;
 pub mod vector;
 
+pub use matrix::MatrixError;
 pub use quantile::{quantile, quantile_of_sum, Convention, QuantileError};
 pub use reduce::{combine_partials, deterministic_sum};
 pub use vector::{

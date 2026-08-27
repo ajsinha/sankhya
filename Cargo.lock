@@ -3330,6 +3330,7 @@ dependencies = [
  "sankhya-table",
  "sankhya-table-delta",
  "sankhya-types",
+ "serde_json",
  "tempfile",
  "tokio",
  "tpchgen",

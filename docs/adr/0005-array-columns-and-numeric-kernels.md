@@ -91,14 +91,42 @@ is the right side of the trade.
 
 | Built | Deferred, deliberately |
 |---|---|
-| Elementwise: add, subtract, multiply, divide, scale | **Matrix multiply** — where BLAS genuinely wins, and where an optional native feature has a real case |
-| Reductions: dot, L1 and L2 norm, sum, mean | Decompositions (LU, QR, SVD) — a different discipline, done badly in-house |
-| Distances: euclidean, cosine | Sparse vectors — a real need and a separate representation decision |
-| `matvec` | |
+| Elementwise: add, subtract, multiply, divide, scale | **QR, SVD, eigendecomposition** — a different discipline, where a specialist library genuinely earns its dependency, and where doing it adequately in-house is worse than not doing it |
+| Reductions: dot, L1 and L2 norm, sum, mean | Sparse vectors and matrices — a real need and a separate representation decision |
+| Distances: euclidean, cosine | |
+| Matrix: multiply, transpose, trace, identity, `matvec` | |
+| **LU with partial pivoting**, and determinant, inverse and solve on top of it | |
 
-Deferring matmul is a judgement that the vector cases are both commoner and more
-determinism-critical, and that the right moment to weigh a native dependency is when a
-measured workload needs it — not now, on the assumption that it might.
+**Amended 2026-08-27** (owner directive): matrix multiplication and the LU-based operations
+are built rather than deferred. The earlier reasoning — that a native backend should wait
+for a measured workload — still holds and is unchanged; what changed is the judgement that
+these operations are wanted *now* and are tractable without one. Multiplication is a grid of
+dot products and inherits their determinism directly; LU's arithmetic is a fixed sequence
+once the pivots are chosen.
+
+QR, SVD and eigendecomposition remain deferred, and for a different reason than matmul was:
+not that they are unwanted, but that they are where an in-house implementation is genuinely
+worse than none. A subtly wrong SVD produces plausible singular values.
+
+### The pivot tie-break
+
+LU's only freedom is which pivot to choose, so determinism rests on that choice. The pivot
+is the largest magnitude in the column **with the lowest row index breaking ties** — `>`
+rather than `>=` in the comparison. Choosing by magnitude alone is the usual formulation and
+is not quite deterministic: two rows of equal magnitude could be chosen differently by two
+builds, and the factorisation would then differ in the last bits of every result that
+follows.
+
+### Where a matrix's shape comes from
+
+A matrix is stored flat, so the shape has to come from somewhere. It comes from **field
+metadata**, using Arrow's canonical `arrow.fixed_shape_tensor` extension rather than a
+private key — so an engine that understands tensors understands these columns, and one that
+does not sees a plain fixed-size array of the right length.
+
+A column with no shape is **refused, not guessed at**. The obvious guess — square, since
+`n × n` values often are — is wrong for every rectangular matrix and produces numbers from
+values that were never in the same row. Every one of those numbers looks ordinary.
 
 ## Consequences, stated as costs
 

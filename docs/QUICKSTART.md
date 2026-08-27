@@ -217,6 +217,24 @@ LIMIT 10;
 `vec_dot`, `vec_euclidean`, `vec_cosine_similarity`, `vec_cosine_distance`, `vec_norm_l1`,
 `vec_norm_l2`, `vec_sum`, `vec_mean`.
 
+Linear algebra over matrix columns:
+
+```sql
+SELECT mat_determinant(covariance), mat_trace(covariance) FROM portfolios;
+SELECT mat_solve(coefficients, observations) FROM systems;
+SELECT mat_multiply(a, b) FROM pairs;
+```
+
+`mat_multiply`, `mat_transpose`, `mat_inverse`, `mat_solve`, `mat_vec`, `mat_determinant`,
+`mat_trace`. A matrix is stored flat and its shape comes from **field metadata**, using
+Arrow's canonical `arrow.fixed_shape_tensor` extension — a column with no declared shape is
+refused rather than assumed square, because that guess is wrong for every rectangular matrix
+and produces numbers from values that were never in the same row.
+
+QR, SVD and eigendecomposition are **not** offered. They are where an in-house
+implementation is genuinely worse than none: a subtly wrong SVD produces plausible singular
+values.
+
 **Every reducing kernel is bit-deterministic.** A dot product is a floating-point sum, and a
 sum whose order depends on how the query was partitioned returns a different number when the
 machine is busier. These go through the same compensated, order-fixed summation the rest of
