@@ -11,6 +11,10 @@ publish      = false
 layer = 100
 
 [dependencies]
+# Tooling may depend on anything; the catalogue generators read the declarations
+# themselves rather than a copy of them, which is the whole point of generating.
+sankhya-metrics = { path = "../crates/sankhya-metrics" }
+sankhya-error   = { path = "../crates/sankhya-error" }
 serde      = { workspace = true }
 serde_json = { workspace = true }
 toml       = { workspace = true }

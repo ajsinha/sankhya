@@ -30,14 +30,35 @@ use sankhya_authz::principal::Principal;
 use sankhya_catalog::guard::Guard;
 use sankhya_catalog::secured::SecuredTable;
 use sankhya_error::protocol::{sqlstate, statuses_for};
+use sankhya_error::Classify;
 use std::sync::Arc;
 
 /// A table this server can serve, and the provider behind it.
 pub struct ServableTable {
     /// Where it lives.
     pub reference: TableRef,
+    /// Where the filesystem holds it.
+    ///
+    /// Carried alongside the provider because a provider answers scans and deliberately
+    /// says nothing about the shape of what it is scanning. The maintenance gauges need the
+    /// file count, and asking the provider for it would be asking the read path to
+    /// re-export the storage layout it exists to hide.
+    pub root: std::path::PathBuf,
     /// What answers a scan of it.
     pub provider: Arc<dyn TableProvider>,
+}
+
+impl ServableTable {
+    /// How many files this table currently consists of.
+    ///
+    /// # Errors
+    ///
+    /// When the log cannot be read or replayed.
+    pub fn live_file_count(&self) -> Result<usize, String> {
+        sankhya_table_delta::live_files(&self.root)
+            .map(|live| live.files.len())
+            .map_err(|error| error.to_string())
+    }
 }
 
 impl std::fmt::Debug for ServableTable {
@@ -89,8 +110,19 @@ pub async fn run(
     sql: &str,
     max_rows: usize,
 ) -> Result<QueryResult, QueryFailure> {
+    // Planned and executed in two steps, deliberately. `SessionContext::sql` does both: it
+    // runs data-definition statements *during planning* and hands back a frame over the
+    // empty result, so a check against the returned plan happens after the table has already
+    // been created. The refusal below only works from here.
+    let plan = context
+        .state()
+        .create_logical_plan(sql)
+        .await
+        .map_err(|error| plan_failure(&error))?;
+    refuse_if_not_a_read(&plan)?;
+
     let frame = context
-        .sql(sql)
+        .execute_logical_plan(plan)
         .await
         .map_err(|error| plan_failure(&error))?;
     let schema = frame.schema().as_arrow().clone();
@@ -123,6 +155,49 @@ pub async fn run(
         tag: format!("SELECT {}", rows.len()),
         fields,
         rows,
+    })
+}
+
+/// Refuse anything that is not a read.
+///
+/// # A success tag for work that did not happen
+///
+/// This server is a read path over a warehouse. Its session context is DataFusion's, and
+/// DataFusion is perfectly willing to execute `CREATE TABLE` against its own in-memory
+/// catalogue --- so the statement returned a success tag, the table existed for the rest of
+/// that connection, and it was gone the moment the client reconnected. Nothing failed and
+/// nothing was written. A user would reasonably conclude their table had been created.
+///
+/// That is the worst shape a defect can take here: not an error, not a wrong number, but a
+/// confirmation of something that did not occur.
+///
+/// Checked against the **planned logical plan** rather than against the statement's first
+/// word. Keyword-sniffing gets `WITH x AS (...) INSERT` wrong, gets comments and leading
+/// whitespace wrong, and is a second parser maintained alongside the real one.
+fn refuse_if_not_a_read(plan: &datafusion::logical_expr::LogicalPlan) -> Result<(), QueryFailure> {
+    use datafusion::logical_expr::LogicalPlan as P;
+    let what = match plan {
+        P::Ddl(_) => "data definition",
+        P::Dml(_) => "data modification",
+        P::Copy(_) => "COPY",
+        _ => return Ok(()),
+    };
+    let refusal = sankhya_error::Error::NotSupported(format!(
+        "{what} is not served over this connection; this server is a read path over a \
+         published warehouse"
+    ));
+    Err(QueryFailure {
+        sqlstate: statuses_for(refusal.class()).sqlstate.as_str().to_string(),
+        message: format!("[{}] {}", refusal.code(), refusal),
+        // The remediation names the supported route rather than only saying no. A refusal
+        // that does not say what to do instead sends somebody looking for a flag to turn it
+        // on, and there is no flag: writes go to the transactional store and reach the
+        // warehouse through capture, or through the publishing tool for an external table.
+        detail: Some(
+            "Write to the transactional store and let capture publish it, or publish an \
+             external table with `sankhya-publish`. See GUIDE.md §3."
+                .to_string(),
+        ),
     })
 }
 
@@ -247,14 +322,64 @@ fn failure(sqlstate: &str, message: &str) -> QueryFailure {
 /// registered, so DataFusion says "no such table" either way --- and that is the right
 /// answer rather than an accident, because saying "you may not read that" would confirm it
 /// exists.
+///
+/// # Every failure that reaches a client carries a code and a remediation
+///
+/// `M6`'s sixth exit criterion asks that every user-reachable error have documented
+/// remediation. An earlier version of this function returned the engine's own message with a
+/// SQLSTATE guessed from substrings and nothing else --- so the errors a user actually meets,
+/// which are almost all of them, were the ones with no code and nothing to do about them.
+/// The catalogue existed and the path a person takes did not go through it.
 fn plan_failure(error: &datafusion::error::DataFusionError) -> QueryFailure {
-    let message = error.to_string();
-    let state = if message.contains("not found") || message.contains("No table") {
-        sqlstate::SYNTAX_ERROR
-    } else if message.contains("Schema error") || message.contains("SQL error") {
-        sqlstate::SYNTAX_ERROR
-    } else {
-        statuses_for(sankhya_error::Class::Fatal).sqlstate
-    };
-    failure(state.as_str(), &message)
+    let classified = classify(error);
+    QueryFailure {
+        sqlstate: statuses_for(classified.class()).sqlstate.as_str().to_string(),
+        // The code first, because it is what a support conversation is conducted in and what
+        // a runbook is indexed by.
+        message: format!("[{}] {}", classified.code(), error),
+        // PostgreSQL renders this as DETAIL, which every client shows.
+        detail: Some(classified.remediation().to_string()),
+    }
+}
+
+/// Which catalogue entry an engine failure is.
+///
+/// Matched on the error's variant rather than on its text wherever the variant carries the
+/// distinction. Substring matching on a message is a mapping that changes silently when a
+/// dependency reworks its wording, and the symptom is a client that stops retrying something
+/// it should retry.
+fn classify(error: &datafusion::error::DataFusionError) -> sankhya_error::Error {
+    use datafusion::error::DataFusionError as E;
+    let detail = error.to_string();
+    match error {
+        // Three wrappers, and unwrapping them is not optional. DataFusion 55 wraps a plan
+        // error in `Diagnostic` to attach a source span, so matching on `Plan` alone never
+        // fires --- "table not found", the single commonest error a user meets, fell through
+        // to the catch-all and was reported as an execution failure. It looked plausible,
+        // which is why it took running the classifier to notice.
+        E::Diagnostic(_, inner) | E::Context(_, inner) => classify(inner),
+        E::Shared(inner) => classify(inner),
+        // A collection is reported by its first member: several errors with one code is a
+        // choice, and the first is the one the others usually follow from.
+        E::Collection(errors) => errors
+            .first()
+            .map_or_else(|| sankhya_error::Error::StatementFailed(detail), classify),
+        // A statement that does not parse, does not resolve, or does not type-check. The
+        // caller's problem, and the detail says what is wrong with it.
+        E::SQL(..) | E::Plan(_) | E::SchemaError(..) => sankhya_error::Error::InvalidQuery(detail),
+        E::NotImplemented(_) => sankhya_error::Error::NotSupported(detail),
+        E::ResourcesExhausted(_) => sankhya_error::Error::AdmissionRejected(detail),
+        // DataFusion's own `Internal` means *its* invariant did not hold, which is exactly
+        // what this class is for: fail fast, and page.
+        E::Internal(_) => sankhya_error::Error::InvariantViolated(detail),
+        E::IoError(_) | E::ObjectStore(_) => sankhya_error::Error::StorageUnavailable(detail),
+        E::Execution(_) | E::ArrowError(..) | E::ParquetError(..) => {
+            sankhya_error::Error::StatementFailed(detail)
+        }
+        E::Configuration(_) => sankhya_error::Error::ConfigInvalid(detail),
+        // Anything a future version of the engine adds. Reported as a statement failure
+        // rather than as an invariant violation, because the alternative is paging somebody
+        // for a new error variant.
+        _ => sankhya_error::Error::StatementFailed(detail),
+    }
 }

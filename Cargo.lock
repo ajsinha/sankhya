@@ -3471,6 +3471,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sankhya-metrics"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+]
+
+[[package]]
 name = "sankhya-mv"
 version = "0.1.0"
 
@@ -3603,6 +3610,7 @@ dependencies = [
  "sankhya-error",
  "sankhya-governor",
  "sankhya-graph",
+ "sankhya-metrics",
  "sankhya-plan",
  "sankhya-readpath",
  "sankhya-session",
@@ -4879,6 +4887,8 @@ dependencies = [
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "sankhya-error",
+ "sankhya-metrics",
  "serde",
  "serde_json",
  "toml",

@@ -156,6 +156,7 @@ pub fn servable(
         ) {
             Ok(provider) => open.push(ServableTable {
                 reference: table.reference.clone(),
+                root: table.root.clone(),
                 provider: Arc::new(provider),
             }),
             Err(error) => refused.push((table.root.clone(), error.to_string())),

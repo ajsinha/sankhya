@@ -1101,6 +1101,102 @@ CATALOGUE = [
      "        Err(VectorError::ZeroMagnitude) => 1.0,",
      "        Err(VectorError::ZeroMagnitude) => 0.0,",
      "sankhya-math"),
+    ("metrics: let a closed label accept any value",
+     "crates/sankhya-metrics/src/metric.rs",
+     "            Values::Closed(allowed) => allowed.contains(&value),",
+     "            Values::Closed(_) => true,",
+     "sankhya-metrics"),
+
+    ("metrics: stop requiring every declared label to be supplied",
+     "crates/sankhya-metrics/src/registry.rs",
+     "        if labels.len() != metric.labels.len() {",
+     "        if false {",
+     "sankhya-metrics"),
+
+    ("metrics: let an identifier label grow without bound",
+     "crates/sankhya-metrics/src/registry.rs",
+     "        if seen.len() >= cap {",
+     "        if false {",
+     "sankhya-metrics"),
+
+    ("metrics: share one cardinality budget across every metric",
+     "crates/sankhya-metrics/src/registry.rs",
+     '            .entry((metric.name, declared.name))',
+     '            .entry(("", declared.name))',
+     "sankhya-metrics"),
+
+    ("metrics: drop the +Inf bucket from a histogram",
+     "crates/sankhya-metrics/src/registry.rs",
+     '            let with_inf = render_labels(labels, Some("+Inf"));',
+     '            let with_inf = render_labels(labels, Some("999999"));',
+     "sankhya-metrics"),
+
+    ("metrics: stop escaping label values, so one table name breaks the scrape",
+     "crates/sankhya-metrics/src/registry.rs",
+     '        .map(|(name, value)| format!("{name}=\\"{}\\"", escape(value)))',
+     '        .map(|(name, value)| format!("{name}=\\"{value}\\""))',
+     "sankhya-metrics"),
+
+    ("metrics: omit a metric that has recorded nothing",
+     "crates/sankhya-metrics/src/registry.rs",
+     '                let _ = writeln!(out, "# TYPE {} {}", metric.name, metric.kind.as_str());\n                continue;',
+     "                continue;",
+     "sankhya-metrics"),
+
+    ("server: count a refusal as an error",
+     "crates/sankhya-server/src/wiring.rs",
+     '            state if state.starts_with("53") || state.starts_with("28") => "refused",',
+     '            state if state.starts_with("53") || state.starts_with("28") => "error",',
+     "sankhya-server"),
+
+    ("server: time only the queries that succeeded",
+     "crates/sankhya-server/src/wiring.rs",
+     '        self.metrics.observe(\n            &catalogue::QUERY_DURATION_SECONDS,\n            &[("outcome", label)],\n            started.elapsed().as_secs_f64(),\n        );',
+     '        if outcome.is_ok() {\n            self.metrics.observe(\n                &catalogue::QUERY_DURATION_SECONDS,\n                &[("outcome", label)],\n                started.elapsed().as_secs_f64(),\n            );\n        }',
+     "sankhya-server"),
+
+    ("server: decrement the connection gauge only on a clean exit",
+     "crates/sankhya-api-pg/src/listener.rs",
+     "    let _guard = ConnectionGuard(Arc::clone(&handler));",
+     "    let _guard = ();",
+     "sankhya-server"),
+
+    ("server: accept a write and discard it",
+     "crates/sankhya-server/src/execute.rs",
+     "    refuse_if_not_a_read(&plan)?;",
+     "    let _ = refuse_if_not_a_read(&plan);",
+     "sankhya-server"),
+
+    ("server: check the statement shape after the engine has already run the DDL",
+     "crates/sankhya-server/src/execute.rs",
+     "    let plan = context\n        .state()\n        .create_logical_plan(sql)\n        .await\n        .map_err(|error| plan_failure(&error))?;\n    refuse_if_not_a_read(&plan)?;\n\n    let frame = context\n        .execute_logical_plan(plan)\n        .await\n        .map_err(|error| plan_failure(&error))?;",
+     "    let frame = context.sql(sql).await.map_err(|error| plan_failure(&error))?;\n    refuse_if_not_a_read(frame.logical_plan())?;",
+     "sankhya-server"),
+
+    ("server: stop unwrapping the engine's diagnostic wrapper",
+     "crates/sankhya-server/src/execute.rs",
+     "        E::Diagnostic(_, inner) | E::Context(_, inner) => classify(inner),",
+     "        E::Context(_, inner) => classify(inner),",
+     "sankhya-server"),
+
+    ("server: send the engine's message with no catalogue code",
+     "crates/sankhya-server/src/execute.rs",
+     '        message: format!("[{}] {}", classified.code(), error),',
+     "        message: error.to_string(),",
+     "sankhya-server"),
+
+    ("server: drop the remediation before it reaches the client",
+     "crates/sankhya-server/src/execute.rs",
+     "        detail: Some(classified.remediation().to_string()),",
+     "        detail: None,",
+     "sankhya-server"),
+
+    ("server: serve any path that starts with /metrics",
+     "crates/sankhya-server/src/scrape.rs",
+     '    path == "/metrics"',
+     '    path.starts_with("/metrics")',
+     "sankhya-server"),
+
 ]
 
 

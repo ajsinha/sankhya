@@ -5,6 +5,8 @@
 //! gate. Each exists because the corresponding mistake is cheap to make, expensive
 //! to unwind, and invisible in review.
 
+mod catalogues;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -155,6 +157,19 @@ fn main() -> ExitCode {
     if run_all || task == "check-mutations" {
         failed |= !check_mutations(&root);
     }
+    if run_all || task == "check-catalogues" {
+        failed |= !catalogues::check(&root);
+    }
+    // Not a check: it writes. Kept out of `check-all` for that reason.
+    if task == "write-catalogues" {
+        match catalogues::write(&root) {
+            Ok(()) => println!("wrote {} and {}", catalogues::METRICS_DOC, catalogues::ERRORS_DOC),
+            Err(error) => {
+                eprintln!("could not write the catalogues: {error}");
+                failed = true;
+            }
+        }
+    }
     if run_all || task == "check-doc-numbers" {
         let mut docs = Vec::new();
         collect_markdown(&root, &mut docs);
@@ -178,6 +193,8 @@ fn main() -> ExitCode {
                 | "check-lints"
                 | "check-mutations"
                 | "check-doc-numbers"
+                | "check-catalogues"
+                | "write-catalogues"
                 | "check-performance"
         )
     {
@@ -185,7 +202,7 @@ fn main() -> ExitCode {
             "usage: cargo xtask \
              [check-all|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
              |check-features|check-lints|check-mutations|check-doc-numbers\
-             |check-performance]"
+             |check-catalogues|write-catalogues|check-performance]"
         );
         return ExitCode::from(2);
     }

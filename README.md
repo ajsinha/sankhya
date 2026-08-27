@@ -1,15 +1,16 @@
 <div align="center">
 
-# SANKHYA
-
-### सांख्य
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/wordmark-dice-dark.png">
+  <img src="docs/assets/wordmark-dice.png" alt="SANKHYA — सांख्य" width="440">
+</picture>
 
 **One binary. Three engines. One reckoning.**
 
 *A general-purpose unified OLTP + OLAP + Graph data server — one binary, written entirely in Rust.*
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-M3%20complete-yellow.svg)](docs/STATUS.md)
+[![Status](https://img.shields.io/badge/status-M5%20complete%2C%20M6%20in%20progress-yellow.svg)](docs/STATUS.md)
 [![Rust](https://img.shields.io/badge/rust-1.97%2B-b7410e.svg)](https://www.rust-lang.org)
 [![JVM](https://img.shields.io/badge/JVM-none-success.svg)](#design-principles)
 

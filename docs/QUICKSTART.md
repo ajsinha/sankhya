@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/wordmark-dice-dark.png">
+    <img src="assets/wordmark-dice.png" alt="SANKHYA" width="300">
+  </picture>
+</p>
+
 # SANKHYA — Quickstart
 
 **Status:** Implementation — M0–M5 complete, M6 in progress
@@ -47,7 +54,8 @@ cargo xtask check-all
 That runs every repository invariant: the layer graph, the file-length ceiling, the
 domain-vocabulary prohibition, the duplicate-dependency gate, the documentation checks,
 the feature pins, clippy under the workspace's denied lints, the mutation catalogue's
-agreement with the source, and every counted figure the documentation claims. **Each is
+agreement with the source, the generated metric and error catalogues' agreement with
+their declarations, and every counted figure the documentation claims. **Each is
 proven to fail when violated**, not merely to pass.
 
 ---
@@ -78,7 +86,7 @@ availability event.
 ## 3. Run the tests
 
 ```bash
-cargo test --workspace          # 1,177 tests, none of which needs a database
+cargo test --workspace          # 1,218 tests, none of which needs a database
 ```
 
 Everything here runs without a database, in well under a minute. Nothing is mocked: the
@@ -120,6 +128,7 @@ TPC-H data is generated rather than fixtured.
 | `sankhya-olap` `tests/exactness.rs` | An approximate answer is labelled approximate. A sketch-derived count never presents itself as exact |
 | `sankhya-governor` | Deadlines and cancellation are bounded at one batch per partition; an aggregation too large to run is refused up front, and the refusal says whether retrying could ever help |
 | `sankhya-math` | Reductions are deterministic regardless of partition order — the analytical counterpart to the `sankhya-types` property |
+| `sankhya-metrics` | An undeclared metric cannot be recorded, a closed label refuses anything outside its set, and an identifier label stops adding series at its cap rather than growing without bound — and says it has |
 | `sankhya-diagnostic` | A projection is never invented from one sample, never drawn through a sawtooth, and never extrapolated further than the observation window supports. Findings sort by *when*, not by how bad. A check that could not run is never counted as one that found nothing |
 
 ### The checks that are not tests
@@ -128,25 +137,26 @@ Three gates catch things a test suite structurally cannot. All three fail the bu
 
 ```bash
 cargo xtask check-all            # every repository invariant — see below
-python3 tools/mutation-audit.py  # 160 deliberate defects, applied one at a time
+python3 tools/mutation-audit.py  # 176 deliberate defects, applied one at a time
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
 ```
 
-**`check-all`** runs nine invariants: the layer graph is acyclic and points the right
+**`check-all`** runs ten invariants: the layer graph is acyclic and points the right
 way, no file exceeds the length ceiling, no core crate names a domain concept, the
 dependency set has no critical duplicates, the documentation's links and version claims
 resolve and its status lines agree, test-only dependencies really are test-only, clippy
 is clean under the workspace's denied lints across every target, no mutation is left
-applied to the source, and every figure a document claims — test counts, catalogue sizes —
-still matches what the repository actually holds. Each is proven to fail when violated, not
+applied to the source, the generated metric and error catalogues still match their
+declarations and every declared metric is actually recorded somewhere, and every figure a
+document claims — test counts, catalogue sizes — still matches what the repository holds. Each is proven to fail when violated, not
 merely to pass.
 
 **The mutation audit** is the answer to "the tests pass, but do they test anything?" It
-applies 160 specific defects one at a time and requires the suite to fail on each. Sixteen
+applies 176 specific defects one at a time and requires the suite to fail on each. Eighteen
 did not, the first time each was run — the most recent three were written for the
 diagnostic, and one of those turned out to be pointing at the wrong copy of a duplicated
 guard, which is precisely the silent-pass this tool exists to catch. Expect it to take a
-while — it is 160 sequential `cargo test` runs, and it edits your source files as it goes,
+while — it is 176 sequential `cargo test` runs, and it edits your source files as it goes,
 restoring each one after. Run it on a clean tree.
 
 **`check-performance`** is deliberately outside `check-all`: it generates a
@@ -458,7 +468,46 @@ Full detail, including why it refuses to project through a sawtooth, is in
 
 ---
 
-## 8. Tidy up
+## 8. Watch what it is doing
+
+```bash
+curl -s http://127.0.0.1:9464/metrics
+```
+
+```
+sankhya_queries_total{outcome="ok"} 412
+sankhya_queries_total{outcome="refused"} 3
+sankhya_query_duration_seconds_bucket{outcome="ok",le="0.025"} 388
+sankhya_table_live_files{table="sales.orders"} 87
+sankhya_metrics_rejected_total{reason="over_cap"} 0
+```
+
+Its own port, one route, loopback by default. The full list is [`METRICS.md`](METRICS.md),
+which is **generated from the declarations** — recording a metric requires passing its
+declaration, so an undeclared metric cannot be typed, and a declared one that nothing records
+fails the build.
+
+Two things to know before you build a dashboard on it:
+
+- **`refused` is not `error`.** A quota held is the system working. An error-rate alert that
+  counts them together fires on correct behaviour.
+- **Watch `sankhya_metrics_rejected_total`.** Non-zero means a call site disagrees with the
+  catalogue, or a label has outgrown its cap and that metric is now incomplete.
+
+And when something fails:
+
+```
+ERROR:  [SNK-C0001] Error during planning: table 'sales.ordres' not found
+DETAIL:  Correct the statement. The detail names the offending element.
+```
+
+The code is permanent and is what [`ERRORS.md`](ERRORS.md) and the
+[runbooks](runbooks/) are indexed by. `DETAIL` is the catalogue's own remediation, so the
+client and the documentation cannot disagree.
+
+---
+
+## 9. Tidy up
 
 ```bash
 $PGBIN/pg_ctl -D .build/pg stop -m fast

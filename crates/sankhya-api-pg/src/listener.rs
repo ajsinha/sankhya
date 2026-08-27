@@ -85,8 +85,26 @@ impl PgListener {
     }
 }
 
+/// Tells the handler the connection has ended, on every path out of [`serve`].
+///
+/// A guard rather than a call before each `return`, because `serve` leaves through several
+/// of them and through `?` besides. A gauge incremented on accept and decremented on all but
+/// one exit climbs forever and reads as a connection leak that is not happening --- and the
+/// exit that gets missed is always an error path, which is when the number matters most.
+/// `Drop` also covers a panic, which no arrangement of explicit calls does.
+struct ConnectionGuard(Arc<dyn Handler>);
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.0.connection_closed();
+    }
+}
+
 /// Drive one connection to completion.
 pub async fn serve(mut stream: TcpStream, handler: Arc<dyn Handler>) -> std::io::Result<()> {
+    handler.connection_opened();
+    let _guard = ConnectionGuard(Arc::clone(&handler));
+
     // Nagle's algorithm delays a small write waiting for a larger one. This protocol is a
     // conversation of small messages, and the delay is visible as latency on every query.
     stream.set_nodelay(true).ok();

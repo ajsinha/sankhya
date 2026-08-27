@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/wordmark-dice-dark.png">
+    <img src="assets/wordmark-dice.png" alt="SANKHYA" width="300">
+  </picture>
+</p>
+
 # SANKHYA — System Architecture
 
 **Document ID:** SNK-AD-001
@@ -1679,6 +1686,35 @@ Tracing spans a request from client through planning to storage requests, with s
 
 **No log line, trace attribute or metric label may contain tenant data.** Query text is data: a normalized plan hash is logged by default, with full text only under explicit policy and routed to the audit store rather than to standard output.
 
+### 17.1a The metric catalogue is the API
+
+Recording a metric takes the metric's **declaration**, not its name. There is no `counter("some_name")`, so an undeclared metric is not refused at runtime — it cannot be typed. Every exported series therefore carries a documented meaning, a unit, a group and a bound on its cardinality, because those are fields on the thing the call site had to pass.
+
+This is the inversion that matters. The usual arrangement makes a metric a string and documentation a separate, optional artefact, and the predictable result is a dashboard carrying series with no stated meaning, no unit and no owner, which somebody then builds an alert on.
+
+**The prohibition in §17.1 is enforced by the label's type, not by review.** A label declares one of exactly two things:
+
+- a **closed set** of permitted values, where anything else is refused and counted; or
+- a **deployment-scoped identifier** — a table, a tenant — under a **cap**.
+
+There is deliberately no third variant, so a label that varies per row, per query or per user has no way to be declared. Putting a value where a dimension belongs is simultaneously the tenant-data leak and the cardinality explosion, and one construct prevents both.
+
+Past the cap, new series are **refused and counted** rather than created. The choice is between three behaviours and only one is defensible: growing without bound takes the process down; dropping silently makes a dashboard quietly wrong; refusing and reporting makes the metric visibly incomplete. A gap gets noticed and a quiet inaccuracy does not.
+
+**Two properties are checked mechanically, and they are different properties.** That the published catalogue matches the declarations — generated, then regenerated and diffed on every build. And that the declarations match reality: every declared metric must be recorded somewhere in the source, or the catalogue is a wishlist published as documentation. Where the architecture names a metric this build cannot emit, the catalogue **states the gap rather than declaring a gauge that reads zero**, because a permanently-zero gauge is indistinguishable from a healthy subsystem.
+
+**A metric that may page must name a runbook**, and the field is not optional. The interval by which it precedes user-visible failure is recorded alongside it, because that interval is the entire justification for paging: an alert with no lead time fires when the user notices, which makes it a notification.
+
+### 17.1b Every error that reaches a client carries a code and a remediation
+
+The error catalogue drives six behaviours from one classification — retry policy, protocol status, SQL state, log level, metric labelling and alerting — and it is published, generated from the same declarations. Codes are permanent: removing or renumbering one breaks every runbook, alert rule and support script that references it.
+
+**The path a person actually takes has to go through it, and that is the part that gets missed.** A catalogue can be complete, classified and published while the wire path returns the engine's own message with a status guessed from substrings — so the errors a user meets most often are precisely the ones with no code and nothing to look up. Mapping engine failures onto catalogue entries is therefore a structural obligation, matched on the failure's **variant** rather than on its text: substring matching is a mapping that changes silently when a dependency rewords a message, and the symptom is a client that stops retrying something it should retry.
+
+**A refusal is not an error.** A quota held and a permission enforced are the system working; counting them with genuine failures makes a healthy system under load indistinguishable from a broken one, which is how an error-rate alert comes to fire on correct behaviour.
+
+**A statement the system will not honour is refused, never accepted and discarded.** Confirming work that did not occur is worse than failing: it is not an error, not a wrong number, and produces no evidence at all.
+
 ### 17.2 Health
 
 Distinct startup, liveness and readiness signals. **Readiness accounts for pipeline lag; liveness does not** — otherwise a lagging pipeline causes an orchestrator to kill a healthy node, converting a degradation into an outage.
@@ -1818,6 +1854,14 @@ The trade-off, stated plainly: scale-up gives lower latency, far simpler failure
 | `DEC-37` | A projection is refused by name rather than invented; `Unknown` is an outcome, not an error | §17.2a |
 | `DEC-38` | Findings sort by when they bite, not by severity | §17.2a |
 | `DEC-39` | "Could not run" is separate from "found nothing", down to the exit status | §17.2a |
+| `DEC-40` | A metric is recorded by passing its declaration, so an undeclared metric is unrepresentable | §17.1a |
+| `DEC-41` | A label is a closed value set or a capped identifier, and nothing else; the tenant-data prohibition is a type, not a review item | §17.1a |
+| `DEC-42` | Over a cardinality cap, series are refused and counted — incomplete and visibly so | §17.1a |
+| `DEC-43` | Catalogues are generated into documentation, and every declared metric must also be recorded somewhere | §17.1a |
+| `DEC-44` | Every error that reaches a client carries a permanent code and the catalogue's remediation | §17.1b |
+| `DEC-45` | Engine failures are classified by variant, never by matching on message text | §17.1b |
+| `DEC-46` | A refusal is counted separately from an error | §17.1b |
+| `DEC-47` | A statement the system will not honour is refused, never confirmed and discarded | §17.1b |
 
 ---
 

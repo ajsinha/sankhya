@@ -205,6 +205,7 @@ async fn an_error_does_not_disclose_that_the_other_tenants_table_exists() {
         read_as_of: sankhya_types::Lsn::new(u64::MAX),
         tenant: acme(),
         require_password: true,
+        metrics_listen: None,
     };
     // Acme's server, with the rival's table granted only to the rival.
     let server = wiring::Server::with_tables(empty, policy(), Vec::new(), Vec::new());

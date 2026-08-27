@@ -96,6 +96,21 @@ pub trait Handler: Send + Sync {
     fn current_schema(&self) -> String {
         "public".to_string()
     }
+
+    /// A connection has been accepted.
+    ///
+    /// Paired with [`Handler::connection_closed`], and the pairing is the whole contract: a
+    /// gauge incremented on accept and decremented on any path *except* the one a panicking
+    /// or short-circuiting connection takes will climb forever and read as a leak that is
+    /// not there. The listener calls this on accept and the close on every exit from
+    /// `serve`, including the error paths.
+    ///
+    /// Defaulted to nothing, so a handler that does not care about connection lifecycle ---
+    /// every test handler --- is unaffected.
+    fn connection_opened(&self) {}
+
+    /// A connection has finished, however it finished.
+    fn connection_closed(&self) {}
 }
 
 /// One connection's protocol state.

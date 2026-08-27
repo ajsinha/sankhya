@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/wordmark-dice-dark.png">
+    <img src="assets/wordmark-dice.png" alt="SANKHYA" width="300">
+  </picture>
+</p>
+
 # SANKHYA — Build Status
 
 **Updated:** 2026-08-26 · Tracks what is *actually built* against
@@ -18,12 +25,76 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M3** Query engine and storage performance | 28–34 ew | **Complete**, all six exit criteria met — closed 2026-08-26. One criterion was corrected first: it required cancellation inside user code, which does not exist until M4, and that clause moved to M4. Parts of the work breakdown remain unbuilt and are listed under *M3, closed* below |
 | **M4** Graph engine and the extension mechanism | 26–32 ew | **Complete.** Every exit criterion met; see below |
 | **M5** Tenancy, security and API surfaces | 22–28 ew | **Closed.** Four of five exit criteria met; the fifth needs a second server version to exist. Two of four API surfaces built — the wire protocol and Flight SQL. The control plane and its gateway are **deferred to M6**, because what they expose is built there |
-| **M6** Operability, packaging and hardening | — | **In progress.** The server process and §10.1's diagnostic are built; §10.2–10.8 are not started |
+| **M6** Operability, packaging and hardening | — | **In progress.** The server process, §10.1's diagnostic and §10.2's catalogues are built; §10.3–10.8 are not started |
 | **M7**–**M8** | — | Not started |
 
 ---
 
 ## M6, in progress
+
+### §10.2 — Observability and the error catalogue
+
+Two catalogues, both **generated into documentation from the declarations themselves**, and a
+check that fails the build when the document and the source disagree. `M6`'s sixth exit
+criterion asks for exactly that — *"generated from the same source as the catalog"* — and the
+clause matters more than it reads: a hand-written table of error codes is correct on the day
+it is written and wrong by the second release, with nothing to say which entry went stale.
+
+**The metric catalogue is the API, not documentation of it.** Recording takes a
+`&'static Metric` from the catalogue, so there is no `counter("some_name")` and an undeclared
+metric is not refused at runtime --- it cannot be typed. Every exported series therefore has
+a documented meaning, a unit, a group and a bound on its cardinality, because those are
+fields on the thing you had to pass.
+
+**The tenant-data prohibition is structural.** `ARCHITECTURE` §17.1 says no metric label may
+contain tenant data. A label declares either a closed set of permitted values --- anything
+else is refused --- or a deployment-scoped identifier under a cap. There is deliberately no
+third variant, so a label that varies per row has no way to be declared. Past the cap, new
+series are refused **and counted**: the metric goes incomplete and says so, rather than
+growing without bound or going quietly wrong.
+
+**Two checks, not one.** Generating a document from a catalogue proves the document matches
+the catalogue and says nothing about whether the catalogue matches reality. So
+`check-catalogues` separately requires every declared metric to be recorded somewhere in the
+source. `ARCHITECTURE` §17.1 names four metrics that page; only compaction debt is declared,
+because the other three measure machinery that does not run in this process and three gauges
+permanently reading zero are indistinguishable from three healthy subsystems. The gap is
+published in `METRICS.md` rather than filled.
+
+**Runbooks are enforced, not aspirational.** A pageable metric's `runbook` field is not an
+`Option`, and the check requires the file to exist *and* to carry its Symptom / What is
+actually wrong / What to do sections. Seven exist. `M6`'s fifth exit criterion holds rather
+than being something to audit later.
+
+**Five defects, four of them in the path a user actually takes:**
+
+- **Errors reaching clients carried no code and no remediation.** The catalogue had existed
+  since M0 and the wire path did not go through it: a failed query returned the engine's own
+  message with a SQLSTATE guessed from substrings. The errors a person actually meets were
+  precisely the ones with nothing to look up. Exit criterion 6 was false.
+- **`CREATE TABLE` succeeded and did nothing durable.** DataFusion will run DDL against its
+  own in-memory catalogue, so the statement returned a success tag, the table existed for the
+  rest of that connection, and it was gone on reconnect. Not an error, not a wrong number ---
+  *a confirmation of something that did not occur*, which is the worst shape available. Fixed
+  by planning and executing in two steps, because `SessionContext::sql` runs DDL during
+  planning and a check on the returned plan is already too late.
+- **The commonest error of all was misclassified.** DataFusion 55 wraps plan errors in
+  `Diagnostic` to attach a source span, so matching on `Plan` never fired and "table not
+  found" fell through to the catch-all.
+- **`Box::leak` on every scrape** --- a few hundred bytes every fifteen seconds, forever, in
+  the component whose job is to report that kind of thing.
+- **A prefix-matched route** served `/metrics/../etc/passwd`. Harmless against an endpoint
+  that reads no files, and exactly the shape that becomes a traversal when one does.
+
+And two tests that did not test what they claimed: a cardinality-budget test using a metric
+with no labels, and a refusal-classification test reaching only one of the three states the
+table covers. Both were found by the mutation catalogue, not by reading.
+
+**What is not built:** distributed tracing spans, and the pre-release log scrape for the
+tenant-data prohibition. `FR-OPS-16`'s remaining checks --- conformance, replica identity,
+archival consistency --- belong to §10.1 and are not built either.
+
+---
 
 ### §10.1 — The diagnostic
 
@@ -644,7 +715,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 160 specific defects applied one at a time; all 160 fail the suite. Sixteen did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, two entries were inert until corrected — the second was anchored on a guard that appears twice, so it patched the harmless copy — and chasing two others produced documentation corrections rather than new tests. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 176 specific defects applied one at a time; all 176 fail the suite. Eighteen did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, two entries were inert until corrected — one was anchored on a guard that appears twice, so it patched the harmless copy — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -1138,9 +1209,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,177 tests, none of which needs a database
+cargo test --workspace           # 1,218 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 160 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 176 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

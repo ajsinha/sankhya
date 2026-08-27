@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/wordmark-dice-dark.png">
+    <img src="assets/wordmark-dice.png" alt="SANKHYA" width="300">
+  </picture>
+</p>
+
 # SANKHYA — a guide, by example
 
 **Status:** Implementation — M0–M5 complete, M6 in progress
@@ -23,7 +30,8 @@ The [quickstart](QUICKSTART.md) gets a server running. This shows what to do wit
 8. [Security, and what it refuses](#8-security-and-what-it-refuses)
 9. [Verifying and repairing a table](#9-verifying-and-repairing-a-table)
 10. [The diagnostic](#10-the-diagnostic)
-11. [What is not built](#11-what-is-not-built)
+11. [Metrics, and what a failure tells you](#11-metrics-and-what-a-failure-tells-you)
+12. [What is not built](#12-what-is-not-built)
 
 ---
 
@@ -598,14 +606,117 @@ built, and [`STATUS.md`](STATUS.md) is the authoritative list.
 
 ---
 
-## 11. What is not built
+## 11. Metrics, and what a failure tells you
+
+### The scrape endpoint
+
+```bash
+curl -s http://127.0.0.1:9464/metrics
+```
+
+Its own port (`SANKHYA_METRICS_LISTEN`, default `127.0.0.1:9464`), one route, exact match.
+Loopback by default, because a metrics endpoint on every interface is a small permanent
+disclosure of the deployment's shape and the safe choice should be the one you get by not
+deciding.
+
+```
+# HELP sankhya_queries_total Statements that reached execution, by how they ended.
+# TYPE sankhya_queries_total counter
+sankhya_queries_total{outcome="ok"} 412
+sankhya_queries_total{outcome="refused"} 3
+sankhya_table_live_files{table="sales.orders"} 87
+```
+
+Every metric appears even at zero, so a dashboard can tell **"no events" from "not wired
+up"**. The full list is [`METRICS.md`](METRICS.md), which is generated from the declarations
+and checked against them on every build.
+
+### `refused` is not `error`
+
+A quota held and a permission enforced are the system working. Counting them alongside
+genuine failures makes a healthy system under load look like a broken one — which is how an
+error-rate alert comes to fire on correct behaviour. Four outcomes: `ok`, `error`, `refused`,
+`cancelled`.
+
+### Labels cannot carry your data
+
+A label is one of exactly two kinds:
+
+- **Closed** — a named set of permitted values. `outcome` is one of four strings; anything
+  else is refused and counted. Such a label cannot be handed a customer's name however the
+  call site is written.
+- **Identifier** — a deployment-scoped name like a table, under a cap. Past the cap new
+  series are refused and `sankhya_metrics_rejected_total{reason="over_cap"}` rises. The
+  metric goes **incomplete and says so**, rather than growing without bound.
+
+There is no third kind, so a label that varies per row has no way to be declared. That is
+`ARCHITECTURE.md` §17.1's tenant-data prohibition made structural rather than left as a
+review item.
+
+Watch `sankhya_metrics_rejected_total`. Non-zero means a call site disagrees with the
+catalogue, or something has outgrown its cap.
+
+### What a failed query tells you
+
+```
+psql> SELECT * FROM sales.ordres;
+ERROR:  [SNK-C0001] Error during planning: table 'sales.ordres' not found
+DETAIL:  Correct the statement. The detail names the offending element.
+```
+
+Three things, and each is doing a job:
+
+| | |
+|---|---|
+| **`SNK-C0001`** | A permanent code. It is what a support conversation is conducted in and what a runbook is indexed by. Codes never change meaning and are never renumbered |
+| **The message** | What happened |
+| **`DETAIL`** | What to do about it — the catalogue's own remediation, so the client and [`ERRORS.md`](ERRORS.md) cannot say different things |
+
+The SQLSTATE comes from the error's **class**, not from its wording. Every driver in this
+ecosystem branches on those five characters, and a plausible message with the wrong ones
+produces a client that connects, appears to work, and mishandles every failure.
+
+The letter after `SNK-` is the class: `C` the caller's request, `R` a limit, `F` a conflict,
+`T` transient, `X` cancelled, `S` a fault that pages. Every `S` code has a runbook in
+[`runbooks/`](runbooks/).
+
+### A table that does not exist and one you may not read are the same error
+
+Deliberately. Saying "you may not read that" confirms it exists, and existence is frequently
+the secret. Only the tables a principal may read are registered, so the engine says "not
+found" either way — the same code, the same state, the same words.
+
+### Writes are refused, not accepted and discarded
+
+```
+psql> CREATE TABLE public.staging (id BIGINT);
+ERROR:  [SNK-C0006] data definition is not served over this connection; this server is
+        a read path over a published warehouse
+DETAIL:  Write to the transactional store and let capture publish it, or publish an
+         external table with `sankhya-publish`. See GUIDE.md §3.
+```
+
+This once returned `CREATE TABLE` and did nothing durable — the table existed for the rest of
+that connection and vanished on reconnect. The refusal names the supported route, because a
+refusal that only says no sends somebody looking for a flag to turn it on, and there is no
+flag.
+
+### Exit statuses
+
+`sankhya-server doctor` exits `0` clean, `1` findings, `2` a check could not run. The third
+exists so a monitoring system cannot read "I could not look" as "nothing found".
+
+---
+
+## 12. What is not built
 
 Stated explicitly, because a guide that implies more than exists is worse than one that
 admits less. [`STATUS.md`](STATUS.md) is the authoritative version.
 
 | | |
 |---|---|
-| **The gRPC control plane and REST gateway** | Not built |
+| **The gRPC control plane and REST gateway** | Not built. The `/metrics` endpoint is not the beginning of one: one route, no authentication, and nothing that returns rows |
+| **Distributed tracing** | Not built. Metrics and the error catalogue exist; spans do not |
 | **Ingest on a timer** | Not built. Capture, apply and publication all work and none of them is driven by a running process, so everything the server serves is already published |
 | **Graph hydration on a timer** | Not built. An epoch is built when something builds it |
 | **The pack loader in the server** | Not built. Packs load into a registry; nothing in the running process does that |
