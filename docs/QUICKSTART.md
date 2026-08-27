@@ -78,7 +78,7 @@ availability event.
 ## 3. Run the tests
 
 ```bash
-cargo test --workspace          # 1,110 tests, none of which needs a database
+cargo test --workspace          # 1,121 tests, none of which needs a database
 ```
 
 Everything here runs without a database, in well under a minute. Nothing is mocked: the
@@ -439,7 +439,7 @@ that admits less.
 | Query governance | **Working.** Deadlines and cancellation bounded at one batch per partition; admission control that refuses an aggregation too large to run rather than letting it take the process down, and says whether retrying could ever help |
 | Graph engine | **Working.** A typed, time-aware adjacency hydrated from published tables — no second store, no graph write path, an edge exists because a row exists. Traversal, weighted and k-shortest loopless paths, simple cycles, components, centrality, communities and multiplicative influence, each bounded and each reporting its own truncation. Five SQL table functions make them joinable against ordinary tables. Nothing drives hydration on a timer |
 | The extension mechanism | **Working.** SANKHYA's own function traits rather than the engine's, so a pack survives the engine changing underneath it. Two reference packs from unrelated industries and one deliberately hostile pack whose every attempt is refused with a named error. A declarative tier expresses a pack as a file rather than a crate. **The loader is not wired into the server**: a running process exists, and nothing in it loads a bundle |
-| API surfaces | **The wire protocol works; the rest is not started.** Real `psql` connects, authenticates, runs catalogue queries and recovers from errors. Arrow Flight SQL, the gRPC control plane and the REST gateway are not built |
+| API surfaces | **Two of four.** Real `psql` connects, authenticates, runs catalogue queries and recovers from errors. **Arrow Flight SQL** streams results as Arrow batches over gRPC, with authorization at planning and a ticket bound to the tenant it was issued to. The gRPC control plane and the REST gateway are not built |
 | Multi-tenancy and security | **Working, and reachable through the server.** A statement arriving over the wire is authorised before a table is registered, so one the caller may not read does not resolve at all. One principal type established at the edge; a pure policy component whose every decision is a function of its inputs; a `Guard` that cannot be constructed except from an allowed decision, so a provider cannot be built without one. Row predicates are enforced above the scan where no provider can decline them, and their presence in the *final physical plan* is asserted. Quotas with typed errors and a hash-chained audit are wired into the query path. Per-tenant graph epochs and envelope encryption are built and tested but have no path through the front door |
 
 The honest summary is that the **correctness contracts are built and tested and the

@@ -14,3 +14,24 @@ layer = 4
 workspace = true
 
 [dependencies]
+sankhya-types   = { path = "../sankhya-types" }
+sankhya-error   = { path = "../sankhya-error" }
+sankhya-authz   = { path = "../sankhya-authz" }
+sankhya-catalog = { path = "../sankhya-catalog" }
+arrow-array     = { workspace = true }
+arrow-schema    = { workspace = true }
+arrow-flight    = { workspace = true }
+arrow-ipc       = { workspace = true }
+datafusion      = { workspace = true }
+tonic           = { workspace = true }
+prost           = { workspace = true }
+futures         = { workspace = true }
+tokio           = { workspace = true }
+tracing         = { workspace = true }
+uuid            = { workspace = true }
+
+[dev-dependencies]
+tokio-stream = { version = "0.1" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+uuid  = { workspace = true }
+

@@ -22,6 +22,7 @@ arrow-array   = { version = "=59.2.0" }
 arrow-schema  = { version = "=59.2.0" }
 arrow-buffer  = { version = "=59.2.0" }
 arrow-ipc     = { version = "=59.2.0" }
+arrow-flight  = { version = "=59.2.0", features = ["flight-sql-experimental"] }
 parquet       = { version = "=59.2.0", default-features = false, features = ["arrow", "async", "zstd", "snap"] }
 object_store  = { version = "=0.13.2" }
 # Features are chosen deliberately rather than inherited. Excluded on purpose:
@@ -41,6 +42,9 @@ delta_kernel  = { version = "=0.27.1", default-features = false, features = ["ar
 
 tokio         = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time", "fs", "process", "io-util", "net"] }
 tokio-util    = { version = "0.7" }
+tonic         = { version = "0.14" }
+prost         = { version = "0.14" }
+futures-util  = { version = "0.3" }
 futures       = { version = "0.3" }
 async-trait   = { version = "0.1" }
 

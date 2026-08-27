@@ -350,6 +350,46 @@ its default.
 
 ---
 
+## 7a. Arrow Flight SQL — the bulk plane
+
+The wire protocol is a **row** protocol: the last step of every query takes columnar batches
+apart one value at a time. For an interactive query that costs nothing worth measuring; for
+a bulk extract it is the whole cost. Flight SQL does not do that — the client's Arrow buffers
+are the same shape as the server's.
+
+```rust
+let info = client.get_flight_info(descriptor_for("SELECT id, label FROM orders")).await?;
+let ticket = info.endpoint[0].ticket.clone().expect("a ticket");
+let batches: Vec<RecordBatch> = FlightRecordBatchStream::new_from_flight_data(
+    client.do_get(ticket).await?.into_inner().map_err(FlightError::from)
+).try_collect().await?;
+```
+
+**Nothing is materialised.** A batch is encoded as it is produced and its memory released as
+soon as it is sent, which `FR-API-07` requires. The consequence is a real behaviour change:
+**an error can arrive mid-stream.** A row protocol sends its error before the first row or
+not at all; this one may have sent a gigabyte first. It reports the failure on the stream
+rather than closing quietly, because a truncated stream that ends cleanly is
+indistinguishable from a complete one.
+
+**The ticket is a security boundary.** Flight splits a query into planning and redemption,
+and the principal redeeming is not necessarily the one who requested. So the decision is made
+once, at `GetFlightInfo`, and the ticket carries its outcome — redeeming does not re-plan and
+does not re-authorize. It checks only that the presenter is the tenant it was issued to, and
+the refusal does not say whose ticket it is.
+
+Tickets expire after five minutes: a ticket names a snapshot, and a snapshot's files are
+eventually retired, so an unbounded one is a lease nobody granted.
+
+**Deliberately absent**: `DoPut`, prepared statements, transactions, `DoExchange`. Each
+returns `UNIMPLEMENTED` with a reason rather than working differently than it should — and
+`DoPut` names which write path to use instead, because a third one with its own semantics
+would be a way for the other two to disagree.
+
+See [ADR-0006](adr/0006-flight-sql.md).
+
+---
+
 ## 8. Security, and what it refuses
 
 A statement is authorised **before** a table is registered in the session. A table the caller
@@ -445,7 +485,6 @@ admits less. [`STATUS.md`](STATUS.md) is the authoritative version.
 
 | | |
 |---|---|
-| **Arrow Flight SQL** | Not built. `FR-API-01` names it the *primary bulk data plane*, and the reason matters: the wire protocol is a **row** protocol, so the last step of every query converts columnar batches into rows. Flight SQL keeps them intact end to end. Until it exists, the bulk path is the compatibility path |
 | **The gRPC control plane and REST gateway** | Not built |
 | **Ingest on a timer** | Not built. Capture, apply and publication all work and none of them is driven by a running process, so everything the server serves is already published |
 | **Graph hydration on a timer** | Not built. An epoch is built when something builds it |
