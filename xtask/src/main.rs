@@ -34,6 +34,12 @@ const CRITICAL_FAMILY: &[&str] = &[
 /// Duplicates that are permitted because they never cross a SANKHYA API boundary.
 /// Every entry is a deliberate decision, not an accumulation.
 const DUP_ALLOWLIST: &[&str] = &[
+    // Build-time CPU-feature detection for `sha2`, which the audit chain needs. No state,
+    // no wire format, nothing that crosses an API boundary — two copies cost a few
+    // kilobytes and can differ in no observable way. Chosen over `sha2 0.11`, which is a
+    // generation ahead of the rest of the RustCrypto stack here and brings three
+    // duplicates (`digest`, `crypto-common`, `block-buffer`) instead of this one.
+    "cpufeatures",
     "base64",
     "foldhash",
     "getrandom",

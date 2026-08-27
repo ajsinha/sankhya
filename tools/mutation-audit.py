@@ -431,6 +431,38 @@ CATALOGUE = [
     # arm afterwards: the generic binary arm below matches every operator, so anything
     # added after it is unreachable and the mutation is inert. That mistake cost a round
     # of "the test does not cover this" before the mutation was checked by hand.
+    # --- audit: a chain that cannot detect tampering is decoration ---
+
+    ("audit: stop checking that each record carries the previous digest",
+     "crates/sankhya-audit/src/chain.rs",
+     "            if record.previous != expected_previous {\n                return Err(Broken::LinkMismatch { at: position });\n            }",
+     "",
+     "sankhya-audit"),
+
+    ("audit: stop recomputing the digest, so an altered record verifies",
+     "crates/sankhya-audit/src/chain.rs",
+     "            if record.compute_digest() != record.digest {\n                return Err(Broken::Altered { at: position });\n            }",
+     "",
+     "sankhya-audit"),
+
+    ("audit: stop checking the sequence, so a reordered log verifies",
+     "crates/sankhya-audit/src/chain.rs",
+     "            if record.sequence != position {\n                return Err(Broken::OutOfOrder {\n                    at: position,\n                    claims: record.sequence,\n                });\n            }",
+     "",
+     "sankhya-audit"),
+
+    ("audit: match history by subject alone, returning another tenant's records",
+     "crates/sankhya-audit/src/chain.rs",
+     "            .filter(|r| r.tenant == tenant && r.subject == subject)",
+     "            .filter(|r| r.subject == subject)",
+     "sankhya-audit"),
+
+    ("audit: leave the row filter out of the record",
+     "crates/sankhya-audit/src/chain.rs",
+     "            row_filter,\n            column_masks: masks",
+     "            row_filter: None,\n            column_masks: masks",
+     "sankhya-audit"),
+
     # --- enforcement: the predicate must reach the plan whatever the provider does ---
 
     ("secured: trust the provider's pushdown instead of enforcing the predicate",
