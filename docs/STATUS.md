@@ -26,7 +26,8 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M4** Graph engine and the extension mechanism | 26–32 ew | **Complete.** Every exit criterion met; see below |
 | **M5** Tenancy, security and API surfaces | 22–28 ew | **Closed.** Four of five exit criteria met; the fifth needs a second server version to exist. Two of four API surfaces built — the wire protocol and Flight SQL. The control plane and its gateway are **deferred to M6**, because what they expose is built there |
 | **M6** Operability, packaging and hardening | — | **In progress.** The server process, §10.1's diagnostic and §10.2's catalogues are built; §10.3–10.8 are not started |
-| **M7**–**M8** | — | Not started |
+| **M7** Multidimensional analysis | — | Not started. **Added 2026-08-27 by owner directive** and placed before scale-out: cubes are a stated differentiator and multi-node deployment is table stakes. See [ADR-0007](adr/0007-the-cube-model.md) |
+| **M8**–**M9** Scale-out, then tiering | — | Not started. Renumbered from M7–M8 when M7 was inserted |
 
 ---
 
@@ -190,7 +191,7 @@ columnar batches into rows, and that conversion is the whole cost of a large ext
 
 The **gRPC control plane and REST gateway are deferred to M6** by owner decision.
 `FR-API-04` says what a control plane exposes --- jobs, health, archive operations --- and
-each of those is built in M6 or M8. Building the surface first would mean endpoints for jobs
+each of those is built in M6 or M9. Building the surface first would mean endpoints for jobs
 no scheduler runs and archives that do not exist: a plausible-looking API returning a
 placeholder, which is the kind of thing that gets believed.
 

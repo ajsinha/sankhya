@@ -17,7 +17,7 @@
 
 ## 1. How this plan is organised
 
-Milestones are numbered `M0`–`M8`. Each has **entry criteria**, a **work breakdown**, **exit criteria** and a **demonstration** — a thing a person can watch. A milestone with no demonstration is a milestone with no feedback, and it is where projects of this size go wrong.
+Milestones are numbered `M0`–`M9`. Each has **entry criteria**, a **work breakdown**, **exit criteria** and a **demonstration** — a thing a person can watch. A milestone with no demonstration is a milestone with no feedback, and it is where projects of this size go wrong.
 
 Effort is stated in **engineer-weeks (ew)**. Ranges are honest ranges, not padding: the lower bound assumes the design holds, the upper assumes one significant rework.
 
@@ -51,8 +51,9 @@ This plan therefore front-loads three things that are nearly free at the start a
 | **M4** | Graph engine and the extension mechanism | 26–32 | weeks 12–20 |
 | **M5** | Tenancy, security and API surfaces | 22–28 | weeks 18–25 |
 | **M6** | Operability, packaging and hardening | 18–22 | weeks 24–30 |
-| **M7** | Scale-out, high availability, disaster recovery | 16–20 | weeks 28–34 |
-| **M8** | Tiering *(gated — see §12)* | 12–16 | after M7 plus the reconciliation gate |
+| **M7** | Multidimensional analysis — cubes, hierarchies, consolidation | 14–18 | weeks 28–34 |
+| **M8** | Scale-out, high availability, disaster recovery | 16–20 | weeks 32–38 |
+| **M9** | Tiering *(gated — see §13)* | 12–16 | after M8 plus the reconciliation gate |
 | | **Total to a hardened first release** | **~150–190 ew** | **~7–8 months** |
 
 **Team shape:** six engineers. Suggested specialisation — two on ingest and storage, two on query and graph, one on platform and operability, one on security and tenancy — with the extension API owned by whoever owns architecture.
@@ -344,7 +345,7 @@ M4 complete.
 > decision.** `FR-API-04` says what the control plane exposes: *administration, tenancy,
 > policy, catalog, health, jobs and archive operations*. Jobs belong to M6 §10.1 — the
 > maintenance scheduler is a loop and nothing drives it on a timer. Health belongs to
-> M6 §10.1–10.2, the diagnostic and the metric catalogue. Archive operations belong to M8,
+> M6 §10.1–10.2, the diagnostic and the metric catalogue. Archive operations belong to M9,
 > which is gated and not started.
 >
 > Building the surface first would mean endpoints for jobs no scheduler runs, archives that
@@ -409,9 +410,72 @@ M5 complete.
 
 ---
 
-## 11. M7 — Scale-out, availability and recovery
+## 11. M7 — Multidimensional analysis
 
-**Weeks 28–34 · 16–20 ew**
+**Weeks 28–34 · 14–18 ew**
+
+*Added 2026-08-27 by owner directive. Placed **before** scale-out deliberately: this is a
+capability the system is meant to be differentiated by, and multi-node deployment is table
+stakes. Shipping the differentiator after the table stakes gets the order backwards.*
+
+### Entry
+M6 complete. M3's read path and M4's graph engine are the two things this builds on, and both
+are done.
+
+### Work
+
+**11.1 The cube model (3 ew).** Dimensions, hierarchies, levels, members and measures as a
+declared, versioned definition over published tables. No second store. Definition-time
+validation: acyclic hierarchies with the cycle reported, and **a measure with no declared
+aggregation rule refused** rather than defaulted to summation.
+
+**11.2 Additivity (2 ew).** Additive, semi-additive and non-additive measures, with the
+aggregation rule declared per dimension. Planning-time rejection of an additive roll-up over a
+non-additive measure, naming the measure and the dimension. This is `FR-QUERY-12`'s rule in
+the place it is most often violated.
+
+**11.3 Hierarchy traversal on the graph engine (3 ew).** Parent-child hierarchies as typed
+edges, consolidation paths as bounded traversals. Ragged hierarchies **native, never padded**
+— padding invents members that do not exist and they appear in results. Alternate roll-ups
+and shared members, with a member reachable by two paths contributing **once**, proven by
+property test.
+
+**11.4 Consolidation (3 ew).** Deterministic reduction per `FR-QUERY-10`, sparse
+representation, and the slice, dice, roll-up, drill-down and pivot operations expressible from
+SQL with no separate build step.
+
+**11.5 Security and completeness (2 ew).** Aggregates computed only over rows the principal
+may read, so two principals may legitimately see different totals; and a completeness measure
+per `FR-QUERY-13` so a policy-filtered total is distinguishable from a complete one. A total
+computed over rows the caller cannot see is a disclosure through arithmetic and is invisible.
+
+**11.6 Optional materialisation (2 ew).** Per-level, declared explicitly, never automatic,
+carrying a staleness contract, with incremental refresh only where the measure forms a
+commutative monoid per `FR-QUERY-27`.
+
+**11.7 Write-back overlay (1–3 ew, `SHOULD`).** A separately versioned overlay for planning
+and what-if analysis. Never modifies published data; a query states whether one was applied.
+
+### Exit
+1. A cube over a ragged parent-child hierarchy with alternate roll-ups returns totals that
+   reconcile against an independently computed answer, with **no member double-counted**.
+2. A semi-additive measure rolled up across time by summation is **rejected at planning
+   time**, not computed.
+3. Two runs of the same consolidation over the same snapshot are **bit-identical**.
+4. Two principals with different row policies see different totals for the same cell, and
+   both results carry a completeness measure saying so.
+5. Slice, dice, roll-up and drill-down are demonstrated from SQL against a cube with at least
+   six dimensions, with no cube-build step preceding the query.
+6. A measure defined without an aggregation rule is refused, with the refusal naming it.
+
+See [`adr/0007-the-cube-model.md`](adr/0007-the-cube-model.md) for why cubes are declared
+views rather than a store, and why MDX is deliberately not planned.
+
+---
+
+## 12. M8 — Scale-out, availability and recovery
+
+**Weeks 32–38 · 16–20 ew**
 
 ### Work
 
@@ -424,9 +488,9 @@ Multi-node deployment with executor scale-out demonstrated; failover tested unde
 
 ---
 
-## 12. M8 — Tiering
+## 13. M9 — Tiering
 
-**After M7, and gated**
+**After M8, and gated**
 
 ### The gate
 
@@ -447,22 +511,22 @@ Purge demonstrated end to end with verification, quarantine and rollback; the an
 
 ---
 
-## 13. Parallelisation and critical path
+## 14. Parallelisation and critical path
 
 ```
 M0 ──┬── M1 ──┬── M2 ─────┐
-     │        └── M3 ─────┼── M4 ── M5 ── M6 ── M7 ── M8
+     │        └── M3 ─────┼── M4 ── M5 ── M6 ── M7 ── M8 ── M9
      └── graph primitives (pure, no dependencies) ─────┘
 ```
 
 - **M2 and M3 run in parallel**, joined by the table-format trait and the in-memory implementation.
 - **Pure graph algorithm work has no dependencies and can start in week 1** as parallel work for anyone blocked.
 - **Documentation scaffolding runs alongside everything.**
-- **Critical path:** M0 → M1 → M3 → M4 → M5 → M6.
+- **Critical path:** M0 → M1 → M3 → M4 → M5 → M6 → M7.
 
 ---
 
-## 14. Engineering practice
+## 15. Engineering practice
 
 ### 14.1 Definition of done
 
@@ -523,7 +587,7 @@ Upgrades follow a documented procedure: bump the pin set atomically; confirm no 
 
 ---
 
-## 15. Top risks to delivery
+## 16. Top risks to delivery
 
 | Risk | Response |
 |---|---|
