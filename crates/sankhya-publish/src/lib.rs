@@ -25,6 +25,12 @@
 //! [`publish`] makes the invariants unavoidable: there is no way to call it that produces
 //! an invalid table, a file without statistics, or a schema that does not round-trip.
 //!
+//! [`repair`] fixes only what can be **derived** from evidence that already exists ---
+//! statistics recomputed by reading the file, a row count from the Parquet footer --- and
+//! refuses anything requiring a guess, explaining what a person would have to decide. It
+//! never deletes, it repairs by appending a new version so the broken state stays readable,
+//! and it plans before it acts.
+//!
 //! [`verify`] does not assume it was used. Making a library the supported path is a
 //! recommendation, and a recommendation is not an invariant --- so a table's log can be
 //! checked, and the check reports *what* is wrong rather than *whether*, and distinguishes
@@ -34,8 +40,10 @@
 
 pub mod class;
 pub mod publish;
+pub mod repair;
 pub mod verify;
 
 pub use class::{configuration, key_columns, TableClass, CLASS_KEY, KEY_COLUMNS_KEY};
 pub use publish::{is_table, publish_table, Publication, PublishError, Published};
+pub use repair::{apply, plan, NeedsAPerson, Outcome, Plan, Repair, RepairError};
 pub use verify::{verify, Finding, Report};
