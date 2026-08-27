@@ -10,6 +10,18 @@
 //!   cargo test -p sankhya-ingest --test scale --release -- --ignored --nocapture
 //! ```
 
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
 use sankhya_cdc_apply::BatchPolicy;
 use sankhya_ingest::Pipeline;
 use sankhya_table::WriterConfig;
@@ -33,7 +45,17 @@ impl Pg {
 
     fn sql(&self, statement: &str) -> String {
         let out = Command::new(format!("{}/psql", self.bin))
-            .args(["-h", &self.socket, "-U", "sankhya", "-d", "postgres", "-tA", "-c", statement])
+            .args([
+                "-h",
+                &self.socket,
+                "-U",
+                "sankhya",
+                "-d",
+                "postgres",
+                "-tA",
+                "-c",
+                statement,
+            ])
             .output()
             .expect("psql runs");
         assert!(
@@ -97,16 +119,46 @@ fn captures_a_large_interleaved_workload_across_every_table() {
     ];
 
     let columns: &[(&str, &str)] = &[
-        ("device_readings", "id, device_id, metric, value, quality, observed_at, observed_date"),
-        ("route_legs", "id, route_ref, from_hub, to_hub, distance_km, departed_at, departed_date"),
-        ("shipment_scans", "id, consignment_ref, hub_code, status, weight_kg, scanned_at, scan_date"),
-        ("access_events", "id, principal_ref, resource, action, allowed, context, occurred_at, occurred_date"),
-        ("energy_intervals", "id, meter_ref, tariff, kwh, estimated, interval_start, interval_date"),
-        ("order_lines", "id, order_ref, product_code, quantity, unit_price, discount, placed_at, placed_date"),
-        ("inventory_levels", "id, location_code, product_code, on_hand, reserved, updated_at, updated_date"),
-        ("sensor_calibrations", "id, device_id, offset_value, technician, notes, calibrated_at, calibrated_date"),
-        ("media_assets", "id, asset_ref, format, thumbnail, duration_s, ingested_at, ingested_date"),
-        ("support_tickets", "id, subject, body, queue, priority, resolved, opened_at, opened_date"),
+        (
+            "device_readings",
+            "id, device_id, metric, value, quality, observed_at, observed_date",
+        ),
+        (
+            "route_legs",
+            "id, route_ref, from_hub, to_hub, distance_km, departed_at, departed_date",
+        ),
+        (
+            "shipment_scans",
+            "id, consignment_ref, hub_code, status, weight_kg, scanned_at, scan_date",
+        ),
+        (
+            "access_events",
+            "id, principal_ref, resource, action, allowed, context, occurred_at, occurred_date",
+        ),
+        (
+            "energy_intervals",
+            "id, meter_ref, tariff, kwh, estimated, interval_start, interval_date",
+        ),
+        (
+            "order_lines",
+            "id, order_ref, product_code, quantity, unit_price, discount, placed_at, placed_date",
+        ),
+        (
+            "inventory_levels",
+            "id, location_code, product_code, on_hand, reserved, updated_at, updated_date",
+        ),
+        (
+            "sensor_calibrations",
+            "id, device_id, offset_value, technician, notes, calibrated_at, calibrated_date",
+        ),
+        (
+            "media_assets",
+            "id, asset_ref, format, thumbnail, duration_s, ingested_at, ingested_date",
+        ),
+        (
+            "support_tickets",
+            "id, subject, body, queue, priority, resolved, opened_at, opened_date",
+        ),
     ];
 
     let rows_per_table_per_round = 20_000i64;
@@ -120,7 +172,9 @@ fn captures_a_large_interleaved_workload_across_every_table() {
         "SELECT pg_drop_replication_slot('{slot}') WHERE EXISTS
          (SELECT 1 FROM pg_replication_slots WHERE slot_name='{slot}')"
     ));
-    pg.sql(&format!("SELECT pg_create_logical_replication_slot('{slot}','pgoutput')"));
+    pg.sql(&format!(
+        "SELECT pg_create_logical_replication_slot('{slot}','pgoutput')"
+    ));
 
     // --- generate ----------------------------------------------------------------
     let write_start = Instant::now();
@@ -152,7 +206,10 @@ fn captures_a_large_interleaved_workload_across_every_table() {
         warehouse.path(),
         // A realistic cadence: publish on row count, so the run produces many files
         // per table as a real deployment would.
-        BatchPolicy { max_rows: 100_000, ..BatchPolicy::default() },
+        BatchPolicy {
+            max_rows: 100_000,
+            ..BatchPolicy::default()
+        },
         WriterConfig::default(),
     );
 
@@ -165,7 +222,9 @@ fn captures_a_large_interleaved_workload_across_every_table() {
         }
         chunks += 1;
         for bytes in &messages {
-            pipeline.accept_bytes(bytes).expect("the pipeline accepts every message");
+            pipeline
+                .accept_bytes(bytes)
+                .expect("the pipeline accepts every message");
         }
         pipeline.publish(false).expect("publishes");
     }
@@ -175,13 +234,20 @@ fn captures_a_large_interleaved_workload_across_every_table() {
     let stats = pipeline.stats().clone();
 
     // --- verify ------------------------------------------------------------------
-    assert_eq!(stats.unresolvable, 0, "no mutation should have been unresolvable");
+    assert_eq!(
+        stats.unresolvable, 0,
+        "no mutation should have been unresolvable"
+    );
     assert_eq!(pipeline.open_rows(), 0, "no transaction should remain open");
     assert_eq!(
         stats.rows_captured as i64, expected_total,
         "every inserted row must be captured exactly once"
     );
-    assert_eq!(stats.tables_onboarded, workloads.len(), "every table should onboard");
+    assert_eq!(
+        stats.tables_onboarded,
+        workloads.len(),
+        "every table should onboard"
+    );
 
     for (table, _) in workloads {
         let source: i64 = pg

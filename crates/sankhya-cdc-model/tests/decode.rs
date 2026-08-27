@@ -7,6 +7,18 @@
 //! the *transactional* system, which is the worst outcome this architecture can
 //! produce. See INV-2.
 
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
 use proptest::prelude::*;
 use sankhya_cdc_model::{DecodeError, Decoder, Message, ReplicaIdentity, TupleValue};
 
@@ -64,7 +76,11 @@ fn tuple(values: &[TupleValue]) -> Vec<u8> {
 
 #[test]
 fn decodes_begin_and_converts_epoch() {
-    let Ok(Message::Begin { final_lsn, commit_time, xid }) = Decoder::new().decode(&begin(0x1_0000_0020, 4242))
+    let Ok(Message::Begin {
+        final_lsn,
+        commit_time,
+        xid,
+    }) = Decoder::new().decode(&begin(0x1_0000_0020, 4242))
     else {
         panic!("expected a Begin");
     };
@@ -77,8 +93,13 @@ fn decodes_begin_and_converts_epoch() {
 
 #[test]
 fn decodes_relation_with_key_columns() {
-    let bytes = relation(16384, "public", "device_readings", b'd',
-        &[("id", 20, true), ("reading", 1700, false)]);
+    let bytes = relation(
+        16384,
+        "public",
+        "device_readings",
+        b'd',
+        &[("id", 20, true), ("reading", 1700, false)],
+    );
     let Ok(Message::Relation(r)) = Decoder::new().decode(&bytes) else {
         panic!("expected a Relation");
     };
@@ -109,8 +130,14 @@ fn unchanged_value_is_distinct_from_null() {
     };
     assert_eq!(new.values[1], TupleValue::Unchanged);
     assert_eq!(new.values[2], TupleValue::Null);
-    assert_ne!(new.values[1], new.values[2], "unchanged must never equal null");
-    assert!(!new.values[1].is_present(), "unchanged carries no writable data");
+    assert_ne!(
+        new.values[1], new.values[2],
+        "unchanged must never equal null"
+    );
+    assert!(
+        !new.values[1].is_present(),
+        "unchanged carries no writable data"
+    );
     assert!(new.values[2].is_present(), "null is a real, writable value");
     assert!(new.has_unchanged());
 }
@@ -143,7 +170,10 @@ fn update_without_before_image_is_accepted() {
     let Ok(Message::Update { old, .. }) = Decoder::new().decode(&bytes) else {
         panic!("expected an Update");
     };
-    assert!(old.is_none(), "default replica identity sends no before-image on update");
+    assert!(
+        old.is_none(),
+        "default replica identity sends no before-image on update"
+    );
 }
 
 #[test]
@@ -154,8 +184,11 @@ fn truncate_carries_all_relations_and_flags() {
     bytes.extend_from_slice(&16384u32.to_be_bytes());
     bytes.extend_from_slice(&16385u32.to_be_bytes());
 
-    let Ok(Message::Truncate { relation_ids, cascade, restart_identity }) =
-        Decoder::new().decode(&bytes)
+    let Ok(Message::Truncate {
+        relation_ids,
+        cascade,
+        restart_identity,
+    }) = Decoder::new().decode(&bytes)
     else {
         panic!("expected a Truncate");
     };
@@ -174,7 +207,10 @@ fn only_commits_seal_a_transaction() {
     let decoded = Decoder::new().decode(&commit).expect("commit decodes");
     assert!(decoded.seals_transaction());
 
-    assert!(!Decoder::new().decode(&begin(1, 1)).expect("begin decodes").seals_transaction());
+    assert!(!Decoder::new()
+        .decode(&begin(1, 1))
+        .expect("begin decodes")
+        .seals_transaction());
 }
 
 #[test]
@@ -213,7 +249,10 @@ fn invalid_utf8_is_rejected() {
     let mut bytes = vec![b'R'];
     bytes.extend_from_slice(&1u32.to_be_bytes());
     bytes.extend_from_slice(&[0xFF, 0xFE, 0x00]);
-    assert!(matches!(Decoder::new().decode(&bytes), Err(DecodeError::InvalidUtf8 { .. })));
+    assert!(matches!(
+        Decoder::new().decode(&bytes),
+        Err(DecodeError::InvalidUtf8 { .. })
+    ));
 }
 
 #[test]
@@ -221,7 +260,10 @@ fn negative_lengths_are_rejected() {
     let mut bytes = vec![b'T'];
     bytes.extend_from_slice(&(-1i32).to_be_bytes());
     bytes.push(0);
-    assert!(matches!(Decoder::new().decode(&bytes), Err(DecodeError::NegativeLength { .. })));
+    assert!(matches!(
+        Decoder::new().decode(&bytes),
+        Err(DecodeError::NegativeLength { .. })
+    ));
 }
 
 proptest! {

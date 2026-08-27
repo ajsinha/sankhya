@@ -23,7 +23,10 @@ impl fmt::Display for MappingError {
                 write!(f, "source type {oid} is not supported: {reason}")
             }
             Self::Unrepresentable { oid, detail } => {
-                write!(f, "source type {oid} cannot be represented exactly: {detail}")
+                write!(
+                    f,
+                    "source type {oid} cannot be represented exactly: {detail}"
+                )
             }
         }
     }
@@ -125,7 +128,10 @@ pub fn map_source_type(oid: u32, type_modifier: i32) -> Result<TypeMapping, Mapp
             })
         }
     };
-    Ok(TypeMapping { logical, lossless: true })
+    Ok(TypeMapping {
+        logical,
+        lossless: true,
+    })
 }
 
 /// Decimals need their precision, and refuse without it.
@@ -159,7 +165,10 @@ fn map_numeric(type_modifier: i32) -> Result<TypeMapping, MappingError> {
         ),
     })?;
 
-    Ok(TypeMapping { logical: LogicalType::Decimal(precision), lossless: true })
+    Ok(TypeMapping {
+        logical: LogicalType::Decimal(precision),
+        lossless: true,
+    })
 }
 
 /// Build a type modifier for a decimal, for tests and for schema synthesis.

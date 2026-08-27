@@ -2,8 +2,8 @@
 
 **Document ID:** SNK-IP-001
 **Version:** 0.1.0 (draft for review)
-**Status:** Design phase — no implementation has begun
-**Date:** 2026-08-25
+**Status:** Implementation — M0–M3 complete, M4 in progress
+**Date:** 2026-08-26
 **Companions:** `REQUIREMENTS.md` (SNK-RD-001), `ARCHITECTURE.md` (SNK-AD-001), `ROADMAP.md`
 
 ---
@@ -235,11 +235,22 @@ M0 complete; the table-format trait and in-memory implementation available.
 
 ### Exit
 1. Performance objectives met **in the pipeline** on reference hardware, each against its named public-suite query where one exists.
-2. Cancellation demonstrated within its bound, including inside user code.
+2. Cancellation demonstrated within its bound at every point M3 controls: inside a running query, bounded at one batch per partition; across threads; and under periodic checking, within the stated interval. A query that cannot be admitted is refused immediately, with the reply saying whether retrying could ever help.
 3. A deliberately hostile aggregation under a constrained memory limit is **rejected rather than terminating the process**.
 4. Plan snapshots stable; the SQL-semantics corpus green.
 5. Cross-engine semantic differences enumerated in a tested list.
 6. Compaction demonstrated to hold file counts within policy under continuous ingest.
+
+> **Amended 2026-08-26.** Exit criterion 2 originally read "including inside user code".
+> User code does not exist until M4 builds the extension mechanism, so as written this
+> milestone could not close on its own terms — it was gated on a later one. The clause
+> has moved to M4 §8, exit criterion 8, where the mechanism it tests is built. What
+> remains here is the part M3 owns: cancellation at the points the engine itself
+> controls. Note that admission never blocks — it returns a decision and the caller
+> waits — so "cancellation while queued" belongs to whoever writes that waiting loop,
+> which is M5's server, and it is not silently claimed here. This is a correction to the plan, not a waiver — nothing is now untested
+> that was going to be tested; the same test is asked for one milestone later, of the
+> milestone that can actually answer it.
 
 ### Demonstration
 *"Query the public analytical suite at scale, warm and cold, with published numbers — and show the plan proving that pruning, late materialization and dynamic filtering actually engaged."*
@@ -281,6 +292,12 @@ Two naming hazards in the general-purpose library are recorded in the design not
 5. **Each reference pack's change touches zero core files** — the mechanical test of the general-purpose claim.
 6. The adversarial pack's every attempt rejected with a named error.
 7. The extension API within its size budget, with no escape-hatch types.
+8. **Cancellation demonstrated within its bound inside pack code** — a pack function in a
+   deliberate infinite loop is stopped, and the query returns an error naming the pack
+   rather than hanging. *(Moved here from M3 §7 on 2026-08-26: this tests the extension
+   mechanism, which M3 does not build. A pack that cannot be interrupted makes every
+   bound elsewhere in the engine advisory, so it is an exit criterion and not a work
+   item.)*
 
 ### Demonstration
 *"Two packs from unrelated industries, both running on an unmodified core, one graph-heavy and one graph-free — plus a hostile pack that fails in exactly the ways it should."*

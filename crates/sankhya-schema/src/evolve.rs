@@ -37,7 +37,10 @@ pub enum Compatibility {
     /// Safe to apply without operator involvement.
     Compatible { changes: Vec<SchemaChange> },
     /// Requires a decision no algorithm can make on the operator's behalf.
-    Incompatible { reason: String, changes: Vec<SchemaChange> },
+    Incompatible {
+        reason: String,
+        changes: Vec<SchemaChange>,
+    },
 }
 
 impl Compatibility {
@@ -54,13 +57,21 @@ pub enum SchemaChange {
     /// A new column. Unambiguous: rows before it simply lack a value.
     ColumnAdded { name: String, logical: LogicalType },
     /// A column widened in a way that loses nothing.
-    ColumnWidened { name: String, from: LogicalType, to: LogicalType },
+    ColumnWidened {
+        name: String,
+        from: LogicalType,
+        to: LogicalType,
+    },
     /// A column became nullable. Existing rows remain valid.
     ColumnRelaxed { name: String },
     /// A column disappeared.
     ColumnDropped { name: String },
     /// A column changed type in a way that may not round-trip.
-    ColumnRetyped { name: String, from: LogicalType, to: LogicalType },
+    ColumnRetyped {
+        name: String,
+        from: LogicalType,
+        to: LogicalType,
+    },
     /// A column became mandatory. Existing rows may violate it.
     ColumnTightened { name: String },
     /// Row identity changed, so previously published rows may no longer be addressable.
@@ -127,7 +138,9 @@ pub fn classify_change(current: &LogicalSchema, incoming: &LogicalSchema) -> Com
     // Columns that disappeared.
     for field in &current.fields {
         if find(incoming, &field.name).is_none() {
-            let change = SchemaChange::ColumnDropped { name: field.name.clone() };
+            let change = SchemaChange::ColumnDropped {
+                name: field.name.clone(),
+            };
             changes.push(change.clone());
             blocking.push(change);
         }
@@ -161,9 +174,13 @@ pub fn classify_change(current: &LogicalSchema, incoming: &LogicalSchema) -> Com
                 }
                 if existing.nullable != field.nullable {
                     let change = if field.nullable {
-                        SchemaChange::ColumnRelaxed { name: field.name.clone() }
+                        SchemaChange::ColumnRelaxed {
+                            name: field.name.clone(),
+                        }
                     } else {
-                        let c = SchemaChange::ColumnTightened { name: field.name.clone() };
+                        let c = SchemaChange::ColumnTightened {
+                            name: field.name.clone(),
+                        };
                         blocking.push(c.clone());
                         c
                     };
@@ -205,7 +222,10 @@ pub fn classify_change(current: &LogicalSchema, incoming: &LogicalSchema) -> Com
 /// rather than proceed, and making that a type-level distinction prevents applying an
 /// incompatible change by omission.
 #[must_use]
-pub fn apply_compatible(current: &LogicalSchema, incoming: &LogicalSchema) -> Option<LogicalSchema> {
+pub fn apply_compatible(
+    current: &LogicalSchema,
+    incoming: &LogicalSchema,
+) -> Option<LogicalSchema> {
     match classify_change(current, incoming) {
         Compatibility::Unchanged => Some(current.clone()),
         Compatibility::Compatible { .. } => Some(incoming.clone()),

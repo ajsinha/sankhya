@@ -1,7 +1,9 @@
 # SANKHYA — Quickstart
 
-**Status:** the project is in early implementation. This guide reflects what works
-**today**, and says plainly what does not yet. Anything not listed here is not built.
+**Status:** Implementation — M0–M3 complete, M4 in progress
+
+This guide reflects what works **today**, and says plainly what does not yet. Anything
+not listed here is not built.
 
 Everything below runs on one machine with no container runtime, no message broker, no
 object store and no cloud credentials.
@@ -43,8 +45,10 @@ cargo xtask check-all
 ```
 
 That runs every repository invariant: the layer graph, the file-length ceiling, the
-domain-vocabulary prohibition, the duplicate-dependency gate, and the documentation
-checks. **All five are proven to fail when violated**, not merely to pass.
+domain-vocabulary prohibition, the duplicate-dependency gate, the documentation checks,
+the feature pins, clippy under the workspace's denied lints, and the mutation
+catalogue's agreement with the source. **Each is proven to fail when violated**, not
+merely to pass.
 
 ---
 
@@ -201,17 +205,23 @@ that admits less.
 
 | | Status |
 |---|---|
-| Analytical query engine | **A vertical slice works.** A captured workload becomes Parquet and answers SQL, with an exact decimal sum matching the source. There is no table provider, no catalog and no server around it yet |
-| The server binary | **A stub.** There is no daemon to run yet |
-| Automatic table onboarding | **Working across many tables.** Schema, write strategy and path are derived from the replication stream alone; several tables capture independently from one interleaved stream and each reconciles against the source. There is no long-running process driving it yet |
+| The server binary | **A stub.** There is no daemon to run, and no listener. Everything below is exercised through tests rather than through a running process |
+| Streaming transport | **Not built.** Changes are drained through a SQL function rather than a replication connection. Neither mainstream Rust PostgreSQL client supports the replication protocol, so this is real work rather than wiring |
+| Automatic table onboarding | **Working across many tables.** Schema, write strategy and path are derived from the replication stream alone; several tables capture independently from one interleaved stream and each reconciles against the source. Nothing drives it on a timer |
+| Storage and the table log | **Working.** Each table gets its own Delta log; capture commits every file it publishes, and a restart recovers its position from that log rather than from memory. The Delta kernel reads these tables, which is what makes the open-storage claim testable rather than aspirational |
+| Compaction and maintenance | **Working as a loop, not as a daemon.** Fragmented partitions are planned, merged, committed and converged, with retirement refusing to remove anything a reader might still hold. Nothing calls the loop on a timer |
+| Analytical queries | **Working, and measured.** A table provider plans from the table log alone — no directory listing, no footer reads — prunes files by recorded statistics, feeds bounds and cardinalities to the optimizer, and resolves updated and deleted rows to one current version each. One SQL statement is answered from memory and Parquet at once, spliced so no position is counted twice or missed, and refused outright when the tiers do not cover the query's span. TPC-H at scale factor 1 meets its three performance objectives under a build gate. No result cache, no bloom filters, no partitioning |
+| Query governance | **Working.** Deadlines and cancellation bounded at one batch per partition; admission control that refuses an aggregation too large to run rather than letting it take the process down, and says whether retrying could ever help |
 | Graph engine | Not started |
 | API surfaces | Not started |
 | Multi-tenancy and security | Not started |
 
-What *does* work today is the foundation those depend on: a verified dependency set, a
-correct wire decoder validated against a real server, an apply path with its
-transaction invariant under test, a lossless type mapping checked against a real
-schema, and a reproducible dataset at realistic scale.
+The honest summary is that the **correctness contracts are built and tested and the
+machinery that runs them continuously is not**. Every capability above is exercised by
+the test suite; none of it is exercised by a process you can start.
+
+[`STATUS.md`](STATUS.md) is the authoritative version of this table, including the
+defects found along the way and what they cost to find.
 
 Progress is tracked in [`ROADMAP.md`](ROADMAP.md) and
 [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).

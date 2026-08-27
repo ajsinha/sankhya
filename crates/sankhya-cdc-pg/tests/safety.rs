@@ -7,8 +7,20 @@
 //! stall — which is important, because the situations that matter most are precisely
 //! the ones nobody wants to reproduce on demand.
 
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
 use proptest::prelude::*;
-use sankhya_cdc_pg::{SafetyPolicy, Severity, SlotState, WalStatus, assess};
+use sankhya_cdc_pg::{assess, SafetyPolicy, Severity, SlotState, WalStatus};
 use sankhya_types::Lsn;
 use std::time::Duration;
 
@@ -28,7 +40,11 @@ fn slot(retained: u64, status: WalStatus) -> SlotState {
 #[test]
 fn a_healthy_slot_needs_no_action() {
     let policy = SafetyPolicy::default();
-    let escalation = assess(&policy, &slot(GB, WalStatus::Reserved), Duration::from_secs(1));
+    let escalation = assess(
+        &policy,
+        &slot(GB, WalStatus::Reserved),
+        Duration::from_secs(1),
+    );
     assert_eq!(escalation.severity, Severity::Normal);
     assert!(!escalation.defer_maintenance);
     assert!(escalation.severity.admits_queries());
@@ -46,9 +62,14 @@ fn the_ladder_climbs_in_order_as_retention_grows() {
         (7 * GB, Severity::Sacrifice),
     ];
     for (retained, severity) in expected {
-        let escalation = assess(&policy, &slot(retained, WalStatus::Reserved), Duration::ZERO);
+        let escalation = assess(
+            &policy,
+            &slot(retained, WalStatus::Reserved),
+            Duration::ZERO,
+        );
         assert_eq!(
-            escalation.severity, severity,
+            escalation.severity,
+            severity,
             "at {} GiB retained, expected {severity} but got {}",
             retained / GB,
             escalation.severity
@@ -76,7 +97,10 @@ fn sankhya_acts_before_the_source_does() {
 fn an_ill_ordered_policy_is_detectable() {
     // A policy that cannot protect the source should be caught at configuration time,
     // not discovered during an incident.
-    let broken = SafetyPolicy { sacrifice_fraction_percent: 100, ..SafetyPolicy::default() };
+    let broken = SafetyPolicy {
+        sacrifice_fraction_percent: 100,
+        ..SafetyPolicy::default()
+    };
     assert!(!broken.is_well_ordered());
 
     let inverted = SafetyPolicy {
@@ -123,10 +147,18 @@ fn lag_alone_escalates_even_when_volume_is_low() {
     // accumulate before noticing would delay the diagnosis by however long it takes
     // the workload to produce them.
     let policy = SafetyPolicy::default();
-    let escalation = assess(&policy, &slot(0, WalStatus::Reserved), Duration::from_secs(120));
+    let escalation = assess(
+        &policy,
+        &slot(0, WalStatus::Reserved),
+        Duration::from_secs(120),
+    );
     assert_eq!(escalation.severity, Severity::Watch);
 
-    let escalation = assess(&policy, &slot(0, WalStatus::Reserved), Duration::from_secs(600));
+    let escalation = assess(
+        &policy,
+        &slot(0, WalStatus::Reserved),
+        Duration::from_secs(600),
+    );
     assert_eq!(escalation.severity, Severity::Constrain);
 }
 
@@ -137,7 +169,10 @@ fn queries_are_refused_before_the_analytical_tier_is_sacrificed() {
     let policy = SafetyPolicy::default();
     let protect = assess(&policy, &slot(6 * GB, WalStatus::Reserved), Duration::ZERO);
     assert!(protect.refuse_queries);
-    assert!(!protect.sacrifice_analytics, "refusing work must be tried before discarding data");
+    assert!(
+        !protect.sacrifice_analytics,
+        "refusing work must be tried before discarding data"
+    );
 }
 
 #[test]

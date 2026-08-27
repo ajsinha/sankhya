@@ -2,8 +2,8 @@
 
 **Document ID:** SNK-RM-001
 **Version:** 0.1.0
-**Status:** Design phase
-**Date:** 2026-08-25
+**Status:** Implementation — M0–M3 complete, M4 in progress
+**Date:** 2026-08-26
 **Companions:** `REQUIREMENTS.md`, `ARCHITECTURE.md`, `IMPLEMENTATION_PLAN.md`
 
 ---

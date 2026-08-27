@@ -14,3 +14,11 @@ layer = 2
 workspace = true
 
 [dependencies]
+sankhya-types = { path = "../sankhya-types" }
+arrow         = { workspace = true }
+arrow-array   = { workspace = true }
+arrow-schema  = { workspace = true }
+
+[dev-dependencies]
+sankhya-plan = { path = "../sankhya-plan" }
+proptest     = { workspace = true }

@@ -59,7 +59,10 @@ pub enum SpliceError {
     ///
     /// Indicates a defect in whatever produced the coverage metadata; splicing anyway
     /// would double-count.
-    Overlap { left: &'static str, right: &'static str },
+    Overlap {
+        left: &'static str,
+        right: &'static str,
+    },
 }
 
 impl fmt::Display for SpliceError {
@@ -70,7 +73,10 @@ impl fmt::Display for SpliceError {
                 "no tier covers ({from}, {to}]; the query was refused rather than \
                  answered partially"
             ),
-            Self::BeyondFrontier { requested, available } => write!(
+            Self::BeyondFrontier {
+                requested,
+                available,
+            } => write!(
                 f,
                 "requested position {requested} exceeds the frontier {available}; \
                  capture has not yet reached it"
@@ -101,7 +107,10 @@ impl std::error::Error for SpliceError {}
 /// Both refuse the query rather than answering partially.
 pub fn plan_splice(tiers: &[TierRef], target: Lsn) -> Result<Splice, SpliceError> {
     if target == Lsn::ZERO {
-        return Ok(Splice { tiers: Vec::new(), target });
+        return Ok(Splice {
+            tiers: Vec::new(),
+            target,
+        });
     }
 
     let frontier = tiers
@@ -110,7 +119,10 @@ pub fn plan_splice(tiers: &[TierRef], target: Lsn) -> Result<Splice, SpliceError
         .max()
         .unwrap_or(Lsn::ZERO);
     if frontier < target {
-        return Err(SpliceError::BeyondFrontier { requested: target, available: frontier });
+        return Err(SpliceError::BeyondFrontier {
+            requested: target,
+            available: frontier,
+        });
     }
 
     let mut chosen: Vec<TierRef> = Vec::new();
@@ -148,11 +160,20 @@ pub fn plan_splice(tiers: &[TierRef], target: Lsn) -> Result<Splice, SpliceError
             .unwrap_or_else(|| LsnRange::up_to(covered_through));
 
         covered_through = trimmed.end_inclusive();
-        chosen.push(TierRef { name: next.name, coverage: trimmed });
+        chosen.push(TierRef {
+            name: next.name,
+            coverage: trimmed,
+        });
     }
 
-    debug_assert!(is_exact_cover(&chosen, target), "the planner produced an unsound cover");
-    Ok(Splice { tiers: chosen, target })
+    debug_assert!(
+        is_exact_cover(&chosen, target),
+        "the planner produced an unsound cover"
+    );
+    Ok(Splice {
+        tiers: chosen,
+        target,
+    })
 }
 
 /// Whether a selection covers `[0, target]` contiguously and without overlap.

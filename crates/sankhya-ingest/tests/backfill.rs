@@ -4,7 +4,19 @@
 //! boundary between "rows as they were" and "changes since then" exact is not, and
 //! both ways of getting it wrong are silent.
 
-use sankhya_ingest::{BackfillPlan, HandoffError, advance_stream, plan_handoff};
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
+use sankhya_ingest::{advance_stream, plan_handoff, BackfillPlan, HandoffError};
 use sankhya_types::Lsn;
 use std::process::Command;
 
@@ -39,7 +51,8 @@ fn a_stream_beginning_late_is_refused_and_names_the_cause() {
         panic!("expected a gap, got {err:?}");
     };
     assert!(
-        err.to_string().contains("Create the slot before reading the snapshot"),
+        err.to_string()
+            .contains("Create the slot before reading the snapshot"),
         "the message must say how to fix it: {err}"
     );
 }
@@ -50,7 +63,10 @@ fn the_stream_half_extends_without_disturbing_the_seam() {
     let handoff = plan_handoff(&plan, Lsn::new(1000)).expect("exact");
     let advanced = advance_stream(&handoff, Lsn::new(5000)).expect("advances");
 
-    assert!(advanced.is_exact(), "advancing must not open a gap at the seam");
+    assert!(
+        advanced.is_exact(),
+        "advancing must not open a gap at the seam"
+    );
     assert_eq!(advanced.snapshot.end_inclusive(), Lsn::new(1000));
     assert_eq!(advanced.stream.end_inclusive(), Lsn::new(5000));
 }
@@ -70,10 +86,16 @@ fn psql(sql: &str) -> Option<String> {
     let bin = std::env::var("SANKHYA_PG_BIN").ok()?;
     let socket = std::env::var("SANKHYA_E2E_SOCKET").ok()?;
     let out = Command::new(format!("{bin}/psql"))
-        .args(["-h", &socket, "-U", "sankhya", "-d", "postgres", "-tA", "-c", sql])
+        .args([
+            "-h", &socket, "-U", "sankhya", "-d", "postgres", "-tA", "-c", sql,
+        ])
         .output()
         .ok()?;
-    assert!(out.status.success(), "psql failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "psql failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
@@ -107,7 +129,10 @@ fn a_real_slot_reports_a_position_the_snapshot_can_be_read_at() {
     psql("SELECT pg_logical_emit_message(true, 'sankhya.test', 'after')").expect("emits");
     psql("SELECT pg_current_wal_flush_lsn()").expect("flushes");
     let now = Lsn::parse(&psql("SELECT pg_current_wal_lsn()").expect("reads")).expect("a position");
-    assert!(now > stream_from, "the source advanced past the handoff point");
+    assert!(
+        now > stream_from,
+        "the source advanced past the handoff point"
+    );
 
     let advanced = advance_stream(&handoff, now).expect("advances");
     assert!(advanced.is_exact());
@@ -144,7 +169,10 @@ fn creating_the_slot_after_the_snapshot_would_open_a_real_gap() {
 
     let after = psql("SELECT pg_current_wal_lsn()").expect("reads");
     let late_stream_start = Lsn::parse(&after).expect("a position");
-    assert!(late_stream_start > snapshot_position, "the source advanced in the window");
+    assert!(
+        late_stream_start > snapshot_position,
+        "the source advanced in the window"
+    );
 
     let plan = BackfillPlan::new("energy_intervals", snapshot_position);
     let err = plan_handoff(&plan, late_stream_start).expect_err("must refuse");

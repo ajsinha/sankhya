@@ -2,8 +2,8 @@
 
 **Document ID:** SNK-AD-001
 **Version:** 0.1.0 (draft for review)
-**Status:** Design phase
-**Date:** 2026-08-25
+**Status:** Implementation — M0–M3 complete, M4 in progress
+**Date:** 2026-08-26
 **Companion documents:** `REQUIREMENTS.md` (SNK-RD-001), `IMPLEMENTATION_PLAN.md`, `ROADMAP.md`
 
 ---
@@ -286,6 +286,24 @@ It is hard-capped in bytes with per-tenant sub-caps. On approaching the cap the 
 Each epoch maintains a compact digest of the keys it touched, so the planner can skip the splice entirely when a query's predicates provably do not intersect the buffer. **The common case — a historical query over old data — must cost exactly nothing for the buffer's existence.** Without this, the buffer taxes every query; with it, it taxes only the queries that need freshness.
 
 **A topology consequence.** The buffer lives on the node running the applier. Executors do not have it. Therefore maximum-freshness reads are routed to the coordinator, while executors serve pinned-snapshot and relaxed-freshness reads. This is a documented constraint and one of the seams identified for future scaling.
+
+#### 5.4.1 The retention rule, and why it is not an eviction policy
+
+**A segment may be released only once a durable tier covers it.** Not when it is old, not when memory is tight, not when it has been read.
+
+This inverts the usual cache relationship, and the inversion is the point. A cache evicts under pressure and takes a miss. This tier has nothing to miss *to* until publication has happened, so evicting under pressure does not degrade an answer — it destroys one. Worse, releasing a segment from the middle of the interval opens a coverage gap, and the splice is a proof of exact cover that cannot be talked into approximating one. The query would be refused.
+
+So when memory runs short and nothing is releasable, the only correct response is to push back on ingest. That is reported as a distinct condition rather than absorbed, because it is a **publication** problem wearing a memory problem's clothes: the tier is full because publication has stalled, and adding memory treats the symptom.
+
+The escalation has a deliberate gap between its soft and hard limits, so ingest gets a chance to lengthen its commit interval — the highest-leverage response, since it reduces publication *and* compaction load simultaneously — before it is stopped rather than running normally into a wall.
+
+#### 5.4.2 Coverage is trimmed; data is not
+
+The buffer physically retains segments the published tier already covers, because releasing them is governed by the rule above. But it **declares** coverage starting at the durable frontier, so the two tiers abut exactly and the splice succeeds. Declaring the physical extent instead would overlap, and the planner rejects overlapping tiers rather than guessing which to believe.
+
+The consequence is that a scan must filter **per row** — `durable_through < lsn <= target` — not per segment. A segment straddling the frontier is half durable and half not; returning it whole would double-count its durable half against the published tier. This is the same defect, one layer up, as suppressing duplicates per batch rather than per row, which is a mistake this system has already made once.
+
+A straddling segment is retained whole rather than split. Splitting costs a copy to reclaim memory the next publication frees anyway.
 
 ### 5.5 Merge strategies
 
@@ -653,18 +671,90 @@ Spill files live on a **separate filesystem from the database's write-ahead log*
 
 Every query carries an end-to-end deadline propagated into execution and into sandboxed user code, and cancellation takes effect within a bounded time — tested, including for queries inside graph traversal and inside user functions.
 
-### 8.6 The two silently-disabling defaults
+### 8.5.1 Where the two engines disagree, and the one that is dangerous
 
-Two settings in the stack have defaults that switch off the mechanism they belong to. Both cost nothing to set correctly and both cost roughly an order of magnitude at query time if left alone. They are recorded here as an architectural concern rather than a tuning note, because neither produces any symptom other than being slow.
+The system presents one copy of the data through two engines, so the same question asked
+of the transactional tier and of the analytical tier is expected to get the same answer.
+It usually does. That is what makes the exceptions dangerous: nobody re-checks a figure
+that has agreed a thousand times.
+
+The differences are enumerated in a test that runs both engines and pins the agreements
+as well as the divergences — a list of differences is only trustworthy if somebody
+checked the rest, and without the agreements pinned a *new* divergence is a discovery
+later rather than a failure now.
+
+**Three of them return a wrong number rather than an error.**
+
+| | Transactional | Analytical |
+|---|---|---|
+| Summing past a 64-bit integer | exact, widened accumulator | **wraps to a large negative** |
+| Multiplying past a 64-bit integer | refuses | **returns zero** |
+| Summing decimals past 38 digits | exact | **loses exactness** |
+
+The third contradicts a stated principle. Fixed-point decimal is used *because* money must
+be exact, and on overflow the analytical tier returns a number close to the right one
+instead of refusing. An error is recoverable; a plausible wrong number in a report is not.
+
+> **This is a real limitation of the current design, not a note about an edge case.** The
+> tier that exists to answer questions about money can answer one wrongly, silently, and
+> the tier of record would have refused the same question.
+
+**The mitigation is predictive rather than detective**, because detection is not on offer:
+by the time the wrong number exists it is already in a result set. The statistics
+catalogue bounds the total from the column's range and row count, and reports whether an
+overflow is *possible*. It deliberately errs toward "possible" — a false alarm costs a
+refused query, a missed one costs a wrong figure nobody notices.
+
+Its limit is that bounds are held as 64-bit integers, so a decimal column beyond about
+nineteen digits has no representable bound and the check answers "unknown". The columns
+most able to overflow a 38-digit decimal are exactly the ones it cannot reason about.
+Widening the bound type closes it.
+
+Three further differences change precision or ordering without making a figure wrong:
+`avg` over integers is arbitrary-precision against a 64-bit float; division to a repeating
+fraction gives twenty significant digits against sixteen; and text orders by the
+database's collation against byte order, so a paged or ranked result over text appears in
+a different order in the two tiers.
+
+### 8.6 Defaults that switch off the mechanism they belong to — and one that should stay off
+
+Some settings in the stack default to off and, when off, silently disable a mechanism. They produce no symptom but slowness, so they are asserted at startup rather than configured and trusted: an upstream default can change between versions and the resulting regression would be invisible.
 
 | Setting | Default | Consequence of leaving it |
 |---|---|---|
-| Query-engine **filter pushdown** and **filter reordering** | disabled | No late materialization. Selective queries read every payload column for every row rather than only for survivors |
-| Parquet writer **page row-count limit** | effectively unlimited | The page index stores bounds *per page*. With no row cap, a narrow column packs enormous row counts into a single page — a boolean can fit tens of millions of rows in one page — and the page index degenerates to one entry covering everything. **Page pruning silently does nothing** |
+| Parquet writer **page row-count limit** | effectively unlimited | The page index stores bounds *per page*. With no row cap, a narrow column packs enormous row counts into one page — a boolean can fit tens of millions — and the index degenerates to a single entry covering everything. **Page pruning silently does nothing.** Not yet measured; read the claim as unverified |
+| Parquet reader **bloom filters** | disabled | Equality predicates on high-cardinality columns cannot skip row groups that bounds cannot exclude. Measured neutral on TPC-H, which has no query of that shape — the mechanism is untested here rather than shown to be worthless |
+| Query-engine **filter reordering** | disabled | Filters run in written order, so an expensive predicate may be evaluated against rows a cheap one would have eliminated. Measured neutral on TPC-H |
 
-With a row cap in place, a typical row group yields dozens of pages per column, so a selective predicate skips almost all of them. The cost is disk only: the page index lives in its own section and is read on demand, so planning latency is unaffected.
+With a row cap in place a typical row group yields dozens of pages per column, so a selective predicate skips almost all of them. The cost is disk only: the page index lives in its own section and is read on demand.
 
-**Both are asserted at startup, not merely configured**, because an upstream default can change between versions and the resulting regression would be invisible.
+#### 8.6.1 Filter pushdown, which was required and should not have been
+
+This is the second correction to this section and it goes further than the first.
+
+Late materialization — evaluating predicates inside the Parquet decoder so payload columns are materialized only for surviving rows — is widely described as the single largest scan optimization available, and it defaults to off. An earlier draft of this document said it was worth roughly an order of magnitude. Measured on a synthetic scan, it was **1.02× — neutral**. It was pinned on anyway, on the reasoning that neutral is not harmful and the benefit was expected on wider payloads.
+
+Measured on TPC-H at scale factor 1, it is not neutral. It is a cost, at every selectivity tried:
+
+| Rows surviving the filter | Off | On | |
+|---|---|---|---|
+| 1 in ~6,000,000 | 5.6 ms | 5.5 ms | 1.02× |
+| 1 in ~1,500 | 4.5 ms | 4.8 ms | 0.94× |
+| 1 in ~60 | 4.0 ms | 4.6 ms | 0.87× |
+| 1 in ~7 | 116.6 ms | 162.0 ms | **0.72×** |
+| all rows | 110.6 ms | 111.7 ms | 0.99× |
+
+On the full queries the effect is larger still, because filter reordering compounds it: with both on, Q6 goes from 351 ms to 917 ms at eight clients — **2.6× slower**.
+
+**The reason matters more than the number.** Late materialization saves the decode of payload columns for rows a predicate eliminates. On this data those rows have already been eliminated, by row-group and page statistics, before any decoding begins — which is why the highly selective queries above finish in four to six milliseconds. Pushdown cannot save work that is not being done; what it adds is per-row bookkeeping on the scan that remains.
+
+> **The two mechanisms are not complementary here. The cheaper one has already won.**
+
+That is a property of well-maintained statistics and sorted-enough data, which is what the rest of this system exists to produce. It would look different on data with no useful bounds — and that is where the setting should be reconsidered, **per query from the statistics**, rather than pinned on for everyone.
+
+It is therefore left at the engine's default rather than pinned off: pinning a setting off is still pinning it, and the evidence supports *not always* rather than *never*.
+
+**What this says about the practice, not the setting.** Both errors came from the same place — a mechanism with a good reputation, asserted on reasoning rather than on a measurement of this system's own data. The first measurement was too narrow to contradict the reasoning; the second was a recognisable workload and did. A setting worth asserting at startup is worth measuring on something somebody else designed.
 
 ---
 
@@ -688,6 +778,99 @@ Lakehouse compaction has the write-amplification shape of a log-structured merge
 ```
 
 Each byte is written once at each level, giving roughly **3× total write amplification instead of two orders of magnitude**. When a partition's newest data falls behind a watermark it is compacted once to the top level and **sealed**; a sealed partition is never rewritten. This bounds total compaction work to a function of data volume rather than of data volume multiplied by elapsed time.
+
+#### 9.1.1 Compaction adds; a separate operation removes
+
+The rule that makes frequent compaction safe is that **a merge never deletes anything**. It writes a new file and leaves its inputs in place, so a reader holding a snapshot continues reading files that are still there. There is no window in which a file under a reader disappears.
+
+Deleting the inputs is a distinct operation with distinct preconditions, all of which must hold for a given file:
+
+1. **The replacement verifies.** Its row count is re-read from its footer at retirement time, not trusted from the merge. A merge may have completed hours earlier.
+2. **No retained snapshot can resolve to the input.** Time travel and long sessions both pin a position; a file a pinned snapshot may reach is kept however old it is.
+3. **The grace period has elapsed.** A reader that listed files a moment before the merge is entitled to open them and has no way to announce that it is doing so. The grace period must exceed the longest query the deployment permits.
+
+An input failing any precondition is **retained with a reason**, which is a correct outcome rather than a failure — retirement is an optimisation, and declining it costs only disk. The one case that is an error is a missing or short replacement: that means the compaction did not actually happen, and nothing may be removed at all.
+
+Separating the two operations means the frequent, cheap one carries essentially no risk, and the dangerous one runs rarely and under stricter conditions.
+
+#### 9.1.2 What compaction is worth, measured
+
+The claim in §9.3 is specific: small files cost query **planning** — listing, footer reads, metadata resolution — rather than scanning. That predicts a roughly *fixed* penalty per query, which should therefore dominate short queries and amortise away on long ones.
+
+Measured over 20,000,000 rows, comparing 400 fragments against the single file they merge into:
+
+| Query | 400 files | 1 file | Ratio | Absolute overhead |
+|---|---|---|---|---|
+| Short — one narrow range | 16.9 ms | 3.8 ms | **4.42×** | 13.1 ms |
+| Long — full aggregation | 121.0 ms | 97.3 ms | **1.24×** | 23.7 ms |
+
+The prediction holds. The overhead stays within the same order across a query that does thirty times more work, while the *ratio* collapses from 4.42× to 1.24×. Fragmentation is therefore an interactive-latency problem, not a throughput one — which is what makes it worth paying attention to, since interactive latency is the thing anyone notices.
+
+This required scaling the fixture before it was a real test. An earlier run over 1,000,000 rows showed 4.43× and 3.77× — apparently uniform, and it would have been read as "more files are slower". The long query simply was not long enough for planning to amortise against. A measurement that cannot distinguish the hypothesis from its negation is not evidence.
+
+Merging also reduced the data by **2.23×**, largely through better compression across a larger block and less per-file overhead.
+
+#### 9.1.3 A directory listing is not a file set
+
+A direct consequence of the add-only rule, and easy to miss because the naive version works perfectly until the first compaction runs.
+
+Between a merge and the retirement of its inputs, the directory holds **both** — the file that was written and the files it replaced, the same rows twice. That window lasts at least a full grace period and exists by design. So anything answering "which files belong to this table" by listing the directory is wrong for the whole of it:
+
+- **A planner given a listing** will plan a merge whose inputs include files an earlier merge already superseded, and the result contains those rows twice — permanently, this time.
+- **A reader given a listing** double-counts every merged row for the duration of the window.
+
+The live set is therefore a first-class value carried across maintenance ticks, not something derived from storage. A tick moves it forward: superseded inputs leave, the new output arrives, and files the tick did not touch are carried through unchanged including their declared coverage.
+
+> **This is the concrete reason the system needs a table log rather than merely liking the idea.** "Which files are live" is not answerable from the filesystem once compaction has run, and both correctness properties above depend on answering it. A directory of Parquet files is a storage layout; it is not a table.
+
+The published tier accordingly names its files individually rather than pointing at a directory. Both behaviours are tested, including the negative one: a query registered against the directory is shown to return the merged rows twice while the same query against the live set returns them once.
+
+#### 9.1.4 The log is written by hand, and validated by the kernel
+
+The table log is emitted by SANKHYA directly — a few hundred lines covering `protocol`, `metaData`, `add` and `remove`, one JSON object per line, staged and renamed so a reader never observes a partial commit. Concurrency control is the protocol's own: a writer picks the next version and fails if someone took it, and the loser rebases because its decisions were made against a state that no longer exists.
+
+The kernel is a **dev-dependency**, used as an independent oracle: it reads the log SANKHYA wrote and must agree about the schema, the version and the live set. This arrangement is what DEC-06's metadata-only coupling actually asks for — the storage library supplies a definition of correctness, not an I/O layer — and it keeps eighty-four packages and a duplicated HTTP client out of the shipped binary. That the dependency stays test-only is checked mechanically rather than left to review.
+
+**The oracle earned its place on its first run.** The log this system wrote was invalid: the `add` action's `partitionValues` field is non-nullable and had been omitted. It round-tripped through SANKHYA's own reader perfectly, because a reader ignores a field it never writes. Two implementations agreeing is worth nothing when the same author wrote both sides.
+
+**The log is checkpointed.** Every ten versions the reconciled state is written as a single Parquet file with a `_last_checkpoint` pointer, and readers start from it. This is worth ten times the read cost at fifty thousand commits, and the beneficiary is mostly *other engines* — they have no cache and start cold on every query, so without a checkpoint an external reader opens one file per commit before it reads a row.
+
+A checkpoint holds exactly what replay produces, which makes it safe in a specific way: **it can always be discarded.** A missing file, a corrupt pointer, or one left behind by a table dropped and recreated at the same path all fall back to the log and cost a replay rather than an answer. Nothing is permitted to depend on a checkpoint being present or even parseable — which is what makes writing the format by hand a defensible risk rather than a reckless one.
+
+Writing it is a *maintenance* job, not part of committing. A commit that had to checkpoint could fail for a reason that does not matter.
+
+**Bounds and null counts are written into the log**, alongside the row count. This reverses an earlier decision in this document, and the reversal is worth recording rather than quietly making.
+
+They were withheld on the grounds that a wrong bound silently drops rows and that bounds go wrong quietly under type coercion. That is true, and it is why every bound written comes from code that refuses to produce one it cannot justify: an unrecognised type gets no bound, an unorderable value gets no bound, a merge that would narrow a bound drops it instead, and a value the protocol cannot represent exactly — a non-finite float, bytes that are not text — is omitted rather than approximated.
+
+What the original reasoning did not weigh is the cost of withholding them. **An external engine can prune only on what the log tells it.** Keeping bounds private to SANKHYA means every other reader scans everything, which undercuts the reason for choosing an open format at all. The bar is higher now rather than lower: a malformed statistic costs *other people* answers, in engines that cannot be fixed from here.
+
+The cardinality sketch stays out, because the protocol has nowhere to put it. A column read back from the log therefore reports zero distinct values, which is a trap for whatever reads that figure first.
+
+One detail worth stating because getting it wrong is silent: a compaction's `remove` actions declare `dataChange: false`. Compaction rewrites files without changing rows, and a reader streaming changes from the table would otherwise see every compacted row as a deletion followed by a re-insertion — a flood of spurious changes proportional to how well maintenance is working.
+
+#### 9.1.5 Metadata-only coupling, and what it buys
+
+The provider is SANKHYA's own. The table format library says **which files exist and what is in them**; it does not read them, does not decode them, and does not appear in the execution plan. Scan execution is the query engine's Parquet source, unmodified.
+
+The reason is version skew, and it is concrete rather than stylistic. A table format library and a query engine move on independent schedules and both expose Arrow types in their signatures. Coupling to both *execution* surfaces makes every upgrade of either a coordinated upgrade of the pair, several times a year. Coupling to one for metadata and the other for execution means a format upgrade touches a file list and an engine upgrade touches a plan — neither is a negotiation.
+
+**The measurable consequence is that planning does no file I/O.** Row counts come from the log, which already records them. The alternative is one footer read per file before a single row is read — the small-file penalty of §9.1.2, moved somewhere compaction cannot help.
+
+| Files | Provider | Directory listing | |
+|---|---|---|---|
+| 50 | 0.54 ms | 1.15 ms | **2.2×** |
+| 200 | 0.63 ms | 3.02 ms | **4.8×** |
+| 800 | 1.37 ms | 10.33 ms | **7.5×** |
+
+The advantage widens with file count, which is the shape the claim predicts. Note that the provider is **not flat**: sixteen times the files costs about 2.5× more planning, because replaying the log grows with commit count. The cost has been moved from one seek per file to one sequential read of a log, not abolished — and it was the argument for log checkpoints, which are now built: a checkpoint collapses the replay to one read of a summary plus the commits after it.
+
+Two details the provider gets right and a naive one would not:
+
+- **Statistics are marked exact only when nothing can be filtered out.** A query pinned below what the tiers hold has an upper bound, not a count. Reporting it as exact lets the optimizer order joins on a number that is simply wrong — a slow plan chosen confidently, which is harder to notice than a slow plan chosen for want of information.
+- **The commit-position column is read when the query pins a position**, because the target filter is evaluated on it, and projected away afterwards. Time travel genuinely costs a column the caller did not ask for, and hiding that would be dishonest about its price. When no tier holds anything past the target the filter provably removes nothing, and neither the filter nor the column read is planned at all — which matters because the cost is per table and therefore compounds with join arity.
+- **The scan reports its own statistics, not the table's.** These are different numbers arriving at different times: the table's are read during logical planning, the scan's during physical planning, and join selection reads the second. A provider that supplies only the first leaves every table looking unmeasurable at the moment the engine decides how to join it — so it repartitions tables it could broadcast, and because tables reporting no size are ordered against tables that do, one absent figure moves every join in the query. The scan's figures are also counted over the files that survived pruning, so a selective predicate is reflected in the number the decision actually uses.
+- **File grouping is left to the engine above its own threshold.** The engine splits file groups by byte range, which balances on size and beats anything a provider can do by counting files — but only for scans large enough to be worth splitting, below which it leaves a single group alone, and a single group is a single partition. So the provider deals files out only below that threshold. Doing both is worse than either: the engine then rebalances an arrangement already unbalanced by file count.
 
 ### 9.2 Commit cadence scales with volume
 
@@ -730,6 +913,29 @@ The gap the file format does not fill is **distinct-value counts**, which the op
 
 This is what makes join ordering work on arbitrary user schemas where nobody has run an analysis command.
 
+#### 9.5.1 The rule statistics live under
+
+**A statistic may make a query slower. It may never make a query wrong.**
+
+This is what justifies keeping statistics *out* of the table log. The log says which files a table consists of, and getting that wrong makes queries fail or double-count, so it is written conservatively and never guessed at. Statistics are different in one respect that changes everything: they are **rebuildable**. A wrong statistic can be recomputed from the data, and until it is, the worst outcome should be a slow plan.
+
+That is only true if the asymmetry is enforced rather than intended:
+
+- **Bounds may skip a file only when they prove nothing in it can match.** Anything uncertain — an absent bound, a type that does not line up, a comparison that cannot be made — means the file is read. A needless read costs time; a wrong skip costs an answer, and nothing downstream can detect it.
+- **Unknown is not unbounded.** An absent bound means "may match anything", and filling it in with a default turns a missing statistic into a wrong one.
+- **A merge may not narrow a bound.** Where both sides hold values and either lacks a bound, the merged bound is absent — inheriting one side's bound would claim a limit the other may exceed. This matters because compaction *merges* statistics rather than recomputing them, so a defect here appears only after maintenance has run, on data that was correct when it was written.
+- **Distinct-value estimates never touch pruning.** They are approximate by construction, so no decision that changes an answer may depend on one however convenient it looks.
+
+The safety property is property-tested directly — if `can_skip` returns true, no value in the file satisfies the predicate — and separately over merged statistics. The converse is deliberately *not* asserted: an implementation that never skipped anything would be slow and correct, and only one direction is a defect.
+
+#### 9.5.2 The cardinality estimate
+
+Distinct-value counts are what neither the file format nor the table log carries, and they are what the optimizer needs to order joins on schemas where nobody has run an analysis command.
+
+The estimate is a HyperLogLog sketch: 4,096 registers per column, merging by register-wise maximum so a merged file's sketch equals the sketch of its inputs' union exactly — which is what makes statistics maintainable at compaction with no value re-read. Accuracy measured within 5% from 10 to 100,000 distinct values.
+
+Two properties matter more than accuracy. The sketch **merges exactly**, so maintenance never degrades it. And the hash is **fixed and process-independent**: a seed that varies per process would make two nodes disagree about a plan, and that disagreement would present as a bug in the optimizer rather than as what it is.
+
 ### 9.6 Bloom filters
 
 Bloom filters help only for equality predicates on columns where bounds-based pruning fails — that is, high-distinct-value columns not used as the sort key, where every file's range spans the whole domain.
@@ -751,6 +957,17 @@ The engine knows nothing about the schema, so the default sort key is derived in
 Declaration paths exist for the cases that genuinely need knowledge, in precedence order: an explicit tenant declaration, a source-side schema comment (so the policy travels with the schema and survives a dump and restore), a domain-pack hint, then inference, then the default.
 
 **Sorting costs approximately one additional pass over the data, once per partition, at top-level compaction.** Re-clustering historical data costs a full read and write of the table and is therefore an explicit, scheduled operator action, never automatic.
+
+**What it buys, measured.** On TPC-H Q6, which selects one year in seven of a date column:
+
+| Layout | Single query | p95 at 8 clients |
+|---|---|---|
+| Arrival order | 222 ms | 1819 ms |
+| Sorted by the filtered column | **31 ms** | **234 ms** |
+
+**7.8× at concurrency**, entirely from row groups skipped on their statistics before any decoding. It is also the difference between missing `NFR-PERF-02`'s 250 ms and meeting it.
+
+That objective names bloom filters and late materialization as its preconditions. Neither turned out to be the lever: bloom filters do not apply to a query with no equality predicate, and late materialization *costs* on this data (§8.6.1). Sorting was the third thing, and it was the one that mattered — which is worth recording, because the objective's own list of preconditions would have sent someone to build the wrong two.
 
 **Multi-dimensional interleaved ordering is not used**, for two independent reasons: an open row-duplication defect in the implementation, and — separately — interleaving defeats the delta encoding on the sort columns, so it compresses worse than plain lexicographic ordering while also being harder for the optimizer to exploit.
 
@@ -1316,7 +1533,7 @@ Recorded because a design document that presents only settled decisions is not r
 
 | # | Question | Blocks | Owner |
 |---|---|---|---|
-| 1 | Is the arrival buffer cleanly retrofittable behind the read-path planner interface? If so, a simpler first release commits every few seconds with no buffer, since a few seconds of lag is acceptable. If not, it must be built first | Storage milestone scope | Systems architect |
+| ~~1~~ | ~~Is the arrival buffer cleanly retrofittable behind the read-path planner interface?~~ **Answered: yes.** The tier was built against the existing `TierRef`/`plan_splice` interface with no change to the planner, and the two tiers are shown to splice. The retrofit question is closed; §5.4.1 records what governs the tier instead | — | — |
 | 2 | Capacity model and scaling roadmap for warehouses in the hundreds of terabytes: node sizing per size tier, metadata footprint, compaction throughput required, and whether maintenance must scale out | Capacity documentation; possibly node roles | Architect and query specialist |
 | 3 | Whether managed cloud database offerings preserve replication slots across failover | Any availability commitment in attached mode on managed cloud databases | Database specialist |
 | 4 | Whether the alternative format's library pushes down decimal predicates and surfaces distinct-value statistics | Whether that format is viable at all as a second implementation | Database specialist |

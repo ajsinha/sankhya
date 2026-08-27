@@ -73,13 +73,19 @@ impl LsnRange {
     /// Construct `(start, end]`. Returns `None` if the interval is inverted.
     #[must_use]
     pub fn new(start_exclusive: Lsn, end_inclusive: Lsn) -> Option<Self> {
-        (start_exclusive <= end_inclusive).then_some(Self { start_exclusive, end_inclusive })
+        (start_exclusive <= end_inclusive).then_some(Self {
+            start_exclusive,
+            end_inclusive,
+        })
     }
 
     /// The interval `(0, end]` — everything a tier holds from the beginning.
     #[must_use]
     pub const fn up_to(end_inclusive: Lsn) -> Self {
-        Self { start_exclusive: Lsn::ZERO, end_inclusive }
+        Self {
+            start_exclusive: Lsn::ZERO,
+            end_inclusive,
+        }
     }
 
     #[must_use]

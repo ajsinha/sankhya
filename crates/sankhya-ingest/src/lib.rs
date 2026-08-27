@@ -25,8 +25,6 @@ mod backfill;
 mod pipeline;
 mod reconcile;
 
+pub use backfill::{advance_stream, plan_handoff, Backfill, BackfillPlan, Handoff, HandoffError};
 pub use pipeline::{Pipeline, PipelineStats, PublishedFile, TableState};
-pub use backfill::{
-    Backfill, BackfillPlan, Handoff, HandoffError, advance_stream, plan_handoff,
-};
 pub use reconcile::{Discrepancy, Reconciliation, RowDigest, TableDigest};

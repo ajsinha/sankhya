@@ -14,3 +14,22 @@ layer = 2
 workspace = true
 
 [dependencies]
+sankhya-types        = { path = "../sankhya-types" }
+sankhya-plan         = { path = "../sankhya-plan" }
+sankhya-table-memory = { path = "../sankhya-table-memory" }
+sankhya-table-delta  = { path = "../sankhya-table-delta" }
+sankhya-stats        = { path = "../sankhya-stats" }
+sankhya-governor     = { path = "../sankhya-governor" }
+futures              = "0.3"
+datafusion           = { workspace = true }
+async-trait          = "0.1"
+arrow-array          = { workspace = true }
+arrow-schema         = { workspace = true }
+
+[dev-dependencies]
+sankhya-schema    = { path = "../sankhya-schema" }
+sankhya-cdc-model = { path = "../sankhya-cdc-model" }
+arrow         = { workspace = true }
+sankhya-table = { path = "../sankhya-table" }
+tokio         = { workspace = true }
+tempfile      = { workspace = true }

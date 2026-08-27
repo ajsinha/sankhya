@@ -9,7 +9,7 @@
 *A general-purpose unified OLTP + OLAP + Graph data server — one binary, written entirely in Rust.*
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-design%20phase-orange.svg)](docs/ROADMAP.md)
+[![Status](https://img.shields.io/badge/status-M3%20complete-yellow.svg)](docs/STATUS.md)
 [![Rust](https://img.shields.io/badge/rust-1.97%2B-b7410e.svg)](https://www.rust-lang.org)
 [![JVM](https://img.shields.io/badge/JVM-none-success.svg)](#design-principles)
 
@@ -151,9 +151,35 @@ Spark, Trino, DuckDB, Snowflake and Athena read these tables **directly**, with 
 
 ## Status
 
-**Early implementation.** The architecture and requirements were reviewed and amended by a panel covering systems architecture, database internals, analytical query engines and Rust engineering practice. Foundations are now built and under test; the analytical engine is not.
+**Early implementation — M0 through M3 complete, M4 in progress.** The architecture and
+requirements were reviewed and amended by a panel covering systems architecture, database
+internals, analytical query engines and Rust engineering practice.
 
-What works today: a verified dependency set that compiles, a `pgoutput` wire decoder validated against a real PostgreSQL 17.11 stream, an apply path whose transaction invariant is property-tested, a lossless type mapping checked against a real schema, mirror naming that refuses collisions rather than disambiguating them, a read-path splice planner proven to cover a query's span exactly once, a complete vertical slice in which a captured workload becomes Parquet and answers SQL with an exact decimal sum matching the source's own arithmetic, and read-your-own-writes — write a row, and the analytical query returns it milliseconds later. What does not: continuous multi-table operation, the catalog, the graph engine, the API surfaces, the server itself. [`docs/QUICKSTART.md`](docs/QUICKSTART.md) is explicit about the boundary.
+What works today, all of it exercised by tests rather than by a running process: a
+`pgoutput` wire decoder validated against a real PostgreSQL 17.11 stream, an apply path
+whose transaction invariant is property-tested, lossless type mapping, capture that
+reconciles against its source and survives a crash at any point, an **open table log**
+that the Delta kernel reads — so the open-storage claim is tested rather than asserted —
+**compaction** that plans, merges, commits and converges without changing an answer, a
+**maintenance scheduler** that arbitrates it against the machine budget, and a **table
+provider** that plans from metadata alone, prunes files by statistics, resolves updated
+and deleted rows to one current version each, and answers from memory and Parquet at once
+or refuses when the tiers do not cover the query.
+
+The analytical tier is measured against TPC-H at scale factor 1, and the three
+performance objectives are **asserted by a build gate** rather than reported: a needle
+lookup at 13 ms against a 250 ms budget, a pivot at 796 ms against 1 s, a wide scan at
+648 ms against 3 s — on twelve cores, where the requirements name a thirty-two-core
+reference node. Cancellation is bounded, a hostile aggregation is refused rather than
+taking the process down, and the places where this engine and PostgreSQL disagree are
+enumerated in a test — which found three ways the analytical tier returns a wrong number.
+
+What does not exist: the server itself, the streaming transport, the graph engine, the
+extension mechanism, the API surfaces, tenancy and security. Also unbuilt inside work
+already counted: bloom filters, table partitioning, the result cache, and leader
+election. [`docs/QUICKSTART.md`](docs/QUICKSTART.md) and [`docs/STATUS.md`](docs/STATUS.md)
+are explicit about the boundary, including the defects found along the way — and about
+the two TPC-H queries whose numbers are published without being gated, and why.
 
 Start here:
 

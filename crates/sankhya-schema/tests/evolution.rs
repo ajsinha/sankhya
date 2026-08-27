@@ -4,13 +4,30 @@
 //! permissive engine would have applied a change whose intent it could not know, and
 //! the consequence would surface much later with no way to reconstruct what was lost.
 
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
 use sankhya_schema::{
-    Compatibility, Field, LogicalSchema, LogicalType, Precision, SchemaChange, apply_compatible,
-    classify_change,
+    apply_compatible, classify_change, Compatibility, Field, LogicalSchema, LogicalType, Precision,
+    SchemaChange,
 };
 
 fn field(name: &str, logical: LogicalType, nullable: bool, is_key: bool) -> Field {
-    Field { name: name.into(), logical, nullable, is_key }
+    Field {
+        name: name.into(),
+        logical,
+        nullable,
+        is_key,
+    }
 }
 
 fn schema(fields: Vec<Field>) -> LogicalSchema {
@@ -37,7 +54,9 @@ fn an_identical_shape_is_unchanged() {
 fn adding_a_column_is_applied_automatically() {
     // Unambiguous: rows written before it simply lack a value.
     let mut extended = base();
-    extended.fields.push(field("added", LogicalType::Int32, true, false));
+    extended
+        .fields
+        .push(field("added", LogicalType::Int32, true, false));
 
     let classification = classify_change(&base(), &extended);
     assert!(classification.may_continue());
@@ -60,7 +79,10 @@ fn widening_an_integer_is_applied_automatically() {
         field("label", LogicalType::Utf8, true, false),
     ]);
     let classification = classify_change(&narrow, &widened);
-    assert!(classification.may_continue(), "every 32-bit value fits in 64 bits");
+    assert!(
+        classification.may_continue(),
+        "every 32-bit value fits in 64 bits"
+    );
 }
 
 #[test]
@@ -109,7 +131,9 @@ fn dropping_a_column_quarantines_because_intent_is_unknowable() {
     let Compatibility::Incompatible { reason, changes } = classification else {
         panic!("dropping must quarantine");
     };
-    assert!(changes.iter().any(|c| matches!(c, SchemaChange::ColumnDropped { .. })));
+    assert!(changes
+        .iter()
+        .any(|c| matches!(c, SchemaChange::ColumnDropped { .. })));
     assert!(
         reason.contains("cannot be inferred"),
         "the message must explain why it refuses: {reason}"
@@ -135,8 +159,12 @@ fn a_rename_quarantines_because_it_looks_like_a_drop_and_an_add() {
     let Compatibility::Incompatible { changes, .. } = classification else {
         panic!("a rename must quarantine");
     };
-    assert!(changes.iter().any(|c| matches!(c, SchemaChange::ColumnDropped { .. })));
-    assert!(changes.iter().any(|c| matches!(c, SchemaChange::ColumnAdded { .. })));
+    assert!(changes
+        .iter()
+        .any(|c| matches!(c, SchemaChange::ColumnDropped { .. })));
+    assert!(changes
+        .iter()
+        .any(|c| matches!(c, SchemaChange::ColumnAdded { .. })));
 }
 
 #[test]
@@ -183,8 +211,12 @@ fn an_incompatible_change_cannot_be_applied_by_omission() {
 #[test]
 fn several_compatible_changes_apply_together() {
     let mut evolved = base();
-    evolved.fields.push(field("a", LogicalType::Int32, true, false));
-    evolved.fields.push(field("b", LogicalType::Utf8, true, false));
+    evolved
+        .fields
+        .push(field("a", LogicalType::Int32, true, false));
+    evolved
+        .fields
+        .push(field("b", LogicalType::Utf8, true, false));
 
     let Compatibility::Compatible { changes } = classify_change(&base(), &evolved) else {
         panic!("two additions should be compatible");

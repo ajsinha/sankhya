@@ -200,7 +200,8 @@ pub fn assess(policy: &SafetyPolicy, state: &SlotState, lag: Duration) -> Escala
         };
     }
 
-    if retained >= policy.threshold(policy.constrain_fraction_percent) || lag >= policy.constrain_lag
+    if retained >= policy.threshold(policy.constrain_fraction_percent)
+        || lag >= policy.constrain_lag
     {
         return Escalation {
             severity: Severity::Constrain,

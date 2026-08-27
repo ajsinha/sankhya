@@ -29,6 +29,18 @@
 //!
 //! Regenerate with `crates/sankhya-cdc-model/tests/fixtures/regenerate.sh`.
 
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
 use sankhya_cdc_model::{Decoder, Message, ReplicaIdentity, TupleValue};
 
 const REAL_STREAM: &[u8] = include_bytes!("fixtures/real-pgoutput-v4.bin");
@@ -87,15 +99,33 @@ fn decodes_a_real_stream_end_to_end() {
 
     // Every transaction that begins must also end. If the decoder mis-sized any
     // message the stream would desynchronise and this balance would break.
-    let begins = messages.iter().filter(|m| matches!(m, Message::Begin { .. })).count();
+    let begins = messages
+        .iter()
+        .filter(|m| matches!(m, Message::Begin { .. }))
+        .count();
     let commits = messages.iter().filter(|m| m.seals_transaction()).count();
-    assert_eq!(begins, commits, "unbalanced transactions: {begins} begins, {commits} commits");
-    assert_eq!(begins, 4, "the fixture contains four autocommitted statements");
+    assert_eq!(
+        begins, commits,
+        "unbalanced transactions: {begins} begins, {commits} commits"
+    );
+    assert_eq!(
+        begins, 4,
+        "the fixture contains four autocommitted statements"
+    );
 
     // Exactly the shape the fixture script produces.
-    let inserts = messages.iter().filter(|m| matches!(m, Message::Insert { .. })).count();
-    let updates = messages.iter().filter(|m| matches!(m, Message::Update { .. })).count();
-    let deletes = messages.iter().filter(|m| matches!(m, Message::Delete { .. })).count();
+    let inserts = messages
+        .iter()
+        .filter(|m| matches!(m, Message::Insert { .. }))
+        .count();
+    let updates = messages
+        .iter()
+        .filter(|m| matches!(m, Message::Update { .. }))
+        .count();
+    let deletes = messages
+        .iter()
+        .filter(|m| matches!(m, Message::Delete { .. }))
+        .count();
     assert_eq!((inserts, updates, deletes), (2, 1, 1));
 }
 
@@ -115,11 +145,18 @@ fn real_relation_metadata_matches_the_source_schema() {
     assert!(relation.replica_identity.identifies_rows());
 
     let names: Vec<&str> = relation.columns.iter().map(|c| c.name.as_str()).collect();
-    assert_eq!(names, ["id", "device_id", "reading", "payload", "observed_at"]);
+    assert_eq!(
+        names,
+        ["id", "device_id", "reading", "payload", "observed_at"]
+    );
 
     // Only the primary key participates in identity under the default setting.
-    let keys: Vec<&str> =
-        relation.columns.iter().filter(|c| c.is_key).map(|c| c.name.as_str()).collect();
+    let keys: Vec<&str> = relation
+        .columns
+        .iter()
+        .filter(|c| c.is_key)
+        .map(|c| c.name.as_str())
+        .collect();
     assert_eq!(keys, ["id"], "only the primary key should be a key column");
 
     // Type identifiers as PostgreSQL assigns them: int8, text, numeric, text, timestamptz.
@@ -153,13 +190,24 @@ fn real_update_withholds_the_unchanged_large_value() {
     assert!(
         update.has_unchanged(),
         "the update should withhold the untouched large value; values: {:?}",
-        update.values.iter().map(std::mem::discriminant).collect::<Vec<_>>()
+        update
+            .values
+            .iter()
+            .map(std::mem::discriminant)
+            .collect::<Vec<_>>()
     );
 
     let payload = &update.values[3];
     assert_eq!(*payload, TupleValue::Unchanged);
-    assert!(!payload.is_present(), "an unchanged value carries nothing writable");
-    assert_ne!(*payload, TupleValue::Null, "unchanged must never be confused with null");
+    assert!(
+        !payload.is_present(),
+        "an unchanged value carries nothing writable"
+    );
+    assert_ne!(
+        *payload,
+        TupleValue::Null,
+        "unchanged must never be confused with null"
+    );
 }
 
 #[test]
@@ -173,10 +221,16 @@ fn real_delete_carries_only_the_key() {
         })
         .expect("the stream contains a delete");
 
-    assert!(key_only, "under the default replica identity a delete sends only the key");
+    assert!(
+        key_only,
+        "under the default replica identity a delete sends only the key"
+    );
     // Non-key columns are null in a key-only image — present but empty, which is
     // different again from unchanged.
-    assert!(matches!(old.values[0], TupleValue::Text(_)), "the key must be present");
+    assert!(
+        matches!(old.values[0], TupleValue::Text(_)),
+        "the key must be present"
+    );
 }
 
 #[test]
@@ -191,7 +245,10 @@ fn real_insert_carries_every_column() {
         .expect("the stream contains an insert");
 
     assert_eq!(insert.values.len(), 5);
-    assert!(!insert.has_unchanged(), "an insert has no previous version to withhold");
+    assert!(
+        !insert.has_unchanged(),
+        "an insert has no previous version to withhold"
+    );
     assert!(insert.values.iter().all(TupleValue::is_present));
 }
 

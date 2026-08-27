@@ -152,7 +152,11 @@ impl LogicalSchema {
             DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
             false,
         )));
-        fields.push(Arc::new(ArrowField::new("_sankhya_op", DataType::Utf8, false)));
+        fields.push(Arc::new(ArrowField::new(
+            "_sankhya_op",
+            DataType::Utf8,
+            false,
+        )));
 
         ArrowSchema::new(fields)
     }

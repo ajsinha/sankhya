@@ -33,5 +33,5 @@
 mod safety;
 mod slot;
 
-pub use safety::{Escalation, SafetyPolicy, Severity, assess};
+pub use safety::{assess, Escalation, SafetyPolicy, Severity};
 pub use slot::{SlotHealth, SlotState, WalStatus};

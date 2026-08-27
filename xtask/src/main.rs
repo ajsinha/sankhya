@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 
 const LOC_HARD: usize = 1500;
 const LOC_WARN: usize = 800;
@@ -20,26 +20,60 @@ const LAYER_TOOLING: u32 = 100;
 /// correctness hazard, not an inefficiency: two Arrow majors make identically
 /// named types incompatible. See docs/adr/0001-dependency-pin-set.md.
 const CRITICAL_FAMILY: &[&str] = &[
-    "arrow", "arrow-array", "arrow-schema", "arrow-buffer", "arrow-ipc",
-    "parquet", "datafusion", "object_store", "delta_kernel",
+    "arrow",
+    "arrow-array",
+    "arrow-schema",
+    "arrow-buffer",
+    "arrow-ipc",
+    "parquet",
+    "datafusion",
+    "object_store",
+    "delta_kernel",
 ];
 
 /// Duplicates that are permitted because they never cross a SANKHYA API boundary.
 /// Every entry is a deliberate decision, not an accumulation.
 const DUP_ALLOWLIST: &[&str] = &[
-    "base64", "foldhash", "getrandom", "hashbrown", "itertools",
-    "rand", "rand_core", "syn", "windows-sys", "r-efi", "wasi",
-    "windows-targets", "windows_x86_64_gnu", "windows-link", "generic-array",
-    "bitflags", "heck", "regex-automata", "regex-syntax", "socket2", "winnow",
+    "base64",
+    "foldhash",
+    "getrandom",
+    "hashbrown",
+    "itertools",
+    "rand",
+    "rand_core",
+    "syn",
+    "windows-sys",
+    "r-efi",
+    "wasi",
+    "windows-targets",
+    "windows_x86_64_gnu",
+    "windows-link",
+    "generic-array",
+    "bitflags",
+    "heck",
+    "regex-automata",
+    "regex-syntax",
+    "socket2",
+    "winnow",
     // proptest pulls an older chacha; it is a dev dependency and never reaches a
     // SANKHYA API boundary.
     "rand_chacha",
+    // Both reach the tree only through delta_kernel_default_engine, which is a
+    // *dev*-dependency used as an oracle: it reads the Delta log SANKHYA writes and must
+    // agree about the live set. Neither appears in any production dependency path, and
+    // that is checked below rather than assumed.
+    "reqwest",
+    "core-foundation",
     // toml's own datetime type, internal to manifest parsing in tooling.
-    "toml_datetime", "toml_parser", "toml_writer", "serde_spanned",
+    "toml_datetime",
+    "toml_parser",
+    "toml_writer",
+    "serde_spanned",
     // Pulled at two versions through the query engine's expression features. Both are
     // internal hashing and bignum utilities; neither appears in any SANKHYA signature,
     // so neither can cause the type incompatibility this gate exists to prevent.
-    "ahash", "num-bigint",
+    "ahash",
+    "num-bigint",
 ];
 
 /// Domain nouns that must not appear in core crates. The general-purpose claim is
@@ -50,10 +84,28 @@ const DUP_ALLOWLIST: &[&str] = &[
 /// neutral in its naming and still be bent toward one domain. Only the reference
 /// packs catch that. Both mechanisms are needed.
 const DOMAIN_WORDS: &[&str] = &[
-    "trade", "counterparty", "notional", "portfolio", "basel", "isin", "cusip",
-    "ledger", "aml", "kyc", "ubo", "laundering", "desk", "book_id",
-    "shipment", "consignment", "patient", "icd10", "diagnosis_code",
-    "sensor_reading", "invoice", "sku",
+    "trade",
+    "counterparty",
+    "notional",
+    "portfolio",
+    "basel",
+    "isin",
+    "cusip",
+    "ledger",
+    "aml",
+    "kyc",
+    "ubo",
+    "laundering",
+    "desk",
+    "book_id",
+    "shipment",
+    "consignment",
+    "patient",
+    "icd10",
+    "diagnosis_code",
+    "sensor_reading",
+    "invoice",
+    "sku",
     // Entries must be DISTINCTIVELY domain-specific, never ordinary English that a
     // domain also happens to use. Two have been removed for exactly that reason:
     //
@@ -88,15 +140,39 @@ fn main() -> ExitCode {
     if run_all || task == "check-docs" {
         failed |= !check_docs(&root);
     }
+    if run_all || task == "check-features" {
+        failed |= !check_features(&root);
+    }
+    if run_all || task == "check-lints" {
+        failed |= !check_lints(&root);
+    }
+    if run_all || task == "check-mutations" {
+        failed |= !check_mutations(&root);
+    }
+    // Deliberately not in `check-all`: it generates a scale-factor-1 dataset and runs
+    // for minutes, and it needs a machine that is not otherwise busy. It belongs to the
+    // performance pipeline, which runs it on its own.
+    if task == "check-performance" {
+        failed |= !check_performance(&root);
+    }
     if !run_all
         && !matches!(
             task.as_str(),
-            "check-layers" | "check-loc" | "check-vocabulary" | "check-dupes" | "check-docs"
+            "check-layers"
+                | "check-loc"
+                | "check-vocabulary"
+                | "check-dupes"
+                | "check-docs"
+                | "check-features"
+                | "check-lints"
+                | "check-mutations"
+                | "check-performance"
         )
     {
         eprintln!(
             "usage: cargo xtask \
-             [check-all|check-layers|check-loc|check-vocabulary|check-dupes|check-docs]"
+             [check-all|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
+             |check-features|check-lints|check-mutations|check-performance]"
         );
         return ExitCode::from(2);
     }
@@ -133,13 +209,17 @@ fn load_crates(root: &Path) -> Vec<Crate> {
     let mut out = Vec::new();
     for group in ["crates", "packs"] {
         let dir = root.join(group);
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for e in entries.flatten() {
             let manifest = e.path().join("Cargo.toml");
             if !manifest.exists() {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&manifest) else { continue };
+            let Ok(text) = std::fs::read_to_string(&manifest) else {
+                continue;
+            };
             let v: toml::Table = match toml::from_str(&text) {
                 Ok(v) => v,
                 Err(e) => {
@@ -173,7 +253,11 @@ fn load_crates(root: &Path) -> Vec<Crate> {
                 eprintln!("  MISSING LAYER  {name} — add [package.metadata.sankhya] layer = N");
                 continue;
             }
-            out.push(Crate { name, layer: layer as u32, deps });
+            out.push(Crate {
+                name,
+                layer: layer as u32,
+                deps,
+            });
         }
     }
     out
@@ -191,7 +275,9 @@ fn check_layers(root: &Path) -> bool {
 
     for c in &crates {
         for d in &c.deps {
-            let Some(dep) = by_name.get(d.as_str()) else { continue }; // external crate
+            let Some(dep) = by_name.get(d.as_str()) else {
+                continue;
+            }; // external crate
             if c.layer == LAYER_PACK {
                 if !pack_allowance.contains(&d.as_str()) {
                     eprintln!(
@@ -204,12 +290,18 @@ fn check_layers(root: &Path) -> bool {
                 continue;
             }
             if dep.layer == LAYER_PACK {
-                eprintln!("  CORE->PACK   {} -> {} : no core crate may depend on a pack", c.name, d);
+                eprintln!(
+                    "  CORE->PACK   {} -> {} : no core crate may depend on a pack",
+                    c.name, d
+                );
                 ok = false;
                 continue;
             }
             if dep.layer == LAYER_TOOLING {
-                eprintln!("  ->TOOLING    {} -> {} : tooling is not a dependency", c.name, d);
+                eprintln!(
+                    "  ->TOOLING    {} -> {} : tooling is not a dependency",
+                    c.name, d
+                );
                 ok = false;
                 continue;
             }
@@ -272,7 +364,9 @@ fn find_cycle(crates: &[Crate], by_name: &BTreeMap<&str, &Crate>) -> Option<Vec<
             }
             None => {}
         }
-        let Some(c) = by_name.get(name) else { return None };
+        let Some(c) = by_name.get(name) else {
+            return None;
+        };
         marks.insert(c.name.as_str(), Mark::Open);
         stack.push(name.to_string());
         for d in &c.deps {
@@ -320,10 +414,14 @@ fn code_lines(src: &str) -> usize {
             }
             if !head.is_empty() {
                 n += 1;
-                if in_block { break; }
+                if in_block {
+                    break;
+                }
                 continue;
             }
-            if in_block { break; }
+            if in_block {
+                break;
+            }
         }
         let line = line.trim();
         if line.is_empty() || line.starts_with("//") {
@@ -335,12 +433,17 @@ fn code_lines(src: &str) -> usize {
 }
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for e in entries.flatten() {
         let p = e.path();
         let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
         if p.is_dir() {
-            if matches!(name, "target" | ".git" | "generated" | "snapshots" | "corpus") {
+            if matches!(
+                name,
+                "target" | ".git" | "generated" | "snapshots" | "corpus"
+            ) {
                 continue;
             }
             rust_files(&p, out);
@@ -363,7 +466,9 @@ fn check_loc(root: &Path) -> bool {
     let mut warned = 0;
     let mut largest = (0usize, String::new());
     for f in &files {
-        let Ok(src) = std::fs::read_to_string(f) else { continue };
+        let Ok(src) = std::fs::read_to_string(f) else {
+            continue;
+        };
         let n = code_lines(&src);
         let rel = f.strip_prefix(root).unwrap_or(f).display().to_string();
         if n > largest.0 {
@@ -379,7 +484,10 @@ fn check_loc(root: &Path) -> bool {
     }
     println!(
         "   {} files, largest {} at {} lines, {} approaching the limit",
-        files.len(), largest.1, largest.0, warned
+        files.len(),
+        largest.1,
+        largest.0,
+        warned
     );
     ok
 }
@@ -392,7 +500,9 @@ fn check_vocabulary(root: &Path) -> bool {
     let mut ok = true;
     let mut hits = 0;
     for f in &files {
-        let Ok(src) = std::fs::read_to_string(f) else { continue };
+        let Ok(src) = std::fs::read_to_string(f) else {
+            continue;
+        };
         let rel = f.strip_prefix(root).unwrap_or(f).display().to_string();
         // The generator and testkit legitimately construct example schemas.
         if rel.contains("sankhya-datagen") || rel.contains("sankhya-testkit") {
@@ -429,7 +539,9 @@ fn check_dupes(root: &Path) -> bool {
         println!("   no Cargo.lock yet — skipped");
         return true;
     }
-    let Ok(text) = std::fs::read_to_string(&lock) else { return true };
+    let Ok(text) = std::fs::read_to_string(&lock) else {
+        return true;
+    };
     let mut seen: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut name = String::new();
     for line in text.lines() {
@@ -437,7 +549,9 @@ fn check_dupes(root: &Path) -> bool {
             name = v.trim_end_matches('"').to_string();
         } else if let Some(v) = line.strip_prefix("version = \"") {
             if !name.is_empty() {
-                seen.entry(name.clone()).or_default().push(v.trim_end_matches('"').to_string());
+                seen.entry(name.clone())
+                    .or_default()
+                    .push(v.trim_end_matches('"').to_string());
                 name.clear();
             }
         }
@@ -451,18 +565,21 @@ fn check_dupes(root: &Path) -> bool {
         } else if DUP_ALLOWLIST.contains(&n.as_str()) {
             benign += 1;
         } else {
-            eprintln!("  NEW DUP      {n}: {versions:?} — review, then allowlist deliberately or remove");
+            eprintln!(
+                "  NEW DUP      {n}: {versions:?} — review, then allowlist deliberately or remove"
+            );
             ok = false;
         }
     }
     println!(
         "   {} packages, {benign} allowlisted duplicates, critical family single-versioned: {}",
         seen.len(),
-        !seen.iter().any(|(n, v)| CRITICAL_FAMILY.contains(&n.as_str()) && v.len() > 1)
+        !seen
+            .iter()
+            .any(|(n, v)| CRITICAL_FAMILY.contains(&n.as_str()) && v.len() > 1)
     );
     ok
 }
-
 
 /// Documentation rot, caught mechanically.
 ///
@@ -488,13 +605,17 @@ fn check_docs(root: &Path) -> bool {
     let mut versions = 0usize;
 
     for doc in &docs {
-        let Ok(text) = std::fs::read_to_string(doc) else { continue };
+        let Ok(text) = std::fs::read_to_string(doc) else {
+            continue;
+        };
         let rel = doc.strip_prefix(root).unwrap_or(doc).display().to_string();
         let dir = doc.parent().unwrap_or(root);
 
         // (a) Relative links must resolve.
         for target in markdown_link_targets(&text) {
-            if target.starts_with("http") || target.starts_with('#') || target.starts_with("mailto:")
+            if target.starts_with("http")
+                || target.starts_with('#')
+                || target.starts_with("mailto:")
             {
                 continue;
             }
@@ -539,11 +660,16 @@ fn check_docs(root: &Path) -> bool {
         "   {} documents, {links} relative links, {versions} version claims checked",
         docs.len()
     );
+
+    ok &= check_status_agreement(&docs);
+
     ok
 }
 
 fn collect_markdown(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for e in entries.flatten() {
         let p = e.path();
         let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
@@ -603,8 +729,8 @@ fn quoted_versions(text: &str, crate_name: &str) -> Vec<String> {
 }
 
 fn leading_version(window: &str) -> Option<String> {
-    let trimmed = window
-        .trim_start_matches(|c: char| matches!(c, '`' | ' ' | '|' | '=' | '"' | '*' | ':'));
+    let trimmed =
+        window.trim_start_matches(|c: char| matches!(c, '`' | ' ' | '|' | '=' | '"' | '*' | ':'));
     let mut digits = String::new();
     for c in trimmed.chars() {
         if c.is_ascii_digit() || c == '.' {
@@ -627,7 +753,9 @@ fn backticked_crate_names(text: &str) -> Vec<String> {
         let Some(end) = after.find('`') else { break };
         let inner = &after[..end];
         if inner.starts_with("sankhya-")
-            && inner.chars().all(|c| c.is_ascii_lowercase() || c == '-' || c.is_ascii_digit())
+            && inner
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c == '-' || c.is_ascii_digit())
         {
             out.push(inner.to_string());
         }
@@ -639,8 +767,12 @@ fn backticked_crate_names(text: &str) -> Vec<String> {
 /// The exact-pinned versions from the workspace dependency table.
 fn workspace_pins(root: &Path) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
-    let Ok(text) = std::fs::read_to_string(root.join("Cargo.toml")) else { return out };
-    let Ok(v) = toml::from_str::<toml::Table>(&text) else { return out };
+    let Ok(text) = std::fs::read_to_string(root.join("Cargo.toml")) else {
+        return out;
+    };
+    let Ok(v) = toml::from_str::<toml::Table>(&text) else {
+        return out;
+    };
     let Some(deps) = v
         .get("workspace")
         .and_then(|w| w.get("dependencies"))
@@ -651,7 +783,10 @@ fn workspace_pins(root: &Path) -> BTreeMap<String, String> {
     for (name, spec) in deps {
         let raw = match spec {
             toml::Value::String(s) => Some(s.clone()),
-            toml::Value::Table(t) => t.get("version").and_then(|v| v.as_str()).map(str::to_string),
+            toml::Value::Table(t) => t
+                .get("version")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
             _ => None,
         };
         // Only exact pins are claims a document can be checked against.
@@ -660,4 +795,321 @@ fn workspace_pins(root: &Path) -> BTreeMap<String, String> {
         }
     }
     out
+}
+
+/// Features a dependency must declare because our own defaults require them.
+///
+/// # Why this check exists
+///
+/// Cargo unifies features across a crate's dependencies *and its dev-dependencies*.
+/// A library crate can therefore pass its entire test suite while missing a feature its
+/// public API needs, because a test-only dependency happened to enable it. The library
+/// is broken for every real consumer and its own tests cannot tell.
+///
+/// That is not hypothetical: the Parquet writer's default compression is Zstandard, the
+/// workspace pin did not enable `zstd`, and `sankhya-table`'s tests passed anyway
+/// because DataFusion — a dev-dependency — turned it on. The defect surfaced only when
+/// a second crate depended on the writer without also depending on DataFusion.
+///
+/// Checking the manifest rather than the resolved graph is deliberate: the resolved
+/// graph is exactly the thing that hides the problem.
+const REQUIRED_FEATURES: &[(&str, &[(&str, &str)])] = &[(
+    "parquet",
+    &[
+        (
+            "zstd",
+            "WriterConfig::default() emits Zstandard; without this feature every write \
+             panics inside the column writer",
+        ),
+        (
+            "snap",
+            "Snappy is the format's most widely written codec; we must be able to read \
+             files other engines produced",
+        ),
+    ],
+)];
+
+fn check_features(root: &Path) -> bool {
+    println!("== check-features ==");
+
+    let manifest_path = root.join("Cargo.toml");
+    let text = match std::fs::read_to_string(&manifest_path) {
+        Ok(t) => t,
+        Err(e) => {
+            println!("  FAIL: reading {}: {e}", manifest_path.display());
+            return false;
+        }
+    };
+    let doc: toml::Table = match toml::from_str(&text) {
+        Ok(d) => d,
+        Err(e) => {
+            println!("  FAIL: parsing {}: {e}", manifest_path.display());
+            return false;
+        }
+    };
+
+    let Some(deps) = doc
+        .get("workspace")
+        .and_then(|w| w.get("dependencies"))
+        .and_then(toml::Value::as_table)
+    else {
+        println!("  FAIL: [workspace.dependencies] is missing");
+        return false;
+    };
+
+    let mut ok = true;
+    for (crate_name, required) in REQUIRED_FEATURES {
+        let Some(spec) = deps.get(*crate_name) else {
+            println!("  FAIL: {crate_name} is not a workspace dependency");
+            ok = false;
+            continue;
+        };
+        let declared: Vec<&str> = spec
+            .get("features")
+            .and_then(toml::Value::as_array)
+            .map(|a| a.iter().filter_map(toml::Value::as_str).collect())
+            .unwrap_or_default();
+
+        for (feature, because) in *required {
+            if declared.contains(feature) {
+                println!("  ok   {crate_name}/{feature}");
+            } else {
+                println!("  FAIL {crate_name}/{feature} is not declared — {because}");
+                ok = false;
+            }
+        }
+    }
+
+    ok &= check_dev_only(root);
+
+    if ok {
+        println!("  all required features are declared on the workspace pin");
+    }
+    ok
+}
+
+/// Crates that must never appear in a production dependency path.
+///
+/// A test-only dependency is a claim about the shipped binary, and a claim in a comment
+/// decays. `delta_kernel_default_engine` is used as an oracle — it reads the Delta log
+/// SANKHYA writes and must agree about the live set — and moving it into
+/// `[dependencies]` would pull eighty-four packages and a duplicated HTTP client into
+/// the binary while looking like a one-line change.
+const DEV_ONLY: &[(&str, &str)] = &[(
+    "delta_kernel_default_engine",
+    "it is an oracle for the log writer, not an I/O layer; DEC-06 couples to storage \
+     metadata only",
+)];
+
+fn check_dev_only(root: &Path) -> bool {
+    let mut ok = true;
+    let crates_dir = root.join("crates");
+    let Ok(entries) = std::fs::read_dir(&crates_dir) else {
+        println!("  FAIL: {} is unreadable", crates_dir.display());
+        return false;
+    };
+
+    for entry in entries.flatten() {
+        let manifest = entry.path().join("Cargo.toml");
+        let Ok(text) = std::fs::read_to_string(&manifest) else {
+            continue;
+        };
+        let Ok(doc) = toml::from_str::<toml::Table>(&text) else {
+            continue;
+        };
+        let Some(deps) = doc.get("dependencies").and_then(toml::Value::as_table) else {
+            continue;
+        };
+
+        for (name, because) in DEV_ONLY {
+            if deps.contains_key(*name) {
+                println!(
+                    "  FAIL {} lists {name} as a production dependency — {because}",
+                    entry.file_name().to_string_lossy()
+                );
+                ok = false;
+            }
+        }
+    }
+
+    if ok {
+        for (name, _) in DEV_ONLY {
+            println!("  ok   {name} is test-only");
+        }
+    }
+    ok
+}
+
+/// The `NFR-PERF-*` objectives, run as a gate.
+///
+/// Separate from `check-all` because it costs minutes and needs a quiet machine, and a
+/// check that people learn to skip is worse than one they have to invoke. This is the
+/// command the performance pipeline runs; `docs/IMPLEMENTATION_PLAN.md` M3 exit
+/// criterion 1 says "in the pipeline", and this is what makes that phrase mean
+/// something a build can fail on.
+fn check_performance(root: &Path) -> bool {
+    println!("== check-performance");
+    let status = Command::new(env!("CARGO"))
+        .current_dir(root)
+        .args([
+            "test",
+            "-p",
+            "sankhya-olap",
+            "--test",
+            "tpch",
+            "--release",
+            "--",
+            "--ignored",
+            "--nocapture",
+            "--exact",
+            "the_performance_objectives_are_met",
+        ])
+        // The objectives are stated at scale factor 1. Running them at anything else
+        // measures a different requirement.
+        .env("SANKHYA_TPCH_SCALE", "1")
+        .status();
+
+    match status {
+        Ok(status) if status.success() => {
+            println!("   objectives met");
+            true
+        }
+        Ok(_) => {
+            eprintln!("   FAILED: at least one objective is not met");
+            false
+        }
+        Err(error) => {
+            eprintln!("   FAILED: could not run the gate: {error}");
+            false
+        }
+    }
+}
+
+/// Clippy across every target, with the workspace's denied lints.
+///
+/// In `check-all` because the denied set is a safety policy, not a style preference:
+/// `unwrap`, `expect`, `panic` and unchecked indexing are refused in library code
+/// because a server must not abort on data it did not choose. A policy that does not
+/// run is not a policy — this was declared in `Cargo.toml` from the start and had never
+/// been enforced by anything, and the library code had accumulated violations in six
+/// crates, including a wire decoder indexing attacker-supplied bytes.
+///
+/// Test targets allow the same lints, stated file by file rather than globally, because
+/// a test panicking is how a test fails.
+fn check_lints(root: &Path) -> bool {
+    println!("== check-lints");
+    let output = Command::new(env!("CARGO"))
+        .current_dir(root)
+        .args(["clippy", "--workspace", "--all-targets", "--keep-going"])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            println!("   clean across every target");
+            true
+        }
+        Ok(output) => {
+            let text = String::from_utf8_lossy(&output.stderr);
+            let count = text.lines().filter(|l| l.starts_with("error")).count();
+            eprintln!("   FAILED: {count} clippy error(s)");
+            for line in text.lines().filter(|l| l.starts_with("error")).take(10) {
+                eprintln!("     {line}");
+            }
+            false
+        }
+        Err(error) => {
+            eprintln!("   FAILED: could not run clippy: {error}");
+            false
+        }
+    }
+}
+
+/// Every mutation-catalogue entry still matches the source it names.
+///
+/// This is the catalogue's staleness check without the audit that follows it: no
+/// compilation, no test run, milliseconds. It is separate from the audit precisely so it
+/// can be cheap enough to gate every build.
+///
+/// It catches two failures that a diff review does not. A refactor moves the code an
+/// entry names, and the entry goes on reporting a pass while proving nothing --- four
+/// entries had drifted this way. And an audit run killed hard enough to defeat its
+/// in-flight record leaves a deliberate defect applied in the tree; one such defect
+/// reached a commit here, a comparison that stopped flipping `5 < x` into `x > 5`, which
+/// makes the reader skip files that do hold matching rows. Both are invisible in the
+/// working tree and neither announces itself.
+fn check_mutations(root: &Path) -> bool {
+    println!("== check-mutations");
+    let output = Command::new("python3")
+        .current_dir(root)
+        .args(["tools/mutation-audit.py", "--check"])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            println!("   every catalogue entry matches its source");
+            true
+        }
+        Ok(output) => {
+            eprintln!("   FAILED: the catalogue and the source disagree");
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines().take(20) {
+                eprintln!("     {line}");
+            }
+            false
+        }
+        Err(error) => {
+            eprintln!("   FAILED: could not run the mutation audit: {error}");
+            false
+        }
+    }
+}
+
+/// Every document's `**Status:**` line says the same thing.
+///
+/// Documentation rot is usually not a false statement; it is two true-at-different-times
+/// statements sitting in different files. This catches the specific case that has
+/// actually happened here: four documents carried "Design phase" long after
+/// implementation started, and two of those had been half-updated into "Implementation —
+/// M0–M3 complete — no implementation has begun", which is a sentence that contradicts
+/// itself and which nobody reading one document in isolation would notice.
+///
+/// Only files declaring a `**Status:**` header line participate. Prose status paragraphs
+/// are left alone: this checks the machine-readable claim, not the writing.
+fn check_status_agreement(docs: &[PathBuf]) -> bool {
+    let mut seen: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+    for doc in docs {
+        // Architecture decision records carry their own status vocabulary — Accepted,
+        // Superseded — which is about the decision, not about the project. They are a
+        // different kind of claim and are excluded rather than forced to agree.
+        if doc.components().any(|c| c.as_os_str() == "adr") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(doc) else {
+            continue;
+        };
+        let name = doc
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        for line in text.lines().take(20) {
+            if let Some(rest) = line.strip_prefix("**Status:** ") {
+                seen.entry(rest.trim().to_string()).or_default().push(name);
+                break;
+            }
+        }
+    }
+
+    if seen.len() > 1 {
+        eprintln!("  DISAGREEMENT: documents state different statuses");
+        for (status, files) in &seen {
+            eprintln!("    {:<50} {}", status, files.join(", "));
+        }
+        return false;
+    }
+
+    if let Some((status, files)) = seen.iter().next() {
+        println!("   {} documents agree on status: {status}", files.len());
+    }
+    true
 }

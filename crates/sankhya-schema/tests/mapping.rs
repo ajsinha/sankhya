@@ -4,10 +4,22 @@
 //! a more permissive mapping would have carried approximately — producing data that
 //! looks correct, reconciles against nothing, and is discovered years later.
 
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
 use arrow_schema::{DataType, TimeUnit};
 use proptest::prelude::*;
 use sankhya_schema::{
-    Field, LogicalSchema, LogicalType, MappingError, Precision, map_source_type, numeric_modifier,
+    map_source_type, numeric_modifier, Field, LogicalSchema, LogicalType, MappingError, Precision,
 };
 
 /// The identifiers used by the ten-table fixture set.
@@ -35,9 +47,11 @@ fn every_type_in_the_fixture_set_maps() {
         (DATE, -1, LogicalType::Date),
         (TIMESTAMPTZ, -1, LogicalType::TimestampUtc),
         (JSONB, -1, LogicalType::Json),
-        (NUMERIC, numeric_modifier(12, 4), LogicalType::Decimal(
-            Precision::new(12, 4).expect("valid"),
-        )),
+        (
+            NUMERIC,
+            numeric_modifier(12, 4),
+            LogicalType::Decimal(Precision::new(12, 4).expect("valid")),
+        ),
     ];
     for (oid, modifier, expected) in cases {
         let mapped = map_source_type(*oid, *modifier)
@@ -57,7 +71,10 @@ fn zoned_and_unzoned_timestamps_stay_distinct() {
         zoned.arrow_type(),
         DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
     );
-    assert_eq!(naive.arrow_type(), DataType::Timestamp(TimeUnit::Microsecond, None));
+    assert_eq!(
+        naive.arrow_type(),
+        DataType::Timestamp(TimeUnit::Microsecond, None)
+    );
 }
 
 #[test]
@@ -71,7 +88,10 @@ fn unconstrained_decimal_is_refused_not_truncated() {
     };
     assert!(detail.contains("arbitrary precision"), "{detail}");
     // The message must tell the operator what to do.
-    assert!(detail.contains("numeric(18,4)") || detail.contains("Constrain"), "{detail}");
+    assert!(
+        detail.contains("numeric(18,4)") || detail.contains("Constrain"),
+        "{detail}"
+    );
 }
 
 #[test]
@@ -104,7 +124,10 @@ fn an_unknown_type_is_refused_with_guidance() {
     let MappingError::Unsupported { reason, .. } = err else {
         panic!("expected unsupported");
     };
-    assert!(reason.contains("deliberately"), "the refusal should say how to proceed: {reason}");
+    assert!(
+        reason.contains("deliberately"),
+        "the refusal should say how to proceed: {reason}"
+    );
 }
 
 #[test]
@@ -120,12 +143,31 @@ fn floats_are_marked_inexact() {
 #[test]
 fn the_physical_schema_carries_provenance() {
     let schema = LogicalSchema::new(vec![
-        Field { name: "id".into(), logical: LogicalType::Int64, nullable: false, is_key: true },
-        Field { name: "label".into(), logical: LogicalType::Utf8, nullable: true, is_key: false },
+        Field {
+            name: "id".into(),
+            logical: LogicalType::Int64,
+            nullable: false,
+            is_key: true,
+        },
+        Field {
+            name: "label".into(),
+            logical: LogicalType::Utf8,
+            nullable: true,
+            is_key: false,
+        },
     ]);
     let arrow = schema.arrow_schema();
     let names: Vec<&str> = arrow.fields().iter().map(|f| f.name().as_str()).collect();
-    assert_eq!(names, ["id", "label", "_sankhya_commit_lsn", "_sankhya_commit_ts", "_sankhya_op"]);
+    assert_eq!(
+        names,
+        [
+            "id",
+            "label",
+            "_sankhya_commit_lsn",
+            "_sankhya_commit_ts",
+            "_sankhya_op"
+        ]
+    );
 
     // Provenance columns are never null: a row without a position could not be
     // reconciled or replayed.
@@ -149,13 +191,22 @@ fn a_source_column_shadowing_a_system_column_is_detected() {
 #[test]
 fn identity_is_reported_accurately() {
     let keyed = LogicalSchema::new(vec![Field {
-        name: "id".into(), logical: LogicalType::Int64, nullable: false, is_key: true,
+        name: "id".into(),
+        logical: LogicalType::Int64,
+        nullable: false,
+        is_key: true,
     }]);
     let keyless = LogicalSchema::new(vec![Field {
-        name: "v".into(), logical: LogicalType::Int64, nullable: false, is_key: false,
+        name: "v".into(),
+        logical: LogicalType::Int64,
+        nullable: false,
+        is_key: false,
     }]);
     assert!(keyed.has_identity());
-    assert!(!keyless.has_identity(), "a keyless table can be appended to but not updated");
+    assert!(
+        !keyless.has_identity(),
+        "a keyless table can be appended to but not updated"
+    );
 }
 
 proptest! {

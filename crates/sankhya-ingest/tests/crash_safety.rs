@@ -21,6 +21,18 @@
 //! specific interleaving against a live database is a matter of luck; here it is a
 //! matter of arithmetic.
 
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
 use proptest::prelude::*;
 use sankhya_cdc_apply::BatchPolicy;
 use sankhya_cdc_model::{
@@ -40,8 +52,18 @@ fn relation() -> Message {
         name: "readings".into(),
         replica_identity: ReplicaIdentity::Default,
         columns: vec![
-            ColumnDescriptor { name: "id".into(), type_oid: 20, type_modifier: -1, is_key: true },
-            ColumnDescriptor { name: "label".into(), type_oid: 25, type_modifier: -1, is_key: false },
+            ColumnDescriptor {
+                name: "id".into(),
+                type_oid: 20,
+                type_modifier: -1,
+                is_key: true,
+            },
+            ColumnDescriptor {
+                name: "label".into(),
+                type_oid: 25,
+                type_modifier: -1,
+                is_key: false,
+            },
         ],
     }))
 }
@@ -84,7 +106,11 @@ fn build_stream(transactions: usize, rows_each: usize) -> Vec<Message> {
 fn pipeline(dir: &std::path::Path, max_rows: usize) -> Pipeline {
     Pipeline::new(
         dir,
-        BatchPolicy { max_rows, max_transactions: usize::MAX, ..BatchPolicy::default() },
+        BatchPolicy {
+            max_rows,
+            max_transactions: usize::MAX,
+            ..BatchPolicy::default()
+        },
         WriterConfig::default(),
     )
 }
@@ -194,7 +220,10 @@ fn repeated_restarts_still_lose_nothing() {
         }
     }
 
-    assert_eq!(total, 20, "five restarts must still yield every row exactly once");
+    assert_eq!(
+        total, 20,
+        "five restarts must still yield every row exactly once"
+    );
 }
 
 #[test]

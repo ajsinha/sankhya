@@ -31,11 +31,35 @@ use std::fmt;
 /// makes format metadata directories invisible to them — so a table so named would be
 /// unreadable by the very engines the layout exists to serve.
 pub const RESERVED_SEGMENTS: &[&str] = &[
-    "_delta_log", "metadata", "data", "_sankhya", "_staging", "graveyard",
+    "_delta_log",
+    "metadata",
+    "data",
+    "_sankhya",
+    "_staging",
+    "graveyard",
     // Platform device names, because the local filesystem backend must work everywhere.
-    "con", "prn", "aux", "nul",
-    "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
-    "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    "com1",
+    "com2",
+    "com3",
+    "com4",
+    "com5",
+    "com6",
+    "com7",
+    "com8",
+    "com9",
+    "lpt1",
+    "lpt2",
+    "lpt3",
+    "lpt4",
+    "lpt5",
+    "lpt6",
+    "lpt7",
+    "lpt8",
+    "lpt9",
 ];
 
 /// The longest segment a path component may be.
@@ -101,7 +125,11 @@ pub enum NamingError {
     ///
     /// Refused rather than disambiguated: a generated suffix destroys the readability
     /// the scheme exists to provide.
-    Collision { identifier: String, existing: String, segment: String },
+    Collision {
+        identifier: String,
+        existing: String,
+        segment: String,
+    },
 }
 
 impl fmt::Display for NamingError {
@@ -112,12 +140,19 @@ impl fmt::Display for NamingError {
                 "identifier {identifier:?} has no legible path representation; \
                  declare an explicit mapping or exclude the table"
             ),
-            Self::Reserved { identifier, segment } => write!(
+            Self::Reserved {
+                identifier,
+                segment,
+            } => write!(
                 f,
                 "identifier {identifier:?} maps to {segment:?}, which SANKHYA reserves; \
                  rename it in the source or declare an explicit mapping"
             ),
-            Self::Collision { identifier, existing, segment } => write!(
+            Self::Collision {
+                identifier,
+                existing,
+                segment,
+            } => write!(
                 f,
                 "identifier {identifier:?} and {existing:?} both map to {segment:?}. \
                  SANKHYA will not disambiguate automatically, because a generated \
@@ -138,12 +173,17 @@ impl std::error::Error for NamingError {}
 /// Collisions are detected by [`TableLocation`], which sees more than one identifier.
 pub fn segment_for(identifier: &str) -> Result<PathSegment, NamingError> {
     if is_already_safe(identifier) {
-        return Ok(PathSegment { text: identifier.to_string(), class: NameClass::Identity });
+        return Ok(PathSegment {
+            text: identifier.to_string(),
+            class: NameClass::Identity,
+        });
     }
 
     let transformed = transform(identifier);
     if transformed.is_empty() {
-        return Err(NamingError::Empty { identifier: identifier.to_string() });
+        return Err(NamingError::Empty {
+            identifier: identifier.to_string(),
+        });
     }
     if is_reserved(&transformed) {
         return Err(NamingError::Reserved {
@@ -151,7 +191,10 @@ pub fn segment_for(identifier: &str) -> Result<PathSegment, NamingError> {
             segment: transformed,
         });
     }
-    Ok(PathSegment { text: transformed, class: NameClass::Transformed })
+    Ok(PathSegment {
+        text: transformed,
+        class: NameClass::Transformed,
+    })
 }
 
 fn is_already_safe(identifier: &str) -> bool {
@@ -165,7 +208,9 @@ fn is_already_safe(identifier: &str) -> bool {
 }
 
 fn is_reserved(candidate: &str) -> bool {
-    RESERVED_SEGMENTS.contains(&candidate) || candidate.starts_with('_') || candidate.starts_with('.')
+    RESERVED_SEGMENTS.contains(&candidate)
+        || candidate.starts_with('_')
+        || candidate.starts_with('.')
 }
 
 /// Lower-case, replace unsafe characters, collapse runs, trim, and bound the length.

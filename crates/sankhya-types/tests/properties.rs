@@ -4,6 +4,18 @@
 //! everything above depends on, over thousands of randomized inputs rather than a
 //! handful of chosen examples.
 
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
 use proptest::prelude::*;
 use sankhya_types::{Fixed, FixedError, Lsn, LsnRange, Scale, Timestamp, ValidityInterval};
 
@@ -154,7 +166,9 @@ fn floating_point_would_not_be_order_independent() {
     );
 
     let scale = Scale::new(6).expect("scale 6 is valid");
-    let exact: Vec<Fixed> = (1..=1000).map(|i| Fixed::from_units(i128::from(i), scale)).collect();
+    let exact: Vec<Fixed> = (1..=1000)
+        .map(|i| Fixed::from_units(i128::from(i), scale))
+        .collect();
     let ef: Fixed = Fixed::sum(exact.iter().copied(), scale).expect("no overflow");
     let eb: Fixed = Fixed::sum(exact.iter().rev().copied(), scale).expect("no overflow");
     assert_eq!(ef, eb, "fixed-point summation must be order-independent");

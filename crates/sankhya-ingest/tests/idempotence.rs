@@ -14,6 +14,18 @@
 //! So idempotence is what converts at-least-once *delivery* into exactly-once
 //! *effect*, and it is checked rather than trusted.
 
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
 use sankhya_cdc_apply::BatchPolicy;
 use sankhya_cdc_model::{
     ColumnDescriptor, Message, RelationDescriptor, ReplicaIdentity, TupleData, TupleValue,
@@ -43,12 +55,18 @@ fn relation() -> Message {
 fn insert(value: &str) -> Message {
     Message::Insert {
         relation_id: RELATION,
-        new: TupleData { values: vec![TupleValue::Text(value.into())] },
+        new: TupleData {
+            values: vec![TupleValue::Text(value.into())],
+        },
     }
 }
 
 fn begin(xid: u32) -> Message {
-    Message::Begin { final_lsn: Lsn::new(0), commit_time: Timestamp::EPOCH, xid }
+    Message::Begin {
+        final_lsn: Lsn::new(0),
+        commit_time: Timestamp::EPOCH,
+        xid,
+    }
 }
 
 fn commit(at: u64) -> Message {
@@ -72,7 +90,11 @@ fn transaction(pipeline: &mut Pipeline, xid: u32, at: u64, count: usize) {
 fn pipeline(dir: &std::path::Path) -> Pipeline {
     Pipeline::new(
         dir,
-        BatchPolicy { max_rows: usize::MAX, max_transactions: usize::MAX, ..BatchPolicy::default() },
+        BatchPolicy {
+            max_rows: usize::MAX,
+            max_transactions: usize::MAX,
+            ..BatchPolicy::default()
+        },
         WriterConfig::default(),
     )
 }
@@ -163,7 +185,11 @@ fn new_work_beyond_the_published_position_is_never_skipped() {
     transaction(&mut p, 2, 101, 3); // only one position further on
     let files = p.publish(true).expect("publishes");
 
-    assert_eq!(files.len(), 1, "work past the published position must publish");
+    assert_eq!(
+        files.len(),
+        1,
+        "work past the published position must publish"
+    );
     assert_eq!(files[0].rows, 3);
     assert_eq!(p.stats().batches_skipped_as_duplicate, 0);
 }
@@ -213,7 +239,9 @@ fn each_table_tracks_its_own_position() {
     p.accept(&other_relation).expect("accepts");
     p.accept(&Message::Insert {
         relation_id: other,
-        new: TupleData { values: vec![TupleValue::Text("1".into())] },
+        new: TupleData {
+            values: vec![TupleValue::Text("1".into())],
+        },
     })
     .expect("accepts");
     p.accept(&commit(1100)).expect("accepts");

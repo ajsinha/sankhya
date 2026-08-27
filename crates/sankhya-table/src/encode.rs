@@ -1,9 +1,8 @@
 //! Text values to typed Arrow arrays.
 
 use arrow_array::builder::{
-    BooleanBuilder, Date32Builder, Decimal128Builder, Float32Builder, Float64Builder,
-    Int16Builder, Int32Builder, Int64Builder, StringBuilder, TimestampMicrosecondBuilder,
-    UInt64Builder,
+    BooleanBuilder, Date32Builder, Decimal128Builder, Float32Builder, Float64Builder, Int16Builder,
+    Int32Builder, Int64Builder, StringBuilder, TimestampMicrosecondBuilder, UInt64Builder,
 };
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::ArrowError;
@@ -20,7 +19,11 @@ pub enum EncodeError {
     /// Fatal by design. Substituting a null would turn a parsing defect into missing
     /// data, which is far harder to detect — the row is present, the query succeeds,
     /// and one column is silently empty.
-    Unparseable { column: String, logical: String, value: String },
+    Unparseable {
+        column: String,
+        logical: String,
+        value: String,
+    },
     /// A null arrived for a column declared not-null.
     UnexpectedNull { column: String },
     /// A row has the wrong number of values for the schema.
@@ -32,7 +35,11 @@ pub enum EncodeError {
 impl fmt::Display for EncodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Unparseable { column, logical, value } => write!(
+            Self::Unparseable {
+                column,
+                logical,
+                value,
+            } => write!(
                 f,
                 "{column}: {value:?} is not a valid {logical}. The value is refused \
                  rather than nulled, because a silently empty column is harder to \
@@ -53,7 +60,9 @@ impl std::error::Error for EncodeError {}
 
 impl From<ArrowError> for EncodeError {
     fn from(e: ArrowError) -> Self {
-        Self::Arrow { detail: e.to_string() }
+        Self::Arrow {
+            detail: e.to_string(),
+        }
     }
 }
 
@@ -71,7 +80,13 @@ pub fn encode_batch(
     let mut columns: Vec<ArrayRef> = Vec::with_capacity(schema.fields.len() + 3);
 
     for (index, field) in schema.fields.iter().enumerate() {
-        columns.push(encode_column(field.name.as_str(), &field.logical, field.nullable, index, mutations)?);
+        columns.push(encode_column(
+            field.name.as_str(),
+            &field.logical,
+            field.nullable,
+            index,
+            mutations,
+        )?);
     }
 
     // Provenance travels with the data, so the applied position is recoverable from
@@ -97,8 +112,15 @@ pub fn encode_batch(
     Ok(RecordBatch::try_new(arrow_schema, columns)?)
 }
 
-fn value_at<'a>(m: &'a Mutation, index: usize, expected: usize) -> Result<&'a Option<String>, EncodeError> {
-    m.row.values.get(index).ok_or(EncodeError::Arity { expected, found: m.row.values.len() })
+fn value_at<'a>(
+    m: &'a Mutation,
+    index: usize,
+    expected: usize,
+) -> Result<&'a Option<String>, EncodeError> {
+    m.row.values.get(index).ok_or(EncodeError::Arity {
+        expected,
+        found: m.row.values.len(),
+    })
 }
 
 macro_rules! numeric_column {
@@ -107,7 +129,11 @@ macro_rules! numeric_column {
         for m in $mutations {
             match value_at(m, $index, usize::MAX)? {
                 None if $nullable => b.append_null(),
-                None => return Err(EncodeError::UnexpectedNull { column: $name.to_string() }),
+                None => {
+                    return Err(EncodeError::UnexpectedNull {
+                        column: $name.to_string(),
+                    })
+                }
                 Some(raw) => {
                     let parsed = $parse(raw.as_str()).ok_or_else(|| EncodeError::Unparseable {
                         column: $name.to_string(),
@@ -132,7 +158,12 @@ fn encode_column(
     let n = mutations.len();
     Ok(match logical {
         LogicalType::Boolean => numeric_column!(
-            BooleanBuilder::with_capacity(n), name, nullable, index, mutations, "boolean",
+            BooleanBuilder::with_capacity(n),
+            name,
+            nullable,
+            index,
+            mutations,
+            "boolean",
             |s: &str| match s {
                 "t" | "true" | "TRUE" | "1" => Some(true),
                 "f" | "false" | "FALSE" | "0" => Some(false),
@@ -140,33 +171,68 @@ fn encode_column(
             }
         ),
         LogicalType::Int16 => numeric_column!(
-            Int16Builder::with_capacity(n), name, nullable, index, mutations, "int16",
+            Int16Builder::with_capacity(n),
+            name,
+            nullable,
+            index,
+            mutations,
+            "int16",
             |s: &str| s.parse::<i16>().ok()
         ),
         LogicalType::Int32 => numeric_column!(
-            Int32Builder::with_capacity(n), name, nullable, index, mutations, "int32",
+            Int32Builder::with_capacity(n),
+            name,
+            nullable,
+            index,
+            mutations,
+            "int32",
             |s: &str| s.parse::<i32>().ok()
         ),
         LogicalType::Int64 => numeric_column!(
-            Int64Builder::with_capacity(n), name, nullable, index, mutations, "int64",
+            Int64Builder::with_capacity(n),
+            name,
+            nullable,
+            index,
+            mutations,
+            "int64",
             |s: &str| s.parse::<i64>().ok()
         ),
         LogicalType::Float32 => numeric_column!(
-            Float32Builder::with_capacity(n), name, nullable, index, mutations, "float32",
+            Float32Builder::with_capacity(n),
+            name,
+            nullable,
+            index,
+            mutations,
+            "float32",
             |s: &str| s.parse::<f32>().ok()
         ),
         LogicalType::Float64 => numeric_column!(
-            Float64Builder::with_capacity(n), name, nullable, index, mutations, "float64",
+            Float64Builder::with_capacity(n),
+            name,
+            nullable,
+            index,
+            mutations,
+            "float64",
             |s: &str| s.parse::<f64>().ok()
         ),
         LogicalType::Date => numeric_column!(
-            Date32Builder::with_capacity(n), name, nullable, index, mutations, "date",
+            Date32Builder::with_capacity(n),
+            name,
+            nullable,
+            index,
+            mutations,
+            "date",
             parse_date
         ),
         LogicalType::TimestampUtc | LogicalType::TimestampLocal => {
             let array = numeric_column!(
-                TimestampMicrosecondBuilder::with_capacity(n), name, nullable, index,
-                mutations, "timestamp", parse_timestamp_micros
+                TimestampMicrosecondBuilder::with_capacity(n),
+                name,
+                nullable,
+                index,
+                mutations,
+                "timestamp",
+                parse_timestamp_micros
             );
             if matches!(logical, LogicalType::TimestampUtc) {
                 // The zone is part of the type. Dropping it here is how a column
@@ -189,14 +255,23 @@ fn encode_column(
             for m in mutations {
                 match value_at(m, index, usize::MAX)? {
                     None if nullable => b.append_null(),
-                    None => return Err(EncodeError::UnexpectedNull { column: name.to_string() }),
+                    None => {
+                        return Err(EncodeError::UnexpectedNull {
+                            column: name.to_string(),
+                        })
+                    }
                     Some(raw) => b.append_value(raw),
                 }
             }
             Arc::new(b.finish()) as ArrayRef
         }
         LogicalType::Time => numeric_column!(
-            Int64Builder::with_capacity(n), name, nullable, index, mutations, "time",
+            Int64Builder::with_capacity(n),
+            name,
+            nullable,
+            index,
+            mutations,
+            "time",
             |s: &str| parse_time_micros(s)
         ),
     })
@@ -218,7 +293,11 @@ fn encode_decimal(
     for m in mutations {
         match value_at(m, index, usize::MAX)? {
             None if nullable => b.append_null(),
-            None => return Err(EncodeError::UnexpectedNull { column: name.to_string() }),
+            None => {
+                return Err(EncodeError::UnexpectedNull {
+                    column: name.to_string(),
+                })
+            }
             Some(raw) => {
                 let units = parse_decimal_units(raw, precision.scale).ok_or_else(|| {
                     EncodeError::Unparseable {

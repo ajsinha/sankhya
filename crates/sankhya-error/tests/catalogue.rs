@@ -3,6 +3,18 @@
 //! Without these tests a newly added variant silently inherits whatever the fallback
 //! happens to be — which is how a fatal condition ends up being retried forever.
 
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
 use sankhya_error::{Class, Classify, Error};
 
 #[test]
@@ -45,7 +57,12 @@ fn code_prefix_matches_class() {
             Class::Fatal => 'S',
         };
         let actual = code.chars().nth(4).unwrap_or('?');
-        assert_eq!(actual, expected, "{code} prefix disagrees with its class {:?}", e.class());
+        assert_eq!(
+            actual,
+            expected,
+            "{code} prefix disagrees with its class {:?}",
+            e.class()
+        );
     }
 }
 
@@ -74,7 +91,10 @@ fn only_fatal_pages_a_human() {
 fn source_endangerment_is_fatal() {
     // INV-2. If this is ever downgraded, SANKHYA could quietly keep running while
     // the database it depends on fills its log volume.
-    assert_eq!(Error::SourceEndangered { detail: None }.class(), Class::Fatal);
+    assert_eq!(
+        Error::SourceEndangered { detail: None }.class(),
+        Class::Fatal
+    );
 }
 
 #[test]

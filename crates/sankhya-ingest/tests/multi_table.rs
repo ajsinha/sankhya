@@ -9,6 +9,18 @@
 //!
 //! Skipped unless `SANKHYA_PG_BIN` and `SANKHYA_E2E_SOCKET` are set.
 
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use sankhya_cdc_apply::BatchPolicy;
 use sankhya_ingest::Pipeline;
@@ -32,7 +44,17 @@ impl Pg {
 
     fn sql(&self, statement: &str) -> String {
         let out = Command::new(format!("{}/psql", self.bin))
-            .args(["-h", &self.socket, "-U", "sankhya", "-d", "postgres", "-tA", "-c", statement])
+            .args([
+                "-h",
+                &self.socket,
+                "-U",
+                "sankhya",
+                "-d",
+                "postgres",
+                "-tA",
+                "-c",
+                statement,
+            ])
             .output()
             .expect("psql runs");
         assert!(
@@ -67,7 +89,12 @@ async fn several_tables_capture_independently_and_reconcile() {
         return;
     };
 
-    let tables = ["device_readings", "route_legs", "shipment_scans", "access_events"];
+    let tables = [
+        "device_readings",
+        "route_legs",
+        "shipment_scans",
+        "access_events",
+    ];
     let per_table = 2_000i64;
     let slot = "sankhya_multi";
 
@@ -78,7 +105,9 @@ async fn several_tables_capture_independently_and_reconcile() {
         "SELECT pg_drop_replication_slot('{slot}') WHERE EXISTS
          (SELECT 1 FROM pg_replication_slots WHERE slot_name='{slot}')"
     ));
-    pg.sql(&format!("SELECT pg_create_logical_replication_slot('{slot}','pgoutput')"));
+    pg.sql(&format!(
+        "SELECT pg_create_logical_replication_slot('{slot}','pgoutput')"
+    ));
 
     for round in 0..4i64 {
         pg.sql(&format!(
@@ -111,26 +140,45 @@ async fn several_tables_capture_independently_and_reconcile() {
         warehouse.path(),
         // Publish once at the end, so the test can check the table-to-file mapping
         // exactly rather than across many partial files.
-        BatchPolicy { max_rows: usize::MAX, max_transactions: usize::MAX, ..BatchPolicy::default() },
+        BatchPolicy {
+            max_rows: usize::MAX,
+            max_transactions: usize::MAX,
+            ..BatchPolicy::default()
+        },
         WriterConfig::default(),
     );
 
     for bytes in &messages {
-        pipeline.accept_bytes(bytes).expect("the pipeline accepts every message");
+        pipeline
+            .accept_bytes(bytes)
+            .expect("the pipeline accepts every message");
     }
 
-    assert_eq!(pipeline.open_rows(), 0, "every transaction in the stream was committed");
+    assert_eq!(
+        pipeline.open_rows(),
+        0,
+        "every transaction in the stream was committed"
+    );
     let published = pipeline.publish(true).expect("publishes");
 
     let stats = pipeline.stats().clone();
-    assert_eq!(stats.unresolvable, 0, "no mutation should have been unresolvable");
-    assert!(stats.tables_onboarded >= tables.len(), "every table should have onboarded");
+    assert_eq!(
+        stats.unresolvable, 0,
+        "no mutation should have been unresolvable"
+    );
+    assert!(
+        stats.tables_onboarded >= tables.len(),
+        "every table should have onboarded"
+    );
     assert_eq!(
         stats.rows_captured as i64,
         per_table * tables.len() as i64,
         "every inserted row should be captured exactly once"
     );
-    assert!(stats.applied_through.get() > 0, "the pipeline must declare coverage");
+    assert!(
+        stats.applied_through.get() > 0,
+        "the pipeline must declare coverage"
+    );
 
     for table in tables {
         let file = published
@@ -139,19 +187,31 @@ async fn several_tables_capture_independently_and_reconcile() {
             .unwrap_or_else(|| panic!("{table} should have published a file"));
         assert_eq!(file.rows as i64, per_table, "{table} row count");
         assert!(
-            file.path.to_string_lossy().contains(&format!("public/{table}")),
+            file.path
+                .to_string_lossy()
+                .contains(&format!("public/{table}")),
             "{table} should land at its mirrored path, got {}",
             file.path.display()
         );
-        assert!(file.covers_through.get() > 0, "{table} must declare coverage");
+        assert!(
+            file.covers_through.get() > 0,
+            "{table} must declare coverage"
+        );
     }
 
     let ctx = SessionContext::new();
     for table in tables {
-        let file = published.iter().find(|f| f.table == table).expect("published");
-        ctx.register_parquet(table, file.path.to_string_lossy().as_ref(), ParquetReadOptions::default())
-            .await
-            .expect("registers");
+        let file = published
+            .iter()
+            .find(|f| f.table == table)
+            .expect("published");
+        ctx.register_parquet(
+            table,
+            file.path.to_string_lossy().as_ref(),
+            ParquetReadOptions::default(),
+        )
+        .await
+        .expect("registers");
 
         let result = ctx
             .sql(&format!("SELECT count(*) AS n FROM {table}"))
@@ -171,7 +231,10 @@ async fn several_tables_capture_independently_and_reconcile() {
             .sql(&format!("SELECT count(*) FROM {table} WHERE id > {MARKER}"))
             .parse()
             .expect("a count");
-        assert_eq!(n, source, "{table}: analytical count disagrees with the source");
+        assert_eq!(
+            n, source,
+            "{table}: analytical count disagrees with the source"
+        );
         assert_eq!(n, per_table);
     }
 

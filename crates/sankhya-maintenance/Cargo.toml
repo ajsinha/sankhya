@@ -1,6 +1,6 @@
 [package]
 name         = "sankhya-maintenance"
-description  = "The unified maintenance scheduler."
+description  = "Compaction policy and the maintenance scheduler."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -14,3 +14,24 @@ layer = 3
 workspace = true
 
 [dependencies]
+sankhya-types = { path = "../sankhya-types" }
+sankhya-error = { path = "../sankhya-error" }
+sankhya-table = { path = "../sankhya-table" }
+sankhya-table-delta = { path = "../sankhya-table-delta" }
+
+[dev-dependencies]
+parquet = { workspace = true }
+sankhya-ingest = { path = "../sankhya-ingest" }
+sankhya-cdc-apply = { path = "../sankhya-cdc-apply" }
+sankhya-cdc-model = { path = "../sankhya-cdc-model" }
+serde_json = { workspace = true }
+proptest = { workspace = true }
+tempfile    = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+sankhya-readpath = { path = "../sankhya-readpath" }
+sankhya-stats = { path = "../sankhya-stats" }
+sankhya-plan = { path = "../sankhya-plan" }
+sankhya-table-memory = { path = "../sankhya-table-memory" }
+datafusion   = { workspace = true }
+tokio        = { workspace = true }

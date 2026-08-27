@@ -6,17 +6,35 @@
 //!
 //! Skipped unless `SANKHYA_PG_BIN` and `SANKHYA_E2E_SOCKET` are set.
 
-use sankhya_schema::{LogicalType, map_source_type};
+// Tests may panic — that is how a test reports a failure. The workspace denies
+// `unwrap`, `expect`, `panic` and indexing because a *server* must not do those things
+// on data it did not choose; a test chooses all of its data, and an assertion that
+// cannot fail loudly is worse than useless.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+
+use sankhya_schema::{map_source_type, LogicalType};
 use std::process::Command;
 
 fn query(sql: &str) -> Option<String> {
     let bin = std::env::var("SANKHYA_PG_BIN").ok()?;
     let socket = std::env::var("SANKHYA_E2E_SOCKET").ok()?;
     let out = Command::new(format!("{bin}/psql"))
-        .args(["-h", &socket, "-U", "sankhya", "-d", "postgres", "-tA", "-F", "|", "-c", sql])
+        .args([
+            "-h", &socket, "-U", "sankhya", "-d", "postgres", "-tA", "-F", "|", "-c", sql,
+        ])
         .output()
         .ok()?;
-    assert!(out.status.success(), "psql failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "psql failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
@@ -57,8 +75,14 @@ fn every_column_of_the_acceptance_schema_maps() {
             LogicalType::Decimal(p) => {
                 decimals += 1;
                 // The modifier must have been read correctly, not defaulted.
-                assert!(p.digits > 0 && p.digits <= 38, "{table}.{column} precision {p:?}");
-                assert!(p.scale <= p.digits, "{table}.{column} scale exceeds precision");
+                assert!(
+                    p.digits > 0 && p.digits <= 38,
+                    "{table}.{column} precision {p:?}"
+                );
+                assert!(
+                    p.scale <= p.digits,
+                    "{table}.{column} scale exceeds precision"
+                );
             }
             LogicalType::TimestampUtc => timestamps += 1,
             _ => {}
@@ -68,10 +92,20 @@ fn every_column_of_the_acceptance_schema_maps() {
         mapped += 1;
     }
 
-    assert_eq!(tables.len(), 10, "expected the ten acceptance tables, saw {tables:?}");
-    assert!(mapped >= 70, "expected at least seventy columns, mapped {mapped}");
+    assert_eq!(
+        tables.len(),
+        10,
+        "expected the ten acceptance tables, saw {tables:?}"
+    );
+    assert!(
+        mapped >= 70,
+        "expected at least seventy columns, mapped {mapped}"
+    );
     assert!(decimals > 0, "the fixture set must exercise exact decimals");
-    assert!(timestamps > 0, "the fixture set must exercise zoned timestamps");
+    assert!(
+        timestamps > 0,
+        "the fixture set must exercise zoned timestamps"
+    );
 
     eprintln!(
         "real schema: {mapped} columns across {} tables mapped losslessly \

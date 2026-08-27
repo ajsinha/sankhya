@@ -19,7 +19,11 @@ const SOURCE_EPOCH_OFFSET_MICROS: i64 = 946_684_800_000_000;
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum DecodeError {
     /// The message ended before the field did.
-    Truncated { at: usize, needed: usize, available: usize },
+    Truncated {
+        at: usize,
+        needed: usize,
+        available: usize,
+    },
     /// The leading message tag is not one this protocol version defines.
     UnknownMessage { tag: u8 },
     /// A column value marker other than the defined set.
@@ -39,8 +43,15 @@ pub enum DecodeError {
 impl std::fmt::Display for DecodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Truncated { at, needed, available } => {
-                write!(f, "truncated at byte {at}: needed {needed}, {available} available")
+            Self::Truncated {
+                at,
+                needed,
+                available,
+            } => {
+                write!(
+                    f,
+                    "truncated at byte {at}: needed {needed}, {available} available"
+                )
             }
             Self::UnknownMessage { tag } => {
                 write!(f, "unknown message tag {tag:#04x} ({:?})", *tag as char)
@@ -82,31 +93,52 @@ impl<'a> Cursor<'a> {
             needed: n,
             available: 0,
         })?;
-        let slice = self.bytes.get(self.pos..end).ok_or(DecodeError::Truncated {
-            at: self.pos,
-            needed: n,
-            available: self.bytes.len().saturating_sub(self.pos),
-        })?;
+        let slice = self
+            .bytes
+            .get(self.pos..end)
+            .ok_or(DecodeError::Truncated {
+                at: self.pos,
+                needed: n,
+                available: self.bytes.len().saturating_sub(self.pos),
+            })?;
         self.pos = end;
         Ok(slice)
     }
 
     fn u8(&mut self) -> Result<u8, DecodeError> {
-        self.take(1)?.first().copied().ok_or(DecodeError::Truncated {
-            at: self.pos,
-            needed: 1,
-            available: 0,
+        self.take(1)?
+            .first()
+            .copied()
+            .ok_or(DecodeError::Truncated {
+                at: self.pos,
+                needed: 1,
+                available: 0,
+            })
+    }
+
+    /// The next `N` bytes as a fixed-size array.
+    ///
+    /// Indexing a slice that was just checked to be long enough is safe but not
+    /// *provably* safe to a reader or to a lint, and the workspace denies indexing
+    /// precisely so that a decoder reading attacker-supplied bytes cannot panic on one.
+    /// Returning the array instead moves the length check into the type, so the callers
+    /// below have nothing left to get wrong.
+    fn take_array<const N: usize>(&mut self) -> Result<[u8; N], DecodeError> {
+        let start = self.pos;
+        let slice = self.take(N)?;
+        <[u8; N]>::try_from(slice).map_err(|_| DecodeError::Truncated {
+            at: start,
+            needed: N,
+            available: slice.len(),
         })
     }
 
     fn i16(&mut self) -> Result<i16, DecodeError> {
-        let b = self.take(2)?;
-        Ok(i16::from_be_bytes([b[0], b[1]]))
+        Ok(i16::from_be_bytes(self.take_array()?))
     }
 
     fn u32(&mut self) -> Result<u32, DecodeError> {
-        let b = self.take(4)?;
-        Ok(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+        Ok(u32::from_be_bytes(self.take_array()?))
     }
 
     fn i32(&mut self) -> Result<i32, DecodeError> {
@@ -114,8 +146,7 @@ impl<'a> Cursor<'a> {
     }
 
     fn u64(&mut self) -> Result<u64, DecodeError> {
-        let b = self.take(8)?;
-        Ok(u64::from_be_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+        Ok(u64::from_be_bytes(self.take_array()?))
     }
 
     fn i64(&mut self) -> Result<i64, DecodeError> {
@@ -136,13 +167,20 @@ impl<'a> Cursor<'a> {
 
     fn cstring(&mut self) -> Result<String, DecodeError> {
         let start = self.pos;
-        let rest = self.bytes.get(start..).ok_or(DecodeError::UnterminatedString { at: start })?;
+        let rest = self
+            .bytes
+            .get(start..)
+            .ok_or(DecodeError::UnterminatedString { at: start })?;
         let nul = rest
             .iter()
             .position(|b| *b == 0)
             .ok_or(DecodeError::UnterminatedString { at: start })?;
-        let text = std::str::from_utf8(&rest[..nul])
-            .map_err(|_| DecodeError::InvalidUtf8 { at: start })?
+        let text = rest
+            .get(..nul)
+            .ok_or(DecodeError::UnterminatedString { at: start })
+            .and_then(|bytes| {
+                std::str::from_utf8(bytes).map_err(|_| DecodeError::InvalidUtf8 { at: start })
+            })?
             .to_owned();
         self.pos = start.saturating_add(nul).saturating_add(1);
         Ok(text)
@@ -213,16 +251,28 @@ impl Decoder {
                 let relation_id = c.u32()?;
                 let marker = c.u8()?;
                 if marker != b'N' {
-                    return Err(DecodeError::UnknownTupleSection { at: c.pos - 1, marker });
+                    return Err(DecodeError::UnknownTupleSection {
+                        at: c.pos - 1,
+                        marker,
+                    });
                 }
-                Ok(Message::Insert { relation_id, new: Self::tuple(c)? })
+                Ok(Message::Insert {
+                    relation_id,
+                    new: Self::tuple(c)?,
+                })
             }
             b'U' => Self::update(c),
             b'D' => Self::delete(c),
             b'T' => Self::truncate(c),
-            b'O' => Ok(Message::Origin { commit_lsn: c.lsn()?, name: c.cstring()? }),
+            b'O' => Ok(Message::Origin {
+                commit_lsn: c.lsn()?,
+                name: c.cstring()?,
+            }),
             b'M' => Self::logical(c),
-            b'S' => Ok(Message::StreamStart { xid: c.u32()?, first_segment: c.u8()? != 0 }),
+            b'S' => Ok(Message::StreamStart {
+                xid: c.u32()?,
+                first_segment: c.u8()? != 0,
+            }),
             b'E' => Ok(Message::StreamStop),
             b'c' => {
                 let xid = c.u32()?;
@@ -249,11 +299,17 @@ impl Decoder {
         let identity_at = c.pos;
         let identity_byte = c.u8()?;
         let replica_identity = ReplicaIdentity::from_byte(identity_byte).ok_or(
-            DecodeError::UnknownReplicaIdentity { at: identity_at, value: identity_byte },
+            DecodeError::UnknownReplicaIdentity {
+                at: identity_at,
+                value: identity_byte,
+            },
         )?;
         let count = c.i16()?;
         if count < 0 {
-            return Err(DecodeError::NegativeLength { at: c.pos - 2, value: i32::from(count) });
+            return Err(DecodeError::NegativeLength {
+                at: c.pos - 2,
+                value: i32::from(count),
+            });
         }
         let mut columns = Vec::with_capacity(usize::try_from(count).unwrap_or(0).min(4096));
         for _ in 0..count {
@@ -292,14 +348,27 @@ impl Decoder {
                     new: Self::tuple(c)?,
                 })
             }
-            other => return Err(DecodeError::UnknownTupleSection { at: marker_at, marker: other }),
+            other => {
+                return Err(DecodeError::UnknownTupleSection {
+                    at: marker_at,
+                    marker: other,
+                })
+            }
         };
         let new_at = c.pos;
         let new_marker = c.u8()?;
         if new_marker != b'N' {
-            return Err(DecodeError::UnknownTupleSection { at: new_at, marker: new_marker });
+            return Err(DecodeError::UnknownTupleSection {
+                at: new_at,
+                marker: new_marker,
+            });
         }
-        Ok(Message::Update { relation_id, old, key_only, new: Self::tuple(c)? })
+        Ok(Message::Update {
+            relation_id,
+            old,
+            key_only,
+            new: Self::tuple(c)?,
+        })
     }
 
     fn delete(c: &mut Cursor<'_>) -> Result<Message, DecodeError> {
@@ -309,15 +378,27 @@ impl Decoder {
         let key_only = match marker {
             b'K' => true,
             b'O' => false,
-            other => return Err(DecodeError::UnknownTupleSection { at: marker_at, marker: other }),
+            other => {
+                return Err(DecodeError::UnknownTupleSection {
+                    at: marker_at,
+                    marker: other,
+                })
+            }
         };
-        Ok(Message::Delete { relation_id, old: Self::tuple(c)?, key_only })
+        Ok(Message::Delete {
+            relation_id,
+            old: Self::tuple(c)?,
+            key_only,
+        })
     }
 
     fn truncate(c: &mut Cursor<'_>) -> Result<Message, DecodeError> {
         let count = c.i32()?;
         if count < 0 {
-            return Err(DecodeError::NegativeLength { at: c.pos - 4, value: count });
+            return Err(DecodeError::NegativeLength {
+                at: c.pos - 4,
+                value: count,
+            });
         }
         let options = c.u8()?;
         let mut relation_ids = Vec::with_capacity(usize::try_from(count).unwrap_or(0).min(65_536));
@@ -337,16 +418,27 @@ impl Decoder {
         let prefix = c.cstring()?;
         let len = c.i32()?;
         if len < 0 {
-            return Err(DecodeError::NegativeLength { at: c.pos - 4, value: len });
+            return Err(DecodeError::NegativeLength {
+                at: c.pos - 4,
+                value: len,
+            });
         }
         let content = c.take(usize::try_from(len).unwrap_or(0))?.to_vec();
-        Ok(Message::Logical { transactional, lsn, prefix, content })
+        Ok(Message::Logical {
+            transactional,
+            lsn,
+            prefix,
+            content,
+        })
     }
 
     fn tuple(c: &mut Cursor<'_>) -> Result<TupleData, DecodeError> {
         let count = c.i16()?;
         if count < 0 {
-            return Err(DecodeError::NegativeLength { at: c.pos - 2, value: i32::from(count) });
+            return Err(DecodeError::NegativeLength {
+                at: c.pos - 2,
+                value: i32::from(count),
+            });
         }
         let mut values = Vec::with_capacity(usize::try_from(count).unwrap_or(0).min(4096));
         for _ in 0..count {
@@ -359,7 +451,10 @@ impl Decoder {
                 b't' => {
                     let len = c.i32()?;
                     if len < 0 {
-                        return Err(DecodeError::NegativeLength { at: c.pos - 4, value: len });
+                        return Err(DecodeError::NegativeLength {
+                            at: c.pos - 4,
+                            value: len,
+                        });
                     }
                     let raw = c.take(usize::try_from(len).unwrap_or(0))?;
                     TupleValue::Text(
@@ -371,11 +466,19 @@ impl Decoder {
                 b'b' => {
                     let len = c.i32()?;
                     if len < 0 {
-                        return Err(DecodeError::NegativeLength { at: c.pos - 4, value: len });
+                        return Err(DecodeError::NegativeLength {
+                            at: c.pos - 4,
+                            value: len,
+                        });
                     }
                     TupleValue::Binary(c.take(usize::try_from(len).unwrap_or(0))?.to_vec())
                 }
-                other => return Err(DecodeError::UnknownTupleKind { at: kind_at, kind: other }),
+                other => {
+                    return Err(DecodeError::UnknownTupleKind {
+                        at: kind_at,
+                        kind: other,
+                    })
+                }
             });
         }
         Ok(TupleData { values })
