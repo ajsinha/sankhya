@@ -1740,6 +1740,86 @@ CATALOGUE = [
      "    let found = reachable(graph, &[root], &graph.all_edge_types(), budget);",
      "sankhya-cube"),
 
+    # --- the sparse cube and the navigation operations ---------------------
+
+    ("cube: read an absent cell as zero",
+     "crates/sankhya-cube/src/cells.rs",
+     "        if self.values.is_empty() {\n            return None;\n        }",
+     "        if self.values.is_empty() {\n            return Some(0.0);\n        }",
+     "sankhya-cube"),
+
+    ("cube: sum a cell without fixing the order, so two runs differ",
+     "crates/sankhya-cube/src/cells.rs",
+     "            Rule::Sum => Some(deterministic_sum(&self.values)),",
+     "            Rule::Sum => Some(self.values.iter().sum()),",
+     "sankhya-cube"),
+
+    ("cube: report a cell of nothing but NaN as absent",
+     "crates/sankhya-cube/src/cells.rs",
+     "        best.or(Some(f64::NAN))",
+     "        best",
+     "sankhya-cube"),
+
+    ("cube: pad an address of the wrong width instead of refusing it",
+     "crates/sankhya-cube/src/cells.rs",
+     "        if address.len() != self.dimensions.len() {",
+     "        if false {",
+     "sankhya-cube"),
+
+    ("cube: give a non-composing measure a value from its partial aggregates",
+     "crates/sankhya-cube/src/cells.rs",
+     "            Rule::None => None,",
+     "            Rule::None => Some(deterministic_sum(&self.values)),",
+     "sankhya-cube"),
+
+    ("cube: roll up a positional measure without a stated member order",
+     "crates/sankhya-cube/src/navigate.rs",
+     "    if positional && order == Ordered::Unstated {",
+     "    if false {",
+     "sankhya-cube"),
+
+    ("cube: take contributions in visit order, so a closing balance is January's",
+     "crates/sankhya-cube/src/navigate.rs",
+     "        if positional {\n            values.sort_by_key(|(at, _)| *at);\n        }",
+     "",
+     "sankhya-cube"),
+
+    ("cube: place a member missing from the stated order rather than refusing",
+     "crates/sankhya-cube/src/navigate.rs",
+     "                    return Err(Refused::MemberNotOrdered {\n                        dimension: dimension.to_string(),\n                        member: member.to_string(),\n                    })",
+     "                    0",
+     "sankhya-cube"),
+
+    ("cube: treat an undeclared dimension as a refusal rather than a definition gap",
+     "crates/sankhya-cube/src/navigate.rs",
+     "        None => Err(Refused::Undeclared {",
+     "        None => Err(Refused::NotComposable {",
+     "sankhya-cube"),
+
+    ("cube: keep the sliced axis, leaving a degenerate dimension behind",
+     "crates/sankhya-cube/src/navigate.rs",
+     "        .filter(|(index, _)| *index != axis)\n        .map(|(_, name)| name.clone())\n        .collect();\n\n    let mut out = Cells::over(remaining);\n    for address in cells.addresses() {\n        if address.get(axis).map(String::as_str) != Some(member) {",
+     "        .map(|(_, name)| name.clone())\n        .collect();\n\n    let mut out = Cells::over(remaining);\n    for address in cells.addresses() {\n        if address.get(axis).map(String::as_str) != Some(member) {",
+     "sankhya-cube"),
+
+    ("cube: drop a dice restriction naming an absent dimension without saying so",
+     "crates/sankhya-cube/src/navigate.rs",
+     "            None => ignored.push((*dimension).to_string()),",
+     "            None => {}",
+     "sankhya-cube"),
+
+    ("cube: lose the axes a partial pivot did not name",
+     "crates/sankhya-cube/src/navigate.rs",
+     "    for axis in 0..cells.dimensions().len() {\n        if !axes.contains(&axis) {\n            axes.push(axis);\n        }\n    }",
+     "",
+     "sankhya-cube"),
+
+    ("cube: invent a parent for a member that has none, padding a ragged hierarchy",
+     "crates/sankhya-cube/src/navigate.rs",
+     "            if let Some(parent) = parents(member) {\n                if let Some(slot) = moved.get_mut(axis) {\n                    *slot = parent;\n                }\n            }",
+     "            if let Some(slot) = moved.get_mut(axis) {\n                *slot = parents(member).unwrap_or_else(|| \"unknown\".to_string());\n            }",
+     "sankhya-cube"),
+
 ]
 
 

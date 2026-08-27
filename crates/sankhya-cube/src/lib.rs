@@ -38,11 +38,15 @@
 
 #![doc(html_root_url = "https://docs.rs/sankhya-cube")]
 
+pub mod cells;
 pub mod consolidate;
 pub mod model;
+pub mod navigate;
 pub mod validate;
 pub mod version;
 
 pub use model::{Definition, Dimension, Level, Cube};
+pub use cells::{Address, Cells, Contributions};
 pub use consolidate::{consolidate, Consolidation, Incomplete};
+pub use navigate::{dice, pivot, roll_up, slice, Ordered, Refused};
 pub use validate::Rejection;
