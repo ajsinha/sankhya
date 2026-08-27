@@ -23,4 +23,6 @@ async-trait       = "0.1"
 parking_lot       = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio    = { version = "1", features = ["rt-multi-thread", "macros"] }
+proptest = { workspace = true }
+sankhya-graph-algo = { path = "../sankhya-graph-algo" }

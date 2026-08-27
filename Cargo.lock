@@ -3392,8 +3392,10 @@ dependencies = [
  "async-trait",
  "datafusion",
  "parking_lot",
+ "proptest",
  "sankhya-cube",
  "sankhya-cube-algo",
+ "sankhya-graph-algo",
  "tokio",
 ]
 

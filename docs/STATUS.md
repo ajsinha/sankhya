@@ -26,10 +26,49 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M4** Graph engine and the extension mechanism | 26–32 ew | **Complete.** Every exit criterion met; see below |
 | **M5** Tenancy, security and API surfaces | 22–28 ew | **Closed.** Four of five exit criteria met; the fifth needs a second server version to exist. Two of four API surfaces built — the wire protocol and Flight SQL. The control plane and its gateway are **deferred to M6**, because what they expose is built there |
 | **M6** Operability, packaging and hardening | — | **In progress. Five of seven exit criteria met.** §10.1's diagnostic, §10.2's catalogues, §10.3's backup and restore drill, §10.4's packaging checks, §10.5's timed journey and §10.6's version axes are built; criterion 3 as far as a single release allows. **Criterion 4 is not met** — §10.7's harness is built and proven, and a multi-day run at the acceptance scale is a scheduled pipeline rather than a session. **Criterion 7 is not met** — §10.8's size decision and route table are built and tested; the gRPC transport and every write path are not |
-| **M7** Multidimensional analysis | — | **In progress.** §11.1's cube definition and the whole of `sankhya-cube-algo` are built: the additivity algebra, ancestor answerability, hierarchy consolidation, the cuboid lattice and greedy selection, and the validated `Cube` whose version is derived from its own content. §11.3's consolidation runs on the graph engine as a bounded traversal: ragged hierarchies native, a member reachable by two paths contributing once, and a truncated or cyclic consolidation refusing to be a total. §11.4's sparse cube and navigation operations are built: a deterministic reduction, an absent cell distinguishable from one that nets to zero, and slice, dice, roll-up, drill-along and pivot each returning a cube so they compose. §11.5's completeness measure is built: a filtered total refuses to be reported as a total below a stated threshold, and an aggregate over no rows is distinguished from a complete one rather than rounded up to it. §11.6's materialisation key, three-level control and ancestor planning are built, and exit criterion 3a is met exactly rather than approximately: a materialised aggregate stores its value unrounded, because rolling up in stages rounds at every stage and the fast path was drifting one ULP from the slow one. §11.7's write-back overlay is built: separately versioned, bound to the definition it was authored against, never touching published data, and every figure it produces names the scenario it came from. A drill-down beneath an edited total is refused unless an allocation says how to spread it, because showing unadjusted children under an adjusted parent makes a drill-down contradict the row above it. `sankhya-cube-sql` exposes roll-up and slice as table functions, with everything that qualifies a number — completeness, withheld count, overlay name, definition version, snapshot, and which cuboid answered — as **columns**, because a qualification outside the rows is dropped by the first `SELECT` that does not mention it. **Added 2026-08-27 by owner directive** and placed before scale-out: cubes are a stated differentiator and multi-node deployment is table stakes. Three crates planned, mirroring the graph split. See [ADR-0007](adr/0007-the-cube-model.md), revised the same day it was written: the first version banned automatic materialisation, and snapshot keying makes that ban unnecessary |
+| **M7** Multidimensional analysis | — | **All eight exit criteria met**, each discharged by a test named for it in `crates/sankhya-cube-sql/tests/exit_criteria.rs`. Three crates built, mirroring the graph split. Criterion 3a was **not** met until exact summation was added. See below, and [ADR-0007](adr/0007-the-cube-model.md) |
 | **M8**–**M9** Scale-out, then tiering | — | Not started. Renumbered from M7–M8 when M7 was inserted |
 
 ---
+
+## M7, complete
+
+Added 2026-08-27 by owner directive and placed before scale-out: cubes are a stated
+differentiator and multi-node deployment is table stakes.
+
+### What was built
+
+| Crate | Layer | What it holds |
+|---|---|---|
+| `sankhya-cube-algo` | 1 | The additivity algebra, ancestor answerability, hierarchy consolidation, the cuboid lattice and greedy selection. No dependencies |
+| `sankhya-cube` | 3 | The validated `Cube`, consolidation on the graph engine, the sparse cube and its navigation, completeness, materialisation, the write-back overlay |
+| `sankhya-cube-sql` | 4 | Roll-up and slice as table functions, with everything that qualifies a number as a column |
+
+### The three findings worth keeping
+
+**Criterion 3a was not met, and the cause was arithmetic.** A cube rolls up in stages, every
+stage rounds, and `round(round(a+b) + round(c+d))` is not `round(a+b+c+d)`. Fixing the
+*order* of summation makes one reduction reproducible; it does nothing about
+**associativity**, and a materialised cuboid is exactly a re-association of the same
+addition. Measured at one ULP — large enough for two reports to disagree by a penny, small
+enough that nobody can point at a defect. A materialised aggregate now stores its value
+unrounded as a Shewchuk expansion, and rounds once when read.
+
+**Criterion 2 is met in a stronger form than its own wording.** It asks that summing a
+semi-additive measure across time be *rejected at planning time*. It is not rejected — it is
+**not expressible**, because the reduction operator is the measure's and never the caller's.
+
+**Completeness cannot be computed from what survived.** A withheld row leaves no trace, so
+an aggregate counting what arrived and dividing by what arrived reports itself complete
+however much policy removed. The withheld count comes from the filter or it does not exist.
+
+### What is not there
+
+MDX, deliberately — see ADR-0007. Cube definitions are not yet loaded from a catalogue or
+persisted; a cube is registered against a session by the embedding application. The lattice
+selection is implemented and is not yet driven by a recorded query log, so automatic
+materialisation is available but nothing is currently choosing what to materialise.
+
 
 ## M6, in progress
 
@@ -1568,7 +1607,7 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,504 tests, none of which needs a database
+cargo test --workspace           # 1,512 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
 python3 tools/mutation-audit.py  # 310 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
