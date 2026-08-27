@@ -838,7 +838,7 @@ admits less. [`STATUS.md`](STATUS.md) is the authoritative version.
 
 | | |
 |---|---|
-| **The gRPC control plane and REST gateway** | Not built. The `/metrics` endpoint is not the beginning of one: one route, no authentication, and nothing that returns rows |
+| **The gRPC transport, and every write path on the control plane** | Not built. The gateway's route table and the size decision `FR-API-06` turns on both exist and are tested; wiring them to tonic and to an audited write path is the remainder. Jobs and archive operations are absent on purpose — with no scheduler, a jobs endpoint would list nothing forever and a client could not tell that from a system with nothing to list |
 | **Backing up the transactional store** | Not built, and deliberately not planned as this system's job. The manifest binds to a PostgreSQL backup taken by your own tooling |
 | **Distributed tracing** | Not built. Metrics and the error catalogue exist; spans do not |
 | **A multi-day soak** | Not run. The harness exists, is proven to detect a leak, and runs short on every build — see [`SOAK.md`](SOAK.md). The scheduled run is a change of duration and scale |

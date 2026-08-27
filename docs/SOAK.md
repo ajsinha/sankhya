@@ -69,40 +69,80 @@ keeping up. The second is a system falling behind, and the difference is only in
 
 ## 4. The results
 
-A short run against the real server, on every build — writes, queries and maintenance
-concurrent. This is `crates/sankhya-server/tests/soak.rs`.
+### The ten-gigabyte run
+
+Ten tables, one gigabyte each, generated in 221 seconds. Writes, log replays and a compaction
+duty cycle running together; a reading every fifteen seconds; judged and written to disk every
+two minutes, so a run killed at hour nine leaves hour eight's verdict behind.
 
 ```
-soak: PASS over less than a minute, judged against a less than a minute horizon,
-      first 10 sample(s) discarded as warm-up
-
-  resident_bytes   steady
-  open_files       steady
-  metric_series    steady
-  history_bytes    steady
-  audit_records    steady
-  live_files       steady
+[21:46:08Z]  t+  362s  round 25  published 250  queries 250  live_files 490  rss  9 MB  PASS
+[21:50:10Z]  t+  604s  round 41  published 410  queries 410  live_files 492  rss 13 MB  PASS
+[21:54:12Z]  t+  846s  round 57  published 570  queries 570  live_files 494  rss 12 MB  PASS
+[21:58:15Z]  t+ 1088s  round 73  published 730  queries 730  live_files 496  rss 12 MB  PASS
 ```
 
-Sixty rounds, five queries each, a file published every round, compaction every fifth round.
-Resident memory settles around **86 MB**; live files oscillate between roughly 1 and 6 and
-return to the floor at every compaction; audit records track queries one for one.
+Resident memory oscillates between 9 and 14 MB and does not trend. Live files hold near the
+floor the duty cycle returns them to. Audit records track queries one for one.
 
-**And the harness is proven to notice.** `crates/sankhya-soak/tests/leak.rs` injects one
-failure of each shape and requires the run to fail on it:
+**The first two reports say `watching`, not `PASS`, and that is the harness working.** Ten
+samples are discarded as warm-up and ten more are needed before a rate means anything, so
+nothing is judgeable for the first five minutes. It says so rather than guessing.
+
+**The horizon grows with the run** — 633s at six minutes, 2811s at eighteen. A run may speak
+about three times what it observed and no further, which is why the four-hour run in progress
+will entitle claims about twelve hours and **not** about three weeks, whatever it shows.
+
+### The short run, on every build
+
+The same harness against the real server through the query path, sixty rounds in eight
+seconds. It proves the measurements come from a running system and the judgement runs end to
+end; it establishes nothing about duration, and does not claim to.
+
+### The harness is proven to notice
+
+`crates/sankhya-soak/tests/leak.rs` injects one failure of each shape and requires the run to
+fail on it:
 
 | Injected | Caught as |
 |---|---|
 | 20 MB/minute retained | `GROWING` — reaches its limit inside the horizon |
 | 4 descriptors/minute not returned | `GROWING` |
 | A sawtooth whose peaks climb | Fails, while a level sawtooth passes |
+| The same sawtooth ending on a trough | Still fails — peaks, not last readings |
 | Audit drifting from 1 to 2 records per query | Fails, **while its total looks healthy** |
 | Nothing sampled at all | `COULD NOT JUDGE` — and that is a failure |
 
-Without those, a green soak would be green because nothing was capable of turning it red —
-an untested backup by another name.
+Without those, a green soak would be green because nothing was capable of turning it red.
 
-## 5. What four attempts taught
+## 5. The result nobody expects: the harness was the hard part
+
+**Every defect this soak has found so far has been in the measuring apparatus, not in the
+system it measures.** Four in the judgement, four more in the runner. The system under test
+has not yet produced a single finding.
+
+That is worth stating rather than quietly enjoying, because it generalises. A soak is a
+measuring instrument, and an instrument that has never been shown to be wrong is an
+instrument nobody has looked at hard enough. The four runner defects are the sharpest
+evidence:
+
+| Defect | What the report said while it was wrong |
+|---|---|
+| Commit versions from a global counter, refused as non-contiguous, error swallowed by `.ok()` | Healthy. Three minutes of writing, **nothing published**, live files unchanged |
+| Compaction that removed every live file and replaced it with one small batch | Would have been healthy — while ten gigabytes stopped being live at round 8 and the remaining 3h58m soaked an empty warehouse |
+| A per-table limit judged against a **sum across ten tables** | `BREACHED — 4900 past the limit`, when every table held 490 |
+| Compaction that never re-compacted its own output | Healthy for hours, then a slow climb that would have been flagged near the end of the run — correctly, and about the harness |
+
+**Three of the four produced a green report while measuring nothing, and the fourth produced
+a red one about nothing.** None would have appeared in a summary at the end. All four
+surfaced because the run prints as it goes — which is the argument for reporting *during* a
+soak rather than at the end of one, and it is now the strongest thing this document has to
+say.
+
+The obvious inference is uncomfortable and probably right: **a soak that has never found a
+defect in itself has not been read closely enough to be trusted about anything else.**
+
+## 6. What four attempts at the judgement taught
 
 Every one of these was found by running the thing, not by reading it.
 
@@ -169,7 +209,7 @@ edge — so the peak series always spans less than the run it came from. Derivin
 entitlement from the peaks shrank it by an amount depending on where the peaks happened to
 fall. The span is a property of the run, so it is taken from the run.
 
-## 6. What has not been done
+## 7. What has not been done
 
 **The multi-day run at the ten-gigabyte scale.** That is `M6` exit criterion 4 and it is a
 scheduled pipeline, not a `cargo test`. Nothing here claims otherwise.

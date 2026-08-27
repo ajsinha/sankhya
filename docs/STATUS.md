@@ -25,13 +25,57 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M3** Query engine and storage performance | 28–34 ew | **Complete**, all six exit criteria met — closed 2026-08-26. One criterion was corrected first: it required cancellation inside user code, which does not exist until M4, and that clause moved to M4. Parts of the work breakdown remain unbuilt and are listed under *M3, closed* below |
 | **M4** Graph engine and the extension mechanism | 26–32 ew | **Complete.** Every exit criterion met; see below |
 | **M5** Tenancy, security and API surfaces | 22–28 ew | **Closed.** Four of five exit criteria met; the fifth needs a second server version to exist. Two of four API surfaces built — the wire protocol and Flight SQL. The control plane and its gateway are **deferred to M6**, because what they expose is built there |
-| **M6** Operability, packaging and hardening | — | **In progress.** The server process, §10.1's diagnostic, §10.2's catalogues, §10.3's backup and restore drill, §10.4's packaging checks, §10.5's timed journey, §10.6's version axes and §10.7's soak harness are built — six of seven exit criteria met, the sixth as far as one release allows. §10.8 is not started |
+| **M6** Operability, packaging and hardening | — | **In progress. Five of seven exit criteria met.** §10.1's diagnostic, §10.2's catalogues, §10.3's backup and restore drill, §10.4's packaging checks, §10.5's timed journey and §10.6's version axes are built; criterion 3 as far as a single release allows. **Criterion 4 is not met** — §10.7's harness is built and proven, and a multi-day run at the acceptance scale is a scheduled pipeline rather than a session. **Criterion 7 is not met** — §10.8's size decision and route table are built and tested; the gRPC transport and every write path are not |
 | **M7** Multidimensional analysis | — | Not started. **Added 2026-08-27 by owner directive** and placed before scale-out: cubes are a stated differentiator and multi-node deployment is table stakes. Three crates planned, mirroring the graph split. See [ADR-0007](adr/0007-the-cube-model.md), revised the same day it was written: the first version banned automatic materialisation, and snapshot keying makes that ban unnecessary |
 | **M8**–**M9** Scale-out, then tiering | — | Not started. Renumbered from M7–M8 when M7 was inserted |
 
 ---
 
 ## M6, in progress
+
+### §10.8 — A gateway that refuses to become the bulk plane
+
+`FR-API-06` is the interesting half, and its reason is a **product** reason rather than an
+operational one:
+
+> Bulk data SHALL NOT be offered over JSON. Serializing analytical results as JSON destroys
+> the zero-copy premise and **defines published benchmarks downward**.
+
+The failure it prevents is not a server running out of memory. REST is the convenient
+surface, so people will use it for bulk extract *because* it is convenient — and then measure
+the system through it. A columnar engine benchmarked through a JSON encoder is a JSON encoder
+benchmark, and that is the number that gets published. The cap exists so the convenient path
+does not become the measured path, which is why it is hard rather than raisable.
+
+**A large result is a redirection, not a refusal.** It comes back as a **Flight ticket** —
+the same query, already planned and authorized, redeemable over the columnar path. A `413`
+sends somebody to ask for a bigger cap; a ticket sends them to the surface built for what
+they are doing.
+
+**You cannot count the rows to decide whether to return the rows.** Materialising a result in
+order to measure it is precisely the cost the cap exists to avoid, so the decision is taken
+from the plan's estimate before anything is materialised. Estimates are wrong, so there is a
+second guard: encoding stops the moment the actual output passes the cap, and the partial
+response is **abandoned rather than truncated** — a JSON array cut short is either invalid or,
+worse, valid and silently short, and a client cannot tell the second from a small answer.
+
+**Routes are declared and matched whole.** The scrape endpoint served
+`/metrics/../etc/passwd` on a prefix match in `§10.2` — harmless there because it reads no
+files, and exactly the shape that becomes a traversal the moment something does. Once was
+enough to make it a rule rather than a fix.
+
+**What `FR-API-04` names and this does not serve is recorded as data, with reasons.** Jobs,
+archive operations, mutating tenancy and policy administration, and the structured graph API.
+An API that quietly omits half a requirement reads as complete — and the jobs case is the
+sharpest: with no scheduler running, the endpoint would list nothing forever, and a client
+cannot tell *"no jobs are running"* from *"nothing runs jobs"*. That is the same reasoning
+that deferred the control plane out of `M5` in the first place.
+
+**Not built:** the gRPC transport itself, and the write paths. What exists is the surface's
+shape and the decision `FR-API-06` turns on, both tested; wiring them to tonic and to an
+audited write path is the remainder.
+
+---
 
 ### §10.7 — The soak, and four attempts at judging one
 
@@ -1015,7 +1059,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 222 specific defects applied one at a time; all 222 fail the suite. Twenty-seven did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, four entries were inert until corrected, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 231 specific defects applied one at a time; all 231 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -1509,9 +1553,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,313 tests, none of which needs a database
+cargo test --workspace           # 1,335 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 222 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 231 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

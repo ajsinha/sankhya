@@ -153,11 +153,7 @@ fn main() {
         samples.record("queries", at_micros, Some(queries as f64));
         #[allow(clippy::cast_precision_loss)]
         samples.record("audit_records", at_micros, Some(queries as f64));
-        let live: usize = roots
-            .iter()
-            .filter_map(|root| live_files(root).ok())
-            .map(|set| set.files.len())
-            .sum();
+        let live = worst_table(&roots);
         #[allow(clippy::cast_precision_loss)]
         samples.record("live_files", at_micros, Some(live as f64));
 
@@ -168,13 +164,32 @@ fn main() {
         std::thread::sleep(SAMPLE_EVERY);
     }
 
-    let live: usize = roots
+    let live = worst_table(&roots);
+    emit(&samples, &at, started.elapsed(), round, queries, live, published);
+    println!("{}  soak finished after {minutes} minute(s)", stamp());
+}
+
+/// The live file count of the table that has the most.
+///
+/// # The maximum, not the sum, and the difference is a false finding
+///
+/// `live_files` is declared with a limit of a thousand and a meaning — *a scan pays per file*
+/// — that is a property of **one table**. Summing across ten tables produces a number in
+/// different units from its own threshold, and the first judged report of the first real run
+/// duly reported `BREACHED — 4900 count is already past the limit` when every table held
+/// about four hundred and ninety, comfortably under.
+///
+/// The maximum is what the limit is about: a query reads one table, and pays for that
+/// table's files. It also still catches the failure the measure exists for, because a table
+/// falling behind raises the maximum whether or not the others do — where a sum can hide one
+/// table's ramp inside nine tables' noise.
+fn worst_table(roots: &[PathBuf]) -> usize {
+    roots
         .iter()
         .filter_map(|root| live_files(root).ok())
         .map(|set| set.files.len())
-        .sum();
-    emit(&samples, &at, started.elapsed(), round, queries, live, published);
-    println!("{}  soak finished after {minutes} minute(s)", stamp());
+        .max()
+        .unwrap_or(0)
 }
 
 /// Print progress and write the judged report.
@@ -245,6 +260,12 @@ fn schema() -> Arc<Schema> {
 }
 
 fn create_table(root: &Path) {
+    // Only if it is not already a table. Resuming a soak against a warehouse that is
+    // already filled has to be cheap, or fixing the harness costs three and a half minutes
+    // of regeneration every time — and paying that makes the tempting move "do not fix it".
+    if root.join("_delta_log").is_dir() {
+        return;
+    }
     if let Err(error) = std::fs::create_dir_all(root) {
         die(&format!("{} could not be created: {error}", root.display()));
     }
@@ -291,11 +312,29 @@ fn batch(from: i64, rows: usize) -> RecordBatch {
 }
 
 /// Write files until the table holds roughly `target_bytes`.
+///
+/// Resumes rather than restarts. The count starts from what the table already holds and the
+/// version from its log, so a run against an already-filled warehouse writes nothing — which
+/// is what makes it cheap to restart a soak after fixing the harness, rather than paying
+/// three and a half minutes to regenerate ten gigabytes that are already there.
 fn fill(root: &Path, target_bytes: f64, since: &Instant) -> u64 {
     const ROWS_PER_FILE: usize = 200_000;
-    let mut written = 0_u64;
-    let mut version = 1_u64;
-    let mut row = 0_i64;
+    let existing = live_files(root).ok();
+    let mut written: u64 = existing
+        .as_ref()
+        .map_or(0, sankhya_table_delta::LiveSet::total_bytes);
+    let mut version = next_version(root).max(1);
+    #[allow(clippy::cast_possible_wrap)]
+    let mut row = existing
+        .as_ref()
+        .map_or(0_i64, |set| (set.files.len() * ROWS_PER_FILE) as i64);
+    if written as f64 >= target_bytes {
+        println!(
+            "{}      already holds {:.2} GB, not refilling",
+            stamp(),
+            written as f64 / (1024.0 * 1024.0 * 1024.0)
+        );
+    }
     while (written as f64) < target_bytes {
         let name = format!("part-{version:06}.parquet");
         let report = match write_parquet(
@@ -388,10 +427,17 @@ fn compact_appended(root: &Path, sequence: u64) -> bool {
     let Ok(live) = live_files(root) else {
         return false;
     };
+    // Its own previous output as well as the newly appended files.
+    //
+    // The first version merged only `live-` files, so every duty cycle left one more
+    // `compacted-` file behind that nothing ever touched again — a permanent climb of one
+    // file per cycle. **A compaction that never re-compacts its own output is not
+    // compaction**, and the sawtooth judge would eventually have flagged it: correctly, and
+    // about the harness rather than about the system, four hours into a run.
     let appended: Vec<&sankhya_table_delta::AddFile> = live
         .files
         .iter()
-        .filter(|file| file.path.starts_with("live-"))
+        .filter(|file| file.path.starts_with("live-") || file.path.starts_with("compacted-"))
         .collect();
     if appended.len() < 2 {
         return false;

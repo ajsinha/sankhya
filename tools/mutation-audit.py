@@ -1490,6 +1490,60 @@ CATALOGUE = [
      "            None => self\n                .taken\n                .entry(measure.to_string())\n                .or_default()\n                .push(Observation::new(at, 0.0)),",
      "sankhya-soak"),
 
+    ("rest: encode a large result as JSON instead of handing back a ticket",
+     "crates/sankhya-api-rest/src/size.rs",
+     "    if estimate.rows > MAX_ROWS {",
+     "    if false {",
+     "sankhya-api-rest"),
+
+    ("rest: ignore the byte estimate and judge only by row count",
+     "crates/sankhya-api-rest/src/size.rs",
+     "    if estimate.bytes as usize > MAX_BYTES {",
+     "    if false {",
+     "sankhya-api-rest"),
+
+    ("rest: keep encoding after the response outgrew the cap",
+     "crates/sankhya-api-rest/src/size.rs",
+     "        if self.bytes > MAX_BYTES || self.rows > MAX_ROWS {\n            self.exceeded = true;\n            return false;\n        }",
+     "",
+     "sankhya-api-rest"),
+
+    ("rest: let a small row reopen a budget that has already refused",
+     "crates/sankhya-api-rest/src/size.rs",
+     "        if self.exceeded {\n            return false;\n        }",
+     "",
+     "sankhya-api-rest"),
+
+    ("rest: truncate an overrun response rather than abandoning it",
+     "crates/sankhya-api-rest/src/size.rs",
+     "        self.exceeded.then(|| {",
+     "        false.then(|| {",
+     "sankhya-api-rest"),
+
+    ("rest: echo the whole statement into a message",
+     "crates/sankhya-api-rest/src/size.rs",
+     "    if statement.chars().count() <= KEEP {",
+     "    if true {",
+     "sankhya-api-rest"),
+
+    ("rest: match routes by prefix",
+     "crates/sankhya-api-rest/src/plane.rs",
+     "        .find(|route| route.method == method && route.path == bare)",
+     "        .find(|route| route.method == method && bare.starts_with(route.path))",
+     "sankhya-api-rest"),
+
+    ("rest: ignore the method when matching a route",
+     "crates/sankhya-api-rest/src/plane.rs",
+     "        .find(|route| route.method == method && route.path == bare)",
+     "        .find(|route| route.path == bare)",
+     "sankhya-api-rest"),
+
+    ("rest: require a credential on the liveness probe",
+     "crates/sankhya-api-rest/src/plane.rs",
+     '        path: "/health",\n        shape: Shape::Document,\n        authenticated: false,',
+     '        path: "/health",\n        shape: Shape::Document,\n        authenticated: true,',
+     "sankhya-api-rest"),
+
 ]
 
 

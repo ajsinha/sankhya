@@ -378,12 +378,21 @@ M4 complete.
 
 **Weeks 24–30 · 18–22 ew**
 
-> **Progress, 2026-08-27.** §10.1 the diagnostic, §10.2 the metric and error catalogues,
-> §10.3 backup and the restore drill, §10.4 the packaging checks, §10.5 the timed
-> journey, §10.6 the version axes and §10.7's soak harness are built. §10.8, the control
-> plane and its gateway, is not started. Six of seven exit criteria are met — the sixth
-> as far as a single release allows, since running the *previous* binary needs one to
-> exist. `STATUS.md` records what each section found.
+> **Progress, 2026-08-27. Five of seven exit criteria met.** §10.1 the diagnostic,
+> §10.2 the metric and error catalogues, §10.3 backup and the restore drill, §10.4 the
+> packaging checks, §10.5 the timed journey and §10.6 the version axes are built —
+> criterion 3 as far as a single release allows, since running the *previous* binary needs
+> one to exist.
+>
+> **Criterion 4 is not met.** §10.7's harness is built and proven to detect a leak, and a
+> ten-gigabyte run is demonstrated; the criterion asks for **multi-day**, which is a
+> scheduled pipeline. Counting the harness as the criterion was an overstatement made and
+> corrected the same day, and it is the shape of error this milestone exists to prevent
+> elsewhere.
+>
+> **Criterion 7 is not met.** §10.8's size decision and route table are built and tested;
+> the gRPC transport and every write path are not. `STATUS.md` records what each section
+> found.
 
 ### Entry
 M5 complete.

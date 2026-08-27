@@ -1,0 +1,22 @@
+[package]
+name         = "sankhya-api-rest"
+description  = "A REST gateway that refuses to become the bulk plane, and hands back a Flight ticket instead."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 4
+
+[lints]
+workspace = true
+
+[dependencies]
+sankhya-types      = { path = "../sankhya-types" }
+sankhya-error      = { path = "../sankhya-error" }
+sankhya-api-flight = { path = "../sankhya-api-flight" }
+
+[dev-dependencies]
+uuid = { workspace = true }

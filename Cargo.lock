@@ -3267,6 +3267,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sankhya-api-rest"
+version = "0.1.0"
+dependencies = [
+ "sankhya-api-flight",
+ "sankhya-error",
+ "sankhya-types",
+ "uuid",
+]
+
+[[package]]
 name = "sankhya-audit"
 version = "0.1.0"
 dependencies = [
