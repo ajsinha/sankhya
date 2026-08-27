@@ -17,7 +17,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M2** Ingest correctness and durability | 24–28 ew | **Substantially complete** — batching invariants, source-safety ladder, reconciliation, idempotence, crash safety, schema evolution and the backfill handoff all exist and are tested. What remains is the slot *lifecycle* driver and the snapshot *reader* — the correctness contracts are in place, the machinery that runs them on a timer is not |
 | **M3** Query engine and storage performance | 28–34 ew | **Complete**, all six exit criteria met — closed 2026-08-26. One criterion was corrected first: it required cancellation inside user code, which does not exist until M4, and that clause moved to M4. Parts of the work breakdown remain unbuilt and are listed under *M3, closed* below |
 | **M4** Graph engine and the extension mechanism | 26–32 ew | **Complete.** Every exit criterion met; see below |
-| **M5** Tenancy, security and API surfaces | 22–28 ew | **Closed.** Four of five exit criteria met; the fifth needs a second server version to exist. Three of four API surfaces not built |
+| **M5** Tenancy, security and API surfaces | 22–28 ew | **Closed.** Four of five exit criteria met; the fifth needs a second server version to exist. Two of four API surfaces built — the wire protocol and Flight SQL. The control plane and its gateway are **deferred to M6**, because what they expose is built there |
 | **M6** Operability, packaging and hardening | — | **Next.** A server process exists ahead of schedule; the rest is not started |
 | **M7**–**M8** | — | Not started |
 
@@ -38,16 +38,19 @@ been on every interface since M0, which is why this was twenty-odd weeks rather 
 
 ### What is built and what is not
 
-Three of four API surfaces are **not built**: Arrow Flight SQL, the gRPC control plane and
-the REST gateway. The wire protocol was built first deliberately --- `FR-API-02` calls it the
-highest-adoption-value surface, and it is the one that makes every other capability
-reachable by a person rather than by a test.
+Two of four API surfaces are built, and the other two are **deferred rather than missing**.
 
-`FR-API-01` names Flight SQL as the *primary bulk data plane*, and the reason matters: the
-wire protocol is a **row** protocol, so the last step of every query converts columnar
-batches into rows. That conversion is forced by the client and is where columnar ends.
-Flight SQL keeps the batches intact end to end, and until it exists the bulk path is the
-compatibility path.
+The wire protocol came first deliberately --- `FR-API-02` calls it the highest-adoption-value
+surface, and it is the one that makes every other capability reachable by a person rather
+than by a test. **Flight SQL** followed, because `FR-API-01` names it the *primary bulk data
+plane*: the wire protocol is a row protocol, so the last step of every query converts
+columnar batches into rows, and that conversion is the whole cost of a large extract.
+
+The **gRPC control plane and REST gateway are deferred to M6** by owner decision.
+`FR-API-04` says what a control plane exposes --- jobs, health, archive operations --- and
+each of those is built in M6 or M8. Building the surface first would mean endpoints for jobs
+no scheduler runs and archives that do not exist: a plausible-looking API returning a
+placeholder, which is the kind of thing that gets believed.
 
 ### Two things worth recording
 
