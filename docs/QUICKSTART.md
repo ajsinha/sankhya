@@ -86,7 +86,7 @@ availability event.
 ## 3. Run the tests
 
 ```bash
-cargo test --workspace          # 1,296 tests, none of which needs a database
+cargo test --workspace          # 1,313 tests, none of which needs a database
 ```
 
 Everything here runs without a database, in well under a minute. Nothing is mocked: the
@@ -129,6 +129,7 @@ TPC-H data is generated rather than fixtured.
 | `sankhya-governor` | Deadlines and cancellation are bounded at one batch per partition; an aggregation too large to run is refused up front, and the refusal says whether retrying could ever help |
 | `sankhya-math` | Reductions are deterministic regardless of partition order — the analytical counterpart to the `sankhya-types` property |
 | `sankhya-server` `tests/five_minutes.rs` | **This guide, executed.** Generate a warehouse, start the real binary, connect over the real wire protocol, query, run the diagnostic, take a backup and prove it — seven documented steps, timed, on every build. It is a test so it cannot rot |
+| `sankhya-soak` | A steady baseline passes and every shape of injected leak fails: memory retained, descriptors not returned, a sawtooth whose peaks climb, and an audit drifting to two records per query **while its total looks healthy**. A run that sampled nothing does not pass |
 | `sankhya-version` | An artefact from a newer release is refused **by name** rather than failing as a parse error somewhere in the middle; an older but supported one is read and never written back |
 | `sankhya-backup` | A manifest refuses to bind an analytical tier that is ahead of its source; a drill catches altered rows that every file-presence check passes; deleting a backup does not release its files; and the evidence keeps the failures |
 | `sankhya-metrics` | An undeclared metric cannot be recorded, a closed label refuses anything outside its set, and an identifier label stops adding series at its cap rather than growing without bound — and says it has |
@@ -140,7 +141,7 @@ Three gates catch things a test suite structurally cannot. All three fail the bu
 
 ```bash
 cargo xtask check-all            # every repository invariant — see below
-python3 tools/mutation-audit.py  # 213 deliberate defects, applied one at a time
+python3 tools/mutation-audit.py  # 222 deliberate defects, applied one at a time
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
 SANKHYA_RELEASE=1 cargo xtask check-package   # the release artifact's platform baseline
 ```
@@ -156,11 +157,11 @@ document claims — test counts, catalogue sizes — still matches what the repo
 merely to pass.
 
 **The mutation audit** is the answer to "the tests pass, but do they test anything?" It
-applies 213 specific defects one at a time and requires the suite to fail on each. Twenty-three
+applies 222 specific defects one at a time and requires the suite to fail on each. Twenty-seven
 did not, the first time each was run — the most recent three were written for the
 diagnostic, and one of those turned out to be pointing at the wrong copy of a duplicated
 guard, which is precisely the silent-pass this tool exists to catch. Expect it to take a
-while — it is 213 sequential `cargo test` runs, and it edits your source files as it goes,
+while — it is 222 sequential `cargo test` runs, and it edits your source files as it goes,
 restoring each one after. Run it on a clean tree.
 
 **`check-performance`** is deliberately outside `check-all`: it generates a
@@ -600,7 +601,10 @@ that admits less.
 | Publishing and repair | **Working.** A library and command-line tool for writing an external table, and a verifier that does not assume it was used. Repair fixes only what can be derived from evidence and refuses anything needing a guess |
 | Query governance | **Working.** Deadlines and cancellation bounded at one batch per partition; admission control that refuses an aggregation too large to run rather than letting it take the process down, and says whether retrying could ever help |
 | Backup and restore | **Working for the analytical half.** A manifest binds table versions and a key generation to a consistent point and refuses to record an inconsistency; a drill reads the data back and digests it; the evidence is append-only. Backing up the transactional store is your own tooling's job — the manifest binds to it and does not take it |
-| The diagnostic | **Working for two checks.** `doctor` walks the warehouse, records what it sees, and projects a date for compaction debt once it has two runs to compare. Storage headroom and replication lag are built as checks with nothing feeding them observations. The rest of `FR-OPS-16` — conformance, replica identity, archival consistency — is not built |
+| Soak testing | **The harness works and is proven to detect a leak; the multi-day run at the ten-gigabyte scale is not done.** A short run against the real server, under concurrent writes, queries and maintenance, runs on every build. See [`SOAK.md`](SOAK.md) |
+| Packaging | **Checks, not artifacts.** The platform baseline is declared and the built binary is measured against it; every deployment manifest's termination grace is compared with the server's drain deadline. Container images and signing are not built |
+| Upgrade and rollback | **Tested as far as one release allows.** Every on-disk format carries a version, an artefact from a newer release is refused by name rather than failing as a parse error, and a corpus of earlier-release artefacts is read on every build. Running the *previous binary* needs a previous binary |
+| The diagnostic | **Working for three checks.** `doctor` walks the warehouse, records what it sees, and projects a date for compaction debt once it has two runs to compare, and reports how long the backup has been unproven. Storage headroom and replication lag are built as checks with nothing feeding them observations. The rest of `FR-OPS-16` — conformance, replica identity, archival consistency — is not built |
 | Graph engine | **Working.** A typed, time-aware adjacency hydrated from published tables — no second store, no graph write path, an edge exists because a row exists. Traversal, weighted and k-shortest loopless paths, simple cycles, components, centrality, communities and multiplicative influence, each bounded and each reporting its own truncation. Five SQL table functions make them joinable against ordinary tables. Nothing drives hydration on a timer |
 | The extension mechanism | **Working.** SANKHYA's own function traits rather than the engine's, so a pack survives the engine changing underneath it. Two reference packs from unrelated industries and one deliberately hostile pack whose every attempt is refused with a named error. A declarative tier expresses a pack as a file rather than a crate. **The loader is not wired into the server**: a running process exists, and nothing in it loads a bundle |
 | API surfaces | **Two of four.** Real `psql` connects, authenticates, runs catalogue queries and recovers from errors. **Arrow Flight SQL** streams results as Arrow batches over gRPC, with authorization at planning and a ticket bound to the tenant it was issued to. The gRPC control plane and the REST gateway are not built |

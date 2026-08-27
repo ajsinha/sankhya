@@ -197,6 +197,16 @@ a tamper-evident hash chain.
 columnar from the Parquet page to the client's buffer — the wire protocol is a row protocol
 and converts at the last step, which is the whole cost of a large extract.
 
+**It can be operated.** `sankhya-server doctor` reports *when* a problem becomes
+user-visible rather than its current value — and refuses to invent a date it cannot support,
+which on a first run means saying so. `backup` binds the transactional backup, the table
+versions and the key generation to one consistent point and refuses to record an
+inconsistency; `drill` proves that backup restores by reading the data back and recomputing
+its digest, because a file-presence check passes on every failure that actually happens. A
+`/metrics` endpoint exports a catalogue where recording requires passing the declaration, so
+an undeclared metric is unrepresentable and no label can carry tenant data. Every error a
+client sees carries a permanent code and the catalogue's own remediation.
+
 What does not exist: the streaming transport, the gRPC control plane and the REST gateway. Also unbuilt inside work already counted: bloom filters, table
 partitioning, the result cache, leader election, a timer that drives graph hydration, and
 a measured graph benchmark — the graph primitives are correct against brute force and
@@ -210,9 +220,22 @@ Start here:
 | Document | What it covers |
 |---|---|
 | [`docs/QUICKSTART.md`](docs/QUICKSTART.md) | Build it, load ten gigabytes, watch capture reconcile — and what does not work yet |
+| [`docs/GUIDE.md`](docs/GUIDE.md) | Every feature by worked example, each one executed by a test |
 | [`docs/STATUS.md`](docs/STATUS.md) | What is actually built today, what is not, and what broke along the way |
 | [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) | The amended, traceable functional and non-functional requirements |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture, crate decomposition, consistency and security models |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | What each release is *for*, gated on exit criteria rather than dates |
+
+Generated from the code, and checked against it on every build:
+
+| Document | What it covers |
+|---|---|
+| [`docs/METRICS.md`](docs/METRICS.md) | Every exported metric, its unit, its cardinality bound, and whether it pages |
+| [`docs/ERRORS.md`](docs/ERRORS.md) | Every error code, its class, and what to do about it |
+| [`docs/PLATFORMS.md`](docs/PLATFORMS.md) | Where the server runs, what a build must satisfy, and where only a client does |
+| [`docs/VERSIONS.md`](docs/VERSIONS.md) | The four version axes, every on-disk format, and whether an upgrade can be undone |
+| [`docs/SOAK.md`](docs/SOAK.md) | The long-run method, its results, and four attempts' worth of what it taught |
+| [`docs/runbooks/`](docs/runbooks/) | One per alert that can page — enforced, not aspirational |
 | [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) | Milestones, work breakdown, sizing and acceptance gates |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Release themes and the capability timeline |
 | [`docs/initial_reqmt.docx`](docs/initial_reqmt.docx) | The original brief, preserved for provenance |

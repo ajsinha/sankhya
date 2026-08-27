@@ -1436,6 +1436,60 @@ CATALOGUE = [
      "",
      "sankhya-diagnostic"),
 
+    ("soak: extrapolate past what the run observed",
+     "crates/sankhya-soak/src/judge.rs",
+     "    if horizon > supported {",
+     "    if false {",
+     "sankhya-soak"),
+
+    ("soak: judge from a handful of samples",
+     "crates/sankhya-soak/src/judge.rs",
+     "    if samples.len() < fewest {",
+     "    if false {",
+     "sankhya-soak"),
+
+    ("soak: call an unjudgeable measure steady",
+     "crates/sankhya-soak/src/report.rs",
+     "        !self.verdicts.is_empty() && self.verdicts.iter().all(|(_, verdict)| verdict.passed())",
+     "        self.verdicts.iter().all(|(_, verdict)| !matches!(verdict, Verdict::Growing { .. }))",
+     "sankhya-soak"),
+
+    ("soak: skip the warm-up exclusion",
+     "crates/sankhya-soak/src/report.rs",
+     "    samples.get(WARM_UP_SAMPLES..).unwrap_or(&[])",
+     "    samples",
+     "sankhya-soak"),
+
+    ("soak: trend a sawtooth's raw samples rather than its peaks",
+     "crates/sankhya-soak/src/judge.rs",
+     "            let peaks = peaks_of(samples, PEAK_WINDOWS);",
+     "            let peaks: Vec<Observation> = samples.to_vec();",
+     "sankhya-soak"),
+
+    ("soak: take a sawtooth's entitlement from its peaks rather than from the run",
+     "crates/sankhya-soak/src/judge.rs",
+     "rising_to_at_least(measure, &peaks, limit, horizon, now, FEWEST_PEAKS, span_of(samples))",
+     "rising_to_at_least(measure, &peaks, limit, horizon, now, FEWEST_PEAKS, span_of(&peaks))",
+     "sankhya-soak"),
+
+    ("soak: count an empty peak window as zero",
+     "crates/sankhya-soak/src/judge.rs",
+     "        else {\n            continue;\n        };\n        peaks.push(Observation::new(peak.at, peak.value));",
+     "        else {\n            peaks.push(Observation::new(start, 0.0));\n            continue;\n        };\n        peaks.push(Observation::new(peak.at, peak.value));",
+     "sankhya-soak"),
+
+    ("soak: judge a per-unit-of-work measure by its total",
+     "crates/sankhya-soak/src/judge.rs",
+     "            let Some(ratios) = ratio(samples, reference) else {",
+     "            let Some(ratios) = Some(samples.to_vec()) else {",
+     "sankhya-soak"),
+
+    ("soak: record a reading that could not be taken as zero",
+     "crates/sankhya-soak/src/sample.rs",
+     "            None => *self.missed.entry(measure.to_string()).or_default() += 1,",
+     "            None => self\n                .taken\n                .entry(measure.to_string())\n                .or_default()\n                .push(Observation::new(at, 0.0)),",
+     "sankhya-soak"),
+
 ]
 
 

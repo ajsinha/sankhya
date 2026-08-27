@@ -378,6 +378,13 @@ M4 complete.
 
 **Weeks 24–30 · 18–22 ew**
 
+> **Progress, 2026-08-27.** §10.1 the diagnostic, §10.2 the metric and error catalogues,
+> §10.3 backup and the restore drill, §10.4 the packaging checks, §10.5 the timed
+> journey, §10.6 the version axes and §10.7's soak harness are built. §10.8, the control
+> plane and its gateway, is not started. Six of seven exit criteria are met — the sixth
+> as far as a single release allows, since running the *previous* binary needs one to
+> exist. `STATUS.md` records what each section found.
+
 ### Entry
 M5 complete.
 

@@ -3636,6 +3636,7 @@ dependencies = [
  "sankhya-plan",
  "sankhya-readpath",
  "sankhya-session",
+ "sankhya-soak",
  "sankhya-table",
  "sankhya-table-delta",
  "sankhya-types",
@@ -3653,6 +3654,19 @@ dependencies = [
  "sankhya-authz",
  "sankhya-types",
  "uuid",
+]
+
+[[package]]
+name = "sankhya-soak"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "sankhya-diagnostic",
+ "sankhya-table",
+ "sankhya-table-delta",
+ "sankhya-types",
+ "tempfile",
 ]
 
 [[package]]

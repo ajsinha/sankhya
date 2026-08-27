@@ -841,6 +841,8 @@ admits less. [`STATUS.md`](STATUS.md) is the authoritative version.
 | **The gRPC control plane and REST gateway** | Not built. The `/metrics` endpoint is not the beginning of one: one route, no authentication, and nothing that returns rows |
 | **Backing up the transactional store** | Not built, and deliberately not planned as this system's job. The manifest binds to a PostgreSQL backup taken by your own tooling |
 | **Distributed tracing** | Not built. Metrics and the error catalogue exist; spans do not |
+| **A multi-day soak** | Not run. The harness exists, is proven to detect a leak, and runs short on every build — see [`SOAK.md`](SOAK.md). The scheduled run is a change of duration and scale |
+| **Container images and signing** | Not built. The platform baseline and the manifests' termination grace are checked; the artifacts a release pipeline produces are not |
 | **Ingest on a timer** | Not built. Capture, apply and publication all work and none of them is driven by a running process, so everything the server serves is already published |
 | **Graph hydration on a timer** | Not built. An epoch is built when something builds it |
 | **The pack loader in the server** | Not built. Packs load into a registry; nothing in the running process does that |

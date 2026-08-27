@@ -25,13 +25,56 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M3** Query engine and storage performance | 28–34 ew | **Complete**, all six exit criteria met — closed 2026-08-26. One criterion was corrected first: it required cancellation inside user code, which does not exist until M4, and that clause moved to M4. Parts of the work breakdown remain unbuilt and are listed under *M3, closed* below |
 | **M4** Graph engine and the extension mechanism | 26–32 ew | **Complete.** Every exit criterion met; see below |
 | **M5** Tenancy, security and API surfaces | 22–28 ew | **Closed.** Four of five exit criteria met; the fifth needs a second server version to exist. Two of four API surfaces built — the wire protocol and Flight SQL. The control plane and its gateway are **deferred to M6**, because what they expose is built there |
-| **M6** Operability, packaging and hardening | — | **In progress.** The server process, §10.1's diagnostic, §10.2's catalogues, §10.3's backup and restore drill, §10.4's packaging checks and §10.5's timed journey are built — three of seven exit criteria met. §10.6–10.8 are not started |
+| **M6** Operability, packaging and hardening | — | **In progress.** The server process, §10.1's diagnostic, §10.2's catalogues, §10.3's backup and restore drill, §10.4's packaging checks, §10.5's timed journey, §10.6's version axes and §10.7's soak harness are built — six of seven exit criteria met, the sixth as far as one release allows. §10.8 is not started |
 | **M7** Multidimensional analysis | — | Not started. **Added 2026-08-27 by owner directive** and placed before scale-out: cubes are a stated differentiator and multi-node deployment is table stakes. Three crates planned, mirroring the graph split. See [ADR-0007](adr/0007-the-cube-model.md), revised the same day it was written: the first version banned automatic materialisation, and snapshot keying makes that ban unnecessary |
 | **M8**–**M9** Scale-out, then tiering | — | Not started. Renumbered from M7–M8 when M7 was inserted |
 
 ---
 
 ## M6, in progress
+
+### §10.7 — The soak, and four attempts at judging one
+
+The section read *"A multi-day soak"* in its entirety, which is not something anybody can
+fail. The criterion is now falsifiable — **no bounded measure projects a crossing within the
+observation horizon** — and inconclusive counts as a failure, because a run whose sampling
+broke must not report the same green as one that ran properly.
+
+**Three kinds of bounded, not one.** The naive soak complains when any number rises, and half
+of them are supposed to. A measure declares whether it must be flat, flat *per unit of work*,
+or a sawtooth whose **peaks** must not climb. The second catches what a total never can — an
+audit drifting from one record per query to two, while its total rises exactly as it should.
+The third is a distinction no point-in-time diagnostic can draw: two oscillating series look
+identical at any moment, and one is a system keeping up while the other starts each cycle
+further behind.
+
+**Four attempts, each finding something by running it:**
+
+- **The diagnostic's linearity gate is wrong for a soak.** A healthy measure is noisy and
+  flat, which has an r² near zero — there is no trend to explain — so the baseline run
+  reported memory, descriptors and the history file as unjudgeable while nothing was wrong.
+  The same trap as r² on a constant series, corrected in `sankhya-math` earlier for the same
+  reason: undefined is not bad.
+- **A half-second run reported a memory leak.** Sixty rounds finished in 0.35 seconds and a
+  process allocates as it starts; across the opening of a run that looks exactly like a
+  linear climb. Fixed by a declared warm-up prefix **and** by bounding the horizon to what
+  the run observed — half a second extrapolated to three weeks is a factor of three and a
+  half million. `sankhya-diagnostic` already carried that guard and applying it there and
+  not here was the omission.
+- **Every caller got the warm-up arithmetic wrong**, both of them, overshooting by exactly
+  the prefix. A calculation both call sites get wrong on the first attempt does not belong at
+  the call site.
+- **A summary spans less than what it summarises.** Peaks sit inside their windows, so the
+  peak series spans less than the run — and the entitlement is a property of the run.
+
+**The harness is proven to notice**, which is the part that would otherwise be an untested
+backup by another name: one injection per shape of failure, each required to fail the run.
+
+**Not done:** the multi-day run at the ten-gigabyte scale, and retained evidence. The
+scheduled run is a change of duration and scale rather than a first attempt at the whole
+thing. [`SOAK.md`](SOAK.md) has the method, the numbers and the reasoning.
+
+---
 
 ### §10.6 — Versions, and the difference between damage and the future
 
@@ -972,7 +1015,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 213 specific defects applied one at a time; all 213 fail the suite. Twenty-three did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, four entries were inert until corrected — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 222 specific defects applied one at a time; all 222 fail the suite. Twenty-seven did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, four entries were inert until corrected, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -1466,9 +1509,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,296 tests, none of which needs a database
+cargo test --workspace           # 1,313 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 213 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 222 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 
