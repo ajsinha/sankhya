@@ -3154,6 +3154,14 @@ dependencies = [
 [[package]]
 name = "sankhya-graph"
 version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "parking_lot",
+ "proptest",
+ "sankhya-error",
+ "sankhya-graph-algo",
+]
 
 [[package]]
 name = "sankhya-graph-algo"

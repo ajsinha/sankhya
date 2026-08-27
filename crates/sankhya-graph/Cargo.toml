@@ -14,3 +14,12 @@ layer = 3
 workspace = true
 
 [dependencies]
+sankhya-graph-algo = { path = "../sankhya-graph-algo" }
+sankhya-error      = { path = "../sankhya-error" }
+arrow-array        = { workspace = true }
+arrow-schema       = { workspace = true }
+parking_lot        = { workspace = true }
+
+
+[dev-dependencies]
+proptest = { workspace = true }
