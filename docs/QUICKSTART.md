@@ -78,21 +78,74 @@ availability event.
 ## 3. Run the tests
 
 ```bash
-cargo test --workspace
+cargo test --workspace          # 630 tests, none of which needs a database
 ```
 
-Everything here runs without a database. The interesting parts:
+Everything here runs without a database, in well under a minute. Nothing is mocked: the
+Parquet is real Parquet, the Delta logs are read back by an independent kernel, and the
+TPC-H data is generated rather than fixtured.
+
+**The transactional and capture half:**
 
 | Suite | What it establishes |
 |---|---|
 | `sankhya-types` | Summation is order-independent — the property that decides fixed-point over floating point |
 | `sankhya-cdc-model` | The wire decoder never panics on arbitrary input, and decodes a stream captured from a real server |
 | `sankhya-cdc-apply` | A transaction is never split across batches, however events interleave |
+| `sankhya-cdc-pg` | A replication slot is never created or dropped in a way that could silently lose a position |
 | `sankhya-schema` | Every type round-trips exactly or is refused with a reason; naming collisions are refused rather than disambiguated; all ten tables onboard from the live stream alone |
-| `sankhya-plan` | A query is answered from tiers covering its span **exactly once**; a session never reads from before a write it has already seen |
-| `sankhya-table` | Text values become typed Arrow; an unparseable value is an error, never a null |
-| `sankhya-ingest` | Several tables capture independently from one interleaved stream, with no rows lost or leaked between them; captured data digests identically to the source |
+| `sankhya-ingest` | Several tables capture independently from one interleaved stream, with no rows lost or leaked between them; a restart recovers its position from the table log; captured data digests identically to the source |
 | `sankhya-datagen` | The generator is reproducible, which is what makes reconciliation meaningful |
+
+**The storage half:**
+
+| Suite | What it establishes |
+|---|---|
+| `sankhya-table` | Text values become typed Arrow; an unparseable value is an error, never a null; compaction merges without changing what a query returns |
+| `sankhya-table-delta` | The log survives a torn write and a gap in the version sequence. **`tests/oracle.rs` is the one to read first**: it reads every log this crate writes back with `delta_kernel`, an independent implementation, because two of our own components agreeing proves nothing |
+| `sankhya-table-memory` | The arrival buffer never releases a segment publication has not covered — the defect that made a mid-stream table claim positions it never held |
+| `sankhya-stats` | Recorded bounds are never narrower than the truth, including under NaN and integer overflow. A bound that is too *wide* costs a wasted read; one that is too narrow is a wrong answer |
+| `sankhya-maintenance` | Compaction converges; retirement refuses to remove a file a reader might still hold; orphan sweeping refuses to remove one a retained snapshot still reaches |
+
+**The analytical half — most of what M3 added:**
+
+| Suite | What it establishes |
+|---|---|
+| `sankhya-readpath` `tests/provider.rs` | Planning reads the table log alone — no directory listing, no footer reads — and a many-file scan is genuinely parallel at the scan node |
+| `sankhya-readpath` `tests/pruning.rs` | Files the catalogue proves irrelevant are skipped, and **the same query returns the same answer with and without the catalogue**. Pruning that changes an answer is the failure mode |
+| `sankhya-readpath` `tests/spliced.rs` | One SQL statement is answered from memory and Parquet at once, with no position counted twice or missed, and refused outright when the tiers do not cover the query's span |
+| `sankhya-readpath` `tests/mutable.rs` | An updated row is returned once, at its current version, and a deleted one not at all |
+| `sankhya-readpath` `tests/hostile.rs` | A malformed predicate, an empty tier and a corrupt footer produce errors rather than panics or wrong answers |
+| `sankhya-olap` `tests/tpch.rs` | TPC-H at scale factor 1. **`tests/cross_engine.rs` is the honest one**: every query's result is compared against the engine's own listing-based plan over the same files, so a provider bug cannot hide behind a self-consistent answer |
+| `sankhya-olap` `tests/exactness.rs` | An approximate answer is labelled approximate. A sketch-derived count never presents itself as exact |
+| `sankhya-governor` | Deadlines and cancellation are bounded at one batch per partition; an aggregation too large to run is refused up front, and the refusal says whether retrying could ever help |
+| `sankhya-numeric` | Reductions are deterministic regardless of partition order — the analytical counterpart to the `sankhya-types` property |
+
+### The checks that are not tests
+
+Three gates catch things a test suite structurally cannot. All three fail the build.
+
+```bash
+cargo xtask check-all            # every repository invariant — see below
+python3 tools/mutation-audit.py  # 127 deliberate defects, applied one at a time
+cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
+```
+
+**`check-all`** runs eight invariants: the layer graph is acyclic and points the right
+way, no file exceeds the length ceiling, no core crate names a domain concept, the
+dependency set has no critical duplicates, the documentation's links and version claims
+resolve and its status lines agree, test-only dependencies really are test-only, clippy
+is clean under the workspace's denied lints across every target, and no mutation is left
+applied to the source. Each is proven to fail when violated, not merely to pass.
+
+**The mutation audit** is the answer to "the tests pass, but do they test anything?" It
+applies 127 specific defects one at a time and requires the suite to fail on each. Thirteen
+did not, the first time it ran. Expect it to take a while — it is 127 sequential
+`cargo test` runs, and it edits your source files as it goes, restoring each one after.
+Run it on a clean tree.
+
+**`check-performance`** is deliberately outside `check-all`: it generates a
+scale-factor-1 dataset and needs a machine that is not otherwise busy.
 
 ---
 
@@ -212,7 +265,7 @@ that admits less.
 | Compaction and maintenance | **Working as a loop, not as a daemon.** Fragmented partitions are planned, merged, committed and converged, with retirement refusing to remove anything a reader might still hold. Nothing calls the loop on a timer |
 | Analytical queries | **Working, and measured.** A table provider plans from the table log alone — no directory listing, no footer reads — prunes files by recorded statistics, feeds bounds and cardinalities to the optimizer, and resolves updated and deleted rows to one current version each. One SQL statement is answered from memory and Parquet at once, spliced so no position is counted twice or missed, and refused outright when the tiers do not cover the query's span. TPC-H at scale factor 1 meets its three performance objectives under a build gate. No result cache, no bloom filters, no partitioning |
 | Query governance | **Working.** Deadlines and cancellation bounded at one batch per partition; admission control that refuses an aggregation too large to run rather than letting it take the process down, and says whether retrying could ever help |
-| Graph engine | Not started |
+| Graph engine | **Not started.** M4. Algorithms will be reachable from SQL as table functions; see `FR-GRAPH-12` |
 | API surfaces | Not started |
 | Multi-tenancy and security | Not started |
 
