@@ -1793,6 +1793,7 @@ The trade-off, stated plainly: scale-up gives lower latency, far simpler failure
 | `DEC-32` | Repair derives, never guesses; it never deletes and only appends | §5.6.8 |
 | `DEC-33` | One date axis on every table: `sank_data_date`, of type `DATE` | [ADR-0004](adr/0004-the-date-axis.md) |
 | `DEC-34` | The date is declared per table, never defaulted per row | [ADR-0004](adr/0004-the-date-axis.md) |
+| `DEC-35` | Array columns as `FixedSizeList`; kernels in-house because they must be deterministic | [ADR-0005](adr/0005-array-columns-and-numeric-kernels.md) |
 
 ---
 

@@ -19,9 +19,11 @@
 
 mod exactness;
 mod session;
+pub mod vectors;
 
 pub use exactness::{approximate_functions, check_exactness, Exactness, ExactnessError, Watermark};
 pub use session::{
     apply_required_settings, session, verify_settings, RequiredSetting, SettingsError,
     PUSHDOWN_FILTERS, REQUIRED,
 };
+pub use vectors::{functions as vector_functions, register as register_vector_functions};
