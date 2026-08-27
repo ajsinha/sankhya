@@ -4,6 +4,10 @@
 
 pub mod lease;
 pub mod mode;
+pub mod token;
 
 pub use lease::{Lease, LeaseError, Leases};
 pub use mode::{ReadMode, TooStale};
+pub use token::{
+    is_visible, CommitPosition, Contradiction, Resolved, Session, SessionRequest, SessionToken,
+};

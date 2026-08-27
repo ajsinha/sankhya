@@ -229,3 +229,140 @@ fn two_sessions_pinning_the_same_snapshot_both_hold_it() {
         "one lease expiring must not release a snapshot another still holds"
     );
 }
+
+// --- session tokens and read-your-own-writes ------------------------------
+
+use sankhya_session::token::{
+    is_visible, CommitPosition, Contradiction, Session, SessionRequest, SessionToken,
+};
+
+#[test]
+fn a_write_token_makes_the_write_visible_to_the_next_query() {
+    // FR-API-13, and the requirement says plainly why it exists: without it the first
+    // demonstration anyone attempts shows their own write missing, and they reasonably
+    // conclude the system is broken. Nothing is broken — the write is committed and
+    // publication has not reached it.
+    let token = SessionToken::issue(CommitPosition(500));
+    let session = Session::new();
+
+    let resolved = session
+        .resolve(&SessionRequest {
+            mode: ReadMode::BoundedFreshness {
+                max_lag_micros: MINUTE,
+            },
+            after: Some(token),
+        })
+        .expect("no contradiction outside a pin");
+
+    assert_eq!(
+        resolved.wait_for,
+        Some(CommitPosition(500)),
+        "the query must wait for the write rather than answering without it"
+    );
+    assert!(!is_visible(CommitPosition(499), CommitPosition(500)));
+    assert!(is_visible(CommitPosition(500), CommitPosition(500)));
+    assert!(is_visible(CommitPosition(501), CommitPosition(500)));
+}
+
+#[test]
+fn a_query_with_no_token_waits_for_nothing() {
+    let resolved = Session::new()
+        .resolve(&SessionRequest {
+            mode: ReadMode::Strong,
+            after: None,
+        })
+        .expect("no contradiction");
+    assert_eq!(resolved.wait_for, None);
+}
+
+#[test]
+fn a_token_is_opaque_and_round_trips() {
+    // FR-API-16. A client that could read a version out of this would depend on it, and the
+    // next format change would be a breaking wire change.
+    let token = SessionToken::issue(CommitPosition(41));
+    let text = token.to_string();
+
+    assert_eq!(SessionToken::parse(&text), Some(token.clone()));
+    assert_eq!(token.position(), Some(CommitPosition(41)));
+}
+
+#[test]
+fn a_token_this_server_did_not_issue_is_not_accepted() {
+    for forged in ["", "41", "skhy2-41", "skhy1-", "skhy1-notanumber", "hello"] {
+        assert_eq!(
+            SessionToken::parse(forged),
+            None,
+            "'{forged}' must not parse as a token"
+        );
+    }
+}
+
+#[test]
+fn asking_for_freshness_inside_a_pinned_session_is_rejected_not_reconciled() {
+    // FR-API-14. Reconciling silently means picking one of the two, and whichever is
+    // picked, some caller gets the opposite of what they asked for without being told.
+    let session = Session::pinned_to(41);
+
+    for mode in [
+        ReadMode::Strong,
+        ReadMode::BoundedFreshness {
+            max_lag_micros: MINUTE,
+        },
+    ] {
+        let Err(contradiction) = session.resolve(&SessionRequest { mode, after: None }) else {
+            panic!("{mode} inside a pinned session must be rejected");
+        };
+        assert!(matches!(
+            contradiction,
+            Contradiction::FreshnessInsidePin { pinned: 41, .. }
+        ));
+        assert!(contradiction
+            .to_string()
+            .contains("cannot both be honoured"));
+    }
+}
+
+#[test]
+fn a_pinned_session_reading_its_own_snapshot_is_fine() {
+    let session = Session::pinned_to(41);
+    let resolved = session
+        .resolve(&SessionRequest {
+            mode: ReadMode::Pinned { snapshot: 41 },
+            after: None,
+        })
+        .expect("consistent with the pin");
+    assert_eq!(resolved.mode, ReadMode::Pinned { snapshot: 41 });
+}
+
+#[test]
+fn a_pinned_session_will_not_be_overridden_per_request() {
+    // Otherwise repeatable reads are not repeatable.
+    let Err(contradiction) = Session::pinned_to(41).resolve(&SessionRequest {
+        mode: ReadMode::Pinned { snapshot: 99 },
+        after: None,
+    }) else {
+        panic!("a different snapshot inside a pin must be rejected");
+    };
+    assert!(matches!(
+        contradiction,
+        Contradiction::DifferentPin {
+            session_pin: 41,
+            requested: 99
+        }
+    ));
+    assert!(contradiction.to_string().contains("not repeatable"));
+}
+
+#[test]
+fn a_pinned_session_does_not_wait_for_a_write_token() {
+    // A pinned session reads committed data only. The pinned snapshot either includes the
+    // write or predates it, and waiting cannot change which — so waiting would only ever
+    // add latency to an answer that was already determined.
+    let resolved = Session::pinned_to(41)
+        .resolve(&SessionRequest {
+            mode: ReadMode::Pinned { snapshot: 41 },
+            after: Some(SessionToken::issue(CommitPosition(999))),
+        })
+        .expect("consistent");
+    assert_eq!(resolved.wait_for, None);
+}
