@@ -186,10 +186,11 @@ enumerated in a test — which found three ways the analytical tier returns a wr
 
 **The server runs and answers queries.** Real `psql` connects, authenticates, and runs
 ordinary SQL — aggregation, expressions, null semantics — against a provider wrapped in its
-policy decision. A table the caller may not read is never registered, so naming it fails to
-resolve rather than confirming it exists; a policy row predicate is enforced where no
-provider can decline it. Everything it did is recorded in a tamper-evident hash chain. The
-table it serves is an in-memory placeholder: what is proven is the path, not the data.
+policy decision — over real Parquet on disk, through the read path that plans from the
+table log alone and prunes files by recorded statistics. A table the caller may not read is
+never registered, so naming it fails to resolve rather than confirming it exists; a policy
+row predicate is enforced where no provider can decline it. Everything it did is recorded in
+a tamper-evident hash chain.
 
 What does not exist: the streaming transport, Arrow Flight SQL, the gRPC control plane and
 the REST gateway. Also unbuilt inside work already counted: bloom filters, table

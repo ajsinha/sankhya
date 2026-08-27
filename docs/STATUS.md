@@ -588,9 +588,11 @@ Stated plainly, because a status document that omits this is marketing.
   positions retirement checks against.
 - **The server runs and executes statements.** Real `psql` connects, authenticates, runs
   catalogue queries and ordinary SQL — aggregation, expressions, null semantics — against a
-  policy-wrapped provider. The table it serves is an **in-memory placeholder**: what is
-  proven is the path, not the data. Connecting the M3 read path to real Delta tables
-  replaces one function.
+  policy-wrapped provider — over **real Parquet on disk**, through the M3 read path, which
+  plans from the table log alone and prunes files by recorded statistics. The server walks
+  a `<schema>/<table>/` warehouse at startup and reads each table's schema out of its own
+  log rather than inferring it from a footer, because a table with no files yet has no
+  footer and one whose files predate a column would be missing it.
 - **The security path is now reachable.** A table the principal may not read is never
   registered, so naming it fails to resolve rather than confirming it exists; a policy row
   predicate is enforced where no provider can decline it, and a tautology cannot widen it.

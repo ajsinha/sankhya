@@ -96,3 +96,92 @@ pub fn schema_string(schema: &Schema) -> Result<String, UnsupportedType> {
         fields?.join(",")
     ))
 }
+
+/// The Arrow type a log's type name denotes.
+///
+/// The inverse of [`type_name`], and deliberately not its mirror image. `long` becomes
+/// `Int64` and never `UInt64`, because the log cannot tell them apart: both are written as
+/// `long`, so a reader has to pick one and picking the signed one is the choice that
+/// preserves every value the log can hold.
+///
+/// A column written as `UInt64` therefore reads back as `Int64`. That is lossless for every
+/// value below 2^63 and would silently wrap above it, which is why the writer's own bound
+/// on those columns matters --- and why this is written down here rather than discovered.
+fn arrow_type(name: &str) -> Option<DataType> {
+    let data_type = match name {
+        "boolean" => DataType::Boolean,
+        "byte" => DataType::Int8,
+        "short" => DataType::Int16,
+        "integer" => DataType::Int32,
+        "long" => DataType::Int64,
+        "float" => DataType::Float32,
+        "double" => DataType::Float64,
+        "string" => DataType::Utf8,
+        "binary" => DataType::Binary,
+        "date" => DataType::Date32,
+        "timestamp" => DataType::Timestamp(TimeUnit::Microsecond, None),
+        other => {
+            let inner = other.strip_prefix("decimal(")?.strip_suffix(')')?;
+            let (precision, scale) = inner.split_once(',')?;
+            DataType::Decimal128(
+                precision.trim().parse::<u8>().ok()?,
+                scale.trim().parse::<i8>().ok()?,
+            )
+        }
+    };
+    Some(data_type)
+}
+
+/// Read a table's schema back out of its log.
+///
+/// A server reads tables it did not write --- on restart, or written by another node --- so
+/// the schema has to come from the log rather than from whoever happened to create it.
+///
+/// # Errors
+///
+/// Returns [`UnsupportedType`] naming the first field whose type this reader does not
+/// recognise. Named, because "the schema is unsupported" is not something an operator can
+/// act on, and skipping the field would produce a table that is quietly missing a column.
+pub fn schema_from_string(json: &str) -> Result<Schema, UnsupportedType> {
+    #[derive(serde::Deserialize)]
+    struct DeltaField {
+        name: String,
+        #[serde(rename = "type")]
+        type_name: serde_json::Value,
+        #[serde(default = "default_true")]
+        nullable: bool,
+    }
+    #[derive(serde::Deserialize)]
+    struct DeltaSchema {
+        fields: Vec<DeltaField>,
+    }
+    const fn default_true() -> bool {
+        true
+    }
+
+    let parsed: DeltaSchema = serde_json::from_str(json).map_err(|error| UnsupportedType {
+        field: "<the schema itself>".to_string(),
+        arrow_type: error.to_string(),
+    })?;
+
+    let fields: Result<Vec<Field>, UnsupportedType> = parsed
+        .fields
+        .into_iter()
+        .map(|field| {
+            // A nested type arrives as an object rather than a string. Refusing it by name
+            // is better than the alternatives: skipping it hides a column, and guessing a
+            // flat type for it produces a table other engines read confidently and wrongly.
+            let name = field.type_name.as_str().ok_or_else(|| UnsupportedType {
+                field: field.name.clone(),
+                arrow_type: field.type_name.to_string(),
+            })?;
+            let data_type = arrow_type(name).ok_or_else(|| UnsupportedType {
+                field: field.name.clone(),
+                arrow_type: name.to_string(),
+            })?;
+            Ok(Field::new(field.name, data_type, field.nullable))
+        })
+        .collect();
+
+    Ok(Schema::new(fields?))
+}

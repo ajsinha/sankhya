@@ -153,8 +153,18 @@ scale-factor-1 dataset and needs a machine that is not otherwise busy.
 
 ```bash
 cargo build --release -p sankhya-server
-SANKHYA_NO_PASSWORD=1 SANKHYA_LISTEN=127.0.0.1:5433 ./target/release/sankhya-server
+SANKHYA_NO_PASSWORD=1 \
+SANKHYA_WAREHOUSE=./warehouse \
+SANKHYA_LISTEN=127.0.0.1:5433 \
+  ./target/release/sankhya-server
 ```
+
+`SANKHYA_WAREHOUSE` is a directory of `<schema>/<table>/`, each table holding Parquet files
+and a `_delta_log`. The server walks it at startup, reads each table's schema **out of its
+own log** — not from a Parquet footer, which a table with no files yet does not have — and
+opens it through the read path. A table it cannot open is named on stderr rather than
+omitted: a server that starts with three tables of four and says nothing produces an outage
+that looks, to whoever queries it, like a table nobody ever created.
 
 In another shell, with any PostgreSQL client:
 
@@ -166,20 +176,25 @@ psql -h 127.0.0.1 -p 5433 -U you -d acme -c "\dt"
 `SANKHYA_NO_PASSWORD` is spelled as an opt-*out* so the insecure choice has to be made
 deliberately, and the startup line says `NO AUTHENTICATION` in capitals when it is in force.
 
-Statements execute:
+Statements execute against the Parquet on disk:
 
 ```
-$ psql -h 127.0.0.1 -p 5433 -U you -d acme -c "SELECT id, label FROM example ORDER BY id;"
- id | label
-----+-------
-  1 | north
-  2 |
-  3 | south
+$ psql ... -c "SELECT region, count(*) AS n, round(sum(amount)) AS total
+               FROM orders GROUP BY region ORDER BY region;"
+ region |  n  | total
+--------+-----+--------
+ north  | 334 | 250250
+ south  | 333 | 249251
+        | 333 | 249750
 (3 rows)
 ```
 
-Row 2's label is genuinely null, not an empty string — the distinction survives from the
-Arrow array to the wire, where it becomes a length of −1.
+The third row's region is genuinely null, not an empty string. The distinction survives from
+the Parquet page through the Arrow array to the wire, where it becomes a length of −1.
+
+Columnar throughout: Parquet on disk, Arrow in memory, and the read path plans from the
+table log alone — no directory listing and no footer reads — pruning files by the statistics
+the log records.
 
 **What the query path enforces.** A table the principal may not read is never registered in
 the session, so naming it fails to resolve — indistinguishable from naming a table that does
@@ -187,11 +202,15 @@ not exist, which is deliberate: saying "you may not read that" would confirm it 
 policy row predicate is conjoined where no provider can decline it, so a tautology in the
 query cannot widen it. Both are tested end to end.
 
-**The example table is a placeholder.** It is in memory and small enough that nobody will
-mistake it for the real thing. What it proves is the *path*, not the data: a statement
-arrives over the wire, is authorised, planned against a policy-wrapped provider, executed,
-and rendered back. Connecting the M3 read path to real Delta tables replaces
-`example_servable` and changes nothing else.
+To create a warehouse to try this against:
+
+```bash
+SANKHYA_WAREHOUSE=./warehouse \
+  cargo test -p sankhya-server --test make_warehouse -- --ignored
+```
+
+That writes one table of 1,000 rows across four Parquet files, so the read path has
+something to prune and to parallelise over.
 
 ---
 
