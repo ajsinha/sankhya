@@ -1,6 +1,6 @@
 [package]
-name         = "sankhya-numeric"
-description  = "Exact and approximate order statistics, deterministic reduction, fixed-point arithmetic."
+name         = "sankhya-math"
+description  = "Mathematics: deterministic reduction, vectors, matrices, statistics and calculus."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

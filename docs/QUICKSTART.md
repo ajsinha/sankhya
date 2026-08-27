@@ -119,7 +119,7 @@ TPC-H data is generated rather than fixtured.
 | `sankhya-olap` `tests/tpch.rs` | TPC-H at scale factor 1. **`tests/cross_engine.rs` is the honest one**: every query's result is compared against the engine's own listing-based plan over the same files, so a provider bug cannot hide behind a self-consistent answer |
 | `sankhya-olap` `tests/exactness.rs` | An approximate answer is labelled approximate. A sketch-derived count never presents itself as exact |
 | `sankhya-governor` | Deadlines and cancellation are bounded at one batch per partition; an aggregation too large to run is refused up front, and the refusal says whether retrying could ever help |
-| `sankhya-numeric` | Reductions are deterministic regardless of partition order — the analytical counterpart to the `sankhya-types` property |
+| `sankhya-math` | Reductions are deterministic regardless of partition order — the analytical counterpart to the `sankhya-types` property |
 
 ### The checks that are not tests
 

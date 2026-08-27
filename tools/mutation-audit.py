@@ -335,28 +335,28 @@ CATALOGUE = [
      "sankhya-readpath"),
 
     ("quantile: place an unorderable value instead of refusing",
-     "crates/sankhya-numeric/src/quantile.rs",
+     "crates/sankhya-math/src/quantile.rs",
      "    if let Some(at) = values.iter().position(|v| v.is_nan()) {\n        return Err(QuantileError::NotOrderable { at });\n    }",
      "",
-     "sankhya-numeric"),
+     "sankhya-math"),
 
     ("quantile: answer an empty input with zero",
-     "crates/sankhya-numeric/src/quantile.rs",
+     "crates/sankhya-math/src/quantile.rs",
      "    if values.is_empty() {\n        return Err(QuantileError::Empty);\n    }",
      "    if values.is_empty() {\n        return Ok(0.0);\n    }",
-     "sankhya-numeric"),
+     "sankhya-math"),
 
     ("quantile: collapse linear interpolation onto the lower observation",
-     "crates/sankhya-numeric/src/quantile.rs",
+     "crates/sankhya-math/src/quantile.rs",
      "            Ok(lower + (upper - lower) * fraction)",
      "            let _ = upper;\n            Ok(lower)",
-     "sankhya-numeric"),
+     "sankhya-math"),
 
     ("quantile: sum across the wrong element, so vectors stop lining up by scenario",
-     "crates/sankhya-numeric/src/quantile.rs",
+     "crates/sankhya-math/src/quantile.rs",
      ".filter_map(|v| v.get(element).copied())",
      ".filter_map(|v| v.get(0).copied())",
-     "sankhya-numeric"),
+     "sankhya-math"),
 
     # Deliberately absent: "sum in arrival order rather than a canonical one".
     #

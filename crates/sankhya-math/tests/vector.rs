@@ -17,7 +17,7 @@
     clippy::float_cmp
 )]
 
-use sankhya_numeric::vector::{
+use sankhya_math::vector::{
     add, cosine_distance, cosine_similarity, divide, dot, euclidean, matvec, mean, multiply,
     norm_l1, norm_l2, row_of, scale, subtract, sum, VectorError,
 };
@@ -37,9 +37,21 @@ fn adversarial() -> (Vec<f64>, Vec<f64>) {
 }
 
 /// Permute a pair identically, so the mathematical answer is unchanged.
+///
+/// `(i * by) % n` is a permutation only when `by` and `n` are coprime. Otherwise it repeats
+/// indices, the "permuted" array holds different data, and the test proves nothing — which
+/// is exactly what happened to the variance test in `stats.rs` before this guard existed.
 fn permuted(a: &[f64], b: &[f64], by: usize) -> (Vec<f64>, Vec<f64>) {
     let n = a.len();
     let order: Vec<usize> = (0..n).map(|i| (i * by + 7) % n).collect();
+    let mut distinct = order.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        n,
+        "stride {by} is not coprime with {n}, so this is not a permutation"
+    );
     (
         order.iter().map(|i| a[*i]).collect(),
         order.iter().map(|i| b[*i]).collect(),

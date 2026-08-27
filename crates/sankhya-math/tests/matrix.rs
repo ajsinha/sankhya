@@ -17,10 +17,10 @@
     clippy::float_cmp
 )]
 
-use sankhya_numeric::matrix::{
+use sankhya_math::matrix::{
     determinant, identity, inverse, multiply, solve, trace, transpose, MatrixError,
 };
-use sankhya_numeric::vector::matvec;
+use sankhya_math::vector::matvec;
 
 /// Assert two matrices agree to within a tolerance appropriate for elimination.
 fn close(got: &[f64], want: &[f64]) {

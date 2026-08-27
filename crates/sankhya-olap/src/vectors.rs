@@ -29,7 +29,7 @@ use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
 };
 use datafusion::prelude::SessionContext;
-use sankhya_numeric::vector;
+use sankhya_math::{calculus, stats, vector};
 use std::sync::Arc;
 
 /// Register every vector function against a session.
@@ -64,6 +64,34 @@ pub fn functions() -> Vec<ScalarUDF> {
         })),
         ScalarUDF::from(VectorFunction::unary("vec_sum", |a| Ok(vector::sum(a)))),
         ScalarUDF::from(VectorFunction::unary("vec_mean", vector::mean)),
+        // Statistics *within* one vector — a per-row series, such as a window of readings
+        // or a term structure. Distinct from an aggregate across rows, which SQL already
+        // has: `stddev(x)` describes a column, `vec_stddev(v)` describes one row's series.
+        ScalarUDF::from(VectorFunction::unary("vec_variance", |a| {
+            stats::variance(a, stats::Population::Sample)
+        })),
+        ScalarUDF::from(VectorFunction::unary("vec_stddev", |a| {
+            stats::standard_deviation(a, stats::Population::Sample)
+        })),
+        ScalarUDF::from(VectorFunction::unary("vec_median", stats::median)),
+        ScalarUDF::from(VectorFunction::unary("vec_skewness", stats::skewness)),
+        ScalarUDF::from(VectorFunction::unary(
+            "vec_kurtosis",
+            stats::excess_kurtosis,
+        )),
+        ScalarUDF::from(VectorFunction::binary("vec_covariance", |a, b| {
+            stats::covariance(a, b, stats::Population::Sample)
+        })),
+        ScalarUDF::from(VectorFunction::binary(
+            "vec_correlation",
+            stats::correlation,
+        )),
+        // Calculus over a sampled series, at unit spacing. A caller wanting another
+        // spacing scales the result, which is exact — rather than this taking a spacing
+        // argument that would have to be a literal for no benefit.
+        ScalarUDF::from(VectorFunction::unary("vec_integral", |a| {
+            calculus::integrate_trapezoid(a, 1.0)
+        })),
     ]
 }
 

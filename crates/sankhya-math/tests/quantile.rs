@@ -12,7 +12,7 @@
     clippy::float_cmp
 )]
 
-use sankhya_numeric::{quantile, quantile_of_sum, Convention, QuantileError};
+use sankhya_math::{quantile, quantile_of_sum, Convention, QuantileError};
 
 fn v(values: &[f64]) -> Vec<f64> {
     values.to_vec()

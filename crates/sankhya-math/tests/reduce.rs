@@ -16,7 +16,7 @@
 )]
 
 use proptest::prelude::*;
-use sankhya_numeric::{combine_partials, deterministic_sum};
+use sankhya_math::{combine_partials, deterministic_sum};
 
 /// Values of widely different magnitudes, where naive summation loses the small ones.
 fn awkward() -> Vec<f64> {

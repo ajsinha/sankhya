@@ -30,7 +30,7 @@ costs:
 > with partition completion order, so the same aggregate query returns different values run
 > to run.
 
-`sankhya-numeric` exists because of that, and its own module comment states the cost
+`sankhya-math` exists because of that, and its own module comment states the cost
 precisely: *"The difference is small. That is what makes it expensive: it is too small to
 notice and too large to reconcile, so it surfaces as a figure that will not tie out and
 nobody can explain."*
@@ -63,7 +63,13 @@ canonical answer is Arrow's **`arrow.fixed_shape_tensor`** extension: a `FixedSi
 also works and is worse — two offset layers, awkward kernels, and no shape metadata for an
 external reader to find.
 
-### Kernels: pure Rust in `sankhya-numeric`, not a library
+### Kernels: pure Rust in `sankhya-math`, not a library
+
+*(The crate carried a narrower name when this was written and was renamed to the one above on 2026-08-27 by
+owner directive, in anticipation of holding a full mathematical library rather than a set of
+numeric primitives: linear algebra, calculus, vector mathematics and statistics. The name
+was the only thing that changed --- the layering, the purity and the determinism guarantee
+are as described here.)*
 
 **Not Polars.** Polars is a dataframe *engine*, not a kernel library: it carries its own
 Arrow memory layer, its own expression system and its own execution engine. ADR-0001 already

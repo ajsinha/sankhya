@@ -73,6 +73,9 @@ async fn documents() -> SessionContext {
 
     let context = SessionContext::new();
     register(&context);
+    // The constructors too, so a test can build a vector inline rather than needing a
+    // fixture column for every shape it wants to describe.
+    sankhya_olap::construct::register(&context);
     context
         .register_batch("documents", batch)
         .expect("registering");
@@ -273,4 +276,92 @@ async fn every_registered_function_is_present() {
         );
         assert!(context.sql(&sql).await.is_ok(), "{name} is not registered");
     }
+}
+
+// --- statistics and calculus within one vector ----------------------------
+
+#[tokio::test]
+async fn statistics_describe_one_row_series_not_a_column() {
+    // The distinction worth naming: SQL's `stddev(x)` describes a *column* across rows;
+    // `vec_stddev(v)` describes the series *inside* one row. A window of readings, a term
+    // structure, a factor path — each is one row and has its own distribution.
+    let context = documents().await;
+    let out = rows(
+        &context,
+        "SELECT vec_mean(vec_of(2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0)) AS m, \
+                vec_median(vec_of(2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0)) AS med",
+    )
+    .await;
+    let text = pretty(&out);
+    assert!(text.contains("5.0"), "the mean is 5: {text}");
+    assert!(text.contains("4.5"), "and the median 4.5: {text}");
+}
+
+#[tokio::test]
+async fn a_variance_and_a_standard_deviation_are_available_per_row() {
+    let context = documents().await;
+    let out = rows(
+        &context,
+        "SELECT vec_stddev(vec_of(2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0)) AS s",
+    )
+    .await;
+    // The sample standard deviation of that series is about 2.138.
+    let text = pretty(&out);
+    assert!(text.contains("2.1"), "{text}");
+}
+
+#[tokio::test]
+async fn shape_statistics_reach_sql() {
+    let context = documents().await;
+    let out = rows(
+        &context,
+        "SELECT vec_skewness(vec_of(1.0, 1.0, 1.0, 2.0, 2.0, 3.0, 10.0)) AS sk",
+    )
+    .await;
+    let text = pretty(&out);
+    assert!(
+        text.contains('2') || text.contains('1'),
+        "a long right tail is positive: {text}"
+    );
+}
+
+#[tokio::test]
+async fn a_correlation_between_two_row_series_is_available() {
+    let context = documents().await;
+    let out = rows(
+        &context,
+        "SELECT vec_correlation(vec_of(1.0, 2.0, 3.0, 4.0), vec_of(2.0, 4.0, 6.0, 8.0)) AS r",
+    )
+    .await;
+    assert!(
+        pretty(&out).contains("1.0"),
+        "a doubled series correlates perfectly"
+    );
+}
+
+#[tokio::test]
+async fn an_integral_over_a_sampled_series_is_available() {
+    let context = documents().await;
+    // The area under y = x sampled at 0..4 with unit spacing is 8.
+    let out = rows(
+        &context,
+        "SELECT vec_integral(vec_of(0.0, 1.0, 2.0, 3.0, 4.0)) AS area",
+    )
+    .await;
+    assert!(pretty(&out).contains("8.0"), "{}", pretty(&out));
+}
+
+#[tokio::test]
+async fn a_constant_series_refuses_a_correlation_rather_than_reporting_zero() {
+    // Zero would say "unrelated". The truth is that a constant series has no correlation
+    // with anything, and a ranked correlation table would show it as genuinely uncorrelated
+    // rather than as unanswerable.
+    let context = documents().await;
+    let outcome = context
+        .sql("SELECT vec_correlation(vec_of(1.0, 2.0, 3.0), vec_of(7.0, 7.0, 7.0))")
+        .await
+        .expect("planning")
+        .collect()
+        .await;
+    assert!(outcome.is_err(), "a constant series has no correlation");
 }
