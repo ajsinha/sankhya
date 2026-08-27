@@ -69,7 +69,7 @@ Everything is one process, one config file, one binary, one security model.
                    Arrow ◀──┘                      └──▶ Arrow
                             ▼                      ▼
                 ┌────────────────────┐  ┌────────────────────────┐
-                │  DataFusion (OLAP) │◀▶│   Graph engine (AML)   │
+                │  DataFusion (OLAP) │◀▶│   Graph engine (typed) │
                 └────────────────────┘  └────────────────────────┘
                             └───────────┬──────────┘
                                         ▼
@@ -151,7 +151,7 @@ Spark, Trino, DuckDB, Snowflake and Athena read these tables **directly**, with 
 
 ## Status
 
-**Early implementation — M0 through M3 complete, M4 in progress.** The architecture and
+**Early implementation — M0 through M4 complete, M5 in progress.** The architecture and
 requirements were reviewed and amended by a panel covering systems architecture, database
 internals, analytical query engines and Rust engineering practice.
 
@@ -166,6 +166,16 @@ provider** that plans from metadata alone, prunes files by statistics, resolves 
 and deleted rows to one current version each, and answers from memory and Parquet at once
 or refuses when the tiers do not cover the query.
 
+The **graph tier** holds no durable state: an epoch is hydrated by scanning published
+tables, carries the snapshot it was built from, and is dropped on shutdown. There is no
+graph write path, so the graph cannot disagree with SQL — an edge exists because a row
+exists. Traversal is time-aware and bounded, and the algorithms are callable from SQL as
+table functions that join against ordinary tables. The **extension mechanism** defines its
+own function traits rather than re-exporting the query engine's, so a pack survives the
+engine changing underneath it; two reference packs from unrelated industries and one
+deliberately hostile pack, whose every attempt is refused with a named error, are what
+test that claim rather than assert it.
+
 The analytical tier is measured against TPC-H at scale factor 1, and the three
 performance objectives are **asserted by a build gate** rather than reported: a needle
 lookup at 13 ms against a 250 ms budget, a pivot at 796 ms against 1 s, a wide scan at
@@ -174,10 +184,12 @@ reference node. Cancellation is bounded, a hostile aggregation is refused rather
 taking the process down, and the places where this engine and PostgreSQL disagree are
 enumerated in a test — which found three ways the analytical tier returns a wrong number.
 
-What does not exist: the server itself, the streaming transport, the graph engine, the
-extension mechanism, the API surfaces, tenancy and security. Also unbuilt inside work
-already counted: bloom filters, table partitioning, the result cache, and leader
-election. [`docs/QUICKSTART.md`](docs/QUICKSTART.md) and [`docs/STATUS.md`](docs/STATUS.md)
+What does not exist: the server itself, the streaming transport, the API surfaces,
+tenancy and security. Also unbuilt inside work already counted: bloom filters, table
+partitioning, the result cache, leader election, a timer that drives graph hydration, and
+a measured graph benchmark — the graph primitives are correct against brute force and
+bounded by construction, but they have not been timed at scale, and that M4 criterion is
+carried forward as unmet rather than reinterpreted. [`docs/QUICKSTART.md`](docs/QUICKSTART.md) and [`docs/STATUS.md`](docs/STATUS.md)
 are explicit about the boundary, including the defects found along the way — and about
 the two TPC-H queries whose numbers are published without being gated, and why.
 

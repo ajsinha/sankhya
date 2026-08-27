@@ -3286,6 +3286,16 @@ name = "sankhya-oltp-pg"
 version = "0.1.0"
 
 [[package]]
+name = "sankhya-pack"
+version = "0.1.0"
+dependencies = [
+ "sankhya-ext",
+ "serde",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "sankhya-plan"
 version = "0.1.0"
 dependencies = [

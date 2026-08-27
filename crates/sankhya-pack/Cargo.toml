@@ -1,0 +1,22 @@
+[package]
+name         = "sankhya-pack"
+description  = "The declarative pack tier: bundle format, loader, validation, reload and verification."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 16
+
+[lints]
+workspace = true
+
+[dependencies]
+sankhya-ext = { path = "../sankhya-ext" }
+serde       = { workspace = true }
+toml        = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

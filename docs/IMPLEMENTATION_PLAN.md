@@ -2,7 +2,7 @@
 
 **Document ID:** SNK-IP-001
 **Version:** 0.1.0 (draft for review)
-**Status:** Implementation — M0–M3 complete, M4 in progress
+**Status:** Implementation — M0–M4 complete, M5 in progress
 **Date:** 2026-08-26
 **Companions:** `REQUIREMENTS.md` (SNK-RD-001), `ARCHITECTURE.md` (SNK-AD-001), `ROADMAP.md`
 
@@ -286,6 +286,12 @@ Two naming hazards in the general-purpose library are recorded in the design not
 
 ### Exit
 1. Graph performance objectives met in the pipeline against the named public graph suite.
+   *(**Carried forward to M5, 2026-08-27, as unmet.** No public graph suite is wired into
+   the performance pipeline. The primitives are correct against an independent brute-force
+   reference and bounded by construction, but they have not been timed at scale, and a
+   correctness proof is not a performance measurement. Recorded as outstanding rather than
+   reinterpreted into something the work does satisfy --- which is the failure mode this
+   plan exists to prevent.)*
 2. The incremental-equals-full-rehydration property test green.
 3. **Memory budget per vertex and per edge type published**, so hardware can be sized before purchase.
 4. Time-respecting traversal proven to return no time-violating path.
