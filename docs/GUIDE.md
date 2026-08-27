@@ -31,7 +31,8 @@ The [quickstart](QUICKSTART.md) gets a server running. This shows what to do wit
 9. [Verifying and repairing a table](#9-verifying-and-repairing-a-table)
 10. [The diagnostic](#10-the-diagnostic)
 11. [Metrics, and what a failure tells you](#11-metrics-and-what-a-failure-tells-you)
-12. [What is not built](#12-what-is-not-built)
+12. [Backups, and proving one](#12-backups-and-proving-one)
+13. [What is not built](#13-what-is-not-built)
 
 ---
 
@@ -708,7 +709,129 @@ exists so a monitoring system cannot read "I could not look" as "nothing found".
 
 ---
 
-## 12. What is not built
+## 12. Backups, and proving one
+
+```bash
+sankhya-server backup     # record a manifest
+sankhya-server drill      # prove it restores
+```
+
+### What a backup actually is here
+
+A **manifest**, not an archive. This system does not copy your data somewhere; it binds three
+artefacts — the transactional backup you took, the table versions in the warehouse, and the
+key generation — to one point, and protects the files so they stay readable.
+
+```
+SANKHYA backup 0.1.0
+  sales.orders at version 1, 1000 row(s)
+
+  backup:01a04442-936a-73a1-bfd1-964c8cd66330
+  queryable at 4821
+  manifest /srv/sankhya/.sankhya/backup-manifest.json
+
+This backup is unproven until it has been drilled: `sankhya-server drill`.
+```
+
+### Two positions, and they are not the same number
+
+| | |
+|---|---|
+| `source_restores_to` | Where the transactional store lands |
+| `queryable_at` | The highest position at which **every** table is complete |
+
+The second is the minimum over the tables' coverage, because a query joining two tables can
+only be answered where both of them reach. Tables publish at their own cadence, so these are
+rarely equal, and the gap between them is **how much re-capture a restore implies** before a
+cross-table query can reach the source's position.
+
+A backup binds to the second. Recording only the first and calling it "the consistent point"
+is the commonest way this goes wrong.
+
+### The manifest refuses to exist rather than record a disagreement
+
+**No table may cover a position past where the source restores to.** If one does, the backup
+is refused:
+
+```
+refusing to record a backup whose analytical tier is ahead of its source. After restoring
+it, 1 table(s) would hold rows the transactional store no longer has; capture would resume
+behind them and republish that range at different positions. Not detectable afterwards from
+either side alone: sales.items covers to 900 and the source restores to 800
+```
+
+Every offending table is named, not just the first — fixing them one at a time means learning
+about the next only after another full backup.
+
+### A drill reads the data back
+
+```
+SANKHYA restore drill 0.1.0
+  backup:01a04442-936a-73a1-bfd1-964c8cd66330
+  sales.orders: verified, 1000 row(s)
+
+Proven. 1 table(s) read back and digested.
+```
+
+Not a file-presence check. **A presence check passes on a truncated Parquet**, on a file whose
+bytes were replaced with another table's, and on essentially every failure that actually
+happens — because what goes wrong with a backup is almost never that a file is missing. A
+missing file is loud. What goes wrong is that a file is there and wrong.
+
+So the drill recomputes the digest. It is expensive and it is the only version of this that
+means anything. And the failure it reports distinguishes two situations that need different
+investigations:
+
+| | |
+|---|---|
+| `expected 1000 row(s) and found 940` | Rows were **lost or duplicated** |
+| `the row count matches at 1000 and the data does not` | Rows were **altered** — every file present, right length, wrong contents |
+
+| Exit | Meaning |
+|---|---|
+| `0` | Proven |
+| `1` | A table did not verify |
+| `2` | The drill could not run |
+
+**Alert on `2` as well as `1`.** A monitor treating "could not run" as "nothing wrong"
+reports a backup as proven when nothing looked at it.
+
+### The evidence keeps the failures
+
+`<data-dir>/restore-drills.jsonl`, append-only:
+
+```
+{"at": 1787851608943991, "backup": "backup:01a0…", "verdict": "pass", "tables": 1}
+{"at": 1787851616975478, "backup": "backup:01a0…", "verdict": "FAIL", "tables": 1,
+ "failures": "sales.orders: could not be read (…part-0000.parquet: Parquet file too small)"}
+```
+
+A drill history with no failures in three years describes either a very good system or a
+drill that does not really run, and nothing in the history says which. So failures are
+written with the same ceremony as passes, and a drill that could not *start* is recorded
+distinctly from one that ran and passed.
+
+`doctor` reports the last **pass**, never the last attempt — an operator asking "when did we
+last prove we could restore" must not be answered with the time of a failure.
+
+### Deleting a backup does not immediately release its files
+
+Seven days of grace between expiry and removal. The failure it prevents: a backup deleted by
+mistake, its files swept before anybody notices, and no way back even if the manifest is
+recovered five minutes later.
+
+### What this does not cover
+
+**The transactional half.** This system binds itself to a PostgreSQL backup somebody else
+took. It records the location and digest; it does not take one and does not verify one. A
+passing drill means the analytical tier restores and says nothing about the source. Proving
+that is a separate drill against your database backup tooling.
+
+Full detail in [`runbooks/restore-drill.md`](runbooks/restore-drill.md).
+
+---
+
+## 13. What is not built
 
 Stated explicitly, because a guide that implies more than exists is worse than one that
 admits less. [`STATUS.md`](STATUS.md) is the authoritative version.
@@ -716,6 +839,7 @@ admits less. [`STATUS.md`](STATUS.md) is the authoritative version.
 | | |
 |---|---|
 | **The gRPC control plane and REST gateway** | Not built. The `/metrics` endpoint is not the beginning of one: one route, no authentication, and nothing that returns rows |
+| **Backing up the transactional store** | Not built, and deliberately not planned as this system's job. The manifest binds to a PostgreSQL backup taken by your own tooling |
 | **Distributed tracing** | Not built. Metrics and the error catalogue exist; spans do not |
 | **Ingest on a timer** | Not built. Capture, apply and publication all work and none of them is driven by a running process, so everything the server serves is already published |
 | **Graph hydration on a timer** | Not built. An epoch is built when something builds it |

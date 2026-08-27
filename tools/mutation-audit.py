@@ -223,7 +223,7 @@ CATALOGUE = [
 
     ("log: let an add of an existing path duplicate it",
      "crates/sankhya-table-delta/src/log.rs",
-     "                Action::Add(add) => match self.position.get(&add.path).copied() {\n                    Some(index) => {\n                        if let Some(slot) = self.files.get_mut(index) {\n                            *slot = Some(add);\n                        }\n                    }\n                    None => {\n                        self.position.insert(add.path.clone(), self.files.len());\n                        self.files.push(Some(add));\n                    }\n                },",
+     "            Action::Add(add) => match self.position.get(&add.path).copied() {\n                Some(index) => {\n                    if let Some(slot) = self.files.get_mut(index) {\n                        *slot = Some(add);\n                    }\n                }\n                None => {\n                    self.position.insert(add.path.clone(), self.files.len());\n                    self.files.push(Some(add));\n                }\n            },",
      "                Action::Add(add) => {\n                    self.position.insert(add.path.clone(), self.files.len());\n                    self.files.push(Some(add));\n                }",
      "sankhya-table-delta"),
 
@@ -624,8 +624,8 @@ CATALOGUE = [
 
     ("log: replay by scanning the file list instead of indexing it",
      "crates/sankhya-table-delta/src/log.rs",
-     "                Action::Add(add) => match self.position.get(&add.path).copied() {\n                    Some(index) => {\n                        if let Some(slot) = self.files.get_mut(index) {\n                            *slot = Some(add);\n                        }\n                    }\n                    None => {\n                        self.position.insert(add.path.clone(), self.files.len());\n                        self.files.push(Some(add));\n                    }\n                },",
-     "                Action::Add(add) => {\n                    if let Some(existing) =\n                        self.files.iter_mut().flatten().find(|f| f.path == add.path)\n                    {\n                        *existing = add;\n                    } else {\n                        self.files.push(Some(add));\n                    }\n                }",
+     "            Action::Add(add) => match self.position.get(&add.path).copied() {\n                Some(index) => {\n                    if let Some(slot) = self.files.get_mut(index) {\n                        *slot = Some(add);\n                    }\n                }\n                None => {\n                    self.position.insert(add.path.clone(), self.files.len());\n                    self.files.push(Some(add));\n                }\n            },",
+     "            Action::Add(add) => {\n                if let Some(existing) =\n                    self.files.iter_mut().flatten().find(|f| f.path == add.path)\n                {\n                    *existing = add;\n                } else {\n                    self.files.push(Some(add));\n                }\n            }",
      "sankhya-table-delta"),
 
     ("cache: trust the cached version instead of asking the log",
@@ -1196,6 +1196,119 @@ CATALOGUE = [
      '    path == "/metrics"',
      '    path.starts_with("/metrics")',
      "sankhya-server"),
+
+    ("backup: record a manifest whose tables are ahead of the source",
+     "crates/sankhya-backup/src/manifest.rs",
+     "        if !ahead.is_empty() {",
+     "        if false {",
+     "sankhya-backup"),
+
+    ("backup: report only the first table that is ahead",
+     "crates/sankhya-backup/src/manifest.rs",
+     "            .filter(|table| table.covers_to > source.restores_to)",
+     "            .filter(|table| table.covers_to > source.restores_to)\n            .take(1)",
+     "sankhya-backup"),
+
+    ("backup: take the queryable position from the source rather than the slowest table",
+     "crates/sankhya-backup/src/manifest.rs",
+     "        let queryable_at = tables\n            .iter()\n            .map(|table| table.covers_to)\n            .min()\n            .unwrap_or(Lsn::new(0));",
+     "        let queryable_at = source.restores_to;",
+     "sankhya-backup"),
+
+    ("backup: record a backup of no tables",
+     "crates/sankhya-backup/src/manifest.rs",
+     "        if tables.is_empty() {\n            return Err(InconsistentBackup::NoTables);\n        }",
+     "",
+     "sankhya-backup"),
+
+    ("backup: leave the tables in the order they arrived",
+     "crates/sankhya-backup/src/manifest.rs",
+     "        tables.sort_by(|a, b| a.table.cmp(&b.table));",
+     "",
+     "sankhya-backup"),
+
+    ("backup: write the checksum as a number and lose its low bits",
+     "crates/sankhya-backup/src/manifest.rs",
+     "            checksum: digest.checksum().to_string(),",
+     "            checksum: (digest.checksum() as f64).to_string(),",
+     "sankhya-backup"),
+
+    ("backup: read an unparseable checksum as zero",
+     "crates/sankhya-backup/src/manifest.rs",
+     "        let checksum: u128 = self.checksum.parse().ok()?;",
+     "        let checksum: u128 = self.checksum.parse().unwrap_or(0);",
+     "sankhya-backup"),
+
+    ("backup: release a deleted backup's files immediately",
+     "crates/sankhya-backup/src/protect.rs",
+     "        if now < expired.saturating_add(GRACE_MICROS) {\n            return false;\n        }",
+     "",
+     "sankhya-backup"),
+
+    ("backup: restart the grace period on every expiry call",
+     "crates/sankhya-backup/src/protect.rs",
+     "        let entry = self.expired_at.entry(backup).or_insert(now);",
+     "        let entry = self.expired_at.entry(backup).and_modify(|at| *at = now).or_insert(now);",
+     "sankhya-backup"),
+
+    ("backup: release a backup past its own horizon without a grace period",
+     "crates/sankhya-backup/src/protect.rs",
+     "            Some(until) if now >= *until => Standing::Grace {\n                until: until.saturating_add(GRACE_MICROS),\n            },",
+     "            Some(until) if now >= *until => Standing::Released,",
+     "sankhya-backup"),
+
+    ("backup: call a drill over no tables a pass",
+     "crates/sankhya-backup/src/drill.rs",
+     "        self.could_not_start.is_none()\n            && !self.tables.is_empty()",
+     "        self.could_not_start.is_none()",
+     "sankhya-backup"),
+
+    ("backup: treat a drill that could not start as a pass",
+     "crates/sankhya-backup/src/drill.rs",
+     "        let verdict = if self.could_not_start.is_some() {\n            \"could-not-start\"\n        } else if self.passed() {",
+     "        let verdict = if self.passed() {",
+     "sankhya-backup"),
+
+    ("backup: stop at the first table that fails to verify",
+     "crates/sankhya-backup/src/drill.rs",
+     "        tables.push((snapshot.table.clone(), outcome));",
+     "        let stop = !outcome.is_verified();\n        tables.push((snapshot.table.clone(), outcome));\n        if stop {\n            break;\n        }",
+     "sankhya-backup"),
+
+    ("backup: report the last drill attempt rather than the last pass",
+     "crates/sankhya-backup/src/drill.rs",
+     '        .filter(|line| line.contains("\\"verdict\\": \\"pass\\""))',
+     "",
+     "sankhya-backup"),
+
+    ("backup: compare only the row count and not the checksum",
+     "crates/sankhya-backup/src/drill.rs",
+     "                Ok(found) if found == expected => TableOutcome::Verified {",
+     "                Ok(found) if found.rows() == expected.rows() => TableOutcome::Verified {",
+     "sankhya-backup"),
+
+    ("backup: digest a null and an empty string identically",
+     "crates/sankhya-backup/src/warehouse.rs",
+     "                if batch.column(index).is_null(row) {\n                    None\n                } else {\n                    Some(text.as_str())\n                }",
+     "                Some(text.as_str())",
+     "sankhya-backup"),
+
+    # Named against `sankhya-backup` rather than the crate the code lives in: time travel
+    # has no test of its own in the log crate, and the test that actually notices is the one
+    # asserting a backup still verifies after the table moves on. An entry pointed at the
+    # wrong crate reports SURVIVED while the defect is caught, which trains you to read
+    # survivors as noise.
+    ("delta: replay past the requested version during time travel",
+     "crates/sankhya-table-delta/src/log.rs",
+     "        if at > version {\n            break;\n        }",
+     "",
+     "sankhya-backup"),
+
+    ("diagnostic: treat a never-proven backup as merely approaching its objective",
+     "crates/sankhya-diagnostic/src/check.rs",
+     "    let Some(last) = last_pass else {",
+     "    let Some(last) = last_pass.or(Some(now)) else {",
+     "sankhya-diagnostic"),
 
 ]
 

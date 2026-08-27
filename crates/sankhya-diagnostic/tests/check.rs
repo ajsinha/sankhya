@@ -326,3 +326,85 @@ fn the_latency_threshold_is_a_named_constant_an_operator_can_find() {
     // with.
     assert_eq!(FILES_BEFORE_LATENCY_SUFFERS, 1_000.0);
 }
+
+// --- the one check whose rate needs no observing ------------------------
+
+use sankhya_diagnostic::check::{restore_drill, DRILL_OBJECTIVE_MICROS};
+
+const DAY_MICROS: i64 = 24 * 3_600 * 1_000_000;
+
+#[test]
+fn a_backup_never_proven_is_already_the_thing_the_requirement_forbids() {
+    // FR-OPS-15: "an untested backup is a rumour". Not a warning about the future — the
+    // situation the requirement exists to prevent, present now.
+    let finding = restore_drill(None, DRILL_OBJECTIVE_MICROS, 500 * DAY_MICROS)
+        .expect("never proven is a finding");
+    assert_eq!(finding.severity, Severity::Critical);
+    assert_eq!(finding.projection, Projection::Already);
+    assert!(
+        finding.observed.contains("has ever passed"),
+        "never having proven a backup and having proven it long ago are different \
+         situations, and only one is evidence the drill works: {}",
+        finding.observed
+    );
+}
+
+#[test]
+fn a_recent_drill_is_not_a_finding() {
+    assert_eq!(
+        restore_drill(Some(0), DRILL_OBJECTIVE_MICROS, DAY_MICROS),
+        None
+    );
+}
+
+#[test]
+fn a_drill_gives_a_firm_date_on_a_first_run_which_nothing_else_here_can() {
+    // Every other check needs two samples before it can say when, because a value alone
+    // implies no rate. Staleness rises at exactly one second per second and always has, so
+    // this one is exact from the first observation.
+    let now = 25 * DAY_MICROS;
+    let finding =
+        restore_drill(Some(0), DRILL_OBJECTIVE_MICROS, now).expect("25 of 30 days is close");
+    let Projection::Crossing {
+        seconds,
+        confidence,
+        ..
+    } = finding.projection
+    else {
+        panic!("a known rate yields a date: {:?}", finding.projection);
+    };
+    assert_eq!(confidence, Confidence::Firm);
+    assert_eq!(seconds / 86_400, 5);
+    assert_eq!(finding.severity, Severity::Warning);
+}
+
+#[test]
+fn a_drill_past_its_objective_is_critical_and_says_how_long_it_has_been() {
+    let finding = restore_drill(Some(0), DRILL_OBJECTIVE_MICROS, 47 * DAY_MICROS)
+        .expect("47 days is past 30");
+    assert_eq!(finding.severity, Severity::Critical);
+    assert_eq!(finding.projection, Projection::Already);
+    assert!(finding.observed.contains("47 days ago"), "{}", finding.observed);
+}
+
+#[test]
+fn the_drill_remediation_names_the_command_and_the_escalation() {
+    // A failing drill is not a maintenance task. It means the backup is not a backup, and
+    // an operator reading this at 03:00 should not have to work that out.
+    let finding = restore_drill(None, DRILL_OBJECTIVE_MICROS, 0).expect("a finding");
+    assert!(finding.remediation.contains("sankhya-server drill"));
+    assert!(finding.remediation.contains("incident"));
+    assert!(finding.remediation.contains("runbooks/restore-drill.md"));
+}
+
+#[test]
+fn a_stale_drill_sorts_above_a_distant_compaction_problem() {
+    // Ordering by when, again: a backup that has been unproven for six weeks is read before
+    // a table that will need compacting next month.
+    let mut report = Report::new();
+    let files = [400.0, 500.0, 600.0, 700.0, 800.0, 900.0];
+    report.found(compaction_debt("a", &series(&files), last_day(&files)).expect("dated"));
+    report.found(restore_drill(None, DRILL_OBJECTIVE_MICROS, 0).expect("a finding"));
+    assert_eq!(report.findings()[0].check, "restore-drill");
+    assert!(report.has_critical());
+}

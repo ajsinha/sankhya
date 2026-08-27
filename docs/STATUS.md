@@ -25,13 +25,83 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M3** Query engine and storage performance | 28–34 ew | **Complete**, all six exit criteria met — closed 2026-08-26. One criterion was corrected first: it required cancellation inside user code, which does not exist until M4, and that clause moved to M4. Parts of the work breakdown remain unbuilt and are listed under *M3, closed* below |
 | **M4** Graph engine and the extension mechanism | 26–32 ew | **Complete.** Every exit criterion met; see below |
 | **M5** Tenancy, security and API surfaces | 22–28 ew | **Closed.** Four of five exit criteria met; the fifth needs a second server version to exist. Two of four API surfaces built — the wire protocol and Flight SQL. The control plane and its gateway are **deferred to M6**, because what they expose is built there |
-| **M6** Operability, packaging and hardening | — | **In progress.** The server process, §10.1's diagnostic and §10.2's catalogues are built; §10.3–10.8 are not started |
+| **M6** Operability, packaging and hardening | — | **In progress.** The server process, §10.1's diagnostic, §10.2's catalogues and §10.3's backup and restore drill are built — two of seven exit criteria met. §10.4–10.8 are not started |
 | **M7** Multidimensional analysis | — | Not started. **Added 2026-08-27 by owner directive** and placed before scale-out: cubes are a stated differentiator and multi-node deployment is table stakes. Three crates planned, mirroring the graph split. See [ADR-0007](adr/0007-the-cube-model.md), revised the same day it was written: the first version banned automatic materialisation, and snapshot keying makes that ban unnecessary |
 | **M8**–**M9** Scale-out, then tiering | — | Not started. Renumbered from M7–M8 when M7 was inserted |
 
 ---
 
 ## M6, in progress
+
+### §10.3 — Backup, protection and the restore drill
+
+Three requirements, each existing because of a specific way backups fail.
+
+**`FR-OPS-13` — the manifest refuses to exist rather than recording a disagreement.** The
+requirement's reason is blunt: *"three backups that do not agree with each other are worse
+than one"*. Worse, because three that agree restore a system and three that do not restore a
+puzzle, with nothing to say which is the one to trust.
+
+There turned out to be **two positions, not one**, and conflating them is the defect the
+manifest exists to prevent. `source_restores_to` is where the transactional store lands.
+`queryable_at` is the highest position at which *every* table is complete — the minimum over
+their coverage, because a query joining two tables can only be answered where both reach.
+They are rarely equal: tables publish at their own cadence. Recording one number and calling
+it "the consistent point" means recording whichever one the author happened to think of, and
+the difference between them is exactly how much re-capture a restore implies.
+
+The rule enforced at **build** time: **no table may cover a position past where the source
+restores to.** If one does, then after a restore the analytical tier holds rows the
+transactional store no longer has; capture resumes behind them and republishes that range at
+different positions. It is `SNK-S0002`'s shape one layer up, and it is not detectable
+afterwards from either side alone — which is why it is checked when the backup is recorded
+rather than when it is needed.
+
+**`FR-OPS-14` — expiry and removal are two steps.** Deleting a backup does not release its
+files. The failure that prevents: a backup deleted by mistake, the files swept before anybody
+notices, and no way back even if the manifest is recovered five minutes later. Seven days of
+grace, which is the span over which this kind of mistake is actually caught. `FR-STORE-21`
+makes the same trade for compaction — only add files, remove them later — for the same
+reason.
+
+**`FR-OPS-15` — the drill reads the data back.** *"An untested backup is a rumour."*
+
+A file-presence check passes on a truncated Parquet, on a file whose bytes were replaced with
+another table's, and on essentially every failure that actually happens — because what goes
+wrong with a backup is almost never that a file is missing. A missing file is loud. What goes
+wrong is that a file is there and wrong. So the drill recomputes the digest, which is
+expensive and is the only version of this that means anything.
+
+Both the backup and the drill compute that digest through **the same code**. Two
+implementations would drift on a null convention or a value rendering, every drill would fail
+on data that is fine, and after the third false alarm nobody would run drills.
+
+**The evidence records failures, or it is marketing.** A drill history with no failures in
+three years describes either a very good system or a drill that does not really run, and
+nothing in the history says which. Append-only, failures written with the same ceremony as
+passes, and "could not start" recorded distinctly from "ran and passed" — the same
+distinction the diagnostic draws, for the same reason.
+
+`sankhya-server backup` and `sankhya-server drill`, exiting `0` proven, `1` a table did not
+verify, `2` could not run. Demonstrated end to end against a real warehouse: take a backup,
+corrupt a file, watch the drill catch it and both outcomes land in the record.
+
+**The check with a property no other has.** The diagnostic now reports how long the backup has
+been unproven — and it is the only check in that crate that gives a **firm** date on a first
+run. Everything else needs two samples because a value alone implies no rate. Staleness rises
+at exactly one second per second and always has, so it needs no observing. The natural
+instinct is to feed it through the same `Trend` machinery as everything else, which would
+collect a week of samples to estimate a rate that is already known exactly, and report
+`TooFewObservations` in the meantime about the one thing that needs none.
+
+**Two catalogue entries were wrong in ways only running them showed.** Refactoring the log
+replay so that time travel and replay-to-the-end share their ordering rules moved two
+existing mutations, and `check-mutations` failed the build rather than letting them pass
+silently. And a new entry named the crate the *code* lives in rather than the crate whose
+tests notice — it reported SURVIVED while the defect was caught, which is precisely how you
+learn to read survivors as noise.
+
+---
 
 ### §10.2 — Observability and the error catalogue
 
@@ -716,7 +786,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 176 specific defects applied one at a time; all 176 fail the suite. Eighteen did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, two entries were inert until corrected — one was anchored on a guard that appears twice, so it patched the harmless copy — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 194 specific defects applied one at a time; all 194 fail the suite. Nineteen did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, three entries were inert until corrected — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -1210,9 +1280,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,218 tests, none of which needs a database
+cargo test --workspace           # 1,260 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 176 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 194 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

@@ -118,6 +118,18 @@ impl TableDigest {
         self.checksum
     }
 
+    /// A digest from its recorded parts.
+    ///
+    /// For a digest read back from somewhere it was written down --- a backup manifest, a
+    /// reconciliation record --- rather than accumulated from rows. Deliberately separate
+    /// from [`TableDigest::add`]: reconstituting a recorded digest and computing one are
+    /// different operations, and a single constructor that did both would let a caller
+    /// assert a checksum for rows it never looked at.
+    #[must_use]
+    pub const fn from_parts(rows: u64, checksum: u128) -> Self {
+        Self { rows, checksum }
+    }
+
     /// Combine two partial digests.
     ///
     /// Associative and commutative, so a digest may be computed in parallel over

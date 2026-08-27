@@ -1747,6 +1747,40 @@ Three artifacts must agree: the transactional backup, the table snapshots, and t
 
 Snapshots referenced by a backup are protected from expiry for its lifetime. **Restore drills are automated and periodic with retained evidence** — an untested backup is a rumour.
 
+### 17.3a There are two positions, and a manifest that records one has recorded the wrong one
+
+`source_restores_to` is where the transactional store lands. `queryable_at` is the highest position at which **every** table is complete — the minimum over their coverage, because a query joining two tables can only be answered where both of them reach.
+
+They are rarely equal. Tables publish at their own cadence, so at any instant some are further behind than others and the transactional store is ahead of all of them. A manifest recording one number and calling it "the consistent point" has recorded whichever of the two its author happened to think of, and the difference between them is not noise: it is **how much re-capture a restore implies** before a cross-table query can reach the source's position.
+
+**The rule enforced when the manifest is built: no table may cover a position past where the source restores to.** If one does, then after a restore the analytical tier holds rows the transactional store no longer has. Capture resumes behind them and republishes that range at different positions, so those rows arrive a second time under different identity — or sit there permanently as data with no origin. It is the shape of `SNK-S0002` one layer up, and it is **not detectable afterwards from either side alone**.
+
+Which is why it is checked at build rather than at restore. A manifest that records an inconsistency has recorded a broken backup as a backup, and the moment to discover that is not the moment you need it.
+
+### 17.3b A drill reads the data back, because presence checks pass on the failures that happen
+
+`FR-OPS-15` is unusually blunt — *"an untested backup is a rumour"* — and the reason the verification must read data rather than list files is that **a file-presence check passes on a truncated Parquet.** It passes on a file whose bytes were replaced with another table's. It passes on essentially every failure that actually occurs, because what goes wrong with a backup is almost never that a file is missing: a missing file is loud, and something notices.
+
+So a drill recomputes the digest recorded at backup time. It is expensive, it runs on a schedule rather than on a request, and it is the only version of this that establishes anything.
+
+**Both sides compute that digest through one implementation.** Two would eventually differ on a null convention, a value rendering or a column order; every drill would then fail on data that is perfectly fine; and after the third false alarm the drills would stop being run. A verification that cries wolf is worse than none, because it consumes the attention that a real failure needs.
+
+**A failure names its kind, because the two need different investigations.** A row count that matches with a different checksum means rows were *altered* — every file present and the right length. A different row count means rows were *lost or duplicated*. One points at a writer that touched a frozen version; the other at retention or a restore.
+
+### 17.3c Evidence that omits failures is not evidence
+
+The drill record is append-only, and a failure is written with the same ceremony as a pass. A history with no failures across three years describes either a very good system or a drill that does not really run, and nothing in the history distinguishes them.
+
+For the same reason, **"could not start" is recorded distinctly from "ran and passed"** — the identical distinction the diagnostic draws between a clean check and one that could not run, and the identical failure if they are merged: a report saying a backup was proven when nothing examined it.
+
+An operator asking *when did we last prove we could restore* is answered with the last **pass**, never the last attempt.
+
+### 17.3d Expiry and removal are separate, and the gap is the point
+
+Deleting a backup does not release the snapshots it protects. A grace period follows, and only then are the files sweepable.
+
+The failure this prevents is specific and unrecoverable: a backup deleted by mistake — by an operator clearing space, by a retention rule, by a script with the wrong argument — its files swept by the next pass, and no way back even if the manifest is restored from somewhere minutes later. `FR-STORE-21` makes the same trade for compaction, only adding files and removing them in a separate later job, and for the same reason. It costs storage that could have been reclaimed sooner and buys a window in which a mistake is still a mistake.
+
 ### 17.4 Determinism
 
 A deterministic mode fixes the clock, seeds identifier generation, sorts listings and pins reduction order, such that:
@@ -1862,6 +1896,11 @@ The trade-off, stated plainly: scale-up gives lower latency, far simpler failure
 | `DEC-45` | Engine failures are classified by variant, never by matching on message text | §17.1b |
 | `DEC-46` | A refusal is counted separately from an error | §17.1b |
 | `DEC-47` | A statement the system will not honour is refused, never confirmed and discarded | §17.1b |
+| `DEC-48` | A backup binds two positions — where the source lands and where every table is complete | §17.3a |
+| `DEC-49` | A manifest whose analytical tier is ahead of its source is refused at build, not flagged at restore | §17.3a |
+| `DEC-50` | A drill reads data back and recomputes the digest; both sides use one implementation | §17.3b |
+| `DEC-51` | Drill evidence is append-only, keeps failures, and separates "could not run" from "passed" | §17.3c |
+| `DEC-52` | A backup is expired, then removed after a grace period | §17.3d |
 
 ---
 

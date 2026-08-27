@@ -22,6 +22,7 @@
 // print to its own console is not much of a binary.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+mod backup;
 mod doctor;
 mod execute;
 mod scrape;
@@ -114,9 +115,18 @@ async fn main() -> std::io::Result<()> {
     // Subcommands before the server starts, because `doctor` must work when `start` would
     // not. One argument is the whole surface for now; more of them want a parser, and a
     // hand-rolled parser is how a flag comes to mean two things.
-    if std::env::args().nth(1).as_deref() == Some("doctor") {
-        let data = data_dir(&settings.warehouse);
-        std::process::exit(doctor::doctor(&settings.warehouse, &data, now_micros()));
+    let data = data_dir(&settings.warehouse);
+    match std::env::args().nth(1).as_deref() {
+        Some("doctor") => {
+            std::process::exit(doctor::doctor(&settings.warehouse, &data, now_micros()))
+        }
+        Some("backup") => {
+            std::process::exit(backup::take(&settings.warehouse, &data, now_micros()))
+        }
+        Some("drill") => {
+            std::process::exit(backup::run_drill(&settings.warehouse, &data, now_micros()))
+        }
+        _ => {}
     }
 
     let (server, listener, complaints) = start(settings).await?;

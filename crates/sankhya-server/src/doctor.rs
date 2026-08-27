@@ -56,6 +56,19 @@ pub(crate) fn doctor(warehouse: &Path, data_dir: &Path, now: i64) -> i32 {
     println!("  {} table(s)", tables.len());
 
     let mut report = run(data_dir, &tables, now);
+
+    // The backup's own health. Folded into the same report because an operator asking "is
+    // this system all right" is asking one question, and a backup that has never been proven
+    // is the most consequential answer in it.
+    if let Some(finding) = sankhya_diagnostic::check::restore_drill(
+        crate::backup::last_proven(data_dir),
+        sankhya_diagnostic::check::DRILL_OBJECTIVE_MICROS,
+        now,
+    ) {
+        report.found(finding);
+    } else {
+        report.clean("restore-drill");
+    }
     for (path, why) in &refused {
         report.skipped("table-discovery", format!("{}: {why}", path.display()));
     }

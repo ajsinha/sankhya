@@ -17,7 +17,7 @@
 //! its value is. That is deliberate: an operator reading top-down should be reading a
 //! schedule.
 
-use crate::projection::{Concern, Projection, Trend};
+use crate::projection::{Concern, Confidence, Projection, Trend};
 use std::fmt;
 
 /// How much attention a finding deserves if nothing changes.
@@ -321,6 +321,91 @@ pub fn replication_lag(
                       cause, and the applier never yields. A growing arrival buffer is the \
                       same problem seen from the other side."
             .to_string(),
+    })
+}
+
+/// How long a backup may go unproven before it is a finding.
+///
+/// Thirty days. Not derived from anything --- it is a judgement about how long an
+/// organisation is willing to have been unable to restore without knowing it, and it is
+/// named here so that somebody who disagrees can find the number.
+pub const DRILL_OBJECTIVE_MICROS: i64 = 30 * 24 * 3_600 * 1_000_000;
+
+/// Whether the backup has been proven restorable recently enough.
+///
+/// # The one measure whose rate is known before any observation
+///
+/// Everything else in this crate needs two samples before it can give a date, because a
+/// value alone does not imply a rate. Staleness is different: it rises at exactly one second
+/// per second, and always has. So this check gives a **firm** date on a first run, and it is
+/// the only one that can.
+///
+/// That is worth stating rather than leaving as an accident of the arithmetic, because the
+/// natural instinct is to feed this through the same [`Trend`] machinery as everything else
+/// --- which would collect observations for a week to estimate a rate that is already known
+/// exactly, and would report `TooFewObservations` in the meantime about the one thing that
+/// needs no observing.
+///
+/// `FR-OPS-15`: *"an untested backup is a rumour"*. A backup that has never been proven is
+/// therefore not a warning about the future --- it is already the thing the requirement
+/// forbids.
+#[must_use]
+pub fn restore_drill(last_pass: Option<i64>, objective_micros: i64, now: i64) -> Option<Finding> {
+    let remediation = "Run a restore drill: `sankhya-server drill`. If it fails, the backup is \
+                       not a backup and this is an incident rather than a maintenance task. See \
+                       docs/runbooks/restore-drill.md."
+        .to_string();
+    let Some(last) = last_pass else {
+        return Some(Finding {
+            check: "restore-drill",
+            subject: "backup".to_string(),
+            severity: Severity::Critical,
+            // Deliberately not "0 days ago". Never having proven a backup and having proven
+            // it a long time ago are different situations, and only one of them is evidence
+            // that the drill works at all.
+            observed: "no restore drill has ever passed".to_string(),
+            projection: Projection::Already,
+            remediation,
+        });
+    };
+
+    let elapsed = now.saturating_sub(last);
+    if elapsed >= objective_micros {
+        return Some(Finding {
+            check: "restore-drill",
+            subject: "backup".to_string(),
+            severity: Severity::Critical,
+            observed: format!(
+                "the last passing restore drill was {} ago",
+                crate::projection::human_duration(elapsed / 1_000_000)
+            ),
+            projection: Projection::Already,
+            remediation,
+        });
+    }
+
+    // Reported before it is breached, because a drill takes time to schedule and a backup
+    // that will be unproven next Tuesday is worth knowing about this week.
+    let remaining = objective_micros.saturating_sub(elapsed);
+    if remaining > objective_micros / 4 {
+        return None;
+    }
+    Some(Finding {
+        check: "restore-drill",
+        subject: "backup".to_string(),
+        severity: Severity::Warning,
+        observed: format!(
+            "the last passing restore drill was {} ago",
+            crate::projection::human_duration(elapsed / 1_000_000)
+        ),
+        projection: Projection::Crossing {
+            seconds: remaining / 1_000_000,
+            // Firm on a first run, which no other check in this crate can be. Staleness
+            // rises at one second per second and needs no observations to establish that.
+            confidence: Confidence::Firm,
+            fit: 1.0,
+        },
+        remediation,
     })
 }
 

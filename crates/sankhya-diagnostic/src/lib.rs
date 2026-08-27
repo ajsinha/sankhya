@@ -20,7 +20,8 @@ pub mod history;
 pub mod projection;
 
 pub use check::{
-    compaction_debt, human_bytes, replication_lag, storage_headroom, Finding, Report, Severity,
+    compaction_debt, human_bytes, replication_lag, restore_drill, storage_headroom, Finding,
+    Report, Severity,
 };
 pub use collect::{TableUnderReview, COMPACTION_DEBT};
 pub use history::{History, HistoryError, Measure};
