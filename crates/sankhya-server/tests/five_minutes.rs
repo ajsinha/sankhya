@@ -210,19 +210,33 @@ fn start(warehouse: &std::path::Path, data: &std::path::Path) -> Running {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         let mut line = String::new();
+        let mut announced = false;
+        // Keeps reading after the port is found, and that is not tidiness.
+        //
+        // An earlier version returned as soon as it had the port, which dropped the reader
+        // and closed the pipe — so the server's *next* `println!` hit a broken pipe, the
+        // process died, and the test's first read got `ConnectionReset`. It passed in
+        // isolation because the whole banner usually landed in the pipe buffer before the
+        // thread exited, and failed under a loaded `cargo test --workspace` because it
+        // sometimes did not. A supervisor drains the pipe for the life of the child; so does
+        // this.
         while reader.read_line(&mut line).unwrap_or(0) > 0 {
-            if let Some(address) = line.trim().strip_prefix("listening on ") {
-                let port = address
-                    .rsplit_once(':')
-                    .and_then(|(_, port)| port.parse::<u16>().ok());
-                sender.send(port).ok();
-                return;
+            if !announced {
+                if let Some(address) = line.trim().strip_prefix("listening on ") {
+                    let port = address
+                        .rsplit_once(':')
+                        .and_then(|(_, port)| port.parse::<u16>().ok());
+                    sender.send(port).ok();
+                    announced = true;
+                }
             }
             line.clear();
         }
-        // Ended without announcing. Reported rather than left to time out, so the failure
-        // says "it never said" instead of "something took too long".
-        sender.send(None).ok();
+        if !announced {
+            // Ended without announcing. Reported rather than left to time out, so the
+            // failure says "it never said" instead of "something took too long".
+            sender.send(None).ok();
+        }
     });
 
     let announced = receiver.recv_timeout(BANNER_TIMEOUT);
