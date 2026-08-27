@@ -21,7 +21,9 @@
 #![doc(html_root_url = "https://docs.rs/sankhya-cube-algo")]
 
 pub mod ancestor;
+pub mod hierarchy;
 pub mod measure;
 
 pub use ancestor::{answerable_from, rolled_away, Answerable};
+pub use hierarchy::{Cyclic, Hierarchy};
 pub use measure::{Along, Measure, Rule, Undeclared};

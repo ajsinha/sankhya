@@ -1562,6 +1562,60 @@ CATALOGUE = [
      "        let after_ok = true || !haystack",
      "xtask"),
 
+    # Counting a shared member once per path cannot be expressed here: `consolidates`
+    # returns a `BTreeSet`, so the duplicate is unrepresentable rather than merely avoided —
+    # the same shape as an undeclared metric. Changing the return type does not compile,
+    # which is the type doing its job. So the mutation targets the other way this goes wrong:
+    # consolidating over every descendant rather than over the leaves, which counts each
+    # internal node as well as the grain beneath it.
+    ("cube: consolidate over every descendant rather than over the leaves",
+     "crates/sankhya-cube-algo/src/hierarchy.rs",
+     "        let children = self.children_of(member);\n        if children.is_empty() {\n            reached.insert(member);\n            return Ok(());\n        }",
+     "        let children = self.children_of(member);\n        reached.insert(member);\n        if children.is_empty() {\n            return Ok(());\n        }",
+     "sankhya-cube-algo"),
+
+    ("cube: stop detecting cycles during consolidation",
+     "crates/sankhya-cube-algo/src/hierarchy.rs",
+     "        if on_path.contains(&member) {",
+     "        if false {",
+     "sankhya-cube-algo"),
+
+    ("cube: skip the members of a hierarchy that has no roots",
+     "crates/sankhya-cube-algo/src/hierarchy.rs",
+     "        if self.roots().is_empty() && !self.members().is_empty() {",
+     "        if false {",
+     "sankhya-cube-algo"),
+
+    ("cube: default an undeclared aggregation rule to summation",
+     "crates/sankhya-cube-algo/src/measure.rs",
+     "            .map(|along| along.rule)",
+     "            .map(|along| along.rule)\n            .or(Some(Rule::Sum))",
+     "sankhya-cube-algo"),
+
+    ("cube: report only the first dimension a measure fails to declare",
+     "crates/sankhya-cube-algo/src/measure.rs",
+     "        let missing: Vec<String> = dimensions",
+     "        let missing: Vec<String> = dimensions\n            .iter()\n            .take(1)\n            .copied()\n            .collect::<Vec<_>>()",
+     "sankhya-cube-algo"),
+
+    ("cube: let a mean compose, so an average of averages is an average",
+     "crates/sankhya-cube-algo/src/measure.rs",
+     "        matches!(self, Self::Sum | Self::Last | Self::First | Self::Max | Self::Min)",
+     "        !matches!(self, Self::None)",
+     "sankhya-cube-algo"),
+
+    ("cube: answer a query from a cuboid that lacks a dimension it needs",
+     "crates/sankhya-cube-algo/src/ancestor.rs",
+     "    if query.iter().any(|wanted| !materialised.contains(wanted)) {\n        return None;\n    }",
+     "",
+     "sankhya-cube-algo"),
+
+    ("cube: treat an undeclared axis as a refusal rather than a definition error",
+     "crates/sankhya-cube-algo/src/ancestor.rs",
+     "            None => {\n                return Answerable::Undeclared {",
+     "            None => {\n                #[allow(unused)]\n                return Answerable::No {\n                    measure: measure.name.to_string(),\n                    dimension: (*dimension).to_string(),\n                    rule: Rule::None,\n                };\n                #[allow(unreachable_code)]\n                return Answerable::Undeclared {",
+     "sankhya-cube-algo"),
+
 ]
 
 
