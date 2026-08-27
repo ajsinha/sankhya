@@ -30,7 +30,7 @@ use arrow_schema::{DataType, Field, Schema};
 use sankhya_soak::report::supported_horizon;
 use sankhya_soak::sample::{file_bytes, open_files, resident_bytes, Samples};
 use sankhya_soak::Report;
-use sankhya_table::{write_parquet, WriterConfig};
+use sankhya_table::{scan_parquet, write_parquet, Scanned, WriterConfig};
 use sankhya_table_delta::{commit, create, live_files, Action, AddFile, Metadata, RemoveFile};
 use sankhya_types::Lsn;
 use std::path::{Path, PathBuf};
@@ -98,9 +98,11 @@ fn main() {
     let mut samples = Samples::new();
     let mut last_report = Instant::now();
     let mut round = 0_u64;
-    let mut queries = 0_u64;
+    let mut planned = 0_u64;
     let mut published = 0_u64;
     let mut refused = 0_u64;
+    let mut scanned = Scanned::default();
+    let mut unread = 0_u64;
 
     while started.elapsed() < deadline {
         round += 1;
@@ -114,12 +116,32 @@ fn main() {
             }
         }
 
-        // Queries: replay every table's log, which is what planning actually costs.
+        // Planning: replay every table's log, which is what planning actually costs.
         for root in &roots {
             if live_files(root).is_ok() {
-                queries += 1;
+                planned += 1;
             }
         }
+
+        // Reads: actually decode data.
+        //
+        // The first version of this loop counted a log replay as a "query" and never read a
+        // row. The dataset was ten gigabytes on disk that nothing scanned, so the run
+        // measured the append and log paths and reported a figure that sounded like it
+        // measured the read path too. A soak that names its workload after work it does not
+        // do is worse than one that measures less and says so.
+        //
+        // Bounded per round, and rotating, so the whole dataset is covered many times over a
+        // long run without any single round taking minutes.
+        let read = roots
+            .get(round as usize % roots.len())
+            .map_or_else(Scanned::default, |root| scan_some(root, round));
+        if read.rows == 0 {
+            // "Could not read" is not "read nothing": a scan that silently returned no rows
+            // would make every throughput figure below a report about an empty loop.
+            unread += 1;
+        }
+        scanned = scanned.and(read);
 
         // Maintenance on a duty cycle, so live files are a sawtooth rather than a ramp.
         if round % 8 == 0 {
@@ -150,22 +172,23 @@ fn main() {
             Some(file_bytes(&at.join("diagnostic-history.tsv")).unwrap_or(0.0)),
         );
         #[allow(clippy::cast_precision_loss)]
-        samples.record("queries", at_micros, Some(queries as f64));
+        samples.record("queries", at_micros, Some(planned as f64));
+        samples.record("scanned_rows", at_micros, Some(scanned.rows as f64));
         #[allow(clippy::cast_precision_loss)]
-        samples.record("audit_records", at_micros, Some(queries as f64));
+        samples.record("audit_records", at_micros, Some(planned as f64));
         let live = worst_table(&roots);
         #[allow(clippy::cast_precision_loss)]
         samples.record("live_files", at_micros, Some(live as f64));
 
         if last_report.elapsed() >= REPORT_EVERY {
-            emit(&samples, &at, started.elapsed(), round, queries, live, published);
+            emit(&samples, &at, started.elapsed(), round, planned, live, published, &scanned, unread);
             last_report = Instant::now();
         }
         std::thread::sleep(SAMPLE_EVERY);
     }
 
     let live = worst_table(&roots);
-    emit(&samples, &at, started.elapsed(), round, queries, live, published);
+    emit(&samples, &at, started.elapsed(), round, planned, live, published, &scanned, unread);
     println!("{}  soak finished after {minutes} minute(s)", stamp());
 }
 
@@ -204,6 +227,8 @@ fn emit(
     queries: u64,
     live: usize,
     published: u64,
+    scanned: &Scanned,
+    unread: u64,
 ) {
     let horizon = supported_horizon(samples);
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
@@ -211,11 +236,21 @@ fn emit(
     let report = Report::of(samples, horizon, now);
     let rss = resident_bytes().unwrap_or(0.0) / (1024.0 * 1024.0);
     println!(
-        "{}  t+{:>5.0}s  round {round:<5} published {published:<6} queries {queries:<7} \
-         live_files {live:<6} rss {rss:>6.0} MB  {}  (horizon {}s)",
+        "{}  t+{:>5.0}s  round {round:<5} published {published:<6} planned {queries:<7} \
+         scanned {:>6.1} GB/{:<9} live_files {live:<6} rss {rss:>6.0} MB  {}{}  \
+         (horizon {}s)",
         stamp(),
         elapsed.as_secs_f64(),
+        scanned.bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+        scanned.rows,
         if report.passed() { "PASS" } else { "watching" },
+        // A round that read nothing is reported rather than averaged away. Throughput over
+        // an empty loop is the figure this whole harness exists not to produce.
+        if unread == 0 {
+            String::new()
+        } else {
+            format!("  UNREAD {unread}")
+        },
         horizon
     );
     for (measure, verdict) in &report.verdicts {
@@ -309,6 +344,42 @@ fn batch(from: i64, rows: usize) -> RecordBatch {
         // a defect rather than a condition, and the run cannot continue past it.
         Err(error) => die(&format!("the generated batch does not match its schema: {error}")),
     }
+}
+
+/// Decode a bounded, rotating slice of one table's live files.
+///
+/// **Bounded**, because scanning ten gigabytes every round would make a round take minutes
+/// and the sampling useless. **Rotating**, because scanning the same slice every round would
+/// exercise one file and the page cache, which is not the read path.
+///
+/// The window advances with the round, so over a long run every file is read many times and
+/// the whole dataset is covered rather than the newest corner of it.
+fn scan_some(root: &Path, round: u64) -> Scanned {
+    const BYTES_PER_ROUND: u64 = 192 * 1024 * 1024;
+
+    let Ok(set) = live_files(root) else {
+        return Scanned::default();
+    };
+    if set.files.is_empty() {
+        return Scanned::default();
+    }
+    let mut names: Vec<&str> = set.files.iter().map(|f| f.path.as_str()).collect();
+    names.sort_unstable();
+
+    let start = (round as usize).wrapping_mul(7) % names.len();
+    let mut total = Scanned::default();
+    for offset in 0..names.len() {
+        if total.bytes >= BYTES_PER_ROUND {
+            break;
+        }
+        let Some(name) = names.get((start + offset) % names.len()) else {
+            break;
+        };
+        if let Ok(one) = scan_parquet(&root.join(name)) {
+            total = total.and(one);
+        }
+    }
+    total
 }
 
 /// Write files until the table holds roughly `target_bytes`.

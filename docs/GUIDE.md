@@ -7,7 +7,7 @@
 
 # SANKHYA — a guide, by example
 
-**Status:** Implementation — M0–M5 complete, M6 in progress
+**Status:** Implementation — M0–M5 complete, M6 closing, M7 in progress
 
 Every example here is **executed by a test**. `crates/sankhya-server/tests/guide.rs` runs the
 SQL on this page and checks the answers, so an example that stops working breaks the build

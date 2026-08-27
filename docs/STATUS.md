@@ -26,12 +26,12 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M4** Graph engine and the extension mechanism | 26–32 ew | **Complete.** Every exit criterion met; see below |
 | **M5** Tenancy, security and API surfaces | 22–28 ew | **Closed.** Four of five exit criteria met; the fifth needs a second server version to exist. Two of four API surfaces built — the wire protocol and Flight SQL. The control plane and its gateway are **deferred to M6**, because what they expose is built there |
 | **M6** Operability, packaging and hardening | — | **In progress. Five of seven exit criteria met.** §10.1's diagnostic, §10.2's catalogues, §10.3's backup and restore drill, §10.4's packaging checks, §10.5's timed journey and §10.6's version axes are built; criterion 3 as far as a single release allows. **Criterion 4 is not met** — §10.7's harness is built and proven, and a multi-day run at the acceptance scale is a scheduled pipeline rather than a session. **Criterion 7 is not met** — §10.8's size decision and route table are built and tested; the gRPC transport and every write path are not |
-| **M7** Multidimensional analysis | — | **All eight exit criteria met**, each discharged by a test named for it in `crates/sankhya-cube-sql/tests/exit_criteria.rs`. Three crates built, mirroring the graph split. Criterion 3a was **not** met until exact summation was added. See below, and [ADR-0007](adr/0007-the-cube-model.md) |
+| **M7** Multidimensional analysis — cubes, slice/dice, roll-up, consolidation | — | **In progress, not complete.** The algebra, navigation, materialisation and SQL surface are built across three crates, and all eight exit criteria have passing tests. **The hydration path does not exist**: nothing builds a cube from a published table, so the exit criteria pass on cells their own fixtures supply. Corrected 2026-08-27 after claiming completion. See below, and [ADR-0007](adr/0007-the-cube-model.md) |
 | **M8**–**M9** Scale-out, then tiering | — | Not started. Renumbered from M7–M8 when M7 was inserted |
 
 ---
 
-## M7, complete
+## M7, in progress
 
 Added 2026-08-27 by owner directive and placed before scale-out: cubes are a stated
 differentiator and multi-node deployment is table stakes.
@@ -62,12 +62,24 @@ semi-additive measure across time be *rejected at planning time*. It is not reje
 an aggregate counting what arrived and dividing by what arrived reports itself complete
 however much policy removed. The withheld count comes from the filter or it does not exist.
 
-### What is not there
+### What is not there, and why M7 is not closed
 
-MDX, deliberately — see ADR-0007. Cube definitions are not yet loaded from a catalogue or
-persisted; a cube is registered against a session by the embedding application. The lattice
-selection is implemented and is not yet driven by a recorded query log, so automatic
-materialisation is available but nothing is currently choosing what to materialise.
+**The hydration path.** This is the one that matters, and it was found by being asked
+whether "complete" was really true rather than by any test failing. A `Definition` names a
+fact table and its dimension tables and validates that those names are well formed. Nothing
+reads them. `sankhya-cube` has no dependency on `sankhya-table`, no `RecordBatch` appears in
+it, and every `Cells` in existence is built either by a navigation operation or by a test
+fixture.
+
+So the cube is an algebra with a SQL façade over data the caller supplies. All eight exit
+criteria pass, and every one of them supplies its own cells — which is precisely why passing
+them did not surface this. A criterion that never had to read a published table cannot tell
+you whether the cube can.
+
+Also absent: MDX, deliberately — see ADR-0007. Cube definitions are not persisted or loaded
+from a catalogue; a cube is registered against a session by the embedding application. The
+lattice selection is implemented and is not driven by a recorded query log, so automatic
+materialisation is available and nothing is currently choosing what to materialise.
 
 
 ## M6, in progress
@@ -1607,7 +1619,7 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,512 tests, none of which needs a database
+cargo test --workspace           # 1,523 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
 python3 tools/mutation-audit.py  # 310 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database

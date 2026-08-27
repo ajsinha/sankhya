@@ -10,7 +10,7 @@
 *A general-purpose unified OLTP + OLAP + Graph data server — one binary, written entirely in Rust.*
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-M5%20complete%2C%20M6%20in%20progress-yellow.svg)](docs/STATUS.md)
+[![Status](https://img.shields.io/badge/status-M6%20closing%2C%20M7%20in%20progress-yellow.svg)](docs/STATUS.md)
 [![Rust](https://img.shields.io/badge/rust-1.97%2B-b7410e.svg)](https://www.rust-lang.org)
 [![JVM](https://img.shields.io/badge/JVM-none-success.svg)](#design-principles)
 
@@ -152,7 +152,7 @@ Spark, Trino, DuckDB, Snowflake and Athena read these tables **directly**, with 
 
 ## Status
 
-**Early implementation — M0 through M5 complete, M6 in progress.** The architecture and
+**Early implementation — M0 through M5 complete, M6 closing, M7 in progress.** The architecture and
 requirements were reviewed and amended by a panel covering systems architecture, database
 internals, analytical query engines and Rust engineering practice.
 

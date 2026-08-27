@@ -18,6 +18,8 @@ sankhya-cube-algo = { path = "../sankhya-cube-algo" }
 sankhya-error     = { path = "../sankhya-error" }
 sankhya-graph-algo = { path = "../sankhya-graph-algo" }
 sankhya-math      = { path = "../sankhya-math" }
+arrow-array       = { workspace = true }
+arrow-schema      = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

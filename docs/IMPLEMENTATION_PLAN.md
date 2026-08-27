@@ -9,7 +9,7 @@
 
 **Document ID:** SNK-IP-001
 **Version:** 0.1.0 (draft for review)
-**Status:** Implementation — M0–M5 complete, M6 in progress
+**Status:** Implementation — M0–M5 complete, M6 closing, M7 in progress
 **Date:** 2026-08-26
 **Companions:** `REQUIREMENTS.md` (SNK-RD-001), `ARCHITECTURE.md` (SNK-AD-001), `ROADMAP.md`
 
@@ -458,7 +458,7 @@ Not "memory looked steady". A measure with an upward trend and a crossing three 
 
 ---
 
-## 11. M7 — Multidimensional analysis
+## 11. M7 — Multidimensional analysis: cubes, slice/dice, roll-up and consolidation
 
 **Weeks 28–34 · 14–18 ew**
 

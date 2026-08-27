@@ -701,7 +701,7 @@ fn check_docs(root: &Path) -> bool {
         docs.len()
     );
 
-    ok &= check_status_agreement(&docs);
+    ok &= check_status_agreement(root, &docs);
 
     ok
 }
@@ -1244,7 +1244,7 @@ fn check_mutations(root: &Path) -> bool {
 ///
 /// Only files declaring a `**Status:**` header line participate. Prose status paragraphs
 /// are left alone: this checks the machine-readable claim, not the writing.
-fn check_status_agreement(docs: &[PathBuf]) -> bool {
+fn check_status_agreement(root: &Path, docs: &[PathBuf]) -> bool {
     let mut seen: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
     for doc in docs {
@@ -1277,8 +1277,119 @@ fn check_status_agreement(docs: &[PathBuf]) -> bool {
         return false;
     }
 
-    if let Some((status, files)) = seen.iter().next() {
-        println!("   {} documents agree on status: {status}", files.len());
+    let Some((status, files)) = seen.iter().next() else {
+        return true;
+    };
+
+    // Agreement is not accuracy.
+    //
+    // This check passed for a week while every document said "M0–M5 complete, M6 in
+    // progress" and M7 was half built. Seven documents agreeing is exactly what a stale
+    // line looks like: nothing disagrees with it, because they were all written at the same
+    // moment and none of them has moved since.
+    //
+    // So the agreed line is checked against something that *does* move --- STATUS.md's
+    // milestone table, which is edited as work lands. Every milestone that table calls
+    // unfinished must be named in the status line.
+    let unfinished = unfinished_milestones(root);
+    let mut ok = true;
+    for milestone in &unfinished {
+        if !status.contains(milestone.as_str()) {
+            eprintln!(
+                "  STALE STATUS  the status line does not mention {milestone}, which \
+                 docs/STATUS.md lists as in progress: {status:?}"
+            );
+            ok = false;
+        }
     }
-    true
+    // The README carries the same claim as a badge and a paragraph rather than a
+    // `**Status:**` line, so the agreement check above cannot see it --- which is why it was
+    // the last document still saying "M5 complete" after every other had moved.
+    ok &= readme_names(root, &unfinished);
+
+    if ok {
+        println!(
+            "   {} documents agree on status, and it names every milestone in progress \
+             ({}): {status}",
+            files.len(),
+            if unfinished.is_empty() {
+                "none".to_string()
+            } else {
+                unfinished.join(", ")
+            }
+        );
+    }
+    ok
+}
+
+/// Whether the README's badge and status section name every milestone in progress.
+///
+/// A separate check because the README states its status in two places and in neither of the
+/// forms the rest of the documentation uses. Both are checked: a badge that disagrees with
+/// the prose beneath it is the version most people see.
+fn readme_names(root: &Path, in_progress: &[String]) -> bool {
+    let Ok(text) = std::fs::read_to_string(root.join("README.md")) else {
+        return true;
+    };
+    let badge: String = text
+        .lines()
+        .filter(|line| line.contains("img.shields.io/badge/status"))
+        .collect();
+    let status: String = text
+        .split("## Status")
+        .nth(1)
+        .map(|rest| rest.lines().take(6).collect())
+        .unwrap_or_default();
+
+    let mut ok = true;
+    for milestone in in_progress {
+        if !badge.contains(milestone.as_str()) {
+            eprintln!("  STALE STATUS  README.md's status badge does not mention {milestone}");
+            ok = false;
+        }
+        if !status.contains(milestone.as_str()) {
+            eprintln!("  STALE STATUS  README.md's Status section does not mention {milestone}");
+            ok = false;
+        }
+    }
+    ok
+}
+
+/// Milestones `docs/STATUS.md` describes as in progress.
+///
+/// Read from the milestone table rather than declared here, so that recording a milestone as
+/// finished in one place is what makes the status line allowed to stop mentioning it. The
+/// table is edited as work lands; the status line is not, which is the whole problem.
+fn unfinished_milestones(root: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(root.join("docs/STATUS.md")) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("| **M") {
+            continue;
+        }
+        let Some(name) = trimmed
+            .strip_prefix("| **")
+            .and_then(|rest| rest.split("**").next())
+        else {
+            continue;
+        };
+        // In progress, specifically --- not merely unfinished. A status line naming every
+        // milestone nobody has started yet is noise, and noise is what gets skipped when
+        // the line does need changing. What must be named is what is in flight.
+        if !trimmed.to_lowercase().contains("in progress") {
+            continue;
+        }
+        for part in name.split(['–', '-']) {
+            let part = part.trim().trim_start_matches("**");
+            if part.starts_with('M') && part.len() >= 2 {
+                out.push(part.to_string());
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }

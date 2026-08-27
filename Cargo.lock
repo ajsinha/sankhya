@@ -3372,6 +3372,8 @@ version = "0.1.0"
 name = "sankhya-cube"
 version = "0.1.0"
 dependencies = [
+ "arrow-array",
+ "arrow-schema",
  "proptest",
  "sankhya-cube-algo",
  "sankhya-error",

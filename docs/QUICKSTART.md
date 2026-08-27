@@ -7,7 +7,7 @@
 
 # SANKHYA — Quickstart
 
-**Status:** Implementation — M0–M5 complete, M6 in progress
+**Status:** Implementation — M0–M5 complete, M6 closing, M7 in progress
 
 This guide reflects what works **today**, and says plainly what does not yet. Anything
 not listed here is not built.
@@ -86,7 +86,7 @@ availability event.
 ## 3. Run the tests
 
 ```bash
-cargo test --workspace          # 1,512 tests, none of which needs a database
+cargo test --workspace          # 1,523 tests, none of which needs a database
 ```
 
 Everything here runs without a database, in well under a minute. Nothing is mocked: the
