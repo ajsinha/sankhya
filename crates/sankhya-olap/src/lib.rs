@@ -17,11 +17,13 @@
 
 #![doc(html_root_url = "https://docs.rs/sankhya-olap")]
 
+pub mod construct;
 mod exactness;
 pub mod matrices;
 mod session;
 pub mod vectors;
 
+pub use construct::{functions as constructor_functions, register as register_constructors};
 pub use exactness::{approximate_functions, check_exactness, Exactness, ExactnessError, Watermark};
 pub use matrices::{
     functions as matrix_functions, register as register_matrix_functions, tensor_metadata,

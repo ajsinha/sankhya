@@ -108,6 +108,31 @@ enum Operation {
 }
 
 impl Operation {
+    /// The shape of the result, given the shapes of the arguments.
+    ///
+    /// This is what makes `mat_determinant(mat_multiply(a, b))` work. A matrix-returning
+    /// function that emitted no shape would produce a run of values the next function
+    /// refuses --- and composing these is the first thing anybody does.
+    const fn result_shape(
+        self,
+        first: (usize, usize),
+        second: Option<(usize, usize)>,
+    ) -> Option<(usize, usize)> {
+        let (rows, columns) = first;
+        Some(match self {
+            Self::Transpose => (columns, rows),
+            Self::Inverse => (rows, columns),
+            Self::Multiply => match second {
+                // The outer dimensions. The inner ones must agree, which the kernel checks.
+                Some((_, right_columns)) => (rows, right_columns),
+                None => return None,
+            },
+            // Solving and applying both produce a column vector.
+            Self::Solve | Self::MatVec => (rows, 1),
+            Self::Determinant | Self::Trace => return None,
+        })
+    }
+
     /// How many arguments it takes.
     const fn arity(self) -> usize {
         match self {
@@ -153,15 +178,52 @@ impl ScalarUDFImpl for MatrixFunction {
     }
 
     fn return_type(&self, _arguments: &[DataType]) -> Result<DataType> {
+        // Never used for a matrix-returning function: `return_field_from_args` takes
+        // precedence and must, because a shape cannot be expressed as a bare `DataType`.
         Ok(if self.operation.returns_array() {
-            // The item is nullable because that is what `ListBuilder` produces, and the
-            // promised type must match the array actually built exactly — the planner
-            // asserts it. Promising non-null here would be a truthful-sounding claim the
-            // builder does not honour, and it fails at execution rather than at planning.
-            DataType::List(Arc::new(Field::new("item", DataType::Float64, true)))
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, true)), 0)
         } else {
             DataType::Float64
         })
+    }
+
+    fn return_field_from_args(
+        &self,
+        args: datafusion::logical_expr::ReturnFieldArgs,
+    ) -> Result<FieldRef> {
+        if !self.operation.returns_array() {
+            return Ok(Arc::new(Field::new(self.name, DataType::Float64, true)));
+        }
+
+        let first = args.arg_fields.first().and_then(shape_of);
+        let second = args.arg_fields.get(1).and_then(shape_of);
+        let Some(first) = first else {
+            return datafusion::common::plan_err!(
+                "{}: its argument declares no matrix shape",
+                self.name
+            );
+        };
+        let Some((rows, columns)) = self.operation.result_shape(first, second) else {
+            return datafusion::common::plan_err!(
+                "{}: the shape of the result cannot be determined from its arguments",
+                self.name
+            );
+        };
+
+        let width = i32::try_from(rows.saturating_mul(columns)).unwrap_or(0);
+        Ok(Arc::new(
+            Field::new(
+                self.name,
+                DataType::FixedSizeList(
+                    Arc::new(Field::new("item", DataType::Float64, true)),
+                    width,
+                ),
+                true,
+            )
+            // The result carries its own shape, so it can be fed straight into the next
+            // matrix function.
+            .with_metadata(tensor_metadata(rows, columns)),
+        ))
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
@@ -229,7 +291,16 @@ impl ScalarUDFImpl for MatrixFunction {
         }
 
         if self.operation.returns_array() {
-            Ok(ColumnarValue::Array(Arc::new(list_of(&vectors))))
+            let width = vectors
+                .iter()
+                .flatten()
+                .map(Vec::len)
+                .next()
+                .and_then(|n| i32::try_from(n).ok())
+                .unwrap_or(0);
+            Ok(ColumnarValue::Array(Arc::new(fixed_list_of(
+                &vectors, width,
+            ))))
         } else {
             Ok(ColumnarValue::Array(Arc::new(Float64Array::from(numbers))))
         }
@@ -282,10 +353,13 @@ impl MatrixFunction {
     }
 }
 
-/// Build a list array from per-row vectors.
-fn list_of(rows: &[Option<Vec<f64>>]) -> ListArray {
-    use arrow_array::builder::{Float64Builder, ListBuilder};
-    let mut builder = ListBuilder::new(Float64Builder::new());
+/// Build a fixed-size list array from per-row vectors.
+///
+/// Fixed rather than variable, so the result carries the same shape guarantee its input had
+/// and can be fed straight into the next matrix function.
+fn fixed_list_of(rows: &[Option<Vec<f64>>], width: i32) -> FixedSizeListArray {
+    use arrow_array::builder::{FixedSizeListBuilder, Float64Builder};
+    let mut builder = FixedSizeListBuilder::new(Float64Builder::new(), width);
     for row in rows {
         match row {
             Some(values) => {
@@ -294,7 +368,12 @@ fn list_of(rows: &[Option<Vec<f64>>]) -> ListArray {
                 }
                 builder.append(true);
             }
-            None => builder.append(false),
+            None => {
+                for _ in 0..width {
+                    builder.values().append_null();
+                }
+                builder.append(false);
+            }
         }
     }
     builder.finish()

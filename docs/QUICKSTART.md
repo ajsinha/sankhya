@@ -231,6 +231,22 @@ Arrow's canonical `arrow.fixed_shape_tensor` extension — a column with no decl
 refused rather than assumed square, because that guess is wrong for every rectangular matrix
 and produces numbers from values that were never in the same row.
 
+Vectors and matrices can be built in SQL, and the constructors emit their own shape — so a
+matrix can be built and operated on without ever being stored:
+
+```sql
+SELECT mat_determinant(mat_of(2, 2, 1.0, 2.0, 3.0, 4.0));   -- -2
+SELECT vec_norm_l2(vec_of(3.0, 4.0));                        -- 5
+SELECT mat_trace(mat_identity(4));                           -- 4
+```
+
+`vec_of`, `mat_of`, `mat_identity`. A matrix's shape is part of its *type*, so `mat_of`'s
+dimensions must be literals and a wrong element count is refused **when the query is
+planned** — not partway through a scan, after work has been done.
+
+Matrix-returning functions carry their own shape too, so `mat_determinant(mat_multiply(a,
+b))` works: the product knows it is `rows(a) × columns(b)`.
+
 QR, SVD and eigendecomposition are **not** offered. They are where an in-house
 implementation is genuinely worse than none: a subtly wrong SVD produces plausible singular
 values.
