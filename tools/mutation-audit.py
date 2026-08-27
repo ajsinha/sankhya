@@ -1982,6 +1982,62 @@ CATALOGUE = [
      "        Adjustment::Delta(by) => by,",
      "sankhya-cube"),
 
+    # --- the SQL surface: provenance that survives a projection ------------
+
+    ("cube-sql: refuse an unknown cube without naming the ones that exist",
+     "crates/sankhya-cube-sql/src/catalog.rs",
+     "                known: cubes.keys().cloned().collect(),",
+     "                known: Vec::new(),",
+     "sankhya-cube-sql"),
+
+    ("cube-sql: report a cube awaiting its first load as a missing name",
+     "crates/sankhya-cube-sql/src/catalog.rs",
+     "            Some(None) => Err(Unresolved::NothingPublished {\n                name: name.to_string(),\n            }),",
+     "            Some(None) => Err(Unresolved::NoSuchCube {\n                name: name.to_string(),\n                known: Vec::new(),\n            }),",
+     "sankhya-cube-sql"),
+
+    ("cube-sql: ignore an unrecognised option instead of refusing the query",
+     "crates/sankhya-cube-sql/src/args.rs",
+     "            if !KNOWN_OPTIONS.contains(&key.as_str()) {",
+     "            if false {",
+     "sankhya-cube-sql"),
+
+    ("cube-sql: drop the overlay name from the rows",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "        Arc::new(StringArray::from(vec![overlay; rows])),",
+     "        Arc::new(StringArray::from(vec![None::<&str>; rows])),",
+     "sankhya-cube-sql"),
+
+    ("cube-sql: leave the snapshot out of the rows",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "        Arc::new(UInt64Array::from(vec![published.snapshot; rows])),",
+     "        Arc::new(UInt64Array::from(vec![0_u64; rows])),",
+     "sankhya-cube-sql"),
+
+    ("cube-sql: apply no overlay when one is named",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "    let Some(name) = args.string(\"overlay\") else {",
+     "    let Some(name) = None::<String> else {",
+     "sankhya-cube-sql"),
+
+    ("cube-sql: accept a restriction naming a dimension the cube lacks",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "    if !diced.ignored.is_empty() {",
+     "    if false {",
+     "sankhya-cube-sql"),
+
+    ("cube-sql: default an unknown measure rather than naming the ones that exist",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "    published.cube.measure(&name).copied().ok_or_else(|| {",
+     "    published.cube.measures().first().copied().ok_or_else(|| {",
+     "sankhya-cube-sql"),
+
+    ("cube-sql: skip the completeness threshold a query asked for",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "    let Some(required) = args.number(\"min_completeness\")? else {",
+     "    let Some(required) = None::<f64> else {",
+     "sankhya-cube-sql"),
+
 ]
 
 

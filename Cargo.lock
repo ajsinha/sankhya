@@ -3384,6 +3384,20 @@ name = "sankhya-cube-algo"
 version = "0.1.0"
 
 [[package]]
+name = "sankhya-cube-sql"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "async-trait",
+ "datafusion",
+ "parking_lot",
+ "sankhya-cube",
+ "sankhya-cube-algo",
+ "tokio",
+]
+
+[[package]]
 name = "sankhya-datagen"
 version = "0.1.0"
 dependencies = [
