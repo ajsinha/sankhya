@@ -6,6 +6,7 @@
 //! to unwind, and invisible in review.
 
 mod catalogues;
+mod package;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -170,6 +171,9 @@ fn main() -> ExitCode {
             }
         }
     }
+    if run_all || task == "check-package" {
+        failed |= !package::check(&root);
+    }
     if run_all || task == "check-doc-numbers" {
         let mut docs = Vec::new();
         collect_markdown(&root, &mut docs);
@@ -193,6 +197,7 @@ fn main() -> ExitCode {
                 | "check-lints"
                 | "check-mutations"
                 | "check-doc-numbers"
+                | "check-package"
                 | "check-catalogues"
                 | "write-catalogues"
                 | "check-performance"
@@ -202,7 +207,7 @@ fn main() -> ExitCode {
             "usage: cargo xtask \
              [check-all|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
              |check-features|check-lints|check-mutations|check-doc-numbers\
-             |check-catalogues|write-catalogues|check-performance]"
+             |check-catalogues|write-catalogues|check-package|check-performance]"
         );
         return ExitCode::from(2);
     }

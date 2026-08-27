@@ -86,7 +86,7 @@ availability event.
 ## 3. Run the tests
 
 ```bash
-cargo test --workspace          # 1,261 tests, none of which needs a database
+cargo test --workspace          # 1,276 tests, none of which needs a database
 ```
 
 Everything here runs without a database, in well under a minute. Nothing is mocked: the
@@ -139,8 +139,9 @@ Three gates catch things a test suite structurally cannot. All three fail the bu
 
 ```bash
 cargo xtask check-all            # every repository invariant — see below
-python3 tools/mutation-audit.py  # 196 deliberate defects, applied one at a time
+python3 tools/mutation-audit.py  # 202 deliberate defects, applied one at a time
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
+SANKHYA_RELEASE=1 cargo xtask check-package   # the release artifact's platform baseline
 ```
 
 **`check-all`** runs ten invariants: the layer graph is acyclic and points the right
@@ -154,15 +155,26 @@ document claims — test counts, catalogue sizes — still matches what the repo
 merely to pass.
 
 **The mutation audit** is the answer to "the tests pass, but do they test anything?" It
-applies 196 specific defects one at a time and requires the suite to fail on each. Twenty
+applies 202 specific defects one at a time and requires the suite to fail on each. Twenty-two
 did not, the first time each was run — the most recent three were written for the
 diagnostic, and one of those turned out to be pointing at the wrong copy of a duplicated
 guard, which is precisely the silent-pass this tool exists to catch. Expect it to take a
-while — it is 196 sequential `cargo test` runs, and it edits your source files as it goes,
+while — it is 202 sequential `cargo test` runs, and it edits your source files as it goes,
 restoring each one after. Run it on a clean tree.
 
 **`check-performance`** is deliberately outside `check-all`: it generates a
 scale-factor-1 dataset and needs a machine that is not otherwise busy.
+
+**`check-package`** compares two numbers that live in different files and that nothing else
+relates — the server's drain deadline and every deployment manifest's termination grace. When
+the grace is the shorter of the two, every deploy kills the server mid-drain and clients see
+resets that look like crashes. It also reads the **platform baseline** the built binary
+actually requires. On a development build that is a warning; under `SANKHYA_RELEASE=1` it
+fails, because a binary built on a current distribution silently requires symbol versions the
+customer's enterprise distribution does not have, and the build machine cannot tell you so.
+Today this build needs `GLIBC_2.34` against a declared baseline of `2.28` — see
+[`STATUS.md`](STATUS.md) §10.4. Every supported platform, its baseline and what is published
+for it are in [`PLATFORMS.md`](PLATFORMS.md).
 
 ---
 

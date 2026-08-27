@@ -25,13 +25,97 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M3** Query engine and storage performance | 28–34 ew | **Complete**, all six exit criteria met — closed 2026-08-26. One criterion was corrected first: it required cancellation inside user code, which does not exist until M4, and that clause moved to M4. Parts of the work breakdown remain unbuilt and are listed under *M3, closed* below |
 | **M4** Graph engine and the extension mechanism | 26–32 ew | **Complete.** Every exit criterion met; see below |
 | **M5** Tenancy, security and API surfaces | 22–28 ew | **Closed.** Four of five exit criteria met; the fifth needs a second server version to exist. Two of four API surfaces built — the wire protocol and Flight SQL. The control plane and its gateway are **deferred to M6**, because what they expose is built there |
-| **M6** Operability, packaging and hardening | — | **In progress.** The server process, §10.1's diagnostic, §10.2's catalogues, §10.3's backup and restore drill and §10.5's timed journey are built — three of seven exit criteria met, with the first conditional on §10.4 packaging. §10.4 and §10.6–10.8 are not started |
+| **M6** Operability, packaging and hardening | — | **In progress.** The server process, §10.1's diagnostic, §10.2's catalogues, §10.3's backup and restore drill, §10.4's packaging checks and §10.5's timed journey are built — three of seven exit criteria met. §10.6–10.8 are not started |
 | **M7** Multidimensional analysis | — | Not started. **Added 2026-08-27 by owner directive** and placed before scale-out: cubes are a stated differentiator and multi-node deployment is table stakes. Three crates planned, mirroring the graph split. See [ADR-0007](adr/0007-the-cube-model.md), revised the same day it was written: the first version banned automatic materialisation, and snapshot keying makes that ban unnecessary |
 | **M8**–**M9** Scale-out, then tiering | — | Not started. Renumbered from M7–M8 when M7 was inserted |
 
 ---
 
 ## M6, in progress
+
+### §10.4 — Packaging, and the two numbers nobody relates
+
+**The drain did not exist.** `serve_until` returned the moment shutdown resolved; its spawned
+connection tasks were detached, so dropping the runtime cancelled them abruptly. The doc
+comment above it said *"connections already running finish on their own, because cutting a
+client off mid-result is indistinguishable to them from a crash"* — describing the behaviour
+it did not have, which is how it survived review. A client mid-result saw a reset on every
+deploy.
+
+That had to be fixed before packaging could mean anything: **you cannot choose a termination
+grace for a process that does not drain.** A `JoinSet` now holds the handles, shutdown waits
+for them, and the wait is bounded — because an unbounded drain hangs on one stuck client
+until the orchestrator's patience runs out and kills the process anyway, with the difference
+that nobody chose the moment.
+
+**Then the check that relates the two.** A server's drain deadline and an orchestrator's
+termination grace live in different files, are edited by different people, and nothing
+normally connects them. When the grace is the shorter, every deploy kills the server
+mid-drain and clients see resets that look like crashes. `check-package` reads the drain out
+of the source, reads the grace out of every manifest under `packaging/`, and fails when a
+manifest allows less time than the server takes.
+
+**The platform baseline, which is where a Rust binary usually fails to install.**
+`IMPLEMENTATION_PLAN` §10.4 already called for *a build against an old platform baseline
+rather than a fully static binary*. What it did not say is that a baseline nobody checks is a
+baseline nobody meets. The declared baseline is `GLIBC_2.28` — RHEL 8, Debian 10 — and
+`check-package` reads what the binary actually requires.
+
+**This build requires `GLIBC_2.34`.** It would not start on RHEL 8, Ubuntu 20.04 or anything
+older than RHEL 9, and nothing on the build machine can tell you that: the symbol is present
+locally, so it links, runs and tests clean. It is discovered by a customer. The check reports
+it as a warning on a development build and **fails** when `SANKHYA_RELEASE` is set, because
+failing every local build on a property only the release environment can satisfy would train
+everybody to ignore it — the same warn-versus-fail distinction `check-loc` already makes.
+
+Meeting the baseline needs a build against an old sysroot, which is release-pipeline work.
+The gap is recorded rather than papered over by lowering the declared baseline to whatever
+this machine produces, which would quietly drop every enterprise distribution.
+
+**A test caught the check being broken before the check caught anything.** `highest_glibc`
+matched a `GLIBC_` prefix against the whole symbol token — but `readelf` writes
+`statx@GLIBC_2.28`, so it matched nothing, found no requirements, and concluded every
+requirement was met. It passed the real binary against a baseline it misses by six versions.
+The unit test written against genuine `readelf` output is the only reason that did not ship,
+and it is the reason the parser is tested on real output rather than on a convenient
+sketch.
+
+**The support matrix is data, not prose.** Five targets, each with its baseline and its
+artifact formats, declared once in `xtask/src/package.rs` and generated into
+[`PLATFORMS.md`](PLATFORMS.md). The number of build targets is the number of things that can
+silently break, and a script per platform drifts from its siblings until one artifact behaves
+unlike the rest for a reason nobody can find.
+
+**The baseline of the self-contained artifact is set by PostgreSQL, not by the Rust binary.**
+Worth stating because tuning the Rust build and declaring victory is the obvious mistake: our
+binary could be musl-static and the bundle would still require whatever `glibc` PostgreSQL was
+built against. `cargo-zigbuild` targets a chosen `glibc` for the Rust half without a
+container; the C half needs an old sysroot, and a container is excluded from *running* this
+system, never from building it.
+
+**Windows, checked rather than assumed.** The objection I expected to be fatal — a
+case-insensitive filesystem, where `Orders` and `orders` collide — is already handled:
+`sankhya-schema` case-folds every path segment to lower-case ASCII, digits and underscores,
+and refuses collisions rather than disambiguating them. The platform device names (`aux`,
+`con`, `nul`, `com1`…`lpt9`) are already reserved, with a comment saying why. **A warehouse is
+already Windows-path-safe.** What is missing is the vendored PostgreSQL build and service
+integration, which is porting work rather than a design problem. So the honest row is *client
+only*: any PostgreSQL driver connects from Windows today, which is what most Windows users
+need, and the server runs under WSL2 or a container until somebody builds it.
+
+**Two tests found defects in things I had just written.** Requiring every server target to
+state a baseline caught macOS declared with none — it has one, `MACOSX_DEPLOYMENT_TARGET`,
+and calling it "not applicable" said the question does not arise when in fact it arises and
+nobody answered it. And a mutation shortening the Kubernetes grace below the drain
+**survived**: the comparison was correct and nothing exercised it, because it lived only in
+`check-package`. A check that is only a command is a check that is only sometimes made, so it
+is now a test as well.
+
+**Not built:** container images and signing. Both need infrastructure this environment does
+not have — a container runtime, which the five-minute claim exists to avoid needing, and a
+signing key. The manifests assume an image that a release pipeline has to produce.
+
+---
 
 ### §10.5 — The five-minute experience
 
@@ -834,7 +918,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 196 specific defects applied one at a time; all 196 fail the suite. Twenty did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, three entries were inert until corrected — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. One mutation exposed a defect in a *test* rather than in the code: the five-minute journey read the server's banner with no deadline, so a server that announced nothing hung the build instead of failing it. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 202 specific defects applied one at a time; all 202 fail the suite. Twenty-two did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, three entries were inert until corrected — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -1328,9 +1412,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,261 tests, none of which needs a database
+cargo test --workspace           # 1,276 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 196 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 202 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

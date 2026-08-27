@@ -1781,6 +1781,22 @@ Deleting a backup does not release the snapshots it protects. A grace period fol
 
 The failure this prevents is specific and unrecoverable: a backup deleted by mistake — by an operator clearing space, by a retention rule, by a script with the wrong argument — its files swept by the next pass, and no way back even if the manifest is restored from somewhere minutes later. `FR-STORE-21` makes the same trade for compaction, only adding files and removing them in a separate later job, and for the same reason. It costs storage that could have been reclaimed sooner and buys a window in which a mistake is still a mistake.
 
+### 17.3e A grace shorter than a drain kills a healthy server on every deploy
+
+Two numbers decide whether a shutdown is orderly, and they live apart: how long the server needs to finish work already in flight, and how long the orchestrator will wait before sending `SIGKILL`. Nothing normally relates them. They are edited by different people, in different files, for different reasons — and when the second is the shorter, every deploy severs connections mid-result and clients see something indistinguishable from a crash.
+
+So the relationship is **checked mechanically**: the drain deadline is read from the source and every deployment manifest's grace is compared against it.
+
+**The drain itself has to be bounded, and it has to exist.** An unbounded drain hangs a shutdown on one stuck client until the orchestrator's patience runs out and kills the process anyway, with the difference that nobody chose the moment. And a shutdown that does not wait at all cannot be given a correct grace, because there is nothing to wait for: it abandons work instantly, which reads as fast and is the failure the grace exists to prevent.
+
+### 17.3f A platform baseline nobody checks is a baseline nobody meets
+
+Bundled database binaries are dynamically linked, so a fully static artifact is not achievable and the alternative is a **declared platform baseline** — the oldest system the artifact runs on, expressed as a maximum symbol version and a set of shared objects.
+
+The declaration is not the interesting part. The check is. A binary built on a current distribution silently acquires symbol-version requirements from it; the symbols are present locally, so it links, runs and tests clean, and the failure appears the first time a customer on an enterprise distribution tries to start it. **Nothing on the build machine can surface this by construction** — the machine is the reason it happens.
+
+Two consequences follow. The check reads what the binary *requires* rather than what the build *intended*. And it fails only on a release build, because a developer's machine cannot satisfy a baseline only the release environment provides, and a check that fails every local build is a check everybody learns to ignore.
+
 ### 17.4 Determinism
 
 A deterministic mode fixes the clock, seeds identifier generation, sorts listings and pins reduction order, such that:
@@ -1901,6 +1917,9 @@ The trade-off, stated plainly: scale-up gives lower latency, far simpler failure
 | `DEC-50` | A drill reads data back and recomputes the digest; both sides use one implementation | §17.3b |
 | `DEC-51` | Drill evidence is append-only, keeps failures, and separates "could not run" from "passed" | §17.3c |
 | `DEC-52` | A backup is expired, then removed after a grace period | §17.3d |
+| `DEC-53` | Shutdown drains in-flight connections, and the drain is bounded | §17.3e |
+| `DEC-54` | Every manifest's termination grace is checked against the drain deadline | §17.3e |
+| `DEC-55` | The platform baseline is declared and the binary is checked against it, failing only on a release build | §17.3f |
 
 ---
 

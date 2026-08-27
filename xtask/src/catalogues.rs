@@ -33,6 +33,8 @@ pub const METRICS_DOC: &str = "docs/METRICS.md";
 pub const ERRORS_DOC: &str = "docs/ERRORS.md";
 /// Where a runbook for a pageable condition lives.
 pub const RUNBOOKS: &str = "docs/runbooks";
+/// Where the generated platform matrix lives.
+pub const PLATFORMS_DOC: &str = "docs/PLATFORMS.md";
 
 /// The header every generated file carries.
 ///
@@ -123,6 +125,78 @@ pub fn metrics_markdown() -> String {
     for (name, why) in NOT_YET_EMITTED {
         let _ = writeln!(out, "**{name}.** {why}\n");
     }
+    out
+}
+
+/// The platform matrix, as a document.
+#[must_use]
+pub fn platforms_markdown() -> String {
+    use crate::package::{Baseline, Support, SUPPORTED};
+    let mut out = generated_header("xtask/src/package.rs");
+    out.push_str("# SANKHYA — Platforms\n\n");
+    out.push_str("Where the server runs, where it does not, and what a build has to satisfy.\n\n");
+    out.push_str("**The number of build targets is the number of things that can silently ");
+    out.push_str("break.** Each one is declared here once and the packaging tooling iterates ");
+    out.push_str("this table, rather than a script per platform drifting from its siblings ");
+    out.push_str("until an artifact behaves unlike the rest for a reason nobody can find.\n\n");
+    let _ = writeln!(out, "| Platform | Target | Support | Baseline | Published as |");
+    let _ = writeln!(out, "|---|---|---|---|---|");
+    for target in SUPPORTED {
+        let support = match target.support {
+            Support::Server => "**server**",
+            Support::ClientOnly => "client only",
+        };
+        let baseline = match target.baseline {
+            Baseline::Glibc(major, minor) => format!("`GLIBC_{major}.{minor}`"),
+            Baseline::Musl => "static (musl)".to_string(),
+            Baseline::MacOs(major, minor) => format!("macOS {major}.{minor}"),
+            Baseline::None => "—".to_string(),
+        };
+        let formats = if target.formats.is_empty() {
+            "—".to_string()
+        } else {
+            target.formats.join(", ")
+        };
+        let _ = writeln!(
+            out,
+            "| {} | `{}` | {support} | {baseline} | {formats} |",
+            target.called, target.triple
+        );
+    }
+    out.push('\n');
+    for target in SUPPORTED {
+        let _ = writeln!(out, "## {}\n", target.called);
+        let _ = writeln!(out, "{}\n", target.note);
+    }
+    out.push_str("---\n\n## How an old baseline is met\n\n");
+    out.push_str("A binary built on a current distribution silently acquires that ");
+    out.push_str("distribution's symbol versions. The symbols are present locally, so it ");
+    out.push_str("links, runs and tests clean, and the failure appears the first time ");
+    out.push_str("somebody on an enterprise distribution tries to start it — which is why ");
+    out.push_str("`cargo xtask check-package` reads what the binary *requires* rather than ");
+    out.push_str("trusting what the build intended.\n\n");
+    out.push_str("Three ways to hit an older one, and they are not equivalent:\n\n");
+    out.push_str("| | |\n|---|---|\n");
+    out.push_str("| **`cargo-zigbuild`** | Targets a chosen `glibc` directly — ");
+    out.push_str("`--target x86_64-unknown-linux-gnu.2.28`. No container, no sysroot to ");
+    out.push_str("maintain. The simplest answer for the Rust half |\n");
+    out.push_str("| **A build container or sysroot** | The only answer for the *bundled ");
+    out.push_str("PostgreSQL*, which is a C build and acquires its baseline the same way. A ");
+    out.push_str("container is excluded from **running** this system, never from building ");
+    out.push_str("it |\n");
+    out.push_str("| **musl, statically linked** | Removes the question entirely, and is only ");
+    out.push_str("available to the artifact that does not bundle PostgreSQL. A static binary ");
+    out.push_str("containing a database is not achievable |\n\n");
+    out.push_str("**So the baseline of the self-contained artifact is set by PostgreSQL, not ");
+    out.push_str("by the Rust binary.** That is worth stating plainly, because tuning the ");
+    out.push_str("Rust build alone and declaring victory is the obvious mistake.\n\n");
+    out.push_str("## One artifact or one per distribution\n\n");
+    out.push_str("Both, answering different questions. A **tarball built at the oldest ");
+    out.push_str("baseline** is one file that runs everywhere newer, which is what an ");
+    out.push_str("air-gapped install needs. **Native packages** integrate with the ");
+    out.push_str("distribution — the service unit, the user, the upgrade path — at the cost ");
+    out.push_str("of a build and a test per distribution. The matrix above is what keeps ");
+    out.push_str("that cost visible.\n");
     out
 }
 
@@ -241,6 +315,7 @@ pub fn runbook_of(error: &Error) -> String {
 /// When either file cannot be written.
 pub fn write(root: &Path) -> std::io::Result<()> {
     std::fs::write(root.join(METRICS_DOC), metrics_markdown())?;
+    std::fs::write(root.join(PLATFORMS_DOC), platforms_markdown())?;
     std::fs::write(root.join(ERRORS_DOC), errors_markdown())
 }
 
@@ -252,14 +327,17 @@ pub fn check(root: &Path) -> bool {
 
     ok &= up_to_date(root, METRICS_DOC, &metrics_markdown());
     ok &= up_to_date(root, ERRORS_DOC, &errors_markdown());
+    ok &= up_to_date(root, PLATFORMS_DOC, &platforms_markdown());
     ok &= every_metric_is_recorded(root);
     ok &= every_pageable_thing_has_a_runbook(root);
 
     if ok {
         println!(
-            "   {} metric(s) and {} error code(s) documented, recorded and runbooked",
+            "   {} metric(s), {} error code(s) and {} platform(s) documented, recorded \
+             and runbooked",
             ALL.len(),
-            Error::all().len()
+            Error::all().len(),
+            crate::package::SUPPORTED.len()
         );
     }
     ok

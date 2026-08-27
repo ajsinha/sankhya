@@ -146,7 +146,7 @@ impl Projection {
             Self::Already => "this threshold has already been crossed".to_string(),
             Self::Receding => "it is moving away from the threshold".to_string(),
             Self::Beyond { horizon_seconds } => format!(
-                "it is heading that way, but the crossing is further out than these                  observations support (they span too little to see past about {}); a date                  from here would be arithmetic rather than evidence",
+                "it is heading that way, but the crossing is further out than these observations support (they span too little to see past about {}); a date from here would be arithmetic rather than evidence",
                 human_duration(*horizon_seconds)
             ),
             Self::Crossing {

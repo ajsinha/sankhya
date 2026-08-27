@@ -1326,6 +1326,42 @@ CATALOGUE = [
      "",
      "sankhya-server"),
 
+    ("listener: return from shutdown without waiting for connections in flight",
+     "crates/sankhya-api-pg/src/listener.rs",
+     "        let drained = tokio::time::timeout(drain, async {\n            while connections.join_next().await.is_some() {}\n        })\n        .await;",
+     "        let drained: Result<(), ()> = Ok(());",
+     "sankhya-api-pg"),
+
+    ("listener: drop the drain deadline and wait forever",
+     "crates/sankhya-api-pg/src/listener.rs",
+     "        let drained = tokio::time::timeout(drain, async {",
+     "        let drained = tokio::time::timeout(Duration::from_secs(86_400), async {",
+     "sankhya-api-pg"),
+
+    ("packaging: give the orchestrator less grace than the server needs to drain",
+     "packaging/kubernetes/deployment.yaml",
+     "      terminationGracePeriodSeconds: 45",
+     "      terminationGracePeriodSeconds: 20",
+     "xtask"),
+
+    ("package: compare glibc versions as strings",
+     "xtask/src/package.rs",
+     "        .filter_map(|token| token.strip_prefix(\"GLIBC_\"))\n        .filter_map(|version| {\n            let mut parts = version.split('.');\n            let major = parts.next()?.parse::<u32>().ok()?;\n            let minor = parts.next().unwrap_or(\"0\").parse::<u32>().ok()?;\n            Some((major, minor))\n        })\n        .max()",
+     "        .filter_map(|token| token.strip_prefix(\"GLIBC_\"))\n        .max()\n        .and_then(|version| {\n            let mut parts = version.split('.');\n            let major = parts.next()?.parse::<u32>().ok()?;\n            let minor = parts.next().unwrap_or(\"0\").parse::<u32>().ok()?;\n            Some((major, minor))\n        })",
+     "xtask"),
+
+    ("package: match the whole symbol rather than the part after the @",
+     "xtask/src/package.rs",
+     "        .filter_map(|token| token.rsplit('@').next())\n",
+     "",
+     "xtask"),
+
+    ("package: report only the first way an artifact misses its baseline",
+     "xtask/src/package.rs",
+     "    for object in &requires.shared_objects {",
+     "    for object in requires.shared_objects.iter().take(0) {",
+     "xtask"),
+
 ]
 
 
