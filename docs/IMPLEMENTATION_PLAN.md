@@ -333,6 +333,21 @@ M4 complete.
 
 **9.6 API surfaces (6 ew).** Columnar streaming as the primary data plane. The wire-protocol front door **with sufficient system-catalog emulation for mainstream tooling** — this is the difference between "a command-line client connects" and "a reporting tool works", and it is more work than it looks. The control plane. A thin administrative gateway with hard result caps. The stable error catalog with documented remediation.
 
+> **The control plane and the REST gateway are deferred to M6, 2026-08-27, by owner
+> decision.** `FR-API-04` says what the control plane exposes: *administration, tenancy,
+> policy, catalog, health, jobs and archive operations*. Jobs belong to M6 §10.1 — the
+> maintenance scheduler is a loop and nothing drives it on a timer. Health belongs to
+> M6 §10.1–10.2, the diagnostic and the metric catalogue. Archive operations belong to M8,
+> which is gated and not started.
+>
+> Building the surface first would mean endpoints for jobs no scheduler runs, archives that
+> do not exist, and health for a system with no daemon — each a plausible-looking API
+> returning a placeholder, which is precisely the kind of thing that gets believed. The
+> REST gateway is `SHOULD` and is defined as a thin layer *over the control plane*, so it
+> follows it rather than preceding it.
+>
+> Deferred, not dropped: they are M6 §10.8 and are listed in that milestone's exit criteria.
+
 **9.7 Session semantics (2 ew).** The three read modes. Session tokens. Snapshot pinning with leases and bounded lifetimes.
 
 ### Exit
@@ -372,6 +387,8 @@ M5 complete.
 
 **10.6 Upgrade and migration (3 ew).** The four independent version axes. Upgrade from the previous release against a fixture, asserting identical reconciliation digests and identical query results. A documented and tested rollback procedure.
 
+**10.8 The control plane and its gateway (5 ew).** Deferred here from M5 §9.6, because what a control plane exposes — jobs, health, archive operations — is built in this milestone and the next. gRPC for administration, tenancy, policy, catalog, health and jobs, plus the graph API which is not relational in shape. A thin REST gateway over it, with **result size hard-capped and anything larger returning a Flight ticket**: `FR-API-06` is explicit that serialising analytical results as JSON destroys the zero-copy premise and defines published benchmarks downward.
+
 **10.7 Hardening (3 ew).** Fuzz corpus maturity. Mutation testing across the critical crates. A multi-day soak. Performance baselines locked. Operator runbooks — one per alert, as a shipped deliverable.
 
 ### Exit
@@ -381,6 +398,7 @@ M5 complete.
 4. Multi-day soak clean.
 5. A runbook exists for every alert that can page.
 6. Every user-reachable error has documented remediation, generated from the same source as the catalog.
+7. The control plane serves administration, tenancy, policy, catalog, health and jobs, and the REST gateway refuses a result too large for JSON by returning a Flight ticket rather than the rows. *(Carried in from M5 §9.6 on 2026-08-27.)*
 
 ---
 
