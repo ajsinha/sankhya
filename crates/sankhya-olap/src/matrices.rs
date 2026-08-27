@@ -28,7 +28,7 @@ use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
 };
 use datafusion::prelude::SessionContext;
-use sankhya_numeric::matrix;
+use sankhya_math::matrix;
 use std::sync::Arc;
 
 /// The Arrow metadata key carrying an extension type's parameters.
@@ -332,7 +332,7 @@ impl MatrixFunction {
             Operation::Trace => Outcome::Number(matrix::trace(a, rows, columns)?),
             Operation::Solve => Outcome::Vector(matrix::solve(a, rows, b)?),
             Operation::MatVec => Outcome::Vector(
-                sankhya_numeric::vector::matvec(a, rows, columns, b)
+                sankhya_math::vector::matvec(a, rows, columns, b)
                     .map_err(matrix::MatrixError::from)?,
             ),
             Operation::Multiply => {

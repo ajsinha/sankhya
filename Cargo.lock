@@ -3300,15 +3300,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "sankhya-mv"
-version = "0.1.0"
-
-[[package]]
-name = "sankhya-numeric"
+name = "sankhya-math"
 version = "0.1.0"
 dependencies = [
  "proptest",
 ]
+
+[[package]]
+name = "sankhya-mv"
+version = "0.1.0"
 
 [[package]]
 name = "sankhya-objectstore"
@@ -3325,7 +3325,7 @@ dependencies = [
  "parquet",
  "sankhya-datagen",
  "sankhya-error",
- "sankhya-numeric",
+ "sankhya-math",
  "sankhya-readpath",
  "sankhya-table",
  "sankhya-table-delta",

@@ -286,7 +286,7 @@ impl ScalarUDFImpl for MatrixIdentity {
             return exec_err!("mat_identity's size must be a literal");
         };
         let size = dimension(Some(scalar), "size")?;
-        let identity = sankhya_numeric::matrix::identity(size);
+        let identity = sankhya_math::matrix::identity(size);
         let width = i32::try_from(identity.len()).unwrap_or(0);
 
         let mut builder = FixedSizeListBuilder::new(Float64Builder::new(), width);
