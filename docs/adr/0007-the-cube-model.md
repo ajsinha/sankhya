@@ -139,14 +139,37 @@ A query for a cuboid that is not materialised can be answered by further aggrega
 further rolled up*.
 
 This is the single most dangerous operation in the engine. A non-additive measure answered
-from an ancestor produces a number that is wrong, plausible, and derived from real data. A
-semi-additive one is worse, because it is correct along most dimensions and wrong along
-exactly one, so it survives casual checking.
+from an ancestor produces a number that is wrong, plausible, and derived from real data — no
+null, no error, nothing missing. It reconciles against nothing, because nobody reconciles a
+subtotal.
+
+**Corrected 2026-08-27, while building `sankhya-cube-algo`.** An earlier version of this
+paragraph said a semi-additive measure was *worse*, "correct along most dimensions and wrong
+along exactly one". That is a description of what a naive implementation does, not of the
+rule, and taking it literally cost a set of tests that refused valid roll-ups — which would
+have sent every balance query to base data for no reason at all.
+
+The precise statement separates two things the loose one ran together:
+
+- **Additive** is about the *operator*: may this measure be **summed** along this axis?
+- **Composable** is about *permission*: can the whole be built from partial aggregates along
+  this axis at all?
+
+A closing balance is not additive over time and it **is** composable over time, because
+`last(last(a, b), c) == last(a, b, c)` given an order. Rolling it up across time is perfectly
+valid — *provided the executor applies `last` and not `sum`*. `Sum`, `Min`, `Max`, `First`
+and `Last` compose; `Mean` does not, because an average of averages is an average only when
+every group is the same size and groups are never the same size; and a distinct count or a
+ratio composes along nothing.
+
+So the danger of a semi-additive measure is **the operator, not the axis** — and it lives in
+the executor, which must honour the declared rule per dimension rather than summing. The
+planner's question is only whether the roll-up is possible.
 
 This is why additivity is **declared rather than inferred**, and why the declaration is
-per dimension rather than per measure: at query time, the planner needs to ask "may this
-measure be summed along *this* axis?" and get an answer that a person committed to, not one
-derived from a column's type or name.
+per dimension rather than per measure: at query time the planner asks "may this measure be
+combined along *this* axis, and with what?" and needs an answer a person committed to, not
+one derived from a column's type or name.
 
 ### A materialised cuboid is an ordinary published table
 
@@ -224,13 +247,13 @@ The graph engine is three crates and the split has earned itself: `sankhya-graph
 **zero dependencies**, which is what makes its property tests fast enough to run thousands of
 cases on every build, and what keeps storage concerns out of the algorithms.
 
-Cubing has the same shape and gets the same treatment. **None of these exist yet** — they are
-the planned structure, named here so the layering is decided before the first line is written
-rather than discovered afterwards:
+Cubing has the same shape and gets the same treatment. `sankhya-cube-algo` exists as of
+2026-08-27 and holds the two decisions above; the other two are planned, named here so the
+layering was decided before the first line was written rather than discovered afterwards:
 
 | Crate (planned) | Layer | What is in it | Depends on |
 |---|---|---|---|
-| **sankhya-cube-algo** | 1 | The lattice, the additivity algebra, the "may C be answered from D?" predicate, cuboid selection under a budget, cell addressing, consolidation ordering | **Nothing** |
+| `sankhya-cube-algo` | 1 | The lattice, the additivity algebra, the "may C be answered from D?" predicate, cuboid selection under a budget, cell addressing, consolidation ordering | **Nothing** |
 | **sankhya-cube** | 3 | Resolving a definition against published tables, member sets, execution over Arrow, reading and writing materialised cuboids, the budget manager | read path, math, graph, authz |
 | **sankhya-cube-sql** | 4 | The SQL surface | DataFusion |
 
