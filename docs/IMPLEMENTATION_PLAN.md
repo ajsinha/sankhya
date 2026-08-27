@@ -422,6 +422,21 @@ stakes. Shipping the differentiator after the table stakes gets the order backwa
 M6 complete. M3's read path and M4's graph engine are the two things this builds on, and both
 are done.
 
+### Structure
+
+Three crates, mirroring the graph engine's split, which has earned itself:
+`sankhya-graph-algo` has **zero dependencies**, which is what makes its property tests fast
+enough to exhaust rather than sample.
+
+| Crate | Layer | Why it is separate |
+|---|---|---|
+| **sankhya-cube-algo** | 1 | The lattice, the additivity algebra, the ancestor-answering predicate and cuboid selection are pure functions of a declaration. With no dependencies they can be property-tested exhaustively, and that matters because they are where wrong answers come from |
+| **sankhya-cube** | 3 | Resolution against published tables, member sets, execution over Arrow, materialised-cuboid read and write, the budget manager |
+| **sankhya-cube-sql** | 4 | The SQL surface |
+
+Materialisation storage gets no crate: a materialised cuboid is a published table and that
+machinery exists.
+
 ### Work
 
 **11.1 The cube model (3 ew).** Dimensions, hierarchies, levels, members and measures as a
@@ -449,9 +464,16 @@ may read, so two principals may legitimately see different totals; and a complet
 per `FR-QUERY-13` so a policy-filtered total is distinguishable from a complete one. A total
 computed over rows the caller cannot see is a disclosure through arithmetic and is invisible.
 
-**11.6 Optional materialisation (2 ew).** Per-level, declared explicitly, never automatic,
-carrying a staleness contract, with incremental refresh only where the measure forms a
-commutative monoid per `FR-QUERY-27`.
+**11.6 The lattice, and materialisation both ways (4 ew).** The cuboid lattice; answering a
+query from a materialised **ancestor**, permitted only where the measure is additive along
+every dimension being further rolled up; greedy selection under an operator budget informed
+by the query log; and the three levels of control — pinned in the definition, budgeted in
+configuration, overridable per session.
+
+A materialised cuboid is keyed by *(definition version, snapshot, cuboid)*, so per
+`FR-QUERY-20` a new commit cannot produce a stale hit and there is no invalidation protocol
+to get wrong. It is stored as an ordinary published table, readable by Spark like anything
+else — the open-storage commitment gets no exception for the fast path.
 
 **11.7 Write-back overlay (1–3 ew, `SHOULD`).** A separately versioned overlay for planning
 and what-if analysis. Never modifies published data; a query states whether one was applied.
@@ -462,6 +484,11 @@ and what-if analysis. Never modifies published data; a query states whether one 
 2. A semi-additive measure rolled up across time by summation is **rejected at planning
    time**, not computed.
 3. Two runs of the same consolidation over the same snapshot are **bit-identical**.
+3a. **Every query returns bit-identical results with materialisation on and off.** This is
+   the criterion that makes materialisation a cache rather than a second source of truth, and
+   it is compared by bits rather than within a tolerance.
+3b. A non-additive measure is **never** answered from a materialised ancestor, proven by
+   property test against the base-data answer.
 4. Two principals with different row policies see different totals for the same cell, and
    both results carry a completeness measure saying so.
 5. Slice, dice, roll-up and drill-down are demonstrated from SQL against a cube with at least

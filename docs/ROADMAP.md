@@ -111,17 +111,18 @@ Published performance against public benchmark suites, on named hardware, with t
 
 Slice, dice, roll up, drill down and pivot as navigation of one declared structure, rather than as a sequence of unrelated `GROUP BY` statements the user reassembles in a client. **On demand, with no cube-build step preceding the query.**
 
-**Available:** cubes as declared views over published tables — no second store · level-based and parent-child hierarchies, ragged ones natively rather than padded · alternate roll-ups and shared members with nothing double-counted · additive, semi-additive and non-additive measures, with the aggregation rule declared per dimension · deterministic consolidation · optional per-level materialisation, always explicit · write-back overlays for planning that never touch published data.
+**Available:** cubes as declared views over published tables — no second store · level-based and parent-child hierarchies, ragged ones natively rather than padded · alternate roll-ups and shared members with nothing double-counted · additive, semi-additive and non-additive measures, with the aggregation rule declared per dimension · deterministic consolidation · **both on-demand and materialised cuboids, chosen per cuboid and controlled by definition, configuration and session preference** · adaptive selection over the cuboid lattice under an operator budget, informed by the query log · materialised cuboids stored as ordinary published tables that Spark can read · write-back overlays for planning that never touch published data.
 
 **Why here rather than after scale-out:** this is a capability the system is meant to be differentiated by. Multi-node deployment is table stakes. Shipping the differentiator second gets the order backwards.
 
 **Three commitments that will be unpopular and are not negotiable:**
 
 - **A measure with no declared aggregation rule is refused**, not defaulted to summation. A closing balance summed across twelve months is a number that means nothing and looks exactly like a number that does.
-- **A cube is not a store.** Precomputation is available per level, declared explicitly, with a staleness contract. It is never automatic, because a materialised aggregate is a second copy that can disagree with its source and the disagreement is not visible from the copy.
+- **A cube returns bit-identical answers whether or not anything is materialised.** Materialisation is therefore a cache with no semantic content, not a second source of truth — which is what makes it safe to choose automatically. Almost nothing else in this category can make this claim, because it requires a deterministic reduction underneath.
+- **A materialised cuboid cannot go stale.** It is keyed by the snapshot it was built from, so a new commit does not produce a stale hit — it produces a miss. There is no invalidation protocol and no time-to-live, and the "the cube is stale" failure mode every product here has is structurally absent rather than carefully avoided.
 - **Two people may legitimately see different totals for the same cell**, because an aggregate is computed only over rows that principal may read. A total computed over rows the caller cannot see is a disclosure through arithmetic, and nothing about it looks wrong.
 
-**The test that matters:** a cube over a ragged hierarchy with alternate roll-ups reconciles against an independently computed answer with no member double-counted, and two runs of the same consolidation are bit-identical.
+**The test that matters:** every query returns bit-identical results with materialisation on and off, and a cube over a ragged hierarchy with alternate roll-ups reconciles against an independently computed answer with no member double-counted.
 
 See [`adr/0007-the-cube-model.md`](adr/0007-the-cube-model.md).
 

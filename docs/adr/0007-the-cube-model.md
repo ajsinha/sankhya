@@ -50,24 +50,110 @@ a time dimension exists before anybody declares one.
 
 ## Decision
 
-### Virtual by default; materialisation is a decision somebody makes
+### Both modes are first class, because snapshot identity removes the reason to fear one
 
-A cube holds no data. It is a declaration over published tables, and a cell exists because
-rows exist — exactly the rule the graph engine follows, and for the same reason.
+*Revised 2026-08-27, same day, on owner direction: "cubes can be materialized and on demand
+both all controlled via config and preferences". The first version of this section said
+materialisation must be **"never automatic or implicit"**, on the grounds that a precomputed
+aggregate is a second copy that can disagree with its source. That reasoning is right about
+every other product in this category and wrong about this one, for a reason the first version
+did not notice.*
 
-The alternative is the classical one: precompute the consolidation, store it, serve queries
-from the store. It is faster and it reintroduces the thing this system exists to remove. A
-materialised aggregate is **a second copy that can disagree with its source**, and the
-disagreement is not detectable from the copy. Every product in this category has a "the cube
-is stale" failure mode, and the reason is architectural rather than incidental.
+A cube holds no data of its own: it is a declaration over published tables, and a cell exists
+because rows exist. That much is unchanged.
 
-So materialisation is available, per level, **declared explicitly**, carrying a staleness
-contract, and never automatic. `FR-QUERY-27` already sets the rule that makes incremental
-refresh safe — only aggregates forming a commutative monoid may declare it — and that rule
-applies here unchanged.
+What changed is the status of precomputation. The classical objection is that a materialised
+aggregate can go stale, and that the staleness is not detectable from the copy — which is why
+every product here has a "the cube is stale" failure mode. But `FR-QUERY-20` already records
+the property that dissolves it:
 
-This is a real performance trade and it is taken knowingly. It is the same trade as
-deterministic summation: slower, and reconcilable.
+> Because files are immutable and every key embeds a snapshot identifier, **a new commit
+> cannot produce a stale hit** — the key simply misses. No invalidation protocol is required.
+
+A materialised cuboid keyed by *(cube definition version, snapshot identifier, cuboid
+specification)* **cannot be stale**. It either matches the snapshot the query is reading at,
+or it is a miss and the answer is computed. There is no invalidation protocol to get wrong,
+no time-to-live to tune, and no window during which a stale answer is served.
+
+That changes what materialisation *is*. It is not a second copy of the truth. It is a
+**cache**, and being wrong about what to cache costs latency rather than correctness.
+
+**So the mode is a per-cuboid decision, and it is configurable at three levels:**
+
+| Level | Who sets it | What it controls |
+|---|---|---|
+| **Cube definition** | Whoever models the cube | Cuboids *pinned* materialised — a judgement that some roll-up is always worth having |
+| **Server configuration** | The operator | The budget: space, refresh concurrency, whether adaptive selection runs at all |
+| **Session preference** | The caller | Whether this query may spend time materialising, and whether it may read materialised cuboids |
+
+The last one deserves a note, because with snapshot keying it is not a correctness control —
+a materialised answer and a computed one are the same answer. It is a cost control, with one
+genuine exception: turning materialisation **off** for a session is how you *prove* the two
+agree. An audit run that reads only base data and reconciles against the ordinary path is a
+real capability, and it exists because the preference exists.
+
+### Selection may be automatic; semantics may not
+
+A cube with *n* dimensions has a lattice of cuboids — one per combination of levels, so
+∏(levels + 1) of them, which passes a thousand at six dimensions with three levels each.
+Materialising all is impossible. Materialising none leaves an enormous amount of performance
+on the floor. Choosing well is a known problem with a known answer: greedy selection under a
+space budget, which is within a constant factor of optimal, informed here by the query log
+rather than by a guess about what people will ask.
+
+**A human cannot do this job.** Nobody can look at a thousand-node lattice and pick the
+forty that pay for themselves, and the attempt produces a cube tuned for the queries somebody
+imagined rather than the ones being run.
+
+So the line is not "automatic versus declared". It is:
+
+> **What may be automatic: anything whose being wrong costs latency.**
+> **What may not: anything whose being wrong changes an answer.**
+
+Automatic: which cuboids to materialise, when, in what order, how long to keep them, and
+whether to answer a given query from a materialised ancestor.
+
+Never automatic: aggregation rules, hierarchy definitions, what a measure means, and the
+completeness contract. Those change answers, and a system that infers them produces numbers
+nobody declared.
+
+### The property that makes all of it safe, and that has to be tested
+
+**A cube returns bit-identical answers whether or not anything is materialised.**
+
+That is the claim, it is stronger than it looks, and almost nothing else in this category can
+make it — because it requires the underlying reduction to be deterministic, which
+`FR-QUERY-10` and `deterministic_sum` already provide. Without it, "materialised" and
+"computed" are two answers that are *close*, and close is the state this whole system is
+built to avoid: too small to notice and too large to reconcile.
+
+With it, materialisation has **zero semantic content**. It is purely a performance decision,
+which is precisely what makes it safe to automate.
+
+It is an exit criterion for `M7`, tested by running every query both ways and comparing bits.
+
+### Answering from an ancestor is where the wrong answers live
+
+A query for a cuboid that is not materialised can be answered by further aggregating a
+**finer** cuboid that is — but only when the measure is additive along *every dimension being
+further rolled up*.
+
+This is the single most dangerous operation in the engine. A non-additive measure answered
+from an ancestor produces a number that is wrong, plausible, and derived from real data. A
+semi-additive one is worse, because it is correct along most dimensions and wrong along
+exactly one, so it survives casual checking.
+
+This is why additivity is **declared rather than inferred**, and why the declaration is
+per dimension rather than per measure: at query time, the planner needs to ask "may this
+measure be summed along *this* axis?" and get an answer that a person committed to, not one
+derived from a column's type or name.
+
+### A materialised cuboid is an ordinary published table
+
+Not a proprietary cube file. It is written through the same writer, into the same warehouse,
+with the same log, and it is readable by Spark like anything else. The open-storage
+commitment does not get an exception for the fast path — and a cache that external tools can
+read is a cache an operator can inspect when they do not believe it.
 
 ### Every measure declares its aggregation rule, per dimension
 
@@ -132,10 +218,37 @@ population that is small and shrinking, and which this system does not target.
 Cubes are addressed from SQL: the system's primary surface, the one `FR-API-02` calls the
 highest-adoption-value surface in the product, and the one every tool already speaks.
 
+### Three crates, mirroring the graph
+
+The graph engine is three crates and the split has earned itself: `sankhya-graph-algo` has
+**zero dependencies**, which is what makes its property tests fast enough to run thousands of
+cases on every build, and what keeps storage concerns out of the algorithms.
+
+Cubing has the same shape and gets the same treatment. **None of these exist yet** — they are
+the planned structure, named here so the layering is decided before the first line is written
+rather than discovered afterwards:
+
+| Crate (planned) | Layer | What is in it | Depends on |
+|---|---|---|---|
+| **sankhya-cube-algo** | 1 | The lattice, the additivity algebra, the "may C be answered from D?" predicate, cuboid selection under a budget, cell addressing, consolidation ordering | **Nothing** |
+| **sankhya-cube** | 3 | Resolving a definition against published tables, member sets, execution over Arrow, reading and writing materialised cuboids, the budget manager | read path, math, graph, authz |
+| **sankhya-cube-sql** | 4 | The SQL surface | DataFusion |
+
+The layer-1 crate is the one that matters. The additivity algebra and the ancestor-answering
+predicate are where wrong answers come from, they are pure functions of a declaration, and
+with no dependencies they can be exhausted by property test rather than sampled by example.
+
+**Materialisation storage gets no crate**, because a materialised cuboid is a published table
+and that machinery exists.
+
 ## Consequences, stated as costs
 
-- **A virtual cube is slower than a materialised one**, sometimes by a lot. That is the trade,
-  and the escape hatch is explicit per-level materialisation rather than a default.
+- **A virtual cube is slower than a materialised one**, sometimes by a lot. Adaptive selection
+  narrows the gap and does not close it, and a query for a cuboid nobody has asked for before
+  pays full price.
+- **Adaptive materialisation spends resources on its own**, in the background, on work no
+  user asked for. It is bounded by an operator's budget and the budget is a real setting
+  somebody has to choose, not a number that can be right by default.
 - **Declaring aggregation rules is work**, and it is work at definition time on somebody who
   would rather be querying. It is the price of not shipping plausible wrong numbers.
 - **Two principals seeing different totals will be reported as a bug** at least once. The
@@ -147,6 +260,14 @@ highest-adoption-value surface in the product, and the one every tool already sp
 
 ## Revisit if
 
-A measured workload shows virtual consolidation is the bottleneck for a large fraction of
-queries rather than a few. The answer then is broader default materialisation with the
-staleness contract made prominent — not silent precomputation.
+**The bit-identical property cannot be held.** It is load-bearing: it is what makes
+materialisation a cache rather than a second source of truth, and therefore what makes
+automatic selection safe. If some measure or some path cannot be made to agree bit for bit
+between the materialised and computed routes, that measure must be excluded from
+materialisation entirely rather than the property being weakened to "agrees closely".
+
+**Snapshot keying stops being sufficient.** The argument above rests on `FR-QUERY-20`: every
+key embeds a snapshot identifier, so a stale hit is impossible. Anything that introduces a
+mutable key into the materialisation path — a cuboid keyed by "latest" rather than by a
+snapshot — reintroduces the staleness problem in full, and the first version of this ADR is
+right again.
