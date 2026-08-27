@@ -190,9 +190,11 @@ impl Server {
         } else {
             "NO AUTHENTICATION — every connection is accepted"
         };
+        // The bound address is printed separately by the caller, which is the only thing
+        // that knows it. Repeating the *configured* one here printed ":0" beside the real
+        // port, which is worse than saying nothing.
         format!(
-            "listening on {}, tenant {}, {auth}, {} policy rule(s), {} table(s) known",
-            self.settings.listen,
+            "tenant {}, {auth}, {} policy rule(s), {} table(s) known",
             self.settings.tenant,
             self.policy.len(),
             self.tables.len()

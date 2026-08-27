@@ -133,8 +133,17 @@ async fn main() -> std::io::Result<()> {
 
     // Printed rather than only logged: an operator starting this by hand needs to see the
     // configuration, and an insecure one is written so it looks wrong.
+    // The address actually bound, not the one configured. Told to bind port 0 the
+    // configured value is literally ":0", so the line that exists to tell an operator where
+    // to connect told them nothing — and a test wanting an ephemeral port had no way to
+    // learn which one it got.
+    let bound = listener
+        .local_addr()
+        .map_or_else(|_| settings_listen.clone(), |address| address.to_string());
+
     println!("SANKHYA {}", env!("CARGO_PKG_VERSION"));
     println!("  {}", server.describe());
+    println!("  listening on {bound}");
     println!(
         "  audit chain head {} ({} record(s))",
         server.audit_head(),
@@ -151,9 +160,7 @@ async fn main() -> std::io::Result<()> {
     // Built from the address actually bound. It was a literal `-p 5433`, which is right
     // until somebody sets `SANKHYA_LISTEN` and then is a printed instruction that does not
     // work, in the one line an operator copies.
-    let (host, port) = settings_listen
-        .rsplit_once(':')
-        .unwrap_or(("127.0.0.1", "5433"));
+    let (host, port) = bound.rsplit_once(':').unwrap_or(("127.0.0.1", "5433"));
     println!("  connect with: psql -h {host} -p {port} -U <user>");
 
     // Bound before the wire listener starts serving, so that a scrape arriving immediately
@@ -164,7 +171,11 @@ async fn main() -> std::io::Result<()> {
     let metrics_task = match &settings_metrics {
         Some(address) => match tokio::net::TcpListener::bind(address).await {
             Ok(listener) => {
-                println!("  metrics on http://{address}/metrics");
+                // The bound address again, for the same reason: `address` may name port 0.
+                let on = listener
+                    .local_addr()
+                    .map_or_else(|_| address.clone(), |bound| bound.to_string());
+                println!("  metrics on http://{on}/metrics");
                 let server = Arc::clone(&server);
                 Some(tokio::spawn(async move {
                     scrape::serve_until(listener, server, async {

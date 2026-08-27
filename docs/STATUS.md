@@ -25,13 +25,54 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M3** Query engine and storage performance | 28–34 ew | **Complete**, all six exit criteria met — closed 2026-08-26. One criterion was corrected first: it required cancellation inside user code, which does not exist until M4, and that clause moved to M4. Parts of the work breakdown remain unbuilt and are listed under *M3, closed* below |
 | **M4** Graph engine and the extension mechanism | 26–32 ew | **Complete.** Every exit criterion met; see below |
 | **M5** Tenancy, security and API surfaces | 22–28 ew | **Closed.** Four of five exit criteria met; the fifth needs a second server version to exist. Two of four API surfaces built — the wire protocol and Flight SQL. The control plane and its gateway are **deferred to M6**, because what they expose is built there |
-| **M6** Operability, packaging and hardening | — | **In progress.** The server process, §10.1's diagnostic, §10.2's catalogues and §10.3's backup and restore drill are built — two of seven exit criteria met. §10.4–10.8 are not started |
+| **M6** Operability, packaging and hardening | — | **In progress.** The server process, §10.1's diagnostic, §10.2's catalogues, §10.3's backup and restore drill and §10.5's timed journey are built — three of seven exit criteria met, with the first conditional on §10.4 packaging. §10.4 and §10.6–10.8 are not started |
 | **M7** Multidimensional analysis | — | Not started. **Added 2026-08-27 by owner directive** and placed before scale-out: cubes are a stated differentiator and multi-node deployment is table stakes. Three crates planned, mirroring the graph split. See [ADR-0007](adr/0007-the-cube-model.md), revised the same day it was written: the first version banned automatic materialisation, and snapshot keying makes that ban unnecessary |
 | **M8**–**M9** Scale-out, then tiering | — | Not started. Renumbered from M7–M8 when M7 was inserted |
 
 ---
 
 ## M6, in progress
+
+### §10.5 — The five-minute experience
+
+`M6`'s first exit criterion, and the plan is explicit about the form: *"it must be a test so
+it cannot rot"*. `crates/sankhya-server/tests/five_minutes.rs` is the quickstart, executed on
+every build — generate a warehouse, start the real binary as a subprocess, connect over the
+real wire protocol, query, aggregate, run the diagnostic, take a backup, prove it. Seven
+documented steps, and any of them breaking breaks the build.
+
+**The measured journey is about forty milliseconds**, from a built binary.
+
+**The claim as written cannot be met from source, and the test says so rather than measuring
+around it.** A first-time user's five minutes includes `cargo build`, which takes several
+minutes on a cold machine and is dominated by dependencies — `QUICKSTART.md` has always said
+so. The five-minute promise is a promise about a **released artifact**, which makes exit
+criterion 1 depend on `§10.4` packaging. Recording that is more useful than a green test
+measuring the wrong interval.
+
+**And tightening the budget does not rescue the timing assertion either.** This warehouse
+holds a thousand rows in four files; no plausible scaling regression is visible at that size.
+Somebody making the read path open every Parquet footer would still finish in milliseconds.
+The budgets catch a phase *breaking* or slowing by two orders of magnitude — a deadlock, a
+retry loop, a sleep left behind — and nothing subtler. Scaling belongs to
+`cargo xtask check-performance`, which generates a scale-factor-1 dataset and sits outside
+`check-all` for exactly that reason. Splitting them is the point: one proves the path works
+on every build, the other proves it is fast on a quiet machine.
+
+**Three defects, and one of them was in the test itself.**
+
+- **The banner printed the configured address, not the bound one.** Told to bind port 0 it
+  printed `:0` — the line whose only job is to say where to connect said nothing, and a test
+  wanting an ephemeral port had no way to learn which one it got. In three places: the
+  startup line, the `psql` invitation, and the metrics URL.
+- **`describe()` printed it a second time**, so the real port appeared beside a literal `:0`.
+- **The test hung instead of failing.** It read the banner with no deadline, so a mutation
+  that stopped the server announcing its port blocked forever and took the whole build with
+  it. Found by running that mutation. A test that hangs is strictly worse than one that
+  fails, because a failure names what broke — the read is now bounded and reports "it never
+  said" distinctly from "it took too long".
+
+---
 
 ### §10.3 — Backup, protection and the restore drill
 
@@ -786,7 +827,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 194 specific defects applied one at a time; all 194 fail the suite. Nineteen did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, three entries were inert until corrected — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 196 specific defects applied one at a time; all 196 fail the suite. Twenty did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, three entries were inert until corrected — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. One mutation exposed a defect in a *test* rather than in the code: the five-minute journey read the server's banner with no deadline, so a server that announced nothing hung the build instead of failing it. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -1280,9 +1321,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,260 tests, none of which needs a database
+cargo test --workspace           # 1,261 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 194 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 196 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

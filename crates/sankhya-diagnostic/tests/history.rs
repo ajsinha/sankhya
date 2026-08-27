@@ -207,7 +207,6 @@ fn values_survive_the_round_trip_bit_for_bit() {
 
 #[test]
 fn the_history_is_bounded_so_the_diagnostic_is_not_itself_a_disk_problem() {
-    let dir = tempfile::tempdir().expect("a temporary directory");
     let mut history = History::new();
     let measure = files_of("a");
     for i in 0..(OBSERVATIONS_KEPT + 50) {

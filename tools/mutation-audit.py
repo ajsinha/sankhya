@@ -1310,6 +1310,22 @@ CATALOGUE = [
      "    let Some(last) = last_pass.or(Some(now)) else {",
      "sankhya-diagnostic"),
 
+    ("server: print the configured address rather than the one actually bound",
+     "crates/sankhya-server/src/main.rs",
+     "    let bound = listener\n        .local_addr()\n        .map_or_else(|_| settings_listen.clone(), |address| address.to_string());",
+     "    let bound = settings_listen.clone();",
+     "sankhya-server"),
+
+    # This one hung the test rather than failing it, the first time it was run: the banner
+    # was read with no deadline, so a server that printed nothing blocked forever and took
+    # the build with it. A test that hangs is strictly worse than one that fails, because a
+    # failure names what broke. The entry stays because it is the only thing that proved it.
+    ("server: stop announcing the port at all",
+     "crates/sankhya-server/src/main.rs",
+     '    println!("  listening on {bound}");',
+     "",
+     "sankhya-server"),
+
 ]
 
 

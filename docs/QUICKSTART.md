@@ -86,7 +86,7 @@ availability event.
 ## 3. Run the tests
 
 ```bash
-cargo test --workspace          # 1,260 tests, none of which needs a database
+cargo test --workspace          # 1,261 tests, none of which needs a database
 ```
 
 Everything here runs without a database, in well under a minute. Nothing is mocked: the
@@ -128,6 +128,7 @@ TPC-H data is generated rather than fixtured.
 | `sankhya-olap` `tests/exactness.rs` | An approximate answer is labelled approximate. A sketch-derived count never presents itself as exact |
 | `sankhya-governor` | Deadlines and cancellation are bounded at one batch per partition; an aggregation too large to run is refused up front, and the refusal says whether retrying could ever help |
 | `sankhya-math` | Reductions are deterministic regardless of partition order — the analytical counterpart to the `sankhya-types` property |
+| `sankhya-server` `tests/five_minutes.rs` | **This guide, executed.** Generate a warehouse, start the real binary, connect over the real wire protocol, query, run the diagnostic, take a backup and prove it — seven documented steps, timed, on every build. It is a test so it cannot rot |
 | `sankhya-backup` | A manifest refuses to bind an analytical tier that is ahead of its source; a drill catches altered rows that every file-presence check passes; deleting a backup does not release its files; and the evidence keeps the failures |
 | `sankhya-metrics` | An undeclared metric cannot be recorded, a closed label refuses anything outside its set, and an identifier label stops adding series at its cap rather than growing without bound — and says it has |
 | `sankhya-diagnostic` | A projection is never invented from one sample, never drawn through a sawtooth, and never extrapolated further than the observation window supports. Findings sort by *when*, not by how bad. A check that could not run is never counted as one that found nothing |
@@ -138,7 +139,7 @@ Three gates catch things a test suite structurally cannot. All three fail the bu
 
 ```bash
 cargo xtask check-all            # every repository invariant — see below
-python3 tools/mutation-audit.py  # 194 deliberate defects, applied one at a time
+python3 tools/mutation-audit.py  # 196 deliberate defects, applied one at a time
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
 ```
 
@@ -153,11 +154,11 @@ document claims — test counts, catalogue sizes — still matches what the repo
 merely to pass.
 
 **The mutation audit** is the answer to "the tests pass, but do they test anything?" It
-applies 194 specific defects one at a time and requires the suite to fail on each. Nineteen
+applies 196 specific defects one at a time and requires the suite to fail on each. Twenty
 did not, the first time each was run — the most recent three were written for the
 diagnostic, and one of those turned out to be pointing at the wrong copy of a duplicated
 guard, which is precisely the silent-pass this tool exists to catch. Expect it to take a
-while — it is 194 sequential `cargo test` runs, and it edits your source files as it goes,
+while — it is 196 sequential `cargo test` runs, and it edits your source files as it goes,
 restoring each one after. Run it on a clean tree.
 
 **`check-performance`** is deliberately outside `check-all`: it generates a
