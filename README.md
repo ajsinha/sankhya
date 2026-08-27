@@ -184,8 +184,14 @@ reference node. Cancellation is bounded, a hostile aggregation is refused rather
 taking the process down, and the places where this engine and PostgreSQL disagree are
 enumerated in a test — which found three ways the analytical tier returns a wrong number.
 
-What does not exist: the server itself, the streaming transport, the API surfaces,
-tenancy and security. Also unbuilt inside work already counted: bloom filters, table
+**The server runs.** A wire-protocol front door that real `psql` connects to, which
+authenticates, answers catalogue queries from a policy-filtered table list, and hash-chains
+what it did into a tamper-evident audit. It does **not** execute statements yet — the read
+path is built and tested but is not connected to the front door, and a `SELECT` gets a named
+refusal saying exactly that, because an empty result would look like a table with no rows.
+
+What does not exist: the streaming transport, Arrow Flight SQL, the gRPC control plane and
+the REST gateway. Also unbuilt inside work already counted: bloom filters, table
 partitioning, the result cache, leader election, a timer that drives graph hydration, and
 a measured graph benchmark — the graph primitives are correct against brute force and
 bounded by construction, but they have not been timed at scale, and that M4 criterion is

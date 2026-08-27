@@ -130,9 +130,14 @@ pub fn recognise(sql: &str) -> Option<CatalogQuery> {
     if compact.contains("current_schema") || compact.contains("current_database") {
         return Some(CatalogQuery::CurrentSchema);
     }
-    if compact.contains("pg_namespace") || compact.contains("information_schema.schemata") {
-        return Some(CatalogQuery::Schemas);
-    }
+    // Order matters, and it was wrong the first time. `psql`'s `\\dt` sends a query
+    // mentioning *both* `pg_class` and `pg_namespace`, because it joins them — so testing
+    // for the namespace first answered a table list with a list of schemas. Real `psql`
+    // showed it immediately; no unit test would have, because no unit test would have
+    // written the query that way.
+    //
+    // The rule is specific-to-general: a query naming a relation catalogue is asking about
+    // relations, whatever else it joins to.
     if compact.contains("pg_attribute") || compact.contains("information_schema.columns") {
         return Some(CatalogQuery::Columns {
             table: literal_after(&compact, "table_name"),
@@ -142,6 +147,9 @@ pub fn recognise(sql: &str) -> Option<CatalogQuery> {
         return Some(CatalogQuery::Tables {
             schema: literal_after(&compact, "table_schema"),
         });
+    }
+    if compact.contains("pg_namespace") || compact.contains("information_schema.schemata") {
+        return Some(CatalogQuery::Schemas);
     }
     if compact.contains("pg_type") {
         return Some(CatalogQuery::Types);

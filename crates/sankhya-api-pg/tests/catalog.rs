@@ -239,6 +239,21 @@ fn current_schema_is_answered() {
 // --- what is deliberately not emulated ------------------------------------
 
 #[test]
+fn a_query_joining_pg_class_to_pg_namespace_is_a_table_list_not_a_schema_list() {
+    // What `psql`'s `\dt` actually sends. It mentions both catalogues because it joins
+    // them, and an implementation that tests for the namespace first answers a table list
+    // with a list of schemas — which is what this one did until real `psql` showed it.
+    //
+    // No unit test would have caught this, because no unit test would have written the
+    // query the way psql writes it.
+    let dt = "SELECT n.nspname as \"Schema\", c.relname as \"Name\" \
+              FROM pg_catalog.pg_class c \
+              LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+              WHERE c.relkind IN ('r','p') ORDER BY 1,2";
+    assert_eq!(recognise(dt), Some(CatalogQuery::Tables { schema: None }));
+}
+
+#[test]
 fn an_ordinary_query_is_not_mistaken_for_a_catalogue_one() {
     // The recogniser must not swallow real work. A SELECT against a user table that
     // happened to be answered from a fake catalogue would return the wrong rows silently.
