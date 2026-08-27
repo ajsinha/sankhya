@@ -431,6 +431,74 @@ CATALOGUE = [
     # arm afterwards: the generic binary arm below matches every operator, so anything
     # added after it is unreachable and the mutation is inert. That mistake cost a round
     # of "the test does not cover this" before the mutation was checked by hand.
+    # --- policy: the component where a surviving mutant is a breach, not a weak test ---
+
+    ("policy: stop comparing the tenant, so a rule reaches across tenants",
+     "crates/sankhya-authz/src/policy.rs",
+     "                r.tenant == *principal.tenant()\n                    && r.table == *table",
+     "                r.table == *table",
+     "sankhya-authz"),
+
+    ("policy: let grants outvote an explicit denial",
+     "crates/sankhya-authz/src/policy.rs",
+     "        if let Some(denial) = applicable.iter().find(|r| r.effect == Effect::Deny) {",
+     "        if let Some(denial) = applicable.iter().find(|r| r.effect == Effect::Allow) {",
+     "sankhya-authz"),
+
+    ("policy: treat the absence of a grant as permission",
+     "crates/sankhya-authz/src/policy.rs",
+     "        if grants.is_empty() {\n            return Decision::Denied {\n                reason: DenialReason::NoGrant,\n            };\n        }",
+     "        if false {\n            return Decision::Denied {\n                reason: DenialReason::NoGrant,\n            };\n        }",
+     "sankhya-authz"),
+
+    ("policy: stop checking the role, so any principal matches any rule",
+     "crates/sankhya-authz/src/policy.rs",
+     "                    && principal.has_role(&r.role)",
+     "",
+     "sankhya-authz"),
+
+    ("policy: stop checking the action, so a read grant permits a delete",
+     "crates/sankhya-authz/src/policy.rs",
+     "                    && r.action == action\n",
+     "",
+     "sankhya-authz"),
+
+    ("policy: combine row filters with AND, so a second role narrows the first",
+     "crates/sankhya-authz/src/policy.rs",
+     '                        .join(" OR "),',
+     '                        .join(" AND "),',
+     "sankhya-authz"),
+
+    ("policy: emit a filter even when an unrestricted grant applies",
+     "crates/sankhya-authz/src/policy.rs",
+     "        let row_filter = if grants.iter().any(|r| r.row_filter.is_none()) {",
+     "        let row_filter = if grants.iter().all(|r| r.row_filter.is_none()) {",
+     "sankhya-authz"),
+
+    ("policy: mask a column any grant masks, so a role can take visibility away",
+     "crates/sankhya-authz/src/policy.rs",
+     "                let masked_by_all = grants.iter().all(|r| r.column_masks.contains_key(column));",
+     "                let masked_by_all = grants.iter().any(|r| r.column_masks.contains_key(column));",
+     "sankhya-authz"),
+
+    ("policy: list a table the principal cannot actually read",
+     "crates/sankhya-authz/src/policy.rs",
+     "                r.effect == Effect::Allow\n                    && matches!(\n                        self.decide(principal, &r.table, Action::Read),\n                        Decision::Allowed { .. }\n                    )",
+     "                r.effect == Effect::Allow",
+     "sankhya-authz"),
+
+    ("principal: accept a tenant identifier that can traverse a path",
+     "crates/sankhya-authz/src/principal.rs",
+     "        if !id\n            .chars()\n            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')\n        {\n            return Err(InvalidTenant::Illegal { id });\n        }",
+     "",
+     "sankhya-authz"),
+
+    ("principal: distinguish 'no rule' from 'a rule forbids you' in the message",
+     "crates/sankhya-authz/src/policy.rs",
+     "            Self::NoGrant | Self::ExplicitDeny { .. } => {\n                f.write_str(\"this principal is not permitted to perform this action\")\n            }",
+     "            Self::NoGrant => f.write_str(\"no rule grants this\"),\n            Self::ExplicitDeny { .. } => f.write_str(\"a rule forbids this\"),",
+     "sankhya-authz"),
+
     ("predicate: split a disjunction and apply one side",
      "crates/sankhya-readpath/src/predicate.rs",
      "            op: Operator::And,",

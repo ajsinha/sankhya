@@ -14,3 +14,9 @@ layer = 2
 workspace = true
 
 [dependencies]
+sankhya-types = { path = "../sankhya-types" }
+sankhya-error = { path = "../sankhya-error" }
+
+
+[dev-dependencies]
+proptest = { workspace = true }
