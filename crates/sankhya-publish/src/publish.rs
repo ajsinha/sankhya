@@ -28,6 +28,7 @@
 use crate::class::{configuration, TableClass};
 use arrow_array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef};
+use sankhya_schema::{is_reserved, DateAxis, DateSource, DATA_DATE_COLUMN};
 use sankhya_table::{write_parquet, WriterConfig};
 use sankhya_table_delta::{commit, schema_string, Action, AddFile, Metadata};
 use sankhya_types::Lsn;
@@ -45,6 +46,12 @@ pub struct Publication {
     pub class: TableClass,
     /// The columns identifying a row, for a mutable table. Empty means append-only.
     pub key_columns: Vec<String>,
+    /// Where this table's date comes from, and how coarsely it partitions.
+    ///
+    /// Not optional. Every table has a date axis (ADR-0004), and the only question is
+    /// whether it means "when this happened" or "when we received it" --- which is exactly
+    /// the question a default would let a publisher avoid answering.
+    pub date_axis: DateAxis,
 }
 
 impl Publication {
@@ -59,7 +66,28 @@ impl Publication {
             name: name.into(),
             class: TableClass::External,
             key_columns: Vec::new(),
+            // Ingest date until told otherwise, and recorded as such rather than left
+            // undeclared, so a reader can tell "this means arrival" from "nobody said".
+            date_axis: DateAxis::ingest_date(),
         }
+    }
+
+    /// The same, taking each row's date from a source column.
+    ///
+    /// The column must exist and must be a date. Every row uses it, and a null there is an
+    /// error rather than a fallback to today --- a per-row fallback makes the column mean
+    /// "when it happened" in some rows and "when we received it" in others, inseparably.
+    #[must_use]
+    pub fn dated_by(mut self, column: impl Into<String>) -> Self {
+        self.date_axis = DateAxis::from_column(column);
+        self
+    }
+
+    /// The same, at a coarser partition granularity.
+    #[must_use]
+    pub const fn partitioned_by(mut self, granularity: sankhya_schema::Granularity) -> Self {
+        self.date_axis.granularity = granularity;
+        self
     }
 
     /// The same, declaring the columns that identify a row.
@@ -86,6 +114,19 @@ impl Publication {
 
         // A key column that is not in the schema would make every merge silently return
         // nothing for that key. Caught here, where the person who typed it is still present.
+        // A source column using the reserved prefix would be shadowed by a system value,
+        // and the source's data would disappear with no error anywhere.
+        for field in schema.fields() {
+            if is_reserved(field.name()) && field.name() != DATA_DATE_COLUMN {
+                return Err(PublishError::DateColumn {
+                    detail: sankhya_schema::AxisError::ReservedName {
+                        column: field.name().clone(),
+                    }
+                    .to_string(),
+                });
+            }
+        }
+
         for column in &self.key_columns {
             // The comma check comes first, deliberately. A name containing one is a
             // *structural* problem — the key list is comma-separated in the log, so it
@@ -105,12 +146,21 @@ impl Publication {
             }
         }
 
+        // The date axis, checked against the schema this table will actually have.
+        self.check_date_axis(schema)?;
+
         std::fs::create_dir_all(&self.root).map_err(|error| PublishError::Io {
             detail: error.to_string(),
         })?;
 
         let mut metadata = Metadata::new(self.name.clone(), json, 0);
         metadata.configuration = configuration(self.class, &self.key_columns);
+        metadata
+            .configuration
+            .extend(self.date_axis.to_configuration());
+        // Partitioned on the date column, which is what makes retention a metadata
+        // operation rather than a bulk delete.
+        metadata.partition_columns = vec![DATA_DATE_COLUMN.to_string()];
 
         commit(&self.root, 0, &[Action::Metadata(metadata)]).map_err(|error| {
             PublishError::Commit {
@@ -118,6 +168,44 @@ impl Publication {
                 detail: error.to_string(),
             }
         })?;
+        Ok(())
+    }
+
+    /// Check the date axis against the schema.
+    ///
+    /// At creation, where the person who declared it is still present. Discovering at query
+    /// time that the date column does not exist means discovering it from a table that has
+    /// been partitioned wrongly for a month.
+    fn check_date_axis(&self, schema: &Schema) -> Result<(), PublishError> {
+        // No source column named: the table uses ingest date, which needs nothing from the
+        // schema. The column is added at publication.
+        let DateSource::Column { name } = &self.date_axis.source else {
+            return Ok(());
+        };
+
+        let field = schema
+            .field_with_name(name)
+            .map_err(|_| PublishError::DateColumn {
+                detail: sankhya_schema::AxisError::NoSuchSourceColumn {
+                    column: name.clone(),
+                    available: schema.fields().iter().map(|f| f.name().clone()).collect(),
+                }
+                .to_string(),
+            })?;
+
+        // A date, not a timestamp. A timestamp carries a time of day the partition cannot
+        // represent, so two rows an hour apart would land in different partitions or the
+        // same one depending on a truncation nobody asked for.
+        if !matches!(field.data_type(), arrow_schema::DataType::Date32) {
+            return Err(PublishError::DateColumn {
+                detail: format!(
+                    "the date column '{name}' is {}, and must be a date. A timestamp \
+                     carries a time of day this partition cannot represent, so the \
+                     truncation would happen somewhere nobody chose",
+                    field.data_type()
+                ),
+            });
+        }
         Ok(())
     }
 
@@ -277,6 +365,11 @@ pub enum PublishError {
         /// What went wrong.
         detail: String,
     },
+    /// The date axis does not fit the schema.
+    DateColumn {
+        /// What is wrong.
+        detail: String,
+    },
     /// The filesystem refused.
     Io {
         /// What went wrong.
@@ -319,6 +412,7 @@ impl fmt::Display for PublishError {
             Self::Commit { version, detail } => {
                 write!(f, "could not commit version {version}: {detail}")
             }
+            Self::DateColumn { detail } => write!(f, "{detail}"),
             Self::Io { detail } => write!(f, "{detail}"),
         }
     }

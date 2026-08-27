@@ -19,6 +19,7 @@ path = "src/main.rs"
 
 [dependencies]
 sankhya-types       = { path = "../sankhya-types" }
+sankhya-schema      = { path = "../sankhya-schema" }
 sankhya-table       = { path = "../sankhya-table" }
 sankhya-table-delta = { path = "../sankhya-table-delta" }
 sankhya-stats       = { path = "../sankhya-stats" }

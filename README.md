@@ -151,7 +151,7 @@ Spark, Trino, DuckDB, Snowflake and Athena read these tables **directly**, with 
 
 ## Status
 
-**Early implementation — M0 through M4 complete, M5 in progress.** The architecture and
+**Early implementation — M0 through M5 complete, M6 in progress.** The architecture and
 requirements were reviewed and amended by a panel covering systems architecture, database
 internals, analytical query engines and Rust engineering practice.
 

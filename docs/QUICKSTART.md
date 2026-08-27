@@ -1,6 +1,6 @@
 # SANKHYA — Quickstart
 
-**Status:** Implementation — M0–M4 complete, M5 in progress
+**Status:** Implementation — M0–M5 complete, M6 in progress
 
 This guide reflects what works **today**, and says plainly what does not yet. Anything
 not listed here is not built.

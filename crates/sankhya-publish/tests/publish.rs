@@ -321,3 +321,152 @@ fn the_report_distinguishes_slow_findings_from_wrong_ones_in_its_summary() {
     let summary = verify(&root).summary();
     assert!(summary.contains("affecting correctness"), "{summary}");
 }
+
+// --- the date axis (ADR-0004) ---------------------------------------------
+
+use sankhya_schema::{DateAxis, DateSource, Granularity, DATA_DATE_COLUMN};
+
+fn dated_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("order_date", DataType::Date32, false),
+    ]))
+}
+
+fn dated_batch() -> RecordBatch {
+    use arrow_array::Date32Array;
+    RecordBatch::try_new(
+        dated_schema(),
+        vec![
+            Arc::new(Int64Array::from(vec![1i64, 2, 3])),
+            Arc::new(Date32Array::from(vec![19_783, 19_784, 19_785])),
+        ],
+    )
+    .expect("a valid batch")
+}
+
+#[test]
+fn a_table_declares_where_its_date_comes_from() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path().join("orders");
+    let publication = Publication::external(&root, "orders").dated_by("order_date");
+    publish_table(&publication, &dated_schema(), &[dated_batch()]).expect("publishing");
+
+    let log = std::fs::read_to_string(root.join("_delta_log/00000000000000000000.json"))
+        .expect("the creation commit");
+    assert!(log.contains("sank.dataDate.source"), "{log}");
+    assert!(log.contains("order_date"));
+    assert!(
+        log.contains(DATA_DATE_COLUMN),
+        "the table must declare its partition column: {log}"
+    );
+}
+
+#[test]
+fn a_table_with_no_declared_source_records_that_it_uses_the_ingest_date() {
+    // Recorded rather than absent, so a reader can tell "this column means arrival" from
+    // "nobody thought about it".
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path().join("t");
+    publish_table(
+        &Publication::external(&root, "t"),
+        &schema(),
+        &[batch(0, 10)],
+    )
+    .expect("publishing");
+
+    let publication = Publication::external(&root, "t");
+    assert_eq!(publication.date_axis.source, DateSource::IngestDate);
+    assert!(!publication.date_axis.source.is_business_date());
+}
+
+#[test]
+fn a_date_column_that_is_not_in_the_schema_is_refused_at_creation() {
+    // Where the person who declared it is still present. Discovering at query time means
+    // discovering it from a table partitioned wrongly for a month.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let publication = Publication::external(dir.path().join("t"), "t").dated_by("no_such_column");
+
+    let Err(error) = publication.create(&dated_schema()) else {
+        panic!("a date column that is not in the schema must be refused");
+    };
+    assert!(matches!(error, PublishError::DateColumn { .. }));
+    assert!(error.to_string().contains("no_such_column"));
+    assert!(
+        error.to_string().contains("order_date"),
+        "the message must say what is available: {error}"
+    );
+}
+
+#[test]
+fn a_timestamp_is_refused_as_a_date_column() {
+    // A timestamp carries a time of day the partition cannot represent, so the truncation
+    // would happen somewhere nobody chose — and two rows an hour apart would land in the
+    // same partition or different ones depending on it.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let stamped = Schema::new(vec![Field::new(
+        "occurred_at",
+        DataType::Timestamp(TimeUnit::Microsecond, None),
+        false,
+    )]);
+    let publication = Publication::external(dir.path().join("t"), "t").dated_by("occurred_at");
+
+    let Err(error) = publication.create(&stamped) else {
+        panic!("a timestamp must not be accepted as a date column");
+    };
+    assert!(error.to_string().contains("must be a date"), "{error}");
+    assert!(error.to_string().contains("nobody chose"));
+}
+
+#[test]
+fn a_source_column_using_the_reserved_prefix_is_refused() {
+    // Shadowing it would make the source's data disappear behind a system value, with no
+    // error anywhere and no way to notice except by missing it.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let colliding = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("sank_total", DataType::Int64, false),
+    ]);
+    let publication = Publication::external(dir.path().join("t"), "t");
+
+    let Err(error) = publication.create(&colliding) else {
+        panic!("a column using the reserved prefix must be refused");
+    };
+    assert!(error.to_string().contains("sank_total"));
+    assert!(error
+        .to_string()
+        .contains("disappears behind a system value"));
+}
+
+#[test]
+fn the_partition_granularity_is_declared_and_round_trips() {
+    // Declarable because a fixed daily granularity on a low-volume table produces 365 small
+    // files a year — the small-file problem compaction exists to fix, made on purpose.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path().join("monthly");
+    let publication = Publication::external(&root, "monthly")
+        .dated_by("order_date")
+        .partitioned_by(Granularity::Month);
+    publish_table(&publication, &dated_schema(), &[dated_batch()]).expect("publishing");
+
+    let log = std::fs::read_to_string(root.join("_delta_log/00000000000000000000.json"))
+        .expect("the creation commit");
+    assert!(
+        log.contains("\"sank.dataDate.granularity\":\"month\""),
+        "{log}"
+    );
+}
+
+#[test]
+fn the_partition_path_is_what_an_external_engine_expects() {
+    // CON-08 requires Spark and Trino to read these tables directly, and `=2024-03-01` is a
+    // date to them.
+    let axis = DateAxis::from_column("order_date");
+    assert_eq!(axis.partition_path(19_783), "sank_data_date=2024-03-01");
+    assert_eq!(
+        DateAxis::from_column("d")
+            .at(Granularity::Month)
+            .partition_path(19_783),
+        "sank_data_date=2024-03"
+    );
+}

@@ -2,7 +2,7 @@
 
 **Document ID:** SNK-AD-001
 **Version:** 0.1.0 (draft for review)
-**Status:** Implementation — M0–M4 complete, M5 in progress
+**Status:** Implementation — M0–M5 complete, M6 in progress
 **Date:** 2026-08-26
 **Companion documents:** `REQUIREMENTS.md` (SNK-RD-001), `IMPLEMENTATION_PLAN.md`, `ROADMAP.md`
 
@@ -1791,6 +1791,8 @@ The trade-off, stated plainly: scale-up gives lower latency, far simpler failure
 | `DEC-30` | Open to read, tooled to write: external publication goes through this system's library | §5.6.6 |
 | `DEC-31` | A table's log is verifiable, and verification is separate from reading | §5.6.7 |
 | `DEC-32` | Repair derives, never guesses; it never deletes and only appends | §5.6.8 |
+| `DEC-33` | One date axis on every table: `sank_data_date`, of type `DATE` | [ADR-0004](adr/0004-the-date-axis.md) |
+| `DEC-34` | The date is declared per table, never defaulted per row | [ADR-0004](adr/0004-the-date-axis.md) |
 
 ---
 

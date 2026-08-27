@@ -2,7 +2,7 @@
 
 **Document ID:** SNK-RM-001
 **Version:** 0.1.0
-**Status:** Implementation — M0–M4 complete, M5 in progress
+**Status:** Implementation — M0–M5 complete, M6 in progress
 **Date:** 2026-08-26
 **Companions:** `REQUIREMENTS.md`, `ARCHITECTURE.md`, `IMPLEMENTATION_PLAN.md`
 

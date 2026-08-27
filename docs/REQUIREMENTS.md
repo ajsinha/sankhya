@@ -2,7 +2,7 @@
 
 **Document ID:** SNK-RD-001
 **Version:** 0.1.0 (draft for review)
-**Status:** Implementation — M0–M4 complete, M5 in progress
+**Status:** Implementation — M0–M5 complete, M6 in progress
 **Date:** 2026-08-26
 **Supersedes:** `docs/initial_reqmt.docx` ("Unified Enterprise Data Architecture & Requirements Document", URARD)
 
@@ -694,6 +694,11 @@ Requirements are grouped by subsystem. Each carries a priority: **M** (mandatory
 | `FR-OLTP-10` | M | Release builds SHALL embed the PostgreSQL archive at compile time. Runtime download of database binaries is disqualifying for air-gapped deployment and is a supply-chain risk. The archive checksum is verified at build and at extraction |
 | `FR-OLTP-11` | S | The system SHALL provide an online table-rewrite capability for bloat remediation. `VACUUM FULL` SHALL NOT be issued automatically under any circumstances, as it takes an exclusive lock for the duration of a full rewrite |
 | `FR-OLTP-12` | M | High-volume, time-shaped tables owned by SANKHYA SHALL use native range partitioning by time, so that retention is a metadata operation rather than a bulk delete |
+| `FR-STORE-20` | M | Every analytical table SHALL carry **`sank_data_date`** of type `DATE`, and SHALL be partitioned on it. See [ADR-0004](adr/0004-the-date-axis.md) for why `DATE` rather than an encoded integer: partition paths are the Hive convention external engines parse natively, date arithmetic works where `20240301 - 7` does not, and no timezone is implied |
+| `FR-STORE-21` | M | The value of `sank_data_date` SHALL be **declared per table, never defaulted per row**. A table naming a source column SHALL use it for every row, and a null there SHALL be an error rather than a substitution of the current date. A table naming none SHALL use the ingest date **and record that it does**. A per-row default makes the column mean "when this happened" in some rows and "when we received it" in others, in one table, inseparably |
+| `FR-STORE-22` | M | Partition granularity SHALL be declarable as day, month or year, defaulting to day. An unrecognised granularity SHALL be refused rather than defaulted, because a monthly table silently becoming daily is repartitioned on its next write — a full rewrite, for a typo |
+| `FR-STORE-23` | M | `sank_` SHALL be a reserved column-name prefix. A source column so named SHALL be refused at onboarding rather than shadowed, because a shadowed column means the source's data disappears behind a system value with no error anywhere |
+| `FR-STORE-24` | M | Managed tables created by this system SHALL carry the column natively. **Attached tables SHALL NOT be altered to add it** — the column is derived during ingest and exists on the analytical side, which is where partitioning happens. `ALTER TABLE` on a cluster somebody else manages breaks inserts without column lists, changes `SELECT *`, and may exceed the granted privilege set |
 
 ### 5.2 Change data capture — `FR-CDC`
 
