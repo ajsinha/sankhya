@@ -45,7 +45,7 @@ SANKHYA is a single self-contained Rust binary that gives you three data models 
 
 | | Engine | Purpose |
 |---|---|---|
-| **Transact** | PostgreSQL — embedded in-process or external | The authoritative system of record. Strict ACID, foreign keys, row-level locking, full audit. |
+| **Transact** | PostgreSQL — embedded in-process or external | The authoritative system of record **for managed tables**. Strict ACID, foreign keys, row-level locking, full audit. A table published directly to the open format by an external writer has no transactional half, and says so rather than pretending. |
 | **Analyse** | Apache DataFusion over Arrow + an open lakehouse table format | Vectorized, SIMD-accelerated OLAP. Ad-hoc SQL, high-cardinality aggregation and multi-dimensional pivots over billions of rows. |
 | **Relate** | In-memory graph engine over Arrow-backed adjacency | Network topology, k-hop traversal, cycle detection, weighted transitive closure, centrality and community detection — with time-respecting paths as a first-class primitive. |
 
