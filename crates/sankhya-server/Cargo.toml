@@ -36,6 +36,12 @@ tracing-subscriber = { workspace = true }
 
 
 [dev-dependencies]
+sankhya-graph = { path = "../sankhya-graph" }
+sankhya-api-pg = { path = "../sankhya-api-pg" }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+
+sankhya-types = { path = "../sankhya-types" }
 tempfile = { workspace = true }
 sankhya-table = { path = "../sankhya-table" }
 uuid = { workspace = true }

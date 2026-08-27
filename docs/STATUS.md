@@ -17,8 +17,58 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M2** Ingest correctness and durability | 24–28 ew | **Substantially complete** — batching invariants, source-safety ladder, reconciliation, idempotence, crash safety, schema evolution and the backfill handoff all exist and are tested. What remains is the slot *lifecycle* driver and the snapshot *reader* — the correctness contracts are in place, the machinery that runs them on a timer is not |
 | **M3** Query engine and storage performance | 28–34 ew | **Complete**, all six exit criteria met — closed 2026-08-26. One criterion was corrected first: it required cancellation inside user code, which does not exist until M4, and that clause moved to M4. Parts of the work breakdown remain unbuilt and are listed under *M3, closed* below |
 | **M4** Graph engine and the extension mechanism | 26–32 ew | **Complete.** Every exit criterion met; see below |
-| **M5** Tenancy, security and API surfaces | 22–28 ew | **In progress.** §9.1–9.5 and §9.7 complete. §9.6: the wire protocol works and a server runs; Flight SQL, gRPC and REST are not built |
-| **M6**–**M8** | — | Not started |
+| **M5** Tenancy, security and API surfaces | 22–28 ew | **Closed.** Four of five exit criteria met; the fifth needs a second server version to exist. Three of four API surfaces not built |
+| **M6** Operability, packaging and hardening | — | **Next.** A server process exists ahead of schedule; the rest is not started |
+| **M7**–**M8** | — | Not started |
+
+---
+
+## M5, closed
+
+Closed 2026-08-27. Tenancy is enforcement rather than retrofit --- the tenant parameter has
+been on every interface since M0, which is why this was twenty-odd weeks rather than sixty.
+
+| Exit criterion | State |
+|---|---|
+| Mainstream client tooling connects and works, verified by a compatibility matrix | **Met, for one surface of four.** Real `psql`, `pg_isready` and `pg_dump` binaries driven against the release server: `cargo test -p sankhya-server --test compatibility -- --ignored`. `pg_dump` is recorded as **failing** rather than omitted, because somebody will try it |
+| Isolation provably enforced across every surface, including the graph tier | **Met.** All five surfaces the demonstration names, in one test with one pair of tenants — SQL, the columnar prefix, a graph traversal, a cached result, and the error message |
+| Mutation score on the policy component above its threshold | **Met.** 11 of 11 mutations caught, including removing the tenant comparison, letting grants outvote a denial, and treating absent grants as permission |
+| Audit records reproduce exactly what a principal saw, including data versions | **Met.** The row filter and column masks that were applied, plus the table snapshot and graph epoch that answered |
+| Compatibility matrix between client and server versions tested, not asserted | **Not met, and carried forward.** One server version exists, so there is no matrix to test. This is honestly untestable rather than skipped, and it becomes real when a second version ships |
+
+### What is built and what is not
+
+Three of four API surfaces are **not built**: Arrow Flight SQL, the gRPC control plane and
+the REST gateway. The wire protocol was built first deliberately --- `FR-API-02` calls it the
+highest-adoption-value surface, and it is the one that makes every other capability
+reachable by a person rather than by a test.
+
+`FR-API-01` names Flight SQL as the *primary bulk data plane*, and the reason matters: the
+wire protocol is a **row** protocol, so the last step of every query converts columnar
+batches into rows. That conversion is forced by the client and is where columnar ends.
+Flight SQL keeps the batches intact end to end, and until it exists the bulk path is the
+compatibility path.
+
+### Two things worth recording
+
+**The type-level guarantee is a `Guard` that cannot be constructed except from an allowed
+decision.** No public constructor, no public fields, no `Default`. Anything requiring one in
+its signature cannot be called without a decision having been made --- and the failure that
+guards against is not a wrong policy but a code path that never consulted one.
+
+**The enforcement does not trust the provider.** The first implementation handed the policy
+predicate to the underlying provider as a pushdown filter, and `MemTable` **declines**
+filters --- so every row came back and the table was secured in name only. No error. The
+predicate is now offered *and*, unless the provider promises exactness, enforced above the
+scan where nothing can decline it.
+
+### Three defects the tests found
+
+| What | How it was found |
+|---|---|
+| **The secured table was secured in name only.** The policy predicate was offered to the provider and the provider declined it, so every row came back with no error raised anywhere | The first run of the test written to check it. Correctness now never depends on the provider cooperating |
+| **A mutation survived twice before the test was honest.** `push the limit below the security filter` kept passing, because the test ran against `MemTable`, which ignores limits too. A test whose subject ignores the thing under test proves nothing | The mutation audit, twice. It now runs against a provider that honours a limit, with the forbidden rows ordered first so the cut bites |
+| **Removing the audit chain's previous-digest check left every test green.** Every test that broke a link also broke the sequence number, which fires first — so the link check was never the thing catching anything. A competent attacker renumbers after a deletion | The mutation audit. That test now exists, along with one for a spliced record |
 
 ---
 

@@ -3435,6 +3435,7 @@ dependencies = [
  "sankhya-catalog",
  "sankhya-error",
  "sankhya-governor",
+ "sankhya-graph",
  "sankhya-plan",
  "sankhya-readpath",
  "sankhya-session",

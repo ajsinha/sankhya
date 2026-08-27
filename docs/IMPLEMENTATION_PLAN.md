@@ -2,7 +2,7 @@
 
 **Document ID:** SNK-IP-001
 **Version:** 0.1.0 (draft for review)
-**Status:** Implementation — M0–M4 complete, M5 in progress
+**Status:** Implementation — M0–M5 complete, M6 in progress
 **Date:** 2026-08-26
 **Companions:** `REQUIREMENTS.md` (SNK-RD-001), `ARCHITECTURE.md` (SNK-AD-001), `ROADMAP.md`
 
@@ -341,6 +341,10 @@ M4 complete.
 3. Mutation score on the policy component above its threshold.
 4. Audit records reproduce exactly what a principal saw, including data versions.
 5. Compatibility matrix between client and server versions tested, not asserted.
+   *(**Carried forward to M6, 2026-08-27, as not met.** One server version exists, so there
+   is no matrix to test. Recorded as honestly untestable rather than quietly satisfied by a
+   matrix of one — which is the failure mode this plan exists to prevent. It becomes real
+   when a second version ships.)*
 
 ### Demonstration
 *"Two tenants, one deployment. Every attempt to reach the other's data — through SQL, through the columnar surface, through a graph traversal, through a cached result, through an error message — fails."*
