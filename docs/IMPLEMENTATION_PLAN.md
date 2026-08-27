@@ -397,13 +397,45 @@ M5 complete.
 
 **10.8 The control plane and its gateway (5 ew).** Deferred here from M5 §9.6, because what a control plane exposes — jobs, health, archive operations — is built in this milestone and the next. gRPC for administration, tenancy, policy, catalog, health and jobs, plus the graph API which is not relational in shape. A thin REST gateway over it, with **result size hard-capped and anything larger returning a Flight ticket**: `FR-API-06` is explicit that serialising analytical results as JSON destroys the zero-copy premise and defines published benchmarks downward.
 
-**10.7 Hardening (3 ew).** Fuzz corpus maturity. Mutation testing across the critical crates. A multi-day soak. Performance baselines locked. Operator runbooks — one per alert, as a shipped deliverable.
+**10.7 Hardening (3 ew).** Fuzz corpus maturity. Mutation testing across the critical crates. Performance baselines locked. Operator runbooks — one per alert, as a shipped deliverable. And the soak, which is specified below because "a multi-day soak" was the whole of it and that is not an exit criterion anybody can fail.
+
+#### 10.7a The soak
+
+*Specified 2026-08-27 after the owner observed that a thousand-row fixture is too small to establish anything about volume. It is: the five-minute journey proves the documented path works and is explicit that no scaling regression is visible at that size.*
+
+**Three sizes, three purposes, and conflating them is how a suite comes to prove nothing:**
+
+| | Size | Runs | Establishes |
+|---|---|---|---|
+| `tests/five_minutes.rs` | 1,000 rows | Every build | The documented path works end to end |
+| `cargo xtask check-performance` | TPC-H scale factor 1, ~1 GB | On a quiet machine | The stated latency objectives hold |
+| **The soak** | **Ten tables, ten gigabytes** — `sankhya-datagen`'s acceptance scale | On a schedule, for days | **Nothing grows without bound, and nothing degrades** |
+
+**What a soak is actually for.** Not "it did not crash" — that is what it reports, and it is nearly worthless on its own. The failures a soak exists to find are the ones that are invisible in any single sample and obvious across a week: memory that grows, file handles that are not returned, a cache with no eviction, a log with no rotation, an audit chain growing faster than the queries that feed it, metric cardinality climbing, compaction that never converges because it keeps losing to the applier.
+
+Every one of those is something this system has a *bound* for. The soak is where the bound is found not to work.
+
+**So the harness is the diagnostic, pointed at itself, sampling densely over days.** `§10.1` already has the machinery: `Trend`, `Projection`, `Concern::RisingTo`, and a refusal to project from too few observations or through a shape that is not a line. A soak is that with a sample every minute for a week instead of one a day.
+
+That makes the pass criterion falsifiable, which "clean" was not:
+
+> **A soak passes when no bounded measure has a projection that crosses its threshold within the observation horizon.**
+
+Not "memory looked steady". A measure with an upward trend and a crossing three weeks out is a **failure**, and it is exactly the failure that ships and is diagnosed six months later in production.
+
+**Measured, at one sample per minute:** resident memory · open file descriptors · live files per table · free space · audit records against queries served · the diagnostic's own history file · distinct metric series · query latency percentiles · retained log volume, once ingest runs on a timer.
+
+**Load shape.** Writes, queries and maintenance **concurrently**. A soak that writes for three days and never queries proves the writer does not leak and nothing else; the interesting failures are contention failures, and they need contention.
+
+**And the harness must be proven to detect a leak.** Otherwise it is an untested backup by another name: a green soak that would have been green anyway. The deliverable includes a test that injects a deliberately growing measure and asserts the harness fails on it.
+
+**What cannot be delivered inside a build.** A multi-day run is a scheduled pipeline, not a `cargo test`. `§10.7` delivers the harness, the injected-leak proof, and a short run; the exit criterion is one clean multi-day run against the ten-gigabyte scale, recorded like a restore drill — evidence retained, failures kept.
 
 ### Exit
 1. The five-minute experience passes as a timed test.
 2. Restore drill automated and passing.
 3. Upgrade and rollback tested.
-4. Multi-day soak clean.
+4. One clean multi-day soak at the ten-gigabyte acceptance scale, with writes, queries and maintenance concurrent — judged by §10.7a's criterion that no bounded measure projects a crossing within the horizon, not by absence of a crash. The harness is itself proven, by a test that injects a leak and requires the soak to fail on it.
 5. A runbook exists for every alert that can page.
 6. Every user-reachable error has documented remediation, generated from the same source as the catalog.
 7. The control plane serves administration, tenancy, policy, catalog, health and jobs, and the REST gateway refuses a result too large for JSON by returning a Flight ticket rather than the rows. *(Carried in from M5 §9.6 on 2026-08-27.)*

@@ -50,6 +50,13 @@ so. The five-minute promise is a promise about a **released artifact**, which ma
 criterion 1 depend on `§10.4` packaging. Recording that is more useful than a green test
 measuring the wrong interval.
 
+**A thousand rows is deliberately small, and the suite has two larger sizes for the two
+larger questions.** `check-performance` runs TPC-H at scale factor 1 on a quiet machine for
+the latency objectives; the soak runs ten tables and ten gigabytes for days, to establish
+that nothing grows without bound. Conflating the three is how a suite comes to prove nothing,
+and `§10.7a` now specifies the third — which previously read, in its entirety, "a multi-day
+soak".
+
 **And tightening the budget does not rescue the timing assertion either.** This warehouse
 holds a thousand rows in four files; no plausible scaling regression is visible at that size.
 Somebody making the read path open every Parquet footer would still finish in milliseconds.
