@@ -33,11 +33,21 @@
 #![doc(html_root_url = "https://docs.rs/sankhya-graph-algo")]
 
 pub mod budget;
+pub mod centrality;
+pub mod community;
+pub mod components;
 pub mod csr;
 pub mod ids;
+pub mod paths;
+pub mod product;
 pub mod traverse;
 
 pub use budget::{Bounded, Budget, Truncation};
+pub use centrality::{betweenness_estimate, degree, rank, Direction, Score};
+pub use community::detect as detect_communities;
+pub use components::{strongly_connected, weakly_connected, Components};
 pub use csr::{Adjacency, AdjacencyBuilder, Arc, Edge, Neighbours, Validity};
 pub use ids::{EdgeMask, EdgeType, Interner, VertexId, VertexType};
+pub use paths::{cycles, k_shortest_loopless, shortest_path, NegativeWeight, Path};
+pub use product::{influence, influence_between, Damping};
 pub use traverse::{reachable, time_respecting, Reached, TimeConstraints};

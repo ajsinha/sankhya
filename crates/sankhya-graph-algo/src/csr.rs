@@ -136,6 +136,14 @@ impl Segment {
 #[derive(Clone, Debug)]
 pub struct Adjacency {
     vertex_count: usize,
+    /// The smallest edge weight anywhere in the structure.
+    ///
+    /// Recorded at build time because the routines that care cannot detect it reliably at
+    /// query time. Dijkstra settles a vertex and moves on; whether it ever *relaxes* the
+    /// negative edge depends on the costs it happens to meet first, so a check during
+    /// relaxation fires or does not fire depending on the query. A graph either has a
+    /// negative edge or it does not, and that is knowable once.
+    min_weight: f64,
     /// Indexed by `EdgeType.0`. A type with no edges still gets a segment, so that
     /// indexing by type never has to distinguish absent from empty.
     outgoing: Vec<Segment>,
@@ -147,6 +155,16 @@ impl Adjacency {
     #[must_use]
     pub const fn vertex_count(&self) -> usize {
         self.vertex_count
+    }
+
+    /// Whether any edge carries a negative weight.
+    ///
+    /// Routines assuming non-negative weights consult this instead of watching for one as
+    /// they go, because watching for one is not reliable: whether the offending edge is
+    /// ever examined depends on the query.
+    #[must_use]
+    pub fn has_negative_weight(&self) -> bool {
+        self.min_weight < 0.0
     }
 
     /// How many edge types it distinguishes.
@@ -411,8 +429,15 @@ impl AdjacencyBuilder {
             ));
         }
 
+        let min_weight = self
+            .edges
+            .iter()
+            .map(|e| e.weight)
+            .fold(f64::INFINITY, f64::min);
+
         Adjacency {
             vertex_count: self.vertex_count,
+            min_weight,
             outgoing,
             incoming,
         }
