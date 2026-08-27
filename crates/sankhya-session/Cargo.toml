@@ -1,0 +1,21 @@
+[package]
+name         = "sankhya-session"
+description  = "Read modes, session tokens, and snapshot pinning with bounded leases."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 2
+
+[lints]
+workspace = true
+
+[dependencies]
+sankhya-types = { path = "../sankhya-types" }
+sankhya-authz = { path = "../sankhya-authz" }
+
+[dev-dependencies]
+uuid = { workspace = true }

@@ -3391,6 +3391,15 @@ name = "sankhya-server"
 version = "0.1.0"
 
 [[package]]
+name = "sankhya-session"
+version = "0.1.0"
+dependencies = [
+ "sankhya-authz",
+ "sankhya-types",
+ "uuid",
+]
+
+[[package]]
 name = "sankhya-stats"
 version = "0.1.0"
 dependencies = [
