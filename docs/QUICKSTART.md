@@ -78,7 +78,7 @@ availability event.
 ## 3. Run the tests
 
 ```bash
-cargo test --workspace          # 630 tests, none of which needs a database
+cargo test --workspace          # 1,110 tests, none of which needs a database
 ```
 
 Everything here runs without a database, in well under a minute. Nothing is mocked: the
@@ -127,7 +127,7 @@ Three gates catch things a test suite structurally cannot. All three fail the bu
 
 ```bash
 cargo xtask check-all            # every repository invariant — see below
-python3 tools/mutation-audit.py  # 127 deliberate defects, applied one at a time
+python3 tools/mutation-audit.py  # 147 deliberate defects, applied one at a time
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
 ```
 
@@ -139,8 +139,8 @@ is clean under the workspace's denied lints across every target, and no mutation
 applied to the source. Each is proven to fail when violated, not merely to pass.
 
 **The mutation audit** is the answer to "the tests pass, but do they test anything?" It
-applies 127 specific defects one at a time and requires the suite to fail on each. Thirteen
-did not, the first time it ran. Expect it to take a while — it is 127 sequential
+applies 147 specific defects one at a time and requires the suite to fail on each. Thirteen
+did not, the first time it ran. Expect it to take a while — it is 147 sequential
 `cargo test` runs, and it edits your source files as it goes, restoring each one after.
 Run it on a clean tree.
 
@@ -428,17 +428,19 @@ that admits less.
 
 | | Status |
 |---|---|
-| The server binary | **It runs, `psql` connects, and statements execute.** Authentication, policy-filtered catalogue answers, a hash-chained audit, and a query path that authorises, wraps each table in its policy decision, plans, executes and renders back. Aggregation, expressions and null semantics all work through a real client. The table it serves is an in-memory placeholder: what is proven is the path, not the data |
+| The server binary | **It runs, `psql` connects, and statements execute against real Parquet.** It walks a `<schema>/<table>/` warehouse at startup, reads each table's schema out of its own log, and opens it through the M3 read path — which plans from the table log alone and prunes files by recorded statistics. Authentication, policy-filtered catalogue answers, a hash-chained audit, and a query path that authorises, wraps each table in its policy decision, plans, executes and renders back. Nothing drives ingest, so everything it serves is already published |
 | Streaming transport | **Not built.** Changes are drained through a SQL function rather than a replication connection. Neither mainstream Rust PostgreSQL client supports the replication protocol, so this is real work rather than wiring |
 | Automatic table onboarding | **Working across many tables.** Schema, write strategy and path are derived from the replication stream alone; several tables capture independently from one interleaved stream and each reconciles against the source. Nothing drives it on a timer |
 | Storage and the table log | **Working.** Each table gets its own Delta log; capture commits every file it publishes, and a restart recovers its position from that log rather than from memory. The Delta kernel reads these tables, which is what makes the open-storage claim testable rather than aspirational |
 | Compaction and maintenance | **Working as a loop, not as a daemon.** Fragmented partitions are planned, merged, committed and converged, with retirement refusing to remove anything a reader might still hold. Nothing calls the loop on a timer |
 | Analytical queries | **Working, and measured.** A table provider plans from the table log alone — no directory listing, no footer reads — prunes files by recorded statistics, feeds bounds and cardinalities to the optimizer, and resolves updated and deleted rows to one current version each. One SQL statement is answered from memory and Parquet at once, spliced so no position is counted twice or missed, and refused outright when the tiers do not cover the query's span. TPC-H at scale factor 1 meets its three performance objectives under a build gate. No result cache, no bloom filters, no partitioning |
+| Mathematics | **Working.** Vectors and matrices as columns, and the kernels over them: elementwise, dot, norms, distances, statistics, calculus, and linear algebra through LU. Every reduction is bit-deterministic. Callable from SQL as `vec_*` and `mat_*`, with constructors that let a matrix be built and operated on without being stored. No QR, SVD or eigendecomposition |
+| Publishing and repair | **Working.** A library and command-line tool for writing an external table, and a verifier that does not assume it was used. Repair fixes only what can be derived from evidence and refuses anything needing a guess |
 | Query governance | **Working.** Deadlines and cancellation bounded at one batch per partition; admission control that refuses an aggregation too large to run rather than letting it take the process down, and says whether retrying could ever help |
 | Graph engine | **Working.** A typed, time-aware adjacency hydrated from published tables — no second store, no graph write path, an edge exists because a row exists. Traversal, weighted and k-shortest loopless paths, simple cycles, components, centrality, communities and multiplicative influence, each bounded and each reporting its own truncation. Five SQL table functions make them joinable against ordinary tables. Nothing drives hydration on a timer |
-| The extension mechanism | **Working.** SANKHYA's own function traits rather than the engine's, so a pack survives the engine changing underneath it. Two reference packs from unrelated industries and one deliberately hostile pack whose every attempt is refused with a named error. A declarative tier expresses a pack as a file rather than a crate. No loader is wired into a running process, because there is not one |
+| The extension mechanism | **Working.** SANKHYA's own function traits rather than the engine's, so a pack survives the engine changing underneath it. Two reference packs from unrelated industries and one deliberately hostile pack whose every attempt is refused with a named error. A declarative tier expresses a pack as a file rather than a crate. **The loader is not wired into the server**: a running process exists, and nothing in it loads a bundle |
 | API surfaces | **The wire protocol works; the rest is not started.** Real `psql` connects, authenticates, runs catalogue queries and recovers from errors. Arrow Flight SQL, the gRPC control plane and the REST gateway are not built |
-| Multi-tenancy and security | **Working as components, not as a running system.** One principal type established at the edge; a pure policy component whose every decision is a function of its inputs; a `Guard` that cannot be constructed except from an allowed decision, so a provider cannot be built without one. Row predicates are enforced above the scan where no provider can decline them, and their presence in the *final physical plan* is asserted. Per-tenant graph epochs, quotas with typed errors, a hash-chained audit and envelope encryption with rotation that never touches data |
+| Multi-tenancy and security | **Working, and reachable through the server.** A statement arriving over the wire is authorised before a table is registered, so one the caller may not read does not resolve at all. One principal type established at the edge; a pure policy component whose every decision is a function of its inputs; a `Guard` that cannot be constructed except from an allowed decision, so a provider cannot be built without one. Row predicates are enforced above the scan where no provider can decline them, and their presence in the *final physical plan* is asserted. Quotas with typed errors and a hash-chained audit are wired into the query path. Per-tenant graph epochs and envelope encryption are built and tested but have no path through the front door |
 
 The honest summary is that the **correctness contracts are built and tested and the
 machinery that runs them continuously is not**. Every capability above is exercised by
@@ -446,6 +448,10 @@ the test suite; none of it is exercised by a process you can start.
 
 [`STATUS.md`](STATUS.md) is the authoritative version of this table, including the
 defects found along the way and what they cost to find.
+
+[`GUIDE.md`](GUIDE.md) is the next thing to read: what to *do* with a running server,
+worked through with examples. Every example on that page is executed by a test, so one that
+stops working breaks the build rather than misleading a reader.
 
 Progress is tracked in [`ROADMAP.md`](ROADMAP.md) and
 [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).

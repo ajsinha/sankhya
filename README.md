@@ -197,7 +197,7 @@ the REST gateway. Also unbuilt inside work already counted: bloom filters, table
 partitioning, the result cache, leader election, a timer that drives graph hydration, and
 a measured graph benchmark — the graph primitives are correct against brute force and
 bounded by construction, but they have not been timed at scale, and that M4 criterion is
-carried forward as unmet rather than reinterpreted. [`docs/QUICKSTART.md`](docs/QUICKSTART.md) and [`docs/STATUS.md`](docs/STATUS.md)
+carried forward as unmet rather than reinterpreted. [`docs/GUIDE.md`](docs/GUIDE.md), [`docs/QUICKSTART.md`](docs/QUICKSTART.md) and [`docs/STATUS.md`](docs/STATUS.md)
 are explicit about the boundary, including the defects found along the way — and about
 the two TPC-H queries whose numbers are published without being gated, and why.
 

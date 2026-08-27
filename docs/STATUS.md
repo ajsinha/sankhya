@@ -570,7 +570,29 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 127 specific defects applied one at a time; all 127 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 147 specific defects applied one at a time; all 147 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+
+---
+
+## Mathematics, arrays and the date axis
+
+Added after M5 closed, by owner directive, and recorded here because a capability nobody
+documents is one nobody finds.
+
+| | |
+|---|---|
+| **Array columns** | `FixedSizeList<Float64, N>` for known dimension, `List` for the ragged case. The values round-trip exactly through the table format; the fixed width is carried in field metadata, so an external reader ignoring it sees a correct variable-length array rather than something wrong |
+| **Vector kernels** | Elementwise, dot, L1 and L2 norms, euclidean and cosine distance. Every reduction bit-deterministic under permutation, asserted by a test whose fixture is itself proven adversarial — a naive sum fails on it |
+| **Linear algebra** | Multiply, transpose, trace, identity, `matvec`, and LU with partial pivoting giving determinant, inverse and solve. The pivot breaks ties on the lowest row index, without which two builds could factor differently |
+| **Statistics** | Variance (two-pass), covariance, correlation, skewness, excess kurtosis, median, standardise, least squares |
+| **Calculus** | Central-difference derivatives, trapezoid and Simpson integration, cumulative integral |
+| **SQL surface** | `vec_*` and `mat_*` functions, plus constructors so a matrix can be built and operated on without being stored. A matrix's shape lives in Arrow's canonical `fixed_shape_tensor` metadata and a column without one is refused rather than assumed square |
+| **The date axis** | `sank_data_date`, of type `DATE`, declared per table and never defaulted per row. Granularity declarable. Nothing yet writes partitioned directories — the declaration exists and the partitioning does not |
+| **Publishing and repair** | A library and CLI for writing an external table, a verifier that does not assume it was used, and repair that derives rather than guesses |
+
+Not built, deliberately: QR, SVD and eigendecomposition. They are where an in-house
+implementation is worse than none, because a subtly wrong SVD produces plausible singular
+values.
 
 ---
 
@@ -1042,9 +1064,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 630 tests, none of which needs a database
+cargo test --workspace           # 1,110 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 127 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 147 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 
