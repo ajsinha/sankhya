@@ -3375,6 +3375,7 @@ dependencies = [
  "proptest",
  "sankhya-cube-algo",
  "sankhya-error",
+ "sankhya-graph-algo",
 ]
 
 [[package]]

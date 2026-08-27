@@ -1702,6 +1702,44 @@ CATALOGUE = [
      "            if false {",
      "sankhya-cube"),
 
+    # --- consolidation: the three ways a total goes silently wrong ---------
+
+    ("cube: consolidate to the leaves, dropping facts attached at an inner member",
+     "crates/sankhya-cube/src/consolidate.rs",
+     "    let members: BTreeSet<VertexId> = found.found.iter().map(|r| r.vertex).collect();",
+     "    let members: BTreeSet<VertexId> = found.found.iter().filter(|r| graph.out_degree(r.vertex, child_edges) == 0).map(|r| r.vertex).collect();",
+     "sankhya-cube"),
+
+    ("cube: leave the root out of its own total",
+     "crates/sankhya-cube/src/consolidate.rs",
+     "    let members: BTreeSet<VertexId> = found.found.iter().map(|r| r.vertex).collect();",
+     "    let members: BTreeSet<VertexId> = found.found.iter().filter(|r| r.via.is_some()).map(|r| r.vertex).collect();",
+     "sankhya-cube"),
+
+    ("cube: let a truncated consolidation be reported as a total",
+     "crates/sankhya-cube/src/consolidate.rs",
+     "        self.truncation\n            .explain()\n            .map(|why| Incomplete::Truncated { why })",
+     "        None",
+     "sankhya-cube"),
+
+    ("cube: stop detecting a hierarchy that consolidates a member into itself",
+     "crates/sankhya-cube/src/consolidate.rs",
+     "                .any(|arc| arc.target == root)",
+     "                .any(|arc| arc.target == root && false)",
+     "sankhya-cube"),
+
+    ("cube: deny a total whenever any cycle exists below the root",
+     "crates/sankhya-cube/src/consolidate.rs",
+     "                .any(|arc| arc.target == root)",
+     "                .any(|arc| members.contains(&arc.target))",
+     "sankhya-cube"),
+
+    ("cube: consolidate along every edge type rather than the declared roll-up",
+     "crates/sankhya-cube/src/consolidate.rs",
+     "    let found = reachable(graph, &[root], child_edges, budget);",
+     "    let found = reachable(graph, &[root], &graph.all_edge_types(), budget);",
+     "sankhya-cube"),
+
 ]
 
 

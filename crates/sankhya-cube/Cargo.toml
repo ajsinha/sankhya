@@ -16,6 +16,7 @@ workspace = true
 [dependencies]
 sankhya-cube-algo = { path = "../sankhya-cube-algo" }
 sankhya-error     = { path = "../sankhya-error" }
+sankhya-graph-algo = { path = "../sankhya-graph-algo" }
 
 [dev-dependencies]
 proptest = { workspace = true }
