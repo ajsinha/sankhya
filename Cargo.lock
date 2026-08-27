@@ -2345,12 +2345,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
+name = "pack-adversarial"
+version = "0.1.0"
+dependencies = [
+ "sankhya-ext",
+]
+
+[[package]]
 name = "pack-ref-logistics"
 version = "0.1.0"
+dependencies = [
+ "sankhya-ext",
+]
 
 [[package]]
 name = "pack-ref-telemetry"
 version = "0.1.0"
+dependencies = [
+ "sankhya-ext",
+]
 
 [[package]]
 name = "parking_lot"
@@ -3142,6 +3155,13 @@ dependencies = [
 [[package]]
 name = "sankhya-ext"
 version = "0.1.0"
+dependencies = [
+ "pack-adversarial",
+ "pack-ref-logistics",
+ "pack-ref-telemetry",
+ "sankhya-error",
+ "sankhya-types",
+]
 
 [[package]]
 name = "sankhya-governor"

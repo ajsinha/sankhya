@@ -14,3 +14,11 @@ layer = 15
 workspace = true
 
 [dependencies]
+sankhya-types = { path = "../sankhya-types" }
+sankhya-error = { path = "../sankhya-error" }
+
+
+[dev-dependencies]
+pack-ref-logistics = { path = "../../packs/pack-ref-logistics" }
+pack-ref-telemetry = { path = "../../packs/pack-ref-telemetry" }
+pack-adversarial   = { path = "../../packs/pack-adversarial" }
