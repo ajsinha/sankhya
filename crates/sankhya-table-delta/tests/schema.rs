@@ -140,7 +140,11 @@ fn a_schema_round_trips_through_the_log() {
         Field::new("label", DataType::Utf8, true),
         Field::new("ratio", DataType::Float64, true),
         Field::new("flag", DataType::Boolean, false),
-        Field::new("when", DataType::Timestamp(TimeUnit::Microsecond, None), true),
+        Field::new(
+            "when",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+        ),
         Field::new("day", DataType::Date32, true),
         Field::new("amount", DataType::Decimal128(38, 9), false),
     ]);
@@ -176,7 +180,10 @@ fn an_unsigned_column_reads_back_as_signed_and_that_is_written_down() {
     let read_back = sankhya_table_delta::schema_from_string(&json).expect("readable");
 
     assert_eq!(read_back.field(0).data_type(), &DataType::Int64);
-    assert_ne!(read_back, original, "and the round trip is not exact for it");
+    assert_ne!(
+        read_back, original,
+        "and the round trip is not exact for it"
+    );
 }
 
 #[test]
