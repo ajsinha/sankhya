@@ -166,10 +166,32 @@ psql -h 127.0.0.1 -p 5433 -U you -d acme -c "\dt"
 `SANKHYA_NO_PASSWORD` is spelled as an opt-*out* so the insecure choice has to be made
 deliberately, and the startup line says `NO AUTHENTICATION` in capitals when it is in force.
 
-**Statements are refused, deliberately and by name.** The read path exists and is tested;
-it is not connected to this front door yet. A `SELECT` against a real table returns an error
-saying so, because an empty result would look like a table with no rows and a plausible zero
-would look like an answer.
+Statements execute:
+
+```
+$ psql -h 127.0.0.1 -p 5433 -U you -d acme -c "SELECT id, label FROM example ORDER BY id;"
+ id | label
+----+-------
+  1 | north
+  2 |
+  3 | south
+(3 rows)
+```
+
+Row 2's label is genuinely null, not an empty string — the distinction survives from the
+Arrow array to the wire, where it becomes a length of −1.
+
+**What the query path enforces.** A table the principal may not read is never registered in
+the session, so naming it fails to resolve — indistinguishable from naming a table that does
+not exist, which is deliberate: saying "you may not read that" would confirm it exists. A
+policy row predicate is conjoined where no provider can decline it, so a tautology in the
+query cannot widen it. Both are tested end to end.
+
+**The example table is a placeholder.** It is in memory and small enough that nobody will
+mistake it for the real thing. What it proves is the *path*, not the data: a statement
+arrives over the wire, is authorised, planned against a policy-wrapped provider, executed,
+and rendered back. Connecting the M3 read path to real Delta tables replaces
+`example_servable` and changes nothing else.
 
 ---
 
@@ -282,7 +304,7 @@ that admits less.
 
 | | Status |
 |---|---|
-| The server binary | **It runs, and `psql` connects to it.** A wire-protocol front door that authenticates, answers catalogue queries from a policy-filtered table list, and hash-chains what it did into an audit. **It does not execute statements yet** — the read path is built and tested but not connected to the front door, and a statement gets a named refusal saying exactly that rather than an empty result |
+| The server binary | **It runs, `psql` connects, and statements execute.** Authentication, policy-filtered catalogue answers, a hash-chained audit, and a query path that authorises, wraps each table in its policy decision, plans, executes and renders back. Aggregation, expressions and null semantics all work through a real client. The table it serves is an in-memory placeholder: what is proven is the path, not the data |
 | Streaming transport | **Not built.** Changes are drained through a SQL function rather than a replication connection. Neither mainstream Rust PostgreSQL client supports the replication protocol, so this is real work rather than wiring |
 | Automatic table onboarding | **Working across many tables.** Schema, write strategy and path are derived from the replication stream alone; several tables capture independently from one interleaved stream and each reconciles against the source. Nothing drives it on a timer |
 | Storage and the table log | **Working.** Each table gets its own Delta log; capture commits every file it publishes, and a restart recovers its position from that log rather than from memory. The Delta kernel reads these tables, which is what makes the open-storage claim testable rather than aspirational |
