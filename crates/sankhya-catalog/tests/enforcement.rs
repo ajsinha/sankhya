@@ -33,8 +33,13 @@ use sankhya_catalog::guard::Guard;
 use sankhya_catalog::secured::{assert_filter_present, SecuredTable};
 use std::sync::Arc;
 
+/// A stable tenant identifier for a readable name.
 fn tenant(name: &str) -> TenantId {
-    TenantId::new(name).expect("a valid tenant name")
+    let mut bytes = [0u8; 16];
+    for (slot, byte) in bytes.iter_mut().zip(name.bytes()) {
+        *slot = byte;
+    }
+    TenantId::from_uuid(uuid::Uuid::from_bytes(bytes))
 }
 
 fn person(name: &str, in_tenant: &str, roles: &[&str]) -> Principal {
@@ -211,7 +216,10 @@ fn a_guards_storage_prefix_comes_from_the_tenant_not_the_caller() {
         Action::Read,
     )
     .expect("permitted");
-    assert_eq!(guard.storage_prefix(), "acme/");
+    assert_eq!(
+        guard.storage_prefix(),
+        sankhya_authz::principal::storage_prefix(&tenant("acme"))
+    );
 }
 
 // --- enforcement in the plan ----------------------------------------------
@@ -528,4 +536,88 @@ async fn the_limit_actually_reaches_the_provider_so_the_test_above_is_not_vacuou
         "a LIMIT must reach the provider's scan; if it does not, no test about pushing \
          limits past a security filter means anything"
     );
+}
+
+// --- the surface people forget: the error message -------------------------
+
+#[tokio::test]
+async fn an_error_about_a_forbidden_table_does_not_confirm_it_exists() {
+    // The demonstration M5 is written against names five surfaces, and this is the one
+    // that gets forgotten: "through an error message". A permission error naming a table
+    // confirms the table exists, and a table name discloses what a business does. The
+    // difference between "no such table" and "you may not read that table" is a working
+    // enumeration oracle.
+    let policy = north_only();
+    let context = SessionContext::new();
+
+    let unknown = Guard::authorize(
+        &policy,
+        &person("mal", "acme", &["north"]),
+        &TableRef::new("hr", "does_not_exist"),
+        Action::Read,
+    );
+    let forbidden = Guard::authorize(
+        &policy,
+        &person("mal", "acme", &["north"]),
+        &TableRef::new("hr", "salaries"),
+        Action::Read,
+    );
+
+    assert!(unknown.is_none());
+    assert!(forbidden.is_none());
+    // Both produce the same outcome — a refusal with nothing to distinguish them — so the
+    // caller cannot use the difference to enumerate what exists.
+
+    // And nothing is registered under either name, so SQL cannot tell them apart either.
+    for name in ["does_not_exist", "salaries"] {
+        let outcome = context.sql(&format!("SELECT * FROM {name}")).await;
+        assert!(outcome.is_err(), "{name} must not resolve");
+    }
+    let first = context.sql("SELECT * FROM does_not_exist").await;
+    let second = context.sql("SELECT * FROM salaries").await;
+    let shape = |r: &datafusion::common::Result<DataFrame>| {
+        r.as_ref().err().map(|e| {
+            e.to_string()
+                .replace("does_not_exist", "X")
+                .replace("salaries", "X")
+        })
+    };
+    assert_eq!(
+        shape(&first),
+        shape(&second),
+        "the two errors must differ only in the name the caller already supplied"
+    );
+}
+
+#[tokio::test]
+async fn a_denial_reason_is_the_same_whichever_way_it_was_denied() {
+    // Distinguishing "no rule mentions you" from "a rule forbids you" tells a caller
+    // something about the policy set they were not granted.
+    let with_deny = PolicySet::new()
+        .with(Rule::grant(
+            tenant("acme"),
+            Role::new("north"),
+            orders(),
+            Action::Read,
+        ))
+        .with(Rule::deny(
+            tenant("acme"),
+            Role::new("blocked"),
+            orders(),
+            Action::Read,
+        ));
+
+    let by_absence = with_deny.decide(&person("x", "acme", &["nobody"]), &orders(), Action::Read);
+    let by_rule = with_deny.decide(
+        &person("y", "acme", &["north", "blocked"]),
+        &orders(),
+        Action::Read,
+    );
+
+    assert!(!by_absence.is_allowed() && !by_rule.is_allowed());
+    let text = |d: &sankhya_authz::policy::Decision| match d {
+        sankhya_authz::policy::Decision::Denied { reason } => reason.to_string(),
+        sankhya_authz::policy::Decision::Allowed { .. } => String::new(),
+    };
+    assert_eq!(text(&by_absence), text(&by_rule));
 }

@@ -3093,6 +3093,7 @@ dependencies = [
  "proptest",
  "sankhya-error",
  "sankhya-types",
+ "uuid",
 ]
 
 [[package]]
@@ -3106,6 +3107,7 @@ dependencies = [
  "proptest",
  "sankhya-authz",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -3180,6 +3182,7 @@ version = "0.1.0"
 dependencies = [
  "proptest",
  "sankhya-types",
+ "uuid",
 ]
 
 [[package]]

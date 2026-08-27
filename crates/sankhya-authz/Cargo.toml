@@ -19,4 +19,5 @@ sankhya-error = { path = "../sankhya-error" }
 
 
 [dev-dependencies]
+uuid     = { workspace = true }
 proptest = { workspace = true }

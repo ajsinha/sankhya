@@ -17,4 +17,5 @@ workspace = true
 sankhya-types = { path = "../sankhya-types" }
 
 [dev-dependencies]
+uuid = { workspace = true }
 proptest = { workspace = true }

@@ -459,8 +459,8 @@ CATALOGUE = [
 
     ("guard: take the storage prefix from somewhere other than the tenant",
      "crates/sankhya-catalog/src/guard.rs",
-     'format!("{}/", self.tenant.as_str())',
-     'format!("{}/", self.subject)',
+     "        sankhya_authz::principal::storage_prefix(&self.tenant)",
+     '        format!("{}/", self.subject)',
      "sankhya-catalog"),
 
     # --- policy: the component where a surviving mutant is a breach, not a weak test ---
@@ -519,11 +519,10 @@ CATALOGUE = [
      "                r.effect == Effect::Allow",
      "sankhya-authz"),
 
-    ("principal: accept a tenant identifier that can traverse a path",
-     "crates/sankhya-authz/src/principal.rs",
-     "        if !id\n            .chars()\n            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')\n        {\n            return Err(InvalidTenant::Illegal { id });\n        }",
-     "",
-     "sankhya-authz"),
+    # Deliberately absent: "accept a tenant identifier that can traverse a path".
+    # There is nothing to mutate. The identifier is a UUID, so a path separator cannot
+    # occur in it — the property is held by construction rather than by a check, and a
+    # mutation audit can only remove checks.
 
     ("principal: distinguish 'no rule' from 'a rule forbids you' in the message",
      "crates/sankhya-authz/src/policy.rs",

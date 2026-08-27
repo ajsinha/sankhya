@@ -136,10 +136,10 @@ impl Guard {
     /// The object-store prefix this guard's tenant owns.
     ///
     /// Derived from the tenant rather than passed in, so a caller cannot supply a prefix
-    /// belonging to somebody else. The tenant identifier is validated at construction
-    /// precisely so it is safe to concatenate here.
+    /// belonging to somebody else. Safe to concatenate without escaping because a tenant
+    /// identifier is a UUID: it cannot contain a path separator.
     #[must_use]
     pub fn storage_prefix(&self) -> String {
-        format!("{}/", self.tenant.as_str())
+        sankhya_authz::principal::storage_prefix(&self.tenant)
     }
 }

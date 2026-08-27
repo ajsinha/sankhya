@@ -20,94 +20,29 @@
 //! Cross-tenant access, where it is legitimate at all, is a *separate* principal with a
 //! separate tenant, obtained by a separate authentication. It is never a flag on this one.
 
+/// Which tenant's data a principal may see.
+///
+/// Re-exported from `sankhya-types` rather than defined here, deliberately. A second type
+/// for the same concept is how two parts of a system come to disagree about who someone is,
+/// and such a disagreement is always resolved in favour of whichever one checked less.
+///
+/// It is a UUID, which matters more than it looks. This identifier becomes an object-store
+/// path prefix, and a UUID **cannot** contain a `/` or a `..` --- so path traversal into
+/// another tenant's data is impossible by construction rather than prevented by validation.
+/// An earlier version of this file defined its own string identifier and validated the
+/// characters. That works until somebody adds a second construction path that does not.
+pub use sankhya_types::TenantId;
 use std::collections::BTreeSet;
 use std::fmt;
 
-/// Which tenant's data a principal may see.
+/// The object-store prefix a tenant's data lives under.
 ///
-/// A newtype rather than a `String`, so a tenant identifier cannot be passed where a table
-/// name is expected, and so every function taking one says so in its signature.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct TenantId(String);
-
-impl TenantId {
-    /// A tenant identifier.
-    ///
-    /// Refuses the empty string. An empty tenant would compare equal to itself and unequal
-    /// to every real one, which makes it look like a valid scope that matches nothing ---
-    /// or, in a badly written comparison, one that matches everything.
-    pub fn new(id: impl Into<String>) -> Result<Self, InvalidTenant> {
-        let id = id.into();
-        if id.is_empty() {
-            return Err(InvalidTenant::Empty);
-        }
-        if id.len() > 128 {
-            return Err(InvalidTenant::TooLong { length: id.len() });
-        }
-        // Restricted, because this identifier becomes an object-store path prefix. A `..`
-        // or a `/` in it is a path traversal into another tenant's data.
-        if !id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        {
-            return Err(InvalidTenant::Illegal { id });
-        }
-        Ok(Self(id))
-    }
-
-    /// The identifier as text.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
+/// Derived from the identifier rather than supplied by a caller, who could otherwise name
+/// somebody else's. Safe to concatenate without escaping, because the identifier is a UUID.
+#[must_use]
+pub fn storage_prefix(tenant: &TenantId) -> String {
+    format!("{}/", tenant.as_uuid())
 }
-
-impl fmt::Display for TenantId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-/// Why a tenant identifier was refused.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum InvalidTenant {
-    /// It was empty.
-    Empty,
-    /// It was longer than a path prefix should be.
-    TooLong {
-        /// How long.
-        length: usize,
-    },
-    /// It contained something that is not allowed in a path component.
-    Illegal {
-        /// What was offered.
-        id: String,
-    },
-}
-
-impl fmt::Display for InvalidTenant {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => f.write_str(
-                "a tenant identifier may not be empty: an empty scope matches nothing, and \
-                 in a badly written comparison matches everything",
-            ),
-            Self::TooLong { length } => write!(
-                f,
-                "a tenant identifier of {length} characters is too long; it becomes an \
-                 object-store path prefix"
-            ),
-            Self::Illegal { id } => write!(
-                f,
-                "the tenant identifier '{id}' contains characters that are not permitted. \
-                 It becomes an object-store path prefix, and a '/' or '..' in it is a path \
-                 traversal into another tenant's data"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for InvalidTenant {}
 
 /// A named capability a principal may hold.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]

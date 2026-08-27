@@ -30,4 +30,4 @@ pub mod policy;
 pub mod principal;
 
 pub use policy::{Action, Decision, DenialReason, Effect, Mask, PolicySet, Rule, TableRef};
-pub use principal::{Authentication, InvalidPrincipal, InvalidTenant, Principal, Role, TenantId};
+pub use principal::{storage_prefix, Authentication, InvalidPrincipal, Principal, Role, TenantId};

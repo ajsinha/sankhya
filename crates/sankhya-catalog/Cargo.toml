@@ -21,6 +21,7 @@ arrow-schema  = { workspace = true }
 
 
 [dev-dependencies]
+uuid        = { workspace = true }
 async-trait = "0.1"
 arrow-array = { workspace = true }
 tokio       = { version = "1", features = ["rt-multi-thread", "macros"] }

@@ -23,8 +23,16 @@
 use sankhya_authz::policy::{Action, Decision, DenialReason, Mask, PolicySet, Rule, TableRef};
 use sankhya_authz::principal::{Authentication, Principal, Role, TenantId};
 
+/// A stable tenant identifier for a readable name.
+///
+/// Deterministic so a test failure names the same tenant every run, and so two calls with
+/// the same name are the same tenant --- which is what most of these tests turn on.
 fn tenant(name: &str) -> TenantId {
-    TenantId::new(name).expect("the fixture uses a valid tenant name")
+    let mut bytes = [0u8; 16];
+    for (slot, byte) in bytes.iter_mut().zip(name.bytes()) {
+        *slot = byte;
+    }
+    TenantId::from_uuid(uuid::Uuid::from_bytes(bytes))
 }
 
 fn person(name: &str, in_tenant: &str, roles: &[&str]) -> Principal {
@@ -134,16 +142,24 @@ fn a_rule_written_for_one_tenant_never_applies_to_another() {
 }
 
 #[test]
-fn a_tenant_identifier_that_could_traverse_a_path_is_refused() {
-    // The identifier becomes an object-store path prefix. A '/' or '..' in it is a path
-    // traversal into another tenant's data.
-    for attempt in ["../other", "a/b", "..", "with space", ""] {
-        assert!(
-            TenantId::new(attempt).is_err(),
-            "'{attempt}' must not be accepted as a tenant identifier"
-        );
-    }
-    assert!(TenantId::new("acme-prod_2").is_ok());
+fn a_tenant_identifier_cannot_traverse_a_path_by_construction() {
+    // The identifier becomes an object-store path prefix, so a '/' or '..' in it would be
+    // a traversal into another tenant's data. It is a UUID, so it cannot contain either --
+    // impossible rather than validated, which survives somebody adding a second
+    // construction path that forgets to validate.
+    let prefix = sankhya_authz::principal::storage_prefix(&tenant("acme"));
+    assert!(prefix.ends_with('/'));
+    assert_eq!(
+        prefix.matches('/').count(),
+        1,
+        "exactly the separator we added"
+    );
+    assert!(!prefix.contains(".."));
+    assert_ne!(
+        prefix,
+        sankhya_authz::principal::storage_prefix(&tenant("other")),
+        "two tenants must not share a prefix"
+    );
 }
 
 #[test]
@@ -151,7 +167,7 @@ fn internal_work_is_still_scoped_to_a_tenant() {
     // Maintenance that could run without a tenant scope would be the one code path with no
     // boundary, which is exactly what an attacker looks for.
     let system = Principal::internal(tenant("acme"));
-    assert_eq!(system.tenant().as_str(), "acme");
+    assert_eq!(system.tenant(), &tenant("acme"));
     assert!(system.is_internal());
 
     let policy = PolicySet::new().with(Rule::grant(
