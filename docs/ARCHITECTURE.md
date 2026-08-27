@@ -312,9 +312,118 @@ Selected by declared table capability, never by heuristic:
 - **Union only**, for append-only tables. No deduplication, no sort, no key comparison. Cost is essentially zero. Most high-volume tables are append-only, so **most queries take this path**.
 - **Latest-version-per-key**, for mutable tables. Because the buffer is tiny relative to published data, the efficient shape is an anti-join: scan the published side excluding keys touched in the buffer, then union the buffer's resolved rows. This turns a full merge into a hash probe against a small build side.
 
-### 5.6 Routing
+### 5.6 Table classes
 
-The routing decision is a pure function of query shape, read mode, session pin, table capabilities and freshness state — deterministic and unit-testable with no I/O, even though the planner that applies it performs I/O.
+Before routing can be described, one thing has to be settled: **not every table has a
+transactional tier**, and the difference is not something to infer.
+
+#### 5.6.1 Why external tables exist
+
+The obvious design is that every mutation passes through the transactional store, which
+captures it, publishes it, and thereby owns a single authoritative history. That is right
+for operational data and it is disqualifying for bulk.
+
+Loading a terabyte through a row-oriented transactional path costs a transaction per row,
+a WAL record per row, a capture event per row and an apply batch per row — to produce
+Parquet files that the loader could have written directly in a fraction of the time. The
+tax is not a constant factor. It is the difference between a backfill that runs overnight
+and one that does not finish.
+
+Worse, it forecloses an entire class of deployment. A customer whose data already lands in
+an object store from Spark, from a vendor feed, or from another engine would have to route
+it *back* through this system's transactional store to make it queryable here. Nobody
+does that; they use something else.
+
+So a table may be **published directly** — by an external writer, into the open format this
+system already reads, discovered by walking the warehouse.
+
+#### 5.6.2 What that costs, precisely
+
+The cost is not "consistency" in the vague sense. It is four specific guarantees, each of
+which depends on there *being* a transactional tier:
+
+| Guarantee | Why it does not survive |
+|---|---|
+| Read-your-own-writes | The session token carries an OLTP commit position. A table nobody wrote through OLTP has no position to wait for |
+| Strongly-consistent reads | There is no transactional tier to read from |
+| The arrival splice | The buffer declares coverage from the change stream. No stream means no log position, which means coverage is undefined — and refusing exactly that is the splice's entire purpose |
+| Write authorization and audit | A row that never passed through this system was never authorized on write and never appeared in its audit chain |
+
+None of those degrade gracefully. A strongly-consistent read served from published data
+alone is not *slightly* stale; it is a claim about currency that is false, and nothing in
+the result says so.
+
+#### 5.6.3 Two classes, declared
+
+| Class | System of record | Written by | Read modes available |
+|---|---|---|---|
+| **Managed** | The transactional store | This system's change applier and maintenance jobs | Strong, bounded-freshness, pinned |
+| **External** | The published tier itself | Anyone, via the open format | Bounded-freshness, pinned |
+
+Three properties make this a design rather than a caveat.
+
+**The class is declared in the table's own log**, in the metadata action's configuration
+map, and not in this system's configuration. Two nodes reading one warehouse cannot then
+disagree about what a table is, a restart cannot forget, and an external publisher can
+declare itself without asking anybody. A fact about a table belongs with the table.
+
+**Absence means external.** A directory somebody dropped Parquet into is, by construction,
+not managed by this system. Defaulting the other way would have a table claim a
+transactional tier it does not have, and the first strongly-consistent read against it
+would return published-only data while asserting currency — the precise failure this whole
+section exists to prevent. The conservative default is the one that under-claims.
+
+**The refusals are the feature.** An external table asked for a strongly-consistent read is
+refused by name, with a message saying that this table has no transactional tier and which
+modes it does support. A user is oblivious to *which tier* answered — that is the point of
+the splice. They cannot be oblivious to whether a transactional tier exists at all,
+because that changes which guarantees are on offer, and pretending otherwise means lying
+to them at exactly the moment they were relying on it.
+
+#### 5.6.4 What an external table still gets
+
+Everything on the read path, because the read path does not care where files came from:
+
+- Snapshot-consistent and pinned reads, replayable by version.
+- Bounded-freshness reads, measured against the table log's own commit time rather than a
+  change-stream position.
+- Policy enforcement, column masking and audit **on read** — these live in the catalog and
+  the provider, not in the write path.
+- Statistics pruning, clustering, graph hydration and materialized views.
+- Mutability, if the publisher declares a key. `latest-version-per-key` is a property of
+  the merge, not of the writer.
+
+An external table is therefore a first-class analytical table that happens to have no
+operational half. That is a coherent thing to be, and describing it as a degraded managed
+table would be the wrong mental model.
+
+#### 5.6.5 Bulk loading a managed table
+
+The third case, and the one that keeps the boundary from being a wall: a **managed** table
+can be bulk-loaded by writing Parquet directly and registering it with the coordinator,
+rather than by inserting rows.
+
+This is not the same as an external table. The publisher must supply the log positions the
+files cover, the coordinator must advance the arrival tier's frontier past them, and the
+transactional store must agree that those positions are accounted for. In exchange the
+table keeps every managed guarantee.
+
+It is more work for the publisher and it is the right shape: the cost of the guarantee is
+paid by whoever wants the guarantee, rather than by every loader whether they need it or
+not.
+
+### 5.7 Routing
+
+The routing decision is a pure function of query shape, read mode, session pin, **table
+class**, table capabilities and freshness state — deterministic and unit-testable with no
+I/O, even though the planner that applies it performs I/O.
+
+Making it pure is not an aesthetic preference. Routing is where a query silently acquires
+the wrong answer: read the wrong tiers and the result is well-formed, plausible, and
+missing rows. A pure function can be exhaustively tested against a table of cases; a
+decision scattered through a planner that also does I/O cannot.
+
+#### 5.7.1 Managed tables
 
 | Query shape | Read mode | Tiers |
 |---|---|---|
@@ -327,9 +436,56 @@ The routing decision is a pure function of query shape, read mode, session pin, 
 | Graph traversal | any | Published-derived epoch; the buffer is **not** spliced |
 | Write | — | Ledger, always |
 
-**The graph tier does not splice the buffer.** A hydrated adjacency structure is a bulk immutable object; incrementally patching it per request is a research problem, not a v1 feature. Graph results therefore report their epoch age, and the graph's freshness objective is stated separately rather than implied to match the analytical tier's. Pretending otherwise would be exactly the kind of overclaim this design is trying to avoid.
+The first row is worth dwelling on, because it is the one that looks like a fallback and is
+not. A point lookup by key goes to the transactional store because that is where it is
+**simultaneously fastest and freshest**: a b-tree probe against the authoritative copy
+beats pruning a thousand Parquet files, and it cannot be stale. The two considerations
+point the same way, which is unusual and is why the rule is simple.
 
-### 5.7 The archival dimension
+#### 5.7.2 External tables
+
+| Query shape | Read mode | Tiers |
+|---|---|---|
+| Any read | Fresh or bounded-freshness | Published only |
+| Any read | Pinned snapshot | Published only, at that version |
+| Any read | **Strong** | **Refused** — there is no transactional tier, and answering from published data would assert a currency this table cannot offer |
+| Graph traversal | any | Published-derived epoch |
+| Write | — | **Refused** — this system is not the writer of record for this table |
+
+The table is shorter because an external table has one tier, so coverage is trivially
+complete and the splice is a no-op. That is not a special case bolted on; it is what the
+splice reduces to when there is nothing to splice.
+
+#### 5.7.3 What the user sees
+
+A user writes `sales.orders` and never writes anything else. There is no
+`warehouse.sales.orders`, and there deliberately never will be.
+
+Putting the tier into the name would encode a *physical* fact in a *logical* identifier,
+and the physical fact moves: a row written this morning is in the transactional store, and
+by this afternoon it is in Parquet. A name that encodes where a row lives is a name whose
+meaning changes underneath the query — a statement written last week silently returns
+different rows this week, and nothing indicates it.
+
+It would also hand the routing to the user. To choose a name they would have to know the
+publication lag, and to span the boundary they would have to write the union themselves —
+across a boundary that moves while they are writing it. Hand-written unions across a moving
+frontier either double-count the overlap or miss the gap, which is the exact defect
+`plan_splice` exists to make impossible.
+
+What varies per request is the **mode**, not the name:
+
+```sql
+SET sankhya.read_mode = 'pinned';
+SET sankhya.snapshot  = 41;
+SELECT ... FROM sales.orders;     -- the same name, always
+```
+
+That is the escape hatch a name-based scheme was reaching for, and it expresses the thing
+actually being asked for — a freshness requirement — rather than a guess about where the
+data currently sits.
+
+### 5.8 The archival dimension
 
 Data tiering (§13) adds a second, orthogonal axis to the same planner:
 
@@ -1524,6 +1680,10 @@ The trade-off, stated plainly: scale-up gives lower latency, far simpler failure
 | `DEC-23` | Purge by partition detach, never row deletion | §13.2 |
 | `DEC-24` | After purge, the published tier is the system of record | §13.1 |
 | `DEC-25` | Cross-tier queries unified with a total tie-break rule | §13.7 |
+| `DEC-26` | Two declared table classes: managed and external | §5.6 |
+| `DEC-27` | A table's class is declared in its own log; absence means external | §5.6.3 |
+| `DEC-28` | A strongly-consistent read of an external table is refused, never degraded | §5.6.3, §5.7.2 |
+| `DEC-29` | The tier is never part of a table's name; freshness is a request mode | §5.7.3 |
 
 ---
 
