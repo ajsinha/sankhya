@@ -19,6 +19,8 @@ sankhya-authz    = { path = "../sankhya-authz" }
 sankhya-audit    = { path = "../sankhya-audit" }
 sankhya-catalog  = { path = "../sankhya-catalog" }
 sankhya-readpath = { path = "../sankhya-readpath" }
+sankhya-table-delta = { path = "../sankhya-table-delta" }
+sankhya-plan     = { path = "../sankhya-plan" }
 datafusion       = { workspace = true }
 arrow-array      = { workspace = true }
 arrow-schema     = { workspace = true }
@@ -34,4 +36,6 @@ tracing-subscriber = { workspace = true }
 
 
 [dev-dependencies]
+tempfile = { workspace = true }
+sankhya-table = { path = "../sankhya-table" }
 uuid = { workspace = true }

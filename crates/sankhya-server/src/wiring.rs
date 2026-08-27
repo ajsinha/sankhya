@@ -19,8 +19,7 @@
 //! is honest about what it is: a front door that authenticates, enforces policy on what it
 //! lists, audits what it did, and says clearly that the room behind it is empty.
 
-use sankhya_api_pg::catalog::{CatalogColumn, CatalogTable};
-use sankhya_api_pg::message::oid;
+use sankhya_api_pg::catalog::CatalogTable;
 use sankhya_api_pg::session::{Handler, QueryFailure, QueryResult};
 use sankhya_audit::chain::{Chain, Entry, RecordedDecision};
 use sankhya_authz::policy::{Action, PolicySet, TableRef};
@@ -36,6 +35,14 @@ use crate::execute::{run, session_for, ServableTable};
 pub struct Settings {
     /// Where the wire-protocol front door listens.
     pub listen: String,
+    /// The directory holding `<schema>/<table>/` for every table this server serves.
+    pub warehouse: std::path::PathBuf,
+    /// The published position to read as of.
+    ///
+    /// Everything up to it is visible and nothing after it is, which is what makes two
+    /// tables in one query agree with each other. A running coordinator advances this;
+    /// with no ingest in this process it is read once at startup.
+    pub read_as_of: sankhya_types::Lsn,
     /// The tenant every connection belongs to, until federated identity is wired in.
     pub tenant: TenantId,
     /// Whether a password is required.
@@ -126,6 +133,12 @@ impl Server {
             self.policy.len(),
             self.tables.len()
         )
+    }
+
+    /// How many tables this server serves.
+    #[must_use]
+    pub fn table_count(&self) -> usize {
+        self.tables.len()
     }
 
     /// The audit chain's current head, for mirroring somewhere append-only.
@@ -331,70 +344,6 @@ fn refusal(sqlstate: &str, message: &str) -> QueryFailure {
     }
 }
 
-/// The tables a fresh server knows about.
-///
-/// A placeholder standing in for the catalogue the coordinator will own. It exists so the
-/// front door has something true to say, and it is small enough that nobody will mistake it
-/// for the real thing.
-#[must_use]
-pub fn example_tables() -> Vec<CatalogTable> {
-    vec![CatalogTable {
-        schema: "public".to_string(),
-        name: "example".to_string(),
-        columns: vec![
-            CatalogColumn {
-                name: "id".to_string(),
-                type_name: "int8".to_string(),
-                type_oid: oid::INT8,
-                nullable: false,
-            },
-            CatalogColumn {
-                name: "label".to_string(),
-                type_name: "text".to_string(),
-                type_oid: oid::TEXT,
-                nullable: true,
-            },
-        ],
-    }]
-}
-
-/// In-memory data for the example table, so the front door has something real to answer.
-///
-/// A placeholder for the catalogue the coordinator will own, and small enough that nobody
-/// will mistake it for the real thing. What it proves is not the data but the *path*: a
-/// statement arrives over the wire, is authorised, planned against a policy-wrapped
-/// provider, executed, and rendered back.
-#[must_use]
-pub fn example_servable(tables: &[CatalogTable]) -> Vec<ServableTable> {
-    use arrow_array::{Int64Array, RecordBatch, StringArray};
-    use arrow_schema::{DataType, Field, Schema};
-
-    tables
-        .iter()
-        .filter(|table| table.name == "example")
-        .filter_map(|table| {
-            let schema = Arc::new(Schema::new(vec![
-                Field::new("id", DataType::Int64, false),
-                Field::new("label", DataType::Utf8, true),
-            ]));
-            let batch = RecordBatch::try_new(
-                Arc::clone(&schema),
-                vec![
-                    Arc::new(Int64Array::from(vec![1, 2, 3])),
-                    Arc::new(StringArray::from(vec![Some("north"), None, Some("south")])),
-                ],
-            )
-            .ok()?;
-            let provider =
-                datafusion::datasource::MemTable::try_new(schema, vec![vec![batch]]).ok()?;
-            Some(ServableTable {
-                reference: TableRef::new(&table.schema, &table.name),
-                provider: Arc::new(provider),
-            })
-        })
-        .collect()
-}
-
 /// A policy granting a reader access to everything in `tables`.
 #[must_use]
 pub fn permissive_policy(tenant: &TenantId, tables: &[CatalogTable]) -> PolicySet {
@@ -409,13 +358,29 @@ pub fn permissive_policy(tenant: &TenantId, tables: &[CatalogTable]) -> PolicySe
 }
 
 /// Build a server and its listener, ready to serve.
+///
+/// Reads the warehouse once, at startup. Every table it finds is opened at the configured
+/// position and described for the catalogue from its own log, so a schema browser and a
+/// query see the same table.
 pub async fn start(
     settings: Settings,
-) -> std::io::Result<(Arc<Server>, sankhya_api_pg::listener::PgListener)> {
-    let tables = example_tables();
+) -> std::io::Result<(Arc<Server>, sankhya_api_pg::listener::PgListener, Vec<String>)> {
+    let (found, unopenable) = crate::warehouse::discover(&settings.warehouse);
+    let cache = sankhya_table_delta::LogCache::new();
+    let (servable, unreadable) = crate::warehouse::servable(&found, settings.read_as_of, &cache);
+
+    // A table that could not be opened is reported rather than omitted. A server that
+    // starts with three tables of four and says nothing has produced an outage that looks,
+    // to whoever queries it, like a table that was never created.
+    let complaints: Vec<String> = unopenable
+        .into_iter()
+        .chain(unreadable)
+        .map(|(path, reason)| format!("{}: {reason}", path.display()))
+        .collect();
+
+    let tables = crate::warehouse::describe(&found);
     let policy = permissive_policy(&settings.tenant, &tables);
     let listener = sankhya_api_pg::listener::PgListener::bind(&settings.listen).await?;
-    let servable = example_servable(&tables);
     let server = Arc::new(Server::with_tables(settings, policy, tables, servable));
-    Ok((server, listener))
+    Ok((server, listener, complaints))
 }

@@ -20,6 +20,7 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
 mod execute;
+mod warehouse;
 mod wiring;
 
 use sankhya_authz::principal::TenantId;
@@ -34,11 +35,25 @@ use wiring::{start, Settings};
 fn settings() -> Settings {
     let listen = std::env::var("SANKHYA_LISTEN").unwrap_or_else(|_| "127.0.0.1:5433".to_string());
     let require_password = std::env::var("SANKHYA_NO_PASSWORD").is_err();
+    let warehouse = std::env::var("SANKHYA_WAREHOUSE")
+        .unwrap_or_else(|_| "./warehouse".to_string())
+        .into();
+    // The position to read as of. With no ingest running in this process there is nothing
+    // advancing it, so it is read once — and `u64::MAX` means "everything published",
+    // which is what a read-only server over a static warehouse wants.
+    let read_as_of = sankhya_types::Lsn::new(
+        std::env::var("SANKHYA_READ_AS_OF")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(u64::MAX),
+    );
     // A fixed tenant until federated identity is wired in. Deterministic so that a restart
     // does not orphan the audit chain and the storage prefix from the previous run.
     let tenant = TenantId::from_uuid(uuid::Uuid::from_u128(1));
     Settings {
         listen,
+        warehouse,
+        read_as_of,
         tenant,
         require_password,
     }
@@ -54,7 +69,7 @@ async fn main() -> std::io::Result<()> {
         .init();
 
     let settings = settings();
-    let (server, listener) = start(settings).await?;
+    let (server, listener, complaints) = start(settings).await?;
 
     // Printed rather than only logged: an operator starting this by hand needs to see the
     // configuration, and an insecure one is written so it looks wrong.
@@ -65,7 +80,14 @@ async fn main() -> std::io::Result<()> {
         server.audit_head(),
         server.audit_len()
     );
-    println!("  statements are not executed yet; catalogue queries are answered");
+    for complaint in &complaints {
+        // Loud, and on stderr. A table that failed to open looks to whoever queries it like
+        // a table that was never created, and they will go looking in the wrong place.
+        eprintln!("  COULD NOT OPEN {complaint}");
+    }
+    if server.table_count() == 0 {
+        println!("  no tables found — set SANKHYA_WAREHOUSE to a directory of <schema>/<table>/");
+    }
     println!("  connect with: psql -h 127.0.0.1 -p 5433 -U <user>");
 
     let handler: Arc<dyn sankhya_api_pg::session::Handler> = Arc::clone(&server) as Arc<_>;
