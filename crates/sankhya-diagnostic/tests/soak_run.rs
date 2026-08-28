@@ -55,12 +55,25 @@ use std::time::{Duration, Instant, SystemTime};
 /// Relative to the project root, so it is inside the repository by construction rather than
 /// by the caller remembering. `.build` is already where generated artefacts live and is
 /// already ignored by version control.
-const DEFAULT_WAREHOUSE: &str = ".build/soak";
+///
+/// The warehouse *is* this directory --- tables live at `<warehouse>/<schema>/<table>`. An
+/// earlier version put the warehouse under a per-run directory and produced
+/// `.build/soak/warehouse/soak/records`, which names the schema twice and buries the
+/// warehouse a level deeper than anything needs.
+const DEFAULT_WAREHOUSE: &str = ".build/warehouse";
 
 /// How often a reading is taken.
 const SAMPLE_EVERY: Duration = Duration::from_secs(15);
 /// How often progress is printed and the report rewritten.
 const REPORT_EVERY: Duration = Duration::from_secs(120);
+
+/// Where a run's own files go: beside the warehouse, never inside it.
+///
+/// The warehouse is emptied before each fill. A report written into it is a report the next
+/// run deletes, and the evidence a soak produces has to outlive the data it produced it from.
+fn artefacts(warehouse: &Path) -> PathBuf {
+    warehouse.parent().map_or_else(|| warehouse.to_path_buf(), Path::to_path_buf)
+}
 
 /// The project root: the nearest ancestor holding the workspace manifest.
 ///
@@ -144,13 +157,13 @@ USAGE:
     sankhya-soak --at <DIR> [--gb <N>] [--tables <N>] [--minutes <N>]
 
 OPTIONS:
-    --at <DIR>       Warehouse directory (default: .build/soak under the project
+    --at <DIR>       Warehouse directory (default: .build/warehouse under the project
                      root). REFUSED if it resolves outside the project root — this
                      binary writes gigabytes, and a stray path puts them somewhere
                      nobody will think to look for them. Emptied before filling, so
                      a run does not inherit the tail of the last one.
     --schema <NAME>  Schema the tables live under (default: soak). Tables are laid
-                     out as <at>/warehouse/<schema>/<table>.
+                     out as <warehouse>/<schema>/<table>.
     --gb <N>         Total data to generate across all tables (default 10)
     --tables <N>     How many tables to spread it across (default 10)
     --minutes <N>    How long to run after filling (default 45)
@@ -210,10 +223,9 @@ fn soak() {
     // and a page cache it did not create, and the memory reading in the first minutes then
     // describes the last run as much as this one. Only the warehouse goes --- the log and the
     // report beside it are the evidence.
-    let warehouse = at.join("warehouse");
-    if warehouse.exists() {
-        if let Err(error) = std::fs::remove_dir_all(&warehouse) {
-            eprintln!("{}  cannot clear {}: {error}", stamp(), warehouse.display());
+    if at.exists() {
+        if let Err(error) = std::fs::remove_dir_all(&at) {
+            eprintln!("{}  cannot clear {}: {error}", stamp(), at.display());
             std::process::exit(2);
         }
         println!("{}    cleared the previous warehouse", stamp());
@@ -229,7 +241,7 @@ fn soak() {
     let mut roots = Vec::new();
     for table in 0..tables {
         let name = table_name(table);
-        let root = at.join("warehouse").join(&schema).join(&name);
+        let root = at.join(&schema).join(&name);
         create_table(&root);
         let written = fill(&root, per_table_bytes, &filling);
         println!(
@@ -322,7 +334,7 @@ fn soak() {
         samples.record(
             "history_bytes",
             at_micros,
-            Some(file_bytes(&at.join("diagnostic-history.tsv")).unwrap_or(0.0)),
+            Some(file_bytes(&artefacts(&at).join("diagnostic-history.tsv")).unwrap_or(0.0)),
         );
         #[allow(clippy::cast_precision_loss)]
         samples.record("queries", at_micros, Some(planned as f64));
@@ -411,7 +423,7 @@ fn emit(
             println!("{}      {:<16} {verdict:?}", stamp(), measure.name);
         }
     }
-    std::fs::write(at.join("soak-report.txt"), report.describe()).ok();
+    std::fs::write(artefacts(at).join("soak-report.txt"), report.describe()).ok();
 }
 
 /// Seconds since the epoch, and a readable clock time beside it.

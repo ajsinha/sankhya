@@ -2152,6 +2152,18 @@ CATALOGUE = [
      "        let combined = Ok::<_, arrow_schema::ArrowError>(batches[0].clone())",
      "sankhya-publish"),
 
+    ("publish: take the next version from the live set, missing an empty table's commits",
+     "crates/sankhya-publish/src/publish.rs",
+     "        sankhya_table_delta::newest_after(&self.root, None)\n            .map_or(0, |version| version.saturating_add(1))",
+     "        sankhya_table_delta::live_files(&self.root).ok().and_then(|s| s.version).map_or(0, |v| v.saturating_add(1))",
+     "sankhya-publish"),
+
+    ("publish: omit the protocol action from a creating commit",
+     "crates/sankhya-publish/src/publish.rs",
+     "        commit(&self.root, 0, &create(metadata)).map_err(|error| {",
+     "        commit(&self.root, 0, &[Action::Metadata(metadata)]).map_err(|error| {",
+     "sankhya-publish"),
+
     # --- the soak writes nothing outside the project root ------------------
 
     ("soak: accept a warehouse outside the project root",

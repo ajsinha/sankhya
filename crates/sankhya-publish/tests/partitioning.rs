@@ -374,3 +374,31 @@ fn a_coarser_granularity_stamps_the_first_day_of_the_period() {
         assert_eq!(dates.value(row), FIRST_OF_MARCH, "the first of the month");
     }
 }
+
+#[test]
+fn a_creating_commit_carries_a_protocol_action() {
+    // A Delta table without one does not declare the reader and writer versions it needs,
+    // and a reader is entitled to refuse it or to assume defaults it does not meet.
+    //
+    // This crate committed metadata alone until the CDC pipeline was moved onto it. That
+    // pipeline's own test asserted the protocol action — its unsanctioned write path emitted
+    // one and the official path did not — so the defect was visible only from outside. The
+    // assertion belongs here, where the behaviour is.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path().join("orders");
+    let publication = Publication::external(&root, "orders").dated_by("order_date");
+    publication.create(&schema()).expect("created");
+
+    let created = log_of(&root, 0);
+    assert!(
+        created.contains(r#""protocol""#),
+        "the creating commit has no protocol action: {created}"
+    );
+    assert!(created.contains("minReaderVersion"), "{created}");
+    assert!(created.contains("minWriterVersion"), "{created}");
+    // And it comes first: a reader parsing the log in order should learn what it is dealing
+    // with before it reads anything it might not understand.
+    let protocol_at = created.find(r#""protocol""#).expect("protocol");
+    let metadata_at = created.find(r#""metaData""#).expect("metadata");
+    assert!(protocol_at < metadata_at, "{created}");
+}

@@ -175,3 +175,47 @@ fn a_failure_that_is_not_a_version_race_is_not_retried() {
         "an unwritable log was reported as contention after sixteen retries: {refused}"
     );
 }
+
+#[test]
+fn the_first_publish_into_a_created_table_takes_version_one() {
+    // A table that has been created and holds no data has *commits* and no *files*. A live
+    // set reports the version of the newest commit that contributed a file, so it reports
+    // nothing here — and a caller reading that as "no commits" starts at zero, finds zero
+    // taken, and walks forward into a gap.
+    //
+    // It stopped a soak twice before a test existed for it. The log said so plainly the
+    // second time: "committing version 14 would leave a gap; the next version is 0."
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path().join("events");
+    let publication = Publication::external(&root, "events").dated_by("event_date");
+    publication.create(&schema()).expect("created");
+
+    assert_eq!(
+        publication.next_version(),
+        1,
+        "a created-but-empty table's next version is one, not zero"
+    );
+
+    let rebased = publication
+        .append_rebasing(publication.next_version(), 4, "a.parquet", &batch(0, 10), Lsn::new(1))
+        .expect("committed");
+    assert_eq!(rebased.version, 1);
+    assert_eq!(rebased.retries, 0, "it should not have had to rebase at all");
+}
+
+#[test]
+fn the_next_version_follows_a_commit_that_added_no_files() {
+    // Maintenance can commit a version that only removes files. The next publish must follow
+    // it, not reuse it.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path().join("events");
+    let publication = Publication::external(&root, "events").dated_by("event_date");
+    publication.create(&schema()).expect("created");
+    publication
+        .append_rebasing(1, 4, "a.parquet", &batch(0, 10), Lsn::new(1))
+        .expect("committed");
+
+    // A commit carrying no adds at all.
+    commit(&root, 2, &[]).expect("an empty commit");
+    assert_eq!(publication.next_version(), 3, "it must follow the empty commit");
+}

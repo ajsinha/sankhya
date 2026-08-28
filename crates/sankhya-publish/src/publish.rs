@@ -314,9 +314,7 @@ impl Publication {
             match commit(&self.root, version, &actions) {
                 Ok(_) => return Ok(Rebased { written, version, retries }),
                 Err(sankhya_table_delta::CommitError::VersionTaken(_)) => {
-                    version = sankhya_table_delta::live_files(&self.root)
-                        .ok()
-                        .and_then(|set| set.version)
+                    version = sankhya_table_delta::newest_after(&self.root, None)
                         .map_or(version.saturating_add(1), |v| v.saturating_add(1));
                 }
                 Err(error) => {
@@ -509,9 +507,15 @@ impl Publication {
     /// held anywhere else is a counter that can be wrong about somebody else's commit.
     #[must_use]
     pub fn next_version(&self) -> u64 {
-        sankhya_table_delta::live_files(&self.root)
-            .ok()
-            .and_then(|set| set.version)
+        // `newest_after`, not `live_files`.
+        //
+        // A live set reports the version of the newest commit *that contributed a file*. A
+        // table that has been created and holds no data yet has commits and no files, so the
+        // live set reports no version at all --- and a caller reading it as "no commits"
+        // starts at zero, finds zero taken, walks forward one at a time, and lands in a gap.
+        // That is not hypothetical: it stopped a soak twice, and the second time the log
+        // said so plainly --- "committing version 14 would leave a gap; the next version is 0".
+        sankhya_table_delta::newest_after(&self.root, None)
             .map_or(0, |version| version.saturating_add(1))
     }
 
