@@ -64,7 +64,7 @@ Every rule here exists because a document said something untrue and nothing noti
 
 | Rule | Why | Enforced by |
 |---|---|---|
-| A figure in prose matches the repository | Seven documents claimed a test count that was two hundred short | `check-doc-numbers` |
+| A figure in prose matches the repository | Seven documents claimed a test count that was two hundred short | `check-doc-numbers`, fixed by `sync-doc-numbers` |
 | A source path named in prose exists | `GUIDE.md` promised its examples were executed by a file that did not exist | `check-docs` |
 | Every document's status line names every milestone in progress | Seven documents **agreed** on a status that was wrong. Agreement is not accuracy | `check-docs` |
 | Every guide example is executed, or listed with a reason | A block that is neither fails the build | `sankhya-server` guide test |

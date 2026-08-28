@@ -74,11 +74,16 @@ fn provenance_columns(
     ]
 }
 
-/// Resolve the cube named in argument one.
+/// Resolve the cells for the cube named in argument one and the measure in argument two.
+///
+/// Both, together, because a set of cells holds one measure's values --- so the pair is the
+/// identity of what a query is asking for, and resolving on the cube alone gives whichever
+/// measure happened to be published last.
 fn cube_of(catalog: &CubeCatalog, args: &Arguments) -> Result<Published> {
     let name = args.string_at(0, "cube name")?;
+    let measure = args.string_at(1, "measure name")?;
     catalog
-        .resolve(&name)
+        .resolve(&name, &measure)
         .map_err(|e| plan_datafusion_err!("{e}"))
 }
 
@@ -89,25 +94,12 @@ fn cube_of(catalog: &CubeCatalog, args: &Arguments) -> Result<Published> {
 /// under rules nobody chose.
 fn measure_of(published: &Published, args: &Arguments) -> Result<Measure> {
     let name = args.string_at(1, "measure name")?;
-    // The cells hold **one** measure's values, and it is not necessarily the one asked for.
-    //
-    // Refused rather than answered. Resolving the rule from the definition and applying it to
-    // whatever values happen to be hydrated produces a number of the right shape and the
-    // right magnitude, computed from the wrong column, with nothing anywhere to say so ---
-    // `Last` over `amount` looks exactly like a closing balance.
-    if published.measure != name {
-        return plan_err!(
-            "cube '{}' is hydrated for measure '{}' and the query asks for '{}'. Answering \
-             would apply '{}'s rule to '{}'s values, which is a wrong number rather than an \
-             error --- publish the cube for '{}' and ask again",
-            published.cube.name(),
-            published.measure,
-            name,
-            name,
-            published.measure,
-            name
-        );
-    }
+    // Belt and braces. `cube_of` resolved the cells *by* this measure, so a mismatch here
+    // would mean the catalogue filed cells under a name that is not their own --- which
+    // `CubeCatalog::publish` makes impossible by taking the name from the cells. Asserted
+    // anyway, because the failure it guards is a plausible number rather than an error, and
+    // that is worth one comparison.
+    debug_assert_eq!(published.measure, name, "cells filed under another measure's name");
     published.cube.measure(&name).cloned().ok_or_else(|| {
         let known: Vec<&str> = published.cube.measures().iter().map(|m| m.name.as_str()).collect();
         plan_datafusion_err!(

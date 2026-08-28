@@ -54,10 +54,28 @@ pub struct Published {
     pub completeness: Completeness,
 }
 
-/// Every cube a session can navigate, by name, and every overlay it may apply.
+/// Every cube a session can navigate, and every overlay it may apply.
+///
+/// # Why the key is *(cube, measure)* and not the cube
+///
+/// [`Cells`] is a map from address to contributions and carries no measure of its own, so a
+/// published set of cells is the values of exactly **one** measure --- whichever hydration was
+/// given. Keyed by cube alone, publishing a second measure replaced the first, and a query
+/// naming either got whatever was published last with its own rule applied to it.
+///
+/// That is a wrong number rather than an error: `Last` over `amount` has the shape and
+/// magnitude of a closing balance. Keying by the pair means a cube can hold every measure it
+/// declares at once, and a measure that was never hydrated is a missing entry rather than
+/// somebody else's values.
 #[derive(Debug, Default)]
 pub struct CubeCatalog {
-    cubes: parking_lot::RwLock<BTreeMap<String, Option<Published>>>,
+    cubes: parking_lot::RwLock<BTreeMap<(String, String), Published>>,
+    /// Cubes known by name, whether or not anything is published for them.
+    ///
+    /// Kept separately so "declared but not loaded" stays distinguishable from "no such
+    /// cube" --- one is a cube awaiting its first hydration, the other is a typo, and telling
+    /// somebody the wrong one sends them to the wrong place.
+    declared: parking_lot::RwLock<std::collections::BTreeSet<String>>,
     overlays: parking_lot::RwLock<BTreeMap<String, Arc<Overlay>>>,
 }
 
@@ -73,12 +91,18 @@ impl CubeCatalog {
     /// Separate from [`CubeCatalog::publish`] so that "declared but not loaded" is a state
     /// the catalog can be in and report, rather than one that looks like a missing name.
     pub fn declare(&self, name: impl Into<String>) {
-        self.cubes.write().entry(name.into()).or_insert(None);
+        self.declared.write().insert(name.into());
     }
 
-    /// Publish cells for a cube.
+    /// Publish one measure's cells for a cube.
+    ///
+    /// The measure comes from `published` rather than being a parameter, so the cells and the
+    /// name they are filed under cannot disagree.
     pub fn publish(&self, name: impl Into<String>, published: Published) {
-        self.cubes.write().insert(name.into(), Some(published));
+        let name = name.into();
+        self.declared.write().insert(name.clone());
+        let measure = published.measure.clone();
+        self.cubes.write().insert((name, measure), published);
     }
 
     /// Register an overlay a query may name.
@@ -92,18 +116,35 @@ impl CubeCatalog {
     ///
     /// # Errors
     /// [`Unresolved`], distinguishing an unknown name from a cube awaiting its first load.
-    pub fn resolve(&self, name: &str) -> Result<Published, Unresolved> {
+    pub fn resolve(&self, name: &str, measure: &str) -> Result<Published, Unresolved> {
         let cubes = self.cubes.read();
-        match cubes.get(name) {
-            None => Err(Unresolved::NoSuchCube {
-                name: name.to_string(),
-                known: cubes.keys().cloned().collect(),
-            }),
-            Some(None) => Err(Unresolved::NothingPublished {
-                name: name.to_string(),
-            }),
-            Some(Some(published)) => Ok(published.clone()),
+        if let Some(published) = cubes.get(&(name.to_string(), measure.to_string())) {
+            return Ok(published.clone());
         }
+        if !self.declared.read().contains(name) {
+            return Err(Unresolved::NoSuchCube {
+                name: name.to_string(),
+                known: self.declared.read().iter().cloned().collect(),
+            });
+        }
+        let published: Vec<String> = cubes
+            .keys()
+            .filter(|(cube, _)| cube == name)
+            .map(|(_, measure)| measure.clone())
+            .collect();
+        // Nothing at all published is a *wait*: the cube is declared and its first hydration
+        // has not happened. Some measures published but not this one is a different fact and
+        // a different action --- one is retried, the other is corrected or loaded.
+        if published.is_empty() {
+            return Err(Unresolved::NothingPublished {
+                name: name.to_string(),
+            });
+        }
+        Err(Unresolved::MeasureNotPublished {
+            name: name.to_string(),
+            measure: measure.to_string(),
+            published,
+        })
     }
 
     /// An overlay by name.
@@ -125,7 +166,18 @@ impl CubeCatalog {
     /// The cube names known, in order.
     #[must_use]
     pub fn names(&self) -> Vec<String> {
-        self.cubes.read().keys().cloned().collect()
+        self.declared.read().iter().cloned().collect()
+    }
+
+    /// Which measures of a cube are published.
+    #[must_use]
+    pub fn published_measures(&self, name: &str) -> Vec<String> {
+        self.cubes
+            .read()
+            .keys()
+            .filter(|(cube, _)| cube == name)
+            .map(|(_, measure)| measure.clone())
+            .collect()
     }
 }
 
@@ -143,6 +195,19 @@ pub enum Unresolved {
     NothingPublished {
         /// The name.
         name: String,
+    },
+    /// The cube exists and *this measure* of it has not been hydrated.
+    ///
+    /// Distinct from a cube nobody has loaded, and distinct from a measure the definition
+    /// does not declare. Collapsing the three would send somebody to fix a typo that is not
+    /// there, or to wait for a load that is never coming.
+    MeasureNotPublished {
+        /// The cube.
+        name: String,
+        /// The measure asked for.
+        measure: String,
+        /// The measures of this cube that *are* published.
+        published: Vec<String>,
     },
     /// No overlay of that name is registered.
     NoSuchOverlay {
@@ -165,6 +230,19 @@ impl fmt::Display for Unresolved {
                     "none".to_string()
                 } else {
                     known.join(", ")
+                }
+            ),
+            Self::MeasureNotPublished { name, measure, published } => write!(
+                f,
+                "cube '{}' has no published cells for measure '{}' — it has {}. Cells hold \
+                 one measure's values, so answering from another measure's would apply this \
+                 rule to the wrong column and give a number of about the right size",
+                name,
+                measure,
+                if published.is_empty() {
+                    "none yet".to_string()
+                } else {
+                    published.join(", ")
                 }
             ),
             Self::NothingPublished { name } => write!(

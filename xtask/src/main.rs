@@ -8,6 +8,7 @@
 mod catalogues;
 mod logging;
 mod buildtree;
+mod docnumbers;
 mod package;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -191,10 +192,15 @@ fn main() -> ExitCode {
     if run_all || task == "check-package" {
         failed |= !package::check(&root);
     }
+    if task == "sync-doc-numbers" {
+        let mut docs = Vec::new();
+        collect_markdown(&root, &mut docs);
+        failed |= !docnumbers::sync(&root, &docs);
+    }
     if run_all || task == "check-doc-numbers" {
         let mut docs = Vec::new();
         collect_markdown(&root, &mut docs);
-        failed |= !check_doc_numbers(&root, &docs);
+        failed |= !docnumbers::check(&root, &docs);
     }
     // Last, and part of `check-all` on purpose: `check-tests` has just rebuilt the
     // workspace, so this is the moment the superseded generation exists and is identifiable.
@@ -230,6 +236,7 @@ fn main() -> ExitCode {
                 | "check-package"
                 | "check-build-tree"
                 | "sweep"
+                | "sync-doc-numbers"
                 | "sweep-dry-run"
                 | "check-catalogues"
                 | "write-catalogues"
@@ -240,7 +247,7 @@ fn main() -> ExitCode {
             "usage: cargo xtask \
              [check-all|check-tests|check-invariants|check-writers|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
              |check-features|check-lints|check-mutations|check-doc-numbers\
-             |check-catalogues|write-catalogues|check-logging|check-package|check-build-tree|sweep|sweep-dry-run|check-performance]"
+             |check-catalogues|write-catalogues|check-logging|check-package|check-build-tree|sweep|sweep-dry-run|sync-doc-numbers|check-performance]"
         );
         return ExitCode::from(2);
     }
@@ -1090,122 +1097,8 @@ fn check_lints(root: &Path) -> bool {
     }
 }
 
-/// Numbers a document claims about this repository are the numbers this repository has.
-///
-/// Test counts and mutation counts rot on almost every commit, silently, and a reader has
-/// no way to tell a stale figure from a current one --- both are just a number. A document
-/// asserting "630 tests" when there are 1,098 is not merely out of date: it is evidence
-/// that nobody has checked, which devalues every other figure in the same document.
-///
-/// Only figures that are mechanically knowable are checked. A historical statement --- "one
-/// entry was inert until corrected" --- is about a moment and cannot rot, so it is left
-/// alone. A check that fired on prose would be switched off, and then it would catch
-/// nothing at all.
-fn check_doc_numbers(root: &Path, docs: &[PathBuf]) -> bool {
-    println!("== check-doc-numbers ==");
-
-    let Some(mutations) = catalogue_size(root) else {
-        eprintln!("   FAILED: could not count the mutation catalogue");
-        return false;
-    };
-    let Some(tests) = test_count(root) else {
-        eprintln!("   FAILED: could not count the tests");
-        return false;
-    };
-
-    // `(number) tests` and `(number) specific|deliberate defects`, which are the two figures
-    // documents actually quote.
-    let mut ok = true;
-    let mut checked = 0usize;
-    for path in docs {
-        let Ok(text) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        let rel = path.strip_prefix(root).unwrap_or(path).display();
-        for (line_number, line) in text.lines().enumerate() {
-            for (claimed, unit) in claimed_numbers(line) {
-                checked += 1;
-                let actual = if unit == "tests" { tests } else { mutations };
-                if claimed != actual {
-                    eprintln!(
-                        "  STALE NUMBER {rel}:{}: claims {claimed} {unit}, and there are \
-                         {actual}",
-                        line_number + 1
-                    );
-                    ok = false;
-                }
-            }
-        }
-    }
-    println!(
-        "   {checked} claimed figure(s) checked against {tests} tests and {mutations} mutations"
-    );
-    ok
-}
-
-/// Every figure a line claims, as `(number, unit)`.
-fn claimed_numbers(line: &str) -> Vec<(usize, &'static str)> {
-    let mut found = Vec::new();
-    for (marker, unit) in [
-        (" tests", "tests"),
-        (" specific defects", "mutations"),
-        (" deliberate defects", "mutations"),
-        (" sequential", "mutations"),
-    ] {
-        let mut from = 0usize;
-        while let Some(at) = line.get(from..).and_then(|rest| rest.find(marker)) {
-            let end = from + at;
-            // Walk back over the digits and separators immediately before the marker.
-            let prefix = line.get(..end).unwrap_or("");
-            let digits: String = prefix
-                .chars()
-                .rev()
-                .take_while(|c| c.is_ascii_digit() || *c == ',')
-                .collect::<Vec<char>>()
-                .into_iter()
-                .rev()
-                .collect();
-            if let Ok(value) = digits.replace(',', "").parse::<usize>() {
-                found.push((value, unit));
-            }
-            from = end + marker.len();
-        }
-    }
-    found
-}
-
-/// How many entries the mutation catalogue holds.
-fn catalogue_size(root: &Path) -> Option<usize> {
-    let text = std::fs::read_to_string(root.join("tools/mutation-audit.py")).ok()?;
-    // Each entry opens with a parenthesised tuple whose first element is a quoted label
-    // containing a colon. Counting those is cheap and does not need Python.
-    Some(
-        text.lines()
-            .filter(|line| {
-                let trimmed = line.trim_start();
-                trimmed.starts_with("(\"") && trimmed.contains(": ")
-            })
-            .count(),
-    )
-}
-
-/// How many tests the workspace runs.
-///
-/// Listed rather than executed: `--list` compiles the test binaries and enumerates them
-/// without running anything, so this costs a build that `check-lints` has already paid for.
-/// Ignored tests are excluded, because the figure documents quote is what a plain
-/// `cargo test --workspace` reports.
-fn test_count(root: &Path) -> Option<usize> {
-    let listed = list_tests(root, false)?;
-    let ignored = list_tests(root, true)?;
-    // `--list` enumerates ignored tests alongside the rest and does not mark them, so the
-    // ignored ones are counted separately and subtracted. Quoting the listed total instead
-    // would overstate by however many tests need a database or a built server.
-    Some(listed.saturating_sub(ignored))
-}
-
 /// Enumerate tests without running them.
-fn list_tests(root: &Path, ignored_only: bool) -> Option<usize> {
+pub(crate) fn list_tests(root: &Path, ignored_only: bool) -> Option<usize> {
     let mut arguments = vec!["test", "--workspace", "--", "--list"];
     if ignored_only {
         arguments.push("--ignored");
@@ -1477,6 +1370,8 @@ fn named_source_paths(text: &str) -> Vec<String> {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::{check_named_sources, named_source_paths, unfinished_milestones};
+
+
     use std::path::Path;
 
     /// The hash is the generation; everything either side of it is the identity.

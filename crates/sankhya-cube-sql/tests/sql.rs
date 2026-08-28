@@ -277,6 +277,57 @@ async fn a_restriction_on_a_dimension_the_cube_lacks_is_refused() {
 }
 
 #[tokio::test]
+async fn two_measures_of_one_cube_are_both_available_at_once() {
+    // The reason the catalogue is keyed by *(cube, measure)* rather than by cube. Keyed by
+    // cube alone, publishing a second measure replaced the first, so a cube could only ever
+    // answer for whichever one was hydrated last --- and a query naming the other got that
+    // one's values with its own rule applied.
+    let (context, catalog) = session();
+    assert_eq!(
+        catalog.published_measures("figures"),
+        vec!["amount".to_string()],
+        "the fixture publishes one measure of `figures`"
+    );
+
+    // `figures_ratio` in the fixture is the same cube under a second name, which is what
+    // keying by cube alone forced. Publishing `ratio` under `figures` itself must now leave
+    // `amount` where it was.
+    let published = catalog.resolve("figures", "amount").expect("amount is published");
+    catalog.publish(
+        "figures",
+        Published {
+            cube: Arc::clone(&published.cube),
+            cells: Arc::clone(&published.cells),
+            measure: "ratio".to_string(),
+            snapshot: published.snapshot,
+            completeness: published.completeness,
+        },
+    );
+
+    let mut both = catalog.published_measures("figures");
+    both.sort();
+    assert_eq!(
+        both,
+        vec!["amount".to_string(), "ratio".to_string()],
+        "publishing a second measure must not evict the first"
+    );
+    assert!(
+        catalog.resolve("figures", "amount").is_ok(),
+        "the first measure still resolves after the second is published"
+    );
+
+    // And the surface still answers for the original.
+    let rows = context
+        .sql("SELECT * FROM cube_rollup('figures', 'amount', 'by=region')")
+        .await
+        .expect("planning")
+        .collect()
+        .await
+        .expect("executing");
+    assert!(!rows.is_empty());
+}
+
+#[tokio::test]
 async fn asking_for_a_measure_the_cells_do_not_hold_is_refused() {
     // `Cells` is a map from address to contributions and carries no measure of its own, so a
     // published set of cells is the values of exactly *one* measure --- whichever hydration
@@ -293,12 +344,12 @@ async fn asking_for_a_measure_the_cells_do_not_hold_is_refused() {
         .expect_err("answered for a measure the cells are not for");
     let message = refused.to_string();
     assert!(
-        message.contains("hydrated for measure 'amount'") && message.contains("asks for 'ratio'"),
-        "the refusal names both measures, because which one is wrong is the whole point: \
-         {message}"
+        message.contains("measure 'ratio'") && message.contains("it has amount"),
+        "the refusal names the measure asked for and the ones that exist, because which is \
+         wrong is the whole point: {message}"
     );
     assert!(
-        message.contains("wrong number rather than an error"),
+        message.contains("wrong column"),
         "and says why it refuses rather than answering: {message}"
     );
 }

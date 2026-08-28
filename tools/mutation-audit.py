@@ -2000,14 +2000,14 @@ CATALOGUE = [
 
     ("cube-sql: refuse an unknown cube without naming the ones that exist",
      "crates/sankhya-cube-sql/src/catalog.rs",
-     "                known: cubes.keys().cloned().collect(),",
+     "                known: self.declared.read().iter().cloned().collect(),",
      "                known: Vec::new(),",
      "sankhya-cube-sql"),
 
     ("cube-sql: report a cube awaiting its first load as a missing name",
      "crates/sankhya-cube-sql/src/catalog.rs",
-     "            Some(None) => Err(Unresolved::NothingPublished {\n                name: name.to_string(),\n            }),",
-     "            Some(None) => Err(Unresolved::NoSuchCube {\n                name: name.to_string(),\n                known: Vec::new(),\n            }),",
+     "            return Err(Unresolved::NothingPublished {\n                name: name.to_string(),\n            });",
+     "            return Err(Unresolved::NoSuchCube {\n                name: name.to_string(),\n                known: Vec::new(),\n            });",
      "sankhya-cube-sql"),
 
     ("cube-sql: ignore an unrecognised option instead of refusing the query",
@@ -2046,10 +2046,16 @@ CATALOGUE = [
      "    published.cube.measures().first().cloned().ok_or_else(|| {",
      "sankhya-cube-sql"),
 
-    ("cube-sql: answer for a measure the published cells do not hold",
+    ("cube-sql: key published cells by cube alone, so a second measure evicts the first",
+     "crates/sankhya-cube-sql/src/catalog.rs",
+     "        self.cubes.write().insert((name, measure), published);",
+     "        self.cubes.write().insert((name, String::new()), published);",
+     "sankhya-cube-sql"),
+
+    ("cube-sql: resolve cells by cube alone, ignoring which measure was asked for",
      "crates/sankhya-cube-sql/src/functions.rs",
-     "    if published.measure != name {",
-     "    if false {",
+     "    let measure = args.string_at(1, \"measure name\")?;\n    catalog\n        .resolve(&name, &measure)",
+     "    let measure = args.string_at(1, \"measure name\")?;\n    let _ = &measure;\n    catalog\n        .resolve(&name, \"amount\")",
      "sankhya-cube-sql"),
 
     ("cube-sql: skip the completeness threshold a query asked for",
