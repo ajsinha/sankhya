@@ -65,7 +65,10 @@ pub enum Action {
 }
 
 /// How a column is obscured when a principal may see the row but not the value.
-#[derive(Clone, PartialEq, Eq, Debug)]
+///
+/// `Hash` because a mask is part of what a principal may *see*, and anything caching results
+/// per visibility scope has to be able to key on it --- see `Guard::scope_digest`.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Mask {
     /// The value becomes null.
     Null,

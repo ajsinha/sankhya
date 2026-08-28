@@ -86,6 +86,43 @@ impl Guard {
         Self::from_decision(principal, table, action, &decision)
     }
 
+    /// What this guard *permits*, as one value.
+    ///
+    /// # Why this exists, and why the subject is not in it
+    ///
+    /// An aggregate computed over the rows one principal may read is not an answer for
+    /// another principal, so anything caching aggregates must key them by the scope they were
+    /// computed under --- see [ADR-0008](../../../docs/adr/0008-serving-cubes-under-policy.md).
+    /// The obvious key is the principal, and it is the wrong one: it makes a cache with one
+    /// entry per user, which for a deployment of a thousand analysts across six roles is a
+    /// thousand copies of six answers.
+    ///
+    /// So the digest covers the tenant, the row filter and the column masks --- everything
+    /// that decides *what is visible* --- and deliberately excludes the subject, which decides
+    /// only *who is looking*. Two principals with identical entitlements digest the same and
+    /// share the work.
+    ///
+    /// The safety property runs the other way and matters more: **any difference in what is
+    /// visible must change this value.** A field that affects visibility and is left out here
+    /// would let one principal be served another's aggregate, which is a disclosure with no
+    /// trace in the result. A field added to `Guard` must be added here or deliberately
+    /// excluded with a reason.
+    #[must_use]
+    pub fn scope_digest(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        // Not `subject`: who is asking does not change what may be seen.
+        self.tenant.hash(&mut hasher);
+        self.table.hash(&mut hasher);
+        self.action.hash(&mut hasher);
+        self.row_filter.hash(&mut hasher);
+        // A `BTreeMap` hashes in key order, so two guards with the same masks declared in a
+        // different order agree --- which they must, or the cache misses on a difference that
+        // is not one.
+        self.column_masks.hash(&mut hasher);
+        hasher.finish()
+    }
+
     /// Whose data this permits reaching.
     #[must_use]
     pub const fn tenant(&self) -> &TenantId {

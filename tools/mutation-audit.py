@@ -1702,6 +1702,32 @@ CATALOGUE = [
      "            if false {",
      "sankhya-cube"),
 
+    # --- the scope digest: what one principal may be served of another's ------
+
+    ("catalog: leave the row filter out of the scope digest",
+     "crates/sankhya-catalog/src/guard.rs",
+     "        self.row_filter.hash(&mut hasher);",
+     "        // self.row_filter.hash(&mut hasher);",
+     "sankhya-catalog"),
+
+    ("catalog: leave the tenant out of the scope digest",
+     "crates/sankhya-catalog/src/guard.rs",
+     "        self.tenant.hash(&mut hasher);",
+     "        // self.tenant.hash(&mut hasher);",
+     "sankhya-catalog"),
+
+    ("catalog: leave the column masks out of the scope digest",
+     "crates/sankhya-catalog/src/guard.rs",
+     "        self.column_masks.hash(&mut hasher);",
+     "        // self.column_masks.hash(&mut hasher);",
+     "sankhya-catalog"),
+
+    ("catalog: put the subject in the scope digest, so no two principals ever share",
+     "crates/sankhya-catalog/src/guard.rs",
+     "        self.tenant.hash(&mut hasher);",
+     "        self.tenant.hash(&mut hasher);\n        self.subject.hash(&mut hasher);",
+     "sankhya-catalog"),
+
     # --- a cube that outlives its process, or quietly changes on the way back ---
 
     ("cube: default an unknown stored rule to Sum rather than refusing it",
