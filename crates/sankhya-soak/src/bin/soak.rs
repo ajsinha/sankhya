@@ -37,10 +37,78 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
+/// Where a warehouse goes unless the caller says otherwise.
+///
+/// Relative to the project root, so it is inside the repository by construction rather than
+/// by the caller remembering. `.build` is already where generated artefacts live and is
+/// already ignored by version control.
+const DEFAULT_WAREHOUSE: &str = ".build/soak";
+
 /// How often a reading is taken.
 const SAMPLE_EVERY: Duration = Duration::from_secs(15);
 /// How often progress is printed and the report rewritten.
 const REPORT_EVERY: Duration = Duration::from_secs(120);
+
+/// The project root: the nearest ancestor holding the workspace manifest.
+///
+/// Found rather than assumed, so the default warehouse is the same directory whether the
+/// binary is run from the root, from a crate, or from a test.
+fn project_root() -> Option<PathBuf> {
+    let mut here = std::env::current_dir().ok()?;
+    loop {
+        let manifest = here.join("Cargo.toml");
+        if manifest.exists()
+            && std::fs::read_to_string(&manifest)
+                .map(|text| text.contains("[workspace]"))
+                .unwrap_or(false)
+        {
+            return Some(here);
+        }
+        if !here.pop() {
+            return None;
+        }
+    }
+}
+
+/// The path, if it is inside the project root.
+///
+/// # Why this is a refusal rather than a convention
+///
+/// The rule that this project writes nothing outside its own root was breached twice in one
+/// session --- once by a default, once by a redirect --- by somebody who knew the rule. A rule
+/// that depends on being remembered is a rule with a failure rate. This makes the breach
+/// impossible instead: a warehouse outside the root is not a warehouse this binary will use.
+///
+/// The check is on the *resolved* path, so `..` and a symlink cannot walk out of it. The
+/// parent is resolved rather than the path itself, because the warehouse usually does not
+/// exist yet.
+fn confined(root: &Path, at: &Path) -> Result<PathBuf, String> {
+    let absolute = if at.is_absolute() {
+        at.to_path_buf()
+    } else {
+        root.join(at)
+    };
+    let anchor = absolute
+        .ancestors()
+        .find(|candidate| candidate.exists())
+        .unwrap_or(root);
+    let resolved = anchor
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve {}: {error}", anchor.display()))?;
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve the project root: {error}"))?;
+    if !resolved.starts_with(&root) {
+        return Err(format!(
+            "{} is outside the project root {} — refused. This binary writes gigabytes, \
+             and a path outside the repository puts them somewhere nobody will think to \
+             look for them",
+            absolute.display(),
+            root.display()
+        ));
+    }
+    Ok(absolute)
+}
 
 fn flag(args: &[String], name: &str) -> Option<String> {
     args.iter()
@@ -63,10 +131,11 @@ USAGE:
     sankhya-soak --at <DIR> [--gb <N>] [--tables <N>] [--minutes <N>]
 
 OPTIONS:
-    --at <DIR>       Warehouse directory. REQUIRED — there is no default, because a
-                     default writes gigabytes somewhere the caller did not name.
-                     Emptied before filling, so a run does not inherit the tail of
-                     the last one.
+    --at <DIR>       Warehouse directory (default: .build/soak under the project
+                     root). REFUSED if it resolves outside the project root — this
+                     binary writes gigabytes, and a stray path puts them somewhere
+                     nobody will think to look for them. Emptied before filling, so
+                     a run does not inherit the tail of the last one.
     --schema <NAME>  Schema the tables live under (default: soak). Tables are laid
                      out as <at>/warehouse/<schema>/<table>.
     --gb <N>         Total data to generate across all tables (default 10)
@@ -98,10 +167,21 @@ fn main() {
     // writes gigabytes into it --- which is exactly what happened when somebody ran the
     // binary with no arguments to see what it did.
     let schema = flag(&args, "--schema").unwrap_or_else(|| "soak".to_string());
-    let Some(at) = flag(&args, "--at").map(PathBuf::from) else {
-        eprintln!("{}  --at <DIR> is required; there is no default warehouse", stamp());
-        eprintln!("{USAGE}");
+    let Some(root) = project_root() else {
+        eprintln!("{}  cannot find the project root from here", stamp());
         std::process::exit(2);
+    };
+    // Defaulted inside the project, and *confined* to it. An earlier version defaulted to
+    // `/var/tmp`, and running the binary to find out what it did left three quarters of a
+    // gigabyte outside the repository. A default is not the problem --- a default nobody can
+    // see, in a place nobody will look, is.
+    let at = flag(&args, "--at").map_or_else(|| root.join(DEFAULT_WAREHOUSE), PathBuf::from);
+    let at = match confined(&root, &at) {
+        Ok(path) => path,
+        Err(why) => {
+            eprintln!("{}  {why}", stamp());
+            std::process::exit(2);
+        }
     };
 
     println!("{}  soak starting", stamp());
@@ -627,4 +707,55 @@ fn compact_appended(root: &Path, sequence: u64) -> bool {
     };
     actions.push(Action::Add(AddFile::with_rows(&name, report.bytes, 0, rows)));
     commit(root, version, &actions).is_ok()
+}
+
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::{confined, table_name};
+    use std::path::Path;
+
+    /// A warehouse outside the project root is refused.
+    ///
+    /// Tested here rather than by running the binary. The guard exists because this project
+    /// writes nothing outside its own root, and the way that rule got broken a third time
+    /// was somebody checking the guard by invoking the thing that writes --- before it had
+    /// compiled in. A guard against writing must never be verified by writing.
+    #[test]
+    fn a_warehouse_outside_the_project_root_is_refused() {
+        let root = Path::new("/tmp/some-project");
+        assert!(confined(root, Path::new("/var/tmp/elsewhere")).is_err());
+        assert!(confined(root, Path::new("/etc")).is_err());
+    }
+
+    #[test]
+    fn a_relative_warehouse_resolves_under_the_root() {
+        let root = std::env::current_dir().expect("a working directory");
+        let at = confined(&root, Path::new(".build/soak")).expect("inside the root");
+        assert!(at.starts_with(&root), "{}", at.display());
+    }
+
+    #[test]
+    fn dot_dot_cannot_walk_out_of_the_root() {
+        // The check is on the resolved path, so a relative escape is caught rather than
+        // being taken literally.
+        let root = std::env::current_dir().expect("a working directory");
+        assert!(confined(&root, Path::new("../../../var/tmp/escaped")).is_err());
+    }
+
+    #[test]
+    fn the_root_itself_is_inside_itself() {
+        let root = std::env::current_dir().expect("a working directory");
+        assert!(confined(&root, &root).is_ok());
+    }
+
+    #[test]
+    fn tables_are_named_and_the_names_extend_past_the_list() {
+        assert_eq!(table_name(0), "events");
+        assert_eq!(table_name(9), "batches");
+        // Five hundred tables still have readable, orderable names.
+        assert_eq!(table_name(10), "events_001");
+        assert_eq!(table_name(499), "batches_049");
+    }
 }

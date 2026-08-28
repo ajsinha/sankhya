@@ -2114,6 +2114,20 @@ CATALOGUE = [
      "        Granularity::Month => (read(0, 1970), read(1, 1), 2),",
      "sankhya-publish"),
 
+    # --- the soak writes nothing outside the project root ------------------
+
+    ("soak: accept a warehouse outside the project root",
+     "crates/sankhya-soak/src/bin/soak.rs",
+     "    if !resolved.starts_with(&root) {",
+     "    if false {",
+     "sankhya-soak"),
+
+    ("soak: check the unresolved path, so `..` walks out of the root",
+     "crates/sankhya-soak/src/bin/soak.rs",
+     "    let anchor = absolute\n        .ancestors()\n        .find(|candidate| candidate.exists())\n        .unwrap_or(root);",
+     "    let anchor = root;",
+     "sankhya-soak"),
+
 ]
 
 
