@@ -167,6 +167,14 @@ claim a cube saw all of its input.
 driven by a recorded query log, so automatic materialisation is available and nothing is
 currently choosing what to materialise.
 
+Four ADRs were written for what comes next, and each was prompted by a question worth
+recording: [ADR-0008](adr/0008-serving-cubes-under-policy.md) on serving under policy,
+[ADR-0009](adr/0009-the-cube-lifecycle.md) on the three lifetimes,
+[ADR-0010](adr/0010-external-aggregations.md) and
+[ADR-0011](adr/0011-sdaf-declared-dependencies.md) on external aggregations that declare what
+they need, and [ADR-0012](adr/0012-open-capabilities.md) on what a standing artefact must
+declare before the system will maintain it on somebody's behalf.
+
 ### A cube that could only exist at compile time
 
 Cube definitions were *"registered against a session by the embedding application"*, so a
@@ -250,10 +258,44 @@ Describing reads no data. A picker that cost a hydration per keystroke is a pick
 leaves switched on, so hydration stays gated on a statement naming a navigation function while
 description is registered always.
 
-**What is still not there.** The materialised-cuboid tier of
-[ADR-0008](adr/0008-serving-cubes-under-policy.md), and the `target_lag` lifecycle of
-[ADR-0009](adr/0009-the-cube-lifecycle.md). Cube selection still waits on the recorded query
-log §11.6 asks for.
+### Cuboids on disk, refreshed without a caller, and collected
+
+The materialised tier of [ADR-0008](adr/0008-serving-cubes-under-policy.md) and the Maintained
+lifetime of [ADR-0009](adr/0009-the-cube-lifecycle.md) are built.
+
+A cuboid is a published table keyed by *(definition version, snapshot, **scope**, cuboid)*.
+The scope is the addition, and here it is stronger than a cache key: **two scopes are two
+tables**, so a bug in the lookup cannot serve one principal's rows to another, because the
+rows are not in the file being read.
+
+Cells are stored as the components of their Shewchuk expansion and rounded once when read.
+Exit criterion 3a asks for bit-identical results with materialisation on and off, and a cube
+rolls up in stages where every stage rounds — fixing the *order* of summation makes one
+reduction reproducible and does nothing about **associativity**, which is exactly what a
+materialised cuboid is. A test round-tripping one cell passed under a mutation that stored the
+rounded total; the loss only appears when a stored partial is added to another, so the test
+that catches it rolls two of them up.
+
+`target_lag` is a **staleness target, not a schedule** — Snowflake's framing for dynamic
+tables. Staleness here is exact rather than estimated, because a cuboid records the version it
+was computed at, and a cuboid past its target is never served as though it were fresh: the
+answer falls back to live aggregation and says `materialised = false`.
+
+A maintained cube is built **with nobody logged in**. The refresher has no principal, so it
+builds the *unrestricted* cuboid — which may serve only an unrestricted caller. **Background
+refresh therefore helps dashboards and service accounts and does nothing for a restricted
+analyst**, whose cuboids are built by their own queries. Pre-building named scopes is a
+decision nobody has made and is not taken by implication.
+
+And superseded cuboids are collected. One at an old snapshot can never be selected, so it is
+garbage the moment the table advances — and it fell between the two mechanisms that existed:
+the orphan sweep finds unreferenced files *within* a table, and this is a whole table no log
+mentions. The same shape as the defect that filled a disk in the soak, reintroduced by adding
+cuboids and closed the same afternoon.
+
+**What is still not there.** Cube selection waits on the recorded query log §11.6 asks for —
+building the selector before the signal exists would repeat the error M7 already made once.
+And a cuboid is pre-built only for the unrestricted scope.
 
 The statement text is scanned for cube function names to decide what to hydrate, which is
 deliberately crude: a `SessionContext` is built per statement, `TableFunctionImpl::call` is
