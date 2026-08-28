@@ -42,6 +42,7 @@
 #![doc(html_root_url = "https://docs.rs/sankhya-cube-sql")]
 
 mod args;
+pub mod hydrated;
 pub mod catalog;
 pub mod functions;
 pub mod publish;

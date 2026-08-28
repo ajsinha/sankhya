@@ -1702,6 +1702,20 @@ CATALOGUE = [
      "            if false {",
      "sankhya-cube"),
 
+    # --- the hydration cache: every field of the key prevents something -------
+
+    ("cube-sql: let the hydration cache grow without bound",
+     "crates/sankhya-cube-sql/src/hydrated.rs",
+     "        if entries.len() >= self.capacity && !entries.contains_key(&key) {",
+     "        if false {",
+     "sankhya-cube-sql"),
+
+    ("cube-sql: forget every cube when one is invalidated",
+     "crates/sankhya-cube-sql/src/hydrated.rs",
+     "        self.entries.write().retain(|key, _| key.cube != cube);",
+     "        let _ = cube;\n        self.entries.write().clear();",
+     "sankhya-cube-sql"),
+
     # --- the scope digest: what one principal may be served of another's ------
 
     ("catalog: leave the row filter out of the scope digest",
