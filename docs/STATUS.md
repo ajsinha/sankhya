@@ -58,9 +58,21 @@ The replacements assert against the files on disk, the commit log, and the Parqu
 `sankhya-ingest` creates tables with no partition columns and writes flat. That is internally
 consistent — it declares nothing and delivers nothing — but it means `FR-STORE-20` is met on
 the batch publish path and **not on the streaming arrival path, which is where most data
-lands**. `Onboarded` carries no date axis at all, so the automatic layout selection
-`ARCHITECTURE` describes is absent rather than unwired. This is the next piece of work and it
-is not started.
+lands**. `FR-STORE-24` is explicit that the column is derived *during ingest* and lives on the
+analytical side, which is precisely this path. `Onboarded` carries no date axis, so the
+automatic layout selection `ARCHITECTURE` §9.8 describes is absent rather than unwired.
+
+**And there is no timestamp to derive one from.** `_sankhya_commit_ts` is declared as a
+system column on every ingested table and written as literal `0` for every row —
+`encode.rs` appends zero, and `Mutation` carries `commit_lsn` and no timestamp at all. The
+comment beside it says the value is "recorded for human reading only", which it is not: it is
+recorded for nothing. So an ingest date axis would have to come from the wall clock at write
+time, and that is a decision to take deliberately rather than to discover halfway through the
+change.
+
+Not started. Sized here rather than begun, because the CDC commit path carries careful
+crash-safety reasoning — sequence-derived names, commit-strictly-after-write, rebasing on
+version conflict — and a partitioning change touches all three.
 
 
 ## M7, in progress
