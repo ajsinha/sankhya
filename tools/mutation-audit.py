@@ -2070,6 +2070,32 @@ CATALOGUE = [
      "        let completeness = Completeness::complete(narrowed.len() as u64);\n        check_completeness(&completeness, &args)?;\n\n        let rolled",
      "sankhya-cube-sql"),
 
+    # --- date partitioning: declared and applied ---------------------------
+
+    ("publish: write files flat while declaring a partition column",
+     "crates/sankhya-publish/src/publish.rs",
+     "            add.partition_values\n                .insert(DATA_DATE_COLUMN.to_string(), partition.clone());",
+     "",
+     "sankhya-publish"),
+
+    ("publish: put every row of a batch in one partition whatever its date",
+     "crates/sankhya-publish/src/publish.rs",
+     "                    let partition = self.date_axis.partition_of(days.value(row));",
+     "                    let partition = self.date_axis.partition_of(days.value(0));",
+     "sankhya-publish"),
+
+    ("publish: file a row with no date under today instead of refusing",
+     "crates/sankhya-publish/src/publish.rs",
+     "                    if days.is_null(row) {",
+     "                    if false {",
+     "sankhya-publish"),
+
+    ("publish: commit each partition of a batch separately",
+     "crates/sankhya-publish/src/publish.rs",
+     "        commit(&self.root, version, &actions).map_err(|error| PublishError::Commit {",
+     "        for one in actions.chunks(1) { commit(&self.root, version, one).ok(); }\n        commit(&self.root, version, &[]).map_err(|error| PublishError::Commit {",
+     "sankhya-publish"),
+
 ]
 
 
