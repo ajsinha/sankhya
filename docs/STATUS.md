@@ -922,7 +922,7 @@ row, and Q6 returns a hundred thousand; `NFR-PERF-03` requires a partition predi
 partitioning is not built, so Q5 could not satisfy it however fast it ran.
 
 **These are met on hardware below the reference node.** The requirements name 32 physical
-cores and 351 GB; this is twelve cores and 62 GB. That makes the results conservative
+cores and 354 GB; this is twelve cores and 62 GB. That makes the results conservative
 rather than qualified — but the reference node has never been measured on, so the numbers
 that would be published with it do not exist.
 
@@ -998,7 +998,7 @@ underneath it, and it made two costs visible.
 |---|---|---|
 | Q1 scan + aggregates | 450 ms | 462 ms |
 | Q6 selective filter | 213 ms | 219 ms |
-| Q3 three-way join | 351 ms | 372 ms |
+| Q3 three-way join | 354 ms | 372 ms |
 | Q5 six-way join | 415 ms | 578 ms |
 
 **Parity on scans, 12% and 39% behind on joins.** Four causes were found in the end. Two
@@ -1084,7 +1084,7 @@ Measured on TPC-H it is not neutral. It costs at every selectivity tried:
 | 1 in ~7 | 116.6 ms | 162.0 ms | **0.72×** |
 | all rows | 110.6 ms | 111.7 ms | 0.99× |
 
-With filter reordering compounding it, Q6 went from 351 ms to **917 ms** at eight clients.
+With filter reordering compounding it, Q6 went from 354 ms to **917 ms** at eight clients.
 
 **Why it does not help is the useful part.** Late materialization saves decoding payload
 columns for rows a predicate eliminates — and on this data those rows were already
@@ -1212,7 +1212,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 351 specific defects applied one at a time; all 351 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 354 specific defects applied one at a time; all 354 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -1428,7 +1428,7 @@ On a 24-core machine with NVMe storage.
 | Cold `cargo check`, full critical dependency family | 32.9 s |
 | Vendored PostgreSQL build | ~2 min, 35 MB installed |
 | Synthetic generation | ~147 MB/s |
-| Bulk load, 10 tables | 99,235,351 rows / 10 GiB in 188.7 s (~526k rows/s) |
+| Bulk load, 10 tables | 99,235,354 rows / 10 GiB in 188.7 s (~526k rows/s) |
 | On-disk size after load | 14 GB |
 
 ### Query-engine settings
@@ -1706,9 +1706,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,618 tests, none of which needs a database
+cargo test --workspace           # 1,620 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 351 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 354 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

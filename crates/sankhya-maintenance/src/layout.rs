@@ -67,3 +67,33 @@ pub fn check(columns: &[String], declared: &[String]) -> Result<(), Vec<String>>
         Err(missing)
     }
 }
+
+/// Every table's declared clustering under one schema.
+///
+/// Reads `table.<schema>.<name>.clustering` for every name that declares one. Returned as a
+/// map rather than looked up per table at compaction time, because a maintenance tick plans
+/// across every partition of every table and re-reading configuration inside that loop would
+/// make the plan depend on when each lookup happened.
+#[must_use]
+pub fn declared(
+    config: &Configuration,
+    schema: &str,
+) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut out = std::collections::BTreeMap::new();
+    for (key, value) in config.section(&format!("table.{schema}")) {
+        // `<table>.clustering`, and nothing else under the table.
+        let Some(table) = key.strip_suffix(".clustering") else {
+            continue;
+        };
+        let columns: Vec<String> = value
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .map(str::to_string)
+            .collect();
+        if !columns.is_empty() {
+            out.insert(table.to_string(), columns);
+        }
+    }
+    out
+}

@@ -42,7 +42,7 @@ pub use driver::{
     apply, checkpoint_if_due, commit_tick, execute_tick, plan_tick, retire_completed, DriverPolicy,
     PendingCompaction, TickPlan, TickReport, CHECKPOINT_INTERVAL,
 };
-pub use layout::{check as check_clustering, clustering, clustering_key};
+pub use layout::{check as check_clustering, clustering, clustering_key, declared};
 pub use execute::{retire_inputs, run_compaction, RetentionPolicy, RetirementOutcome};
 pub use orphans::{plan_orphan_cleanup, sweep, FileOnDisk, OrphanPlan, OrphanPolicy, OrphanReport};
 pub use schedule::{schedule, Class, Deferral, Job, Schedule, Scheduled, SystemState};

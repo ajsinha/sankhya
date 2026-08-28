@@ -50,6 +50,7 @@
 //! A driver that merged and retired in one pass would make the grace period
 //! unobservable and the safety it provides theoretical.
 
+use std::collections::BTreeMap;
 use sankhya_error::Result;
 use sankhya_table::{CompactionOutcome, WriterConfig};
 use sankhya_table_delta::{
@@ -71,6 +72,17 @@ use sankhya_types::Lsn;
 pub struct DriverPolicy {
     pub compaction: CompactionPolicy,
     pub retention: RetentionPolicy,
+    /// The clustering each table declares, by table name.
+    ///
+    /// **Per table, because clustering is a per-table decision.** `CompactionPolicy` carries
+    /// one clustering for everything it governs, which is the right shape for thresholds ---
+    /// a target file size applies to every table equally --- and the wrong shape for a sort
+    /// order, which is a statement about one table's query pattern and means nothing about
+    /// another's.
+    ///
+    /// A table absent from this map falls back to `compaction.clustering`, which is empty by
+    /// default. Undeclared means unclustered.
+    pub clustering: BTreeMap<String, Vec<String>>,
     /// Bytes a tick of budget is worth.
     ///
     /// Deliberately crude. The estimate exists to stop one enormous merge consuming the
@@ -84,12 +96,27 @@ impl Default for DriverPolicy {
         Self {
             compaction: CompactionPolicy::default(),
             retention: RetentionPolicy::default(),
+            clustering: BTreeMap::new(),
             bytes_per_tick: 8 * 1024 * 1024,
         }
     }
 }
 
 impl DriverPolicy {
+    /// The same policy, with each table's declared clustering read from configuration.
+    ///
+    /// Reads every `table.<schema>.<name>.clustering` under `schema`. A schema nobody has
+    /// configured leaves the map empty, which is the same as declaring nothing.
+    #[must_use]
+    pub fn declaring_clustering(
+        mut self,
+        config: &sankhya_config::Configuration,
+        schema: &str,
+    ) -> Self {
+        self.clustering = crate::layout::declared(config, schema);
+        self
+    }
+
     /// What class of problem this partition has.
     #[must_use]
     pub const fn class_for(urgency: CompactionUrgency) -> Option<Class> {
@@ -178,7 +205,12 @@ pub fn plan_tick(
         pending.push(PendingCompaction {
             plan,
             job,
-            clustering: policy.compaction.clustering.clone(),
+            // The table's own clustering, falling back to the policy-wide one.
+            clustering: policy
+                .clustering
+                .get(&partition.table)
+                .cloned()
+                .unwrap_or_else(|| policy.compaction.clustering.clone()),
         });
     }
 
@@ -246,7 +278,40 @@ pub fn execute_tick(
     let mut report = TickReport::default();
 
     for (index, pending) in plan.run.iter().enumerate() {
-        let name = format!("compacted-{sequence:06}-{index:04}.parquet");
+        // Into the partition the plan is for, never at the table root.
+        //
+        // `run_compaction` writes `output_name` relative to `directory`, and the inputs live
+        // inside `<partition>/`. A bare name puts the merged file *outside* the partition its
+        // rows belong to: the rows' dates no longer match the directory holding them, the
+        // add action carries no partition value, and an external reader sees a file that
+        // belongs to no partition at all.
+        //
+        // It also never converges. Each tick removes files from the partition and adds one
+        // at the root, so the partition keeps receiving writes and the root accumulates
+        // merged files nothing ever touches again.
+        // Beside its inputs, whatever directory that is.
+        //
+        // Derived from the first input's path rather than from `plan.partition`, because a
+        // partition *identifier* is not a directory name --- callers legitimately label a
+        // partition "all" or "2026-Q3" while the files sit somewhere else entirely. Using
+        // the label built a path to a directory that does not exist, the write failed, and
+        // the merge was reported as failed rather than done.
+        //
+        // The inputs' directory is the only thing that is always true, and it is what the
+        // output must join: a merge that lands outside the partition its rows belong to
+        // leaves their dates disagreeing with the directory holding them.
+        let directory_of_inputs = pending
+            .plan
+            .inputs
+            .first()
+            .and_then(|file| std::path::Path::new(&file.name).parent())
+            .map(|parent| parent.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let name = if directory_of_inputs.is_empty() {
+            format!("compacted-{sequence:06}-{index:04}.parquet")
+        } else {
+            format!("{directory_of_inputs}/compacted-{sequence:06}-{index:04}.parquet")
+        };
         match run_compaction(&pending.plan, directory, &name, config, &pending.clustering) {
             Ok(outcome) => {
                 report.bytes_before = report.bytes_before.saturating_add(outcome.bytes_before);
@@ -271,21 +336,28 @@ pub fn execute_tick(
 /// Files the tick did not touch are left exactly as they were, including their declared
 /// coverage: rewriting coverage the merge did not change would be a chance to get it
 /// wrong for no benefit.
-pub fn apply(live: &mut Vec<FileStat>, report: &TickReport) {
+pub fn apply(live: &mut Vec<FileStat>, report: &TickReport, table_root: &Path) {
+    let relative = |p: &Path| {
+        p.strip_prefix(table_root)
+            .unwrap_or(p)
+            .to_string_lossy()
+            .into_owned()
+    };
     for outcome in &report.merged {
-        let superseded: BTreeSet<&std::ffi::OsStr> = outcome
-            .inputs_retained
-            .iter()
-            .filter_map(|p| p.file_name())
-            .collect();
+        // Matched on the path relative to the table root, not the bare file name.
+        //
+        // The bare name was indistinguishable from correct while every file sat at the
+        // table root. Once tables are partitioned, `f.name` is
+        // `sank_data_date=2026-08-28/00000000.parquet` and the bare name is
+        // `00000000.parquet`, so nothing ever matched: the live set kept every input it was
+        // told had been merged, and grew by one phantom entry per tick.
+        let superseded: BTreeSet<String> =
+            outcome.inputs_retained.iter().map(|p| relative(p)).collect();
 
-        live.retain(|f| !superseded.contains(std::ffi::OsStr::new(f.name.as_str())));
+        live.retain(|f| !superseded.contains(&f.name));
 
         live.push(FileStat {
-            name: outcome.output.file_name().map_or_else(
-                || outcome.output.to_string_lossy().into_owned(),
-                |n| n.to_string_lossy().into_owned(),
-            ),
+            name: relative(&outcome.output),
             bytes: outcome.bytes,
             rows: outcome.rows,
             covers_through: outcome.covers_through,
@@ -317,11 +389,20 @@ pub fn commit_tick(
     let mut actions = Vec::new();
 
     for outcome in &report.merged {
+        // Relative to the table root, which is what the Delta protocol means by a file
+        // path --- not the bare file name.
+        //
+        // It was the bare name. That was indistinguishable from correct while every file sat
+        // at the table root, and became wrong the moment tables were partitioned: a merge
+        // inside `sank_data_date=2026-08-28/` was logged as a file at the root, so the add
+        // pointed at a path that does not exist and the removals did not match the
+        // partitioned inputs they were meant to retire. The partition then kept every input
+        // *and* gained a phantom entry per tick.
         let name = |p: &Path| {
-            p.file_name().map_or_else(
-                || p.to_string_lossy().into_owned(),
-                |n| n.to_string_lossy().into_owned(),
-            )
+            p.strip_prefix(table_root)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .into_owned()
         };
 
         // Everything the merge learned, written where other engines can read it too.

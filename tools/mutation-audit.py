@@ -199,7 +199,7 @@ CATALOGUE = [
 
     ("driver: leave superseded inputs in the live set",
      "crates/sankhya-maintenance/src/driver.rs",
-     "        live.retain(|f| !superseded.contains(std::ffi::OsStr::new(f.name.as_str())));",
+     "        live.retain(|f| !superseded.contains(&f.name));",
      "",
      "sankhya-maintenance"),
 
@@ -217,8 +217,8 @@ CATALOGUE = [
 
     ("driver: reuse one output name for every tick",
      "crates/sankhya-maintenance/src/driver.rs",
-     'let name = format!("compacted-{sequence:06}-{index:04}.parquet");',
-     'let name = format!("compacted-{index:04}.parquet");',
+     'format!("compacted-{sequence:06}-{index:04}.parquet")',
+     'format!("compacted-{index:04}.parquet")',
      "sankhya-maintenance"),
 
     ("log: let an add of an existing path duplicate it",
@@ -2163,6 +2163,26 @@ CATALOGUE = [
      "        commit(&self.root, 0, &create(metadata)).map_err(|error| {",
      "        commit(&self.root, 0, &[Action::Metadata(metadata)]).map_err(|error| {",
      "sankhya-publish"),
+
+    # --- compaction lands in the partition its rows belong to --------------
+
+    ("maintenance: log a merged file by its bare name, losing its partition",
+     "crates/sankhya-maintenance/src/driver.rs",
+     "            p.strip_prefix(table_root)\n                .unwrap_or(p)\n                .to_string_lossy()\n                .into_owned()\n        };\n\n        // Everything the merge learned",
+     "            p.file_name().map_or_else(|| p.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned())\n        };\n\n        // Everything the merge learned",
+     "sankhya-maintenance"),
+
+    ("maintenance: retire live files by bare name, so a partitioned one never leaves",
+     "crates/sankhya-maintenance/src/driver.rs",
+     "        let superseded: BTreeSet<String> =\n            outcome.inputs_retained.iter().map(|p| relative(p)).collect();",
+     "        let superseded: BTreeSet<String> = outcome.inputs_retained.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).collect();",
+     "sankhya-maintenance"),
+
+    ("maintenance: write a merged file outside the partition its rows belong to",
+     "crates/sankhya-maintenance/src/driver.rs",
+     "        let name = if directory_of_inputs.is_empty() {",
+     "        let directory_of_inputs = String::new();\n        let name = if directory_of_inputs.is_empty() {",
+     "sankhya-maintenance"),
 
     # --- clustering: declared, and applied only when settled ---------------
 

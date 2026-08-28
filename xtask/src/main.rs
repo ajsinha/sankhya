@@ -135,6 +135,9 @@ fn main() -> ExitCode {
 
     let run_all = task.is_empty() || task == "check-all";
 
+    if run_all || task == "check-tests" {
+        failed |= !check_tests(&root);
+    }
     if run_all || task == "check-invariants" {
         failed |= !check_invariants(&root);
     }
@@ -209,6 +212,7 @@ fn main() -> ExitCode {
                 | "check-doc-numbers"
                 | "check-writers"
                 | "check-invariants"
+                | "check-tests"
                 | "check-logging"
                 | "check-package"
                 | "check-catalogues"
@@ -218,7 +222,7 @@ fn main() -> ExitCode {
     {
         eprintln!(
             "usage: cargo xtask \
-             [check-all|check-invariants|check-writers|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
+             [check-all|check-tests|check-invariants|check-writers|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
              |check-features|check-lints|check-mutations|check-doc-numbers\
              |check-catalogues|write-catalogues|check-logging|check-package|check-performance]"
         );
@@ -1781,4 +1785,67 @@ const KNOWN_CHECKS: &[&str] = &[
     "check-logging",
     "check-package",
     "check-doc-numbers",
+    "check-tests",
 ];
+
+/// Run the test suite.
+///
+/// # Why this was not here, and why that was the problem
+///
+/// `check-all` ran thirteen static checks --- layers, lints, documentation, mutations --- and
+/// **not the tests**. `cargo test --workspace` appeared in this file exactly once, in a doc
+/// comment describing what somebody else should run.
+///
+/// The consequence is the failure mode this project keeps finding in other people's work and
+/// had in its own: a green report that was true about what it checked and silent about what
+/// it did not. A maintenance test failed for some time while every commit said "all checks
+/// passed", because the count of tests was obtained by *counting test functions* rather than
+/// by running them --- a number that is equally correct whether they pass or not.
+///
+/// It is slow, and that is why it was left out. Slow is not a reason for a check to be
+/// absent; it is a reason for it to be last.
+fn check_tests(root: &Path) -> bool {
+    println!("== check-tests ==");
+    let started = std::time::Instant::now();
+    let output = std::process::Command::new(env!("CARGO"))
+        .arg("test")
+        .arg("--workspace")
+        .arg("--quiet")
+        .current_dir(root)
+        .output();
+
+    let Ok(output) = output else {
+        eprintln!("  COULD NOT RUN  cargo test could not be started");
+        return false;
+    };
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    if !output.status.success() {
+        // The failing lines, not the whole run. A wall of output is a wall nobody reads.
+        for line in text.lines().filter(|line| {
+            line.contains("panicked at")
+                || line.starts_with("test result: FAILED")
+                || line.starts_with("error")
+        }) {
+            eprintln!("  {line}");
+        }
+        eprintln!("  FAILED         the test suite does not pass");
+        return false;
+    }
+
+    let passed: u64 = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("test result: ok. "))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .filter_map(|count| count.parse::<u64>().ok())
+        .sum();
+    println!(
+        "   {passed} test(s) passed in {:.0}s",
+        started.elapsed().as_secs_f64()
+    );
+    true
+}
