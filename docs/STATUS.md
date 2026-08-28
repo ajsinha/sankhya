@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/wordmark-dice-dark.png">
+    <img src="assets/wordmark-dice.png" alt="SANKHYA" width="300">
+  </picture>
+</p>
+
 # SANKHYA — Build Status
 
 **Updated:** 2026-08-26 · Tracks what is *actually built* against
@@ -18,8 +25,640 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M3** Query engine and storage performance | 28–34 ew | **Complete**, all six exit criteria met — closed 2026-08-26. One criterion was corrected first: it required cancellation inside user code, which does not exist until M4, and that clause moved to M4. Parts of the work breakdown remain unbuilt and are listed under *M3, closed* below |
 | **M4** Graph engine and the extension mechanism | 26–32 ew | **Complete.** Every exit criterion met; see below |
 | **M5** Tenancy, security and API surfaces | 22–28 ew | **Closed.** Four of five exit criteria met; the fifth needs a second server version to exist. Two of four API surfaces built — the wire protocol and Flight SQL. The control plane and its gateway are **deferred to M6**, because what they expose is built there |
-| **M6** Operability, packaging and hardening | — | **Next.** A server process exists ahead of schedule; the rest is not started |
-| **M7**–**M8** | — | Not started |
+| **M6** Operability, packaging and hardening | — | **In progress. Five of seven exit criteria met.** §10.1's diagnostic, §10.2's catalogues, §10.3's backup and restore drill, §10.4's packaging checks, §10.5's timed journey and §10.6's version axes are built; criterion 3 as far as a single release allows. **Criterion 4 is not met** — §10.7's harness is built and proven, and the four-hour 10 GB run of 2026-08-26 passed for the paths it exercised. It did not read the data: the loop counted a log replay as a query, and the 10 GB was written once and scanned by nothing. A reading workload now exists and the run that uses it has not been done. See [SOAK.md §7](SOAK.md). **Criterion 7 is not met** — §10.8's size decision and route table are built and tested; the gRPC transport and every write path are not |
+| **M7** Multidimensional analysis — cubes, slice/dice, roll-up, consolidation | — | **In progress, not complete.** The algebra, navigation, materialisation and SQL surface are built across three crates, and all eight exit criteria have passing tests. **The hydration path does not exist**: nothing builds a cube from a published table, so the exit criteria pass on cells their own fixtures supply. Corrected 2026-08-27 after claiming completion. See below, and [ADR-0007](adr/0007-the-cube-model.md) |
+| **M8**–**M9** Scale-out, then tiering | — | Not started. Renumbered from M7–M8 when M7 was inserted |
+
+---
+
+## Partition fan-out, found by the soak on its first honest run
+
+The fix for the partitioning defect introduced a different one, and `FR-CDC-14` names it:
+
+> A single commit batch SHALL NOT produce unbounded file fan-out. A batch touching many
+> partitions MUST NOT write one tiny file per partition **without a guard**.
+
+`Publication::append` wrote one file per partition per batch, with no guard. A 200,000-row
+batch spread over ninety days becomes ninety files; a 5,000-row append becomes ninety files of
+fifty-five rows.
+
+**Measured, not reasoned about: 32,279 live files across ten tables in four minutes,
+averaging 37 KB, against a compaction policy that targets 256 MB.** The soak's judge breached
+`live_files` on its own — *"compaction is not keeping up with the write rate… if the peaks
+climb, each cycle starts further behind than the last"* — which is the harness doing exactly
+what it exists for.
+
+**This is the argument for routing the soak through `sankhya-publish`, demonstrated.** The
+previous harness wrote through its own code and reported `PASS` on flat, non-conforming tables
+for hours. One run through the shipping write path surfaced a MUST violation in four minutes.
+
+`ARCHITECTURE` §6.4.2 had specified the guards and nothing had built them. `sankhya-publish`
+now has `fanout`: a minimum file size below which a partition waits, a deferral age after
+which it is written however small (waiting for ever is not deferral, it is loss), a cap on
+partitions per commit, and the bulk path — feed an `Accumulator` everything, flush once, and
+each partition is written once in full rather than once per input batch.
+
+**The alarm is the part that matters**, and §6.4.2 says so: *"the guards buy time; the alarm
+gets the design fixed. Silently absorbing it would be the failure."* `Strain::explain` reports
+sustained fan-out and names the cause — a partition granularity finer than the arrival
+pattern — because no amount of deferral fixes that.
+
+## Date partitioning, corrected 2026-08-27
+
+Found by being asked whether Delta was following the partition-by-date decision. It was not,
+and the tables were **malformed** rather than merely unpartitioned.
+
+Every table declared `partitionColumns: ["sank_data_date"]` and then wrote every file flat at
+the table root with `"partitionValues":{}`, against a schema that did not contain the column.
+It existed in no location the Delta protocol defines. An external engine reads such a column
+as null for every row and prunes nothing — and `CON-08` requires Spark and Trino to read
+these tables directly, `FR-STORE-20` requires every analytical table to carry the column and
+be partitioned on it.
+
+Corrected in `sankhya-publish`: the column is part of the schema, files land in
+`sank_data_date=YYYY-MM-DD/`, every add action carries its partition value, one batch
+spanning several dates becomes several files in a **single commit**, and each file carries
+the date of the partition it sits in rather than of the row — a stamp disagreeing with its
+directory is a table that reconciles differently depending on which a reader trusts.
+
+**It survived because of a test named for the layout that tested a string formatter.**
+`the_partition_path_is_what_an_external_engine_expects` publishes nothing and reads nothing.
+The replacements assert against the files on disk, the commit log, and the Parquet contents.
+
+### Still not partitioned: the ingest path
+
+`sankhya-ingest` creates tables with no partition columns and writes flat. That is internally
+consistent — it declares nothing and delivers nothing — but it means `FR-STORE-20` is met on
+the batch publish path and **not on the streaming arrival path, which is where most data
+lands**. `FR-STORE-24` is explicit that the column is derived *during ingest* and lives on the
+analytical side, which is precisely this path. `Onboarded` carries no date axis, so the
+automatic layout selection `ARCHITECTURE` §9.8 describes is absent rather than unwired.
+
+**And there is no timestamp to derive one from.** `_sankhya_commit_ts` is declared as a
+system column on every ingested table and written as literal `0` for every row —
+`encode.rs` appends zero, and `Mutation` carries `commit_lsn` and no timestamp at all. The
+comment beside it says the value is "recorded for human reading only", which it is not: it is
+recorded for nothing. So an ingest date axis would have to come from the wall clock at write
+time, and that is a decision to take deliberately rather than to discover halfway through the
+change.
+
+Not started. Sized here rather than begun, because the CDC commit path carries careful
+crash-safety reasoning — sequence-derived names, commit-strictly-after-write, rebasing on
+version conflict — and a partitioning change touches all three.
+
+
+## M7, in progress
+
+Added 2026-08-27 by owner directive and placed before scale-out: cubes are a stated
+differentiator and multi-node deployment is table stakes.
+
+### What was built
+
+| Crate | Layer | What it holds |
+|---|---|---|
+| `sankhya-cube-algo` | 1 | The additivity algebra, ancestor answerability, hierarchy consolidation, the cuboid lattice and greedy selection. No dependencies |
+| `sankhya-cube` | 3 | The validated `Cube`, consolidation on the graph engine, the sparse cube and its navigation, completeness, materialisation, the write-back overlay |
+| `sankhya-cube-sql` | 4 | Roll-up and slice as table functions, with everything that qualifies a number as a column |
+
+### The three findings worth keeping
+
+**Criterion 3a was not met, and the cause was arithmetic.** A cube rolls up in stages, every
+stage rounds, and `round(round(a+b) + round(c+d))` is not `round(a+b+c+d)`. Fixing the
+*order* of summation makes one reduction reproducible; it does nothing about
+**associativity**, and a materialised cuboid is exactly a re-association of the same
+addition. Measured at one ULP — large enough for two reports to disagree by a penny, small
+enough that nobody can point at a defect. A materialised aggregate now stores its value
+unrounded as a Shewchuk expansion, and rounds once when read.
+
+**Criterion 2 is met in a stronger form than its own wording.** It asks that summing a
+semi-additive measure across time be *rejected at planning time*. It is not rejected — it is
+**not expressible**, because the reduction operator is the measure's and never the caller's.
+
+**Completeness cannot be computed from what survived.** A withheld row leaves no trace, so
+an aggregate counting what arrived and dividing by what arrived reports itself complete
+however much policy removed. The withheld count comes from the filter or it does not exist.
+
+### The gap that was found by being asked, and then closed
+
+**The hydration path did not exist.** A `Definition` named a fact table and validated that
+the name was well formed; nothing read it. Every `Cells` in existence was built by a
+navigation operation or a test fixture, so the cube was an algebra with a SQL façade over
+data the caller supplied. All eight exit criteria passed, and every one of them supplied its
+own cells — which is precisely why passing them did not surface it. **A criterion that never
+has to read a published table cannot tell you whether the cube can.**
+
+`hydrate.rs` and `publish_from_fact_table` now close it: the cube reads the table its
+definition names, through the same session that will query it. `tests/end_to_end.rs` supplies
+a *table* and makes the cube find it, which is the test whose absence allowed the claim.
+
+A row that cannot be placed — a null key, a null measure — is **counted, never dropped**, and
+returned as a `Completeness`. Skipping such rows leaves totals quietly short, which is the
+same failure as a policy-filtered total presented as complete, so it gets the same machinery.
+
+**A related defect in the same area.** The SQL surface computed `Completeness::complete(rows
+that survived)`, which reports complete however much was lost — the exact trap
+`sankhya_cube::complete` documents, implemented one crate away from the warning. Completeness
+now comes from hydration and is a required field on `Published`, so a fixture cannot quietly
+claim a cube saw all of its input.
+
+### What is still not there
+
+ MDX, deliberately — see ADR-0007. Cube definitions are not persisted or loaded
+from a catalogue; a cube is registered against a session by the embedding application. The
+lattice selection is implemented and is not driven by a recorded query log, so automatic
+materialisation is available and nothing is currently choosing what to materialise.
+
+
+## M6, in progress
+
+### §10.8 — A gateway that refuses to become the bulk plane
+
+`FR-API-06` is the interesting half, and its reason is a **product** reason rather than an
+operational one:
+
+> Bulk data SHALL NOT be offered over JSON. Serializing analytical results as JSON destroys
+> the zero-copy premise and **defines published benchmarks downward**.
+
+The failure it prevents is not a server running out of memory. REST is the convenient
+surface, so people will use it for bulk extract *because* it is convenient — and then measure
+the system through it. A columnar engine benchmarked through a JSON encoder is a JSON encoder
+benchmark, and that is the number that gets published. The cap exists so the convenient path
+does not become the measured path, which is why it is hard rather than raisable.
+
+**A large result is a redirection, not a refusal.** It comes back as a **Flight ticket** —
+the same query, already planned and authorized, redeemable over the columnar path. A `413`
+sends somebody to ask for a bigger cap; a ticket sends them to the surface built for what
+they are doing.
+
+**You cannot count the rows to decide whether to return the rows.** Materialising a result in
+order to measure it is precisely the cost the cap exists to avoid, so the decision is taken
+from the plan's estimate before anything is materialised. Estimates are wrong, so there is a
+second guard: encoding stops the moment the actual output passes the cap, and the partial
+response is **abandoned rather than truncated** — a JSON array cut short is either invalid or,
+worse, valid and silently short, and a client cannot tell the second from a small answer.
+
+**Routes are declared and matched whole.** The scrape endpoint served
+`/metrics/../etc/passwd` on a prefix match in `§10.2` — harmless there because it reads no
+files, and exactly the shape that becomes a traversal the moment something does. Once was
+enough to make it a rule rather than a fix.
+
+**What `FR-API-04` names and this does not serve is recorded as data, with reasons.** Jobs,
+archive operations, mutating tenancy and policy administration, and the structured graph API.
+An API that quietly omits half a requirement reads as complete — and the jobs case is the
+sharpest: with no scheduler running, the endpoint would list nothing forever, and a client
+cannot tell *"no jobs are running"* from *"nothing runs jobs"*. That is the same reasoning
+that deferred the control plane out of `M5` in the first place.
+
+**Not built:** the gRPC transport itself, and the write paths. What exists is the surface's
+shape and the decision `FR-API-06` turns on, both tested; wiring them to tonic and to an
+audited write path is the remainder.
+
+---
+
+### §10.7 — The soak, and four attempts at judging one
+
+The section read *"A multi-day soak"* in its entirety, which is not something anybody can
+fail. The criterion is now falsifiable — **no bounded measure projects a crossing within the
+observation horizon** — and inconclusive counts as a failure, because a run whose sampling
+broke must not report the same green as one that ran properly.
+
+**Three kinds of bounded, not one.** The naive soak complains when any number rises, and half
+of them are supposed to. A measure declares whether it must be flat, flat *per unit of work*,
+or a sawtooth whose **peaks** must not climb. The second catches what a total never can — an
+audit drifting from one record per query to two, while its total rises exactly as it should.
+The third is a distinction no point-in-time diagnostic can draw: two oscillating series look
+identical at any moment, and one is a system keeping up while the other starts each cycle
+further behind.
+
+**Four attempts, each finding something by running it:**
+
+- **The diagnostic's linearity gate is wrong for a soak.** A healthy measure is noisy and
+  flat, which has an r² near zero — there is no trend to explain — so the baseline run
+  reported memory, descriptors and the history file as unjudgeable while nothing was wrong.
+  The same trap as r² on a constant series, corrected in `sankhya-math` earlier for the same
+  reason: undefined is not bad.
+- **A half-second run reported a memory leak.** Sixty rounds finished in 0.35 seconds and a
+  process allocates as it starts; across the opening of a run that looks exactly like a
+  linear climb. Fixed by a declared warm-up prefix **and** by bounding the horizon to what
+  the run observed — half a second extrapolated to three weeks is a factor of three and a
+  half million. `sankhya-diagnostic` already carried that guard and applying it there and
+  not here was the omission.
+- **Every caller got the warm-up arithmetic wrong**, both of them, overshooting by exactly
+  the prefix. A calculation both call sites get wrong on the first attempt does not belong at
+  the call site.
+- **A summary spans less than what it summarises.** Peaks sit inside their windows, so the
+  peak series spans less than the run — and the entitlement is a property of the run.
+
+**The harness is proven to notice**, which is the part that would otherwise be an untested
+backup by another name: one injection per shape of failure, each required to fail the run.
+
+**Not done:** the multi-day run at the ten-gigabyte scale, and retained evidence. The
+scheduled run is a change of duration and scale rather than a first attempt at the whole
+thing. [`SOAK.md`](SOAK.md) has the method, the numbers and the reasoning.
+
+---
+
+### §10.6 — Versions, and the difference between damage and the future
+
+**Three on-disk formats were added this session and none of them carried a version.** The
+backup manifest, the restore-drill evidence and the diagnostic history. That is the gap
+`§10.6` exists to close, and it was made in `§10.1` and `§10.3` — which is how these gaps are
+usually made: a format is invented to solve a problem, and versioning it is not part of the
+problem.
+
+**A parse error and "this is from the future" are different facts, and only one says what to
+do.** An artefact written by a newer release, read by an older one, fails somewhere in the
+middle of parsing — an unknown field, a number that will not fit, a restructured object. The
+error reads `invalid type: string, expected u64 at line 14 column 9`, and an operator reads
+that as **corruption**. They go looking for a damaged disk, a truncated write, a bad copy. The
+answer was "upgrade the binary", and nothing in front of them said so.
+
+So every format now carries its version **first in the file**, read before anything else is
+understood, and a future version is refused by name — with both numbers and an instruction.
+The ordering is the whole point: a version buried at the end of a JSON object is a version you
+learn only after successfully parsing everything you were trying to avoid parsing.
+
+**The four axes, and why independence is load-bearing.** `FR-OPS-11` requires the internal
+schema, the database major version, the table protocol and the wire APIs to version
+independently. One product version covering all four means every change to any of them is a
+change to all of them: an upgrade touching only the wire protocol reads as a storage-format
+change and gets the caution one deserves — and, worse, the reverse, a genuine storage break
+hiding inside a release that looked like a wire change.
+
+**Backwards is the direction that decides whether you can roll back.** A new release reading
+old data is the easy direction and the one everybody tests. Whether the *old* release can read
+what the new one wrote is the question, and after the upgrade is not the moment to answer it.
+So every format declares its rollback consequence — `safe`, `tolerated`, or **`ONE-WAY`** — and
+that column exists so the decision is visible *before* the upgrade rather than discovered
+during the rollback.
+
+**A corpus, because a fixture is an old binary's behaviour preserved.** Testing an upgrade
+properly means running release *n−1* against release *n*'s data. One release exists, so there
+is no earlier binary to run — and there does not need to be. What is needed is an earlier
+binary's **output**: artefacts as previous releases wrote them, checked in and read by every
+build. Unlike a binary, a fixture never stops building, never needs a toolchain that has been
+removed, and is legible in a diff.
+
+The fixtures are **hand-written rather than generated**, deliberately. A generated fixture
+regenerates when the format changes, agrees with the current code by construction, and proves
+nothing at all.
+
+**What is not tested:** running the previous binary, because there is not one. That is the
+honest limit of `§10.6` until a second release exists — and it is also what unblocks `M5`'s
+carried-forward client/server version matrix.
+
+[`VERSIONS.md`](VERSIONS.md) is generated from the declarations, including the rollback
+procedure.
+
+---
+
+### §10.4 — Packaging, and the two numbers nobody relates
+
+**The drain did not exist.** `serve_until` returned the moment shutdown resolved; its spawned
+connection tasks were detached, so dropping the runtime cancelled them abruptly. The doc
+comment above it said *"connections already running finish on their own, because cutting a
+client off mid-result is indistinguishable to them from a crash"* — describing the behaviour
+it did not have, which is how it survived review. A client mid-result saw a reset on every
+deploy.
+
+That had to be fixed before packaging could mean anything: **you cannot choose a termination
+grace for a process that does not drain.** A `JoinSet` now holds the handles, shutdown waits
+for them, and the wait is bounded — because an unbounded drain hangs on one stuck client
+until the orchestrator's patience runs out and kills the process anyway, with the difference
+that nobody chose the moment.
+
+**Then the check that relates the two.** A server's drain deadline and an orchestrator's
+termination grace live in different files, are edited by different people, and nothing
+normally connects them. When the grace is the shorter, every deploy kills the server
+mid-drain and clients see resets that look like crashes. `check-package` reads the drain out
+of the source, reads the grace out of every manifest under `packaging/`, and fails when a
+manifest allows less time than the server takes.
+
+**The platform baseline, which is where a Rust binary usually fails to install.**
+`IMPLEMENTATION_PLAN` §10.4 already called for *a build against an old platform baseline
+rather than a fully static binary*. What it did not say is that a baseline nobody checks is a
+baseline nobody meets. The declared baseline is `GLIBC_2.28` — RHEL 8, Debian 10 — and
+`check-package` reads what the binary actually requires.
+
+**This build requires `GLIBC_2.34`.** It would not start on RHEL 8, Ubuntu 20.04 or anything
+older than RHEL 9, and nothing on the build machine can tell you that: the symbol is present
+locally, so it links, runs and tests clean. It is discovered by a customer. The check reports
+it as a warning on a development build and **fails** when `SANKHYA_RELEASE` is set, because
+failing every local build on a property only the release environment can satisfy would train
+everybody to ignore it — the same warn-versus-fail distinction `check-loc` already makes.
+
+Meeting the baseline needs a build against an old sysroot, which is release-pipeline work.
+The gap is recorded rather than papered over by lowering the declared baseline to whatever
+this machine produces, which would quietly drop every enterprise distribution.
+
+**A test caught the check being broken before the check caught anything.** `highest_glibc`
+matched a `GLIBC_` prefix against the whole symbol token — but `readelf` writes
+`statx@GLIBC_2.28`, so it matched nothing, found no requirements, and concluded every
+requirement was met. It passed the real binary against a baseline it misses by six versions.
+The unit test written against genuine `readelf` output is the only reason that did not ship,
+and it is the reason the parser is tested on real output rather than on a convenient
+sketch.
+
+**The support matrix is data, not prose.** Five targets, each with its baseline and its
+artifact formats, declared once in `xtask/src/package.rs` and generated into
+[`PLATFORMS.md`](PLATFORMS.md). The number of build targets is the number of things that can
+silently break, and a script per platform drifts from its siblings until one artifact behaves
+unlike the rest for a reason nobody can find.
+
+**The baseline of the self-contained artifact is set by PostgreSQL, not by the Rust binary.**
+Worth stating because tuning the Rust build and declaring victory is the obvious mistake: our
+binary could be musl-static and the bundle would still require whatever `glibc` PostgreSQL was
+built against. `cargo-zigbuild` targets a chosen `glibc` for the Rust half without a
+container; the C half needs an old sysroot, and a container is excluded from *running* this
+system, never from building it.
+
+**Windows, checked rather than assumed.** The objection I expected to be fatal — a
+case-insensitive filesystem, where `Orders` and `orders` collide — is already handled:
+`sankhya-schema` case-folds every path segment to lower-case ASCII, digits and underscores,
+and refuses collisions rather than disambiguating them. The platform device names (`aux`,
+`con`, `nul`, `com1`…`lpt9`) are already reserved, with a comment saying why. **A warehouse is
+already Windows-path-safe.** What is missing is the vendored PostgreSQL build and service
+integration, which is porting work rather than a design problem. So the honest row is *client
+only*: any PostgreSQL driver connects from Windows today, which is what most Windows users
+need, and the server runs under WSL2 or a container until somebody builds it.
+
+**Two tests found defects in things I had just written.** Requiring every server target to
+state a baseline caught macOS declared with none — it has one, `MACOSX_DEPLOYMENT_TARGET`,
+and calling it "not applicable" said the question does not arise when in fact it arises and
+nobody answered it. And a mutation shortening the Kubernetes grace below the drain
+**survived**: the comparison was correct and nothing exercised it, because it lived only in
+`check-package`. A check that is only a command is a check that is only sometimes made, so it
+is now a test as well.
+
+**Not built:** container images and signing. Both need infrastructure this environment does
+not have — a container runtime, which the five-minute claim exists to avoid needing, and a
+signing key. The manifests assume an image that a release pipeline has to produce.
+
+---
+
+### §10.5 — The five-minute experience
+
+`M6`'s first exit criterion, and the plan is explicit about the form: *"it must be a test so
+it cannot rot"*. `crates/sankhya-server/tests/five_minutes.rs` is the quickstart, executed on
+every build — generate a warehouse, start the real binary as a subprocess, connect over the
+real wire protocol, query, aggregate, run the diagnostic, take a backup, prove it. Seven
+documented steps, and any of them breaking breaks the build.
+
+**The measured journey is about forty milliseconds**, from a built binary.
+
+**The claim as written cannot be met from source, and the test says so rather than measuring
+around it.** A first-time user's five minutes includes `cargo build`, which takes several
+minutes on a cold machine and is dominated by dependencies — `QUICKSTART.md` has always said
+so. The five-minute promise is a promise about a **released artifact**, which makes exit
+criterion 1 depend on `§10.4` packaging. Recording that is more useful than a green test
+measuring the wrong interval.
+
+**A thousand rows is deliberately small, and the suite has two larger sizes for the two
+larger questions.** `check-performance` runs TPC-H at scale factor 1 on a quiet machine for
+the latency objectives; the soak runs ten tables and ten gigabytes for days, to establish
+that nothing grows without bound. Conflating the three is how a suite comes to prove nothing,
+and `§10.7a` now specifies the third — which previously read, in its entirety, "a multi-day
+soak".
+
+**And tightening the budget does not rescue the timing assertion either.** This warehouse
+holds a thousand rows in four files; no plausible scaling regression is visible at that size.
+Somebody making the read path open every Parquet footer would still finish in milliseconds.
+The budgets catch a phase *breaking* or slowing by two orders of magnitude — a deadlock, a
+retry loop, a sleep left behind — and nothing subtler. Scaling belongs to
+`cargo xtask check-performance`, which generates a scale-factor-1 dataset and sits outside
+`check-all` for exactly that reason. Splitting them is the point: one proves the path works
+on every build, the other proves it is fast on a quiet machine.
+
+**Three defects, and one of them was in the test itself.**
+
+- **The banner printed the configured address, not the bound one.** Told to bind port 0 it
+  printed `:0` — the line whose only job is to say where to connect said nothing, and a test
+  wanting an ephemeral port had no way to learn which one it got. In three places: the
+  startup line, the `psql` invitation, and the metrics URL.
+- **`describe()` printed it a second time**, so the real port appeared beside a literal `:0`.
+- **The test hung instead of failing.** It read the banner with no deadline, so a mutation
+  that stopped the server announcing its port blocked forever and took the whole build with
+  it. Found by running that mutation. A test that hangs is strictly worse than one that
+  fails, because a failure names what broke — the read is now bounded and reports "it never
+  said" distinctly from "it took too long".
+
+---
+
+### §10.3 — Backup, protection and the restore drill
+
+Three requirements, each existing because of a specific way backups fail.
+
+**`FR-OPS-13` — the manifest refuses to exist rather than recording a disagreement.** The
+requirement's reason is blunt: *"three backups that do not agree with each other are worse
+than one"*. Worse, because three that agree restore a system and three that do not restore a
+puzzle, with nothing to say which is the one to trust.
+
+There turned out to be **two positions, not one**, and conflating them is the defect the
+manifest exists to prevent. `source_restores_to` is where the transactional store lands.
+`queryable_at` is the highest position at which *every* table is complete — the minimum over
+their coverage, because a query joining two tables can only be answered where both reach.
+They are rarely equal: tables publish at their own cadence. Recording one number and calling
+it "the consistent point" means recording whichever one the author happened to think of, and
+the difference between them is exactly how much re-capture a restore implies.
+
+The rule enforced at **build** time: **no table may cover a position past where the source
+restores to.** If one does, then after a restore the analytical tier holds rows the
+transactional store no longer has; capture resumes behind them and republishes that range at
+different positions. It is `SNK-S0002`'s shape one layer up, and it is not detectable
+afterwards from either side alone — which is why it is checked when the backup is recorded
+rather than when it is needed.
+
+**`FR-OPS-14` — expiry and removal are two steps.** Deleting a backup does not release its
+files. The failure that prevents: a backup deleted by mistake, the files swept before anybody
+notices, and no way back even if the manifest is recovered five minutes later. Seven days of
+grace, which is the span over which this kind of mistake is actually caught. `FR-STORE-21`
+makes the same trade for compaction — only add files, remove them later — for the same
+reason.
+
+**`FR-OPS-15` — the drill reads the data back.** *"An untested backup is a rumour."*
+
+A file-presence check passes on a truncated Parquet, on a file whose bytes were replaced with
+another table's, and on essentially every failure that actually happens — because what goes
+wrong with a backup is almost never that a file is missing. A missing file is loud. What goes
+wrong is that a file is there and wrong. So the drill recomputes the digest, which is
+expensive and is the only version of this that means anything.
+
+Both the backup and the drill compute that digest through **the same code**. Two
+implementations would drift on a null convention or a value rendering, every drill would fail
+on data that is fine, and after the third false alarm nobody would run drills.
+
+**The evidence records failures, or it is marketing.** A drill history with no failures in
+three years describes either a very good system or a drill that does not really run, and
+nothing in the history says which. Append-only, failures written with the same ceremony as
+passes, and "could not start" recorded distinctly from "ran and passed" — the same
+distinction the diagnostic draws, for the same reason.
+
+`sankhya-server backup` and `sankhya-server drill`, exiting `0` proven, `1` a table did not
+verify, `2` could not run. Demonstrated end to end against a real warehouse: take a backup,
+corrupt a file, watch the drill catch it and both outcomes land in the record.
+
+**The check with a property no other has.** The diagnostic now reports how long the backup has
+been unproven — and it is the only check in that crate that gives a **firm** date on a first
+run. Everything else needs two samples because a value alone implies no rate. Staleness rises
+at exactly one second per second and always has, so it needs no observing. The natural
+instinct is to feed it through the same `Trend` machinery as everything else, which would
+collect a week of samples to estimate a rate that is already known exactly, and report
+`TooFewObservations` in the meantime about the one thing that needs none.
+
+**Two catalogue entries were wrong in ways only running them showed.** Refactoring the log
+replay so that time travel and replay-to-the-end share their ordering rules moved two
+existing mutations, and `check-mutations` failed the build rather than letting them pass
+silently. And a new entry named the crate the *code* lives in rather than the crate whose
+tests notice — it reported SURVIVED while the defect was caught, which is precisely how you
+learn to read survivors as noise.
+
+---
+
+### §10.2 — Observability and the error catalogue
+
+Two catalogues, both **generated into documentation from the declarations themselves**, and a
+check that fails the build when the document and the source disagree. `M6`'s sixth exit
+criterion asks for exactly that — *"generated from the same source as the catalog"* — and the
+clause matters more than it reads: a hand-written table of error codes is correct on the day
+it is written and wrong by the second release, with nothing to say which entry went stale.
+
+**The metric catalogue is the API, not documentation of it.** Recording takes a
+`&'static Metric` from the catalogue, so there is no `counter("some_name")` and an undeclared
+metric is not refused at runtime --- it cannot be typed. Every exported series therefore has
+a documented meaning, a unit, a group and a bound on its cardinality, because those are
+fields on the thing you had to pass.
+
+**The tenant-data prohibition is structural.** `ARCHITECTURE` §17.1 says no metric label may
+contain tenant data. A label declares either a closed set of permitted values --- anything
+else is refused --- or a deployment-scoped identifier under a cap. There is deliberately no
+third variant, so a label that varies per row has no way to be declared. Past the cap, new
+series are refused **and counted**: the metric goes incomplete and says so, rather than
+growing without bound or going quietly wrong.
+
+**Two checks, not one.** Generating a document from a catalogue proves the document matches
+the catalogue and says nothing about whether the catalogue matches reality. So
+`check-catalogues` separately requires every declared metric to be recorded somewhere in the
+source. `ARCHITECTURE` §17.1 names four metrics that page; only compaction debt is declared,
+because the other three measure machinery that does not run in this process and three gauges
+permanently reading zero are indistinguishable from three healthy subsystems. The gap is
+published in `METRICS.md` rather than filled.
+
+**Runbooks are enforced, not aspirational.** A pageable metric's `runbook` field is not an
+`Option`, and the check requires the file to exist *and* to carry its Symptom / What is
+actually wrong / What to do sections. Seven exist. `M6`'s fifth exit criterion holds rather
+than being something to audit later.
+
+**Five defects, four of them in the path a user actually takes:**
+
+- **Errors reaching clients carried no code and no remediation.** The catalogue had existed
+  since M0 and the wire path did not go through it: a failed query returned the engine's own
+  message with a SQLSTATE guessed from substrings. The errors a person actually meets were
+  precisely the ones with nothing to look up. Exit criterion 6 was false.
+- **`CREATE TABLE` succeeded and did nothing durable.** DataFusion will run DDL against its
+  own in-memory catalogue, so the statement returned a success tag, the table existed for the
+  rest of that connection, and it was gone on reconnect. Not an error, not a wrong number ---
+  *a confirmation of something that did not occur*, which is the worst shape available. Fixed
+  by planning and executing in two steps, because `SessionContext::sql` runs DDL during
+  planning and a check on the returned plan is already too late.
+- **The commonest error of all was misclassified.** DataFusion 55 wraps plan errors in
+  `Diagnostic` to attach a source span, so matching on `Plan` never fired and "table not
+  found" fell through to the catch-all.
+- **`Box::leak` on every scrape** --- a few hundred bytes every fifteen seconds, forever, in
+  the component whose job is to report that kind of thing.
+- **A prefix-matched route** served `/metrics/../etc/passwd`. Harmless against an endpoint
+  that reads no files, and exactly the shape that becomes a traversal when one does.
+
+And two tests that did not test what they claimed: a cardinality-budget test using a metric
+with no labels, and a refusal-classification test reaching only one of the three states the
+table covers. Both were found by the mutation catalogue, not by reading.
+
+**The tenant-data prohibition is now checked rather than asserted.** `ARCHITECTURE` §17.1
+forbids caller data in any log line; metric labels were already structural and logs had only
+the sentence. `cargo xtask check-logging` closes it — and it is aimed at the case nobody
+writes deliberately: **`#[instrument]` records every argument of the function it decorates**,
+so three words on `fn query(&self, sql: &str)` put every statement any client sends into the
+log, predicate values included, with nothing at the call site saying so. There is no
+suppression comment, because a prohibition with an escape hatch becomes a prohibition with
+escapes in it.
+
+Its own mutations then showed the word-boundary logic was **entirely unexercised**: every
+test was rejected by plain substring absence, so neither half of the boundary was ever
+reached. `%sql` is a real substring of `%sqlx`, and the leading and trailing checks reject
+different things — one constructed case each. Third time this milestone a survivor exposed a
+test passing for a reason unrelated to its name, which is the specific value of mutation
+testing over coverage: both lines were covered throughout.
+
+**What is not built:** distributed tracing spans. `FR-OPS-16`'s remaining checks --- conformance, replica identity,
+archival consistency --- belong to §10.1 and are not built either.
+
+---
+
+### §10.1 — The diagnostic
+
+`sankhya-server doctor`. Walks the warehouse, records what it sees, and reports findings
+ordered by *when* rather than by how bad.
+
+`FR-OPS-17` is the requirement, and it has a consequence it does not state:
+
+> The diagnostic SHALL report **time until a problem becomes user-visible**, not merely its
+> current value.
+
+**A time cannot be computed from one sample.** It needs a rate, a rate needs observations
+over time, and observations over time need somewhere to keep them between runs. That second
+half is easy to miss — the projection arithmetic looks like the hard part and is not. A
+diagnostic with the arithmetic and no history satisfies the requirement on paper and never
+once in practice, because every run is the first run.
+
+So the crate has two halves. `projection.rs` turns a series into a date or a named refusal;
+`history.rs` is an append-only text file beside the warehouse that makes a second run
+possible. It is deliberately not a table in the system being diagnosed: a diagnostic that
+cannot run when the database is unhealthy is a diagnostic that cannot run on the day it is
+needed.
+
+**What it refuses to do, and why each refusal is its own outcome:**
+
+| Refusal | The failure it prevents |
+|---|---|
+| Fewer than two observations | A date invented from one sample is a number with a calendar entry attached |
+| A poor linear fit | A sawtooth — debt accumulating and being compacted away — fits a line badly *by construction*, and a date through one reports where in the cycle the samples fell |
+| Beyond the horizon | Four days of samples projecting six months out is arithmetic, not evidence. The horizon is three times the observed span |
+| No elapsed time | Every observation shares an instant |
+
+A measure *near* the threshold with no rate yet still speaks up, undated, at `note`
+severity. Silence at 990 of 1,000 files reads as health, and it is not.
+
+**Four defects found while building it, three by running it rather than by testing it:**
+
+- **The direction of concern was read from the slope.** It cannot be: a measure falling
+  while the threshold sits above it is receding, and the slope-based reading called it
+  already-crossed. Which direction is trouble is the caller's fact, not the data's.
+- **Linearity was asked after direction.** A sawtooth averages to roughly no slope, so the
+  direction test reached first and answered *receding* — an affirmative all-clear drawn from
+  data that supports no conclusion at all. The order is now load-bearing and is tested.
+- **`linear_fit` called a constant series a bad fit.** `r²` is 0/0 there, and the code
+  returned zero on the reasoning that the fit explains none of the variance. Arithmetically
+  defensible; it reads as "these points are not described by a line" about the straightest
+  series there is. A horizontal line through a horizontal series is a perfect fit, so it now
+  returns one. This was a real defect in `sankhya-math`, found by its first caller who cared.
+- **"1 days".** A `contains` assertion hid it — `"about 1 days"` contains `"about 1 day"`.
+  Found by reading the output, and the test now pins the whole phrase.
+
+**And two catalogue entries that could never have failed.** One mutation was anchored on a
+guard whose text appears twice, so it patched the harmless copy in `line()` and reported
+SURVIVED; another claimed `{}` rounds `f64` where `{:?}` does not, which is false — both
+round-trip, and the real reason to prefer `{:?}` is that `1e-300` under `{}` is 302
+characters. The first was re-anchored; the second was deleted, along with the code comment
+making the same false claim.
+
+**What is checked today:** compaction debt, end to end. Storage headroom and replication lag
+exist as checks with nothing feeding them observations — free space needs a platform call
+`forbid(unsafe_code)` will not permit, so the caller that has one passes the number in, and
+nothing in this process advances a replication position. The rest of `FR-OPS-16` —
+conformance, replica identity, archival consistency — is not built.
+
+Exit status is `0` clean, `1` findings, `2` a check could not run. The third exists because
+a monitoring system treating "I could not look" as "nothing found" is the failure this whole
+crate is arranged against.
 
 ---
 
@@ -48,7 +687,7 @@ columnar batches into rows, and that conversion is the whole cost of a large ext
 
 The **gRPC control plane and REST gateway are deferred to M6** by owner decision.
 `FR-API-04` says what a control plane exposes --- jobs, health, archive operations --- and
-each of those is built in M6 or M8. Building the surface first would mean endpoints for jobs
+each of those is built in M6 or M9. Building the surface first would mean endpoints for jobs
 no scheduler runs and archives that do not exist: a plausible-looking API returning a
 placeholder, which is the kind of thing that gets believed.
 
@@ -283,7 +922,7 @@ row, and Q6 returns a hundred thousand; `NFR-PERF-03` requires a partition predi
 partitioning is not built, so Q5 could not satisfy it however fast it ran.
 
 **These are met on hardware below the reference node.** The requirements name 32 physical
-cores and 256 GB; this is twelve cores and 62 GB. That makes the results conservative
+cores and 357 GB; this is twelve cores and 62 GB. That makes the results conservative
 rather than qualified — but the reference node has never been measured on, so the numbers
 that would be published with it do not exist.
 
@@ -359,7 +998,7 @@ underneath it, and it made two costs visible.
 |---|---|---|
 | Q1 scan + aggregates | 450 ms | 462 ms |
 | Q6 selective filter | 213 ms | 219 ms |
-| Q3 three-way join | 333 ms | 372 ms |
+| Q3 three-way join | 357 ms | 372 ms |
 | Q5 six-way join | 415 ms | 578 ms |
 
 **Parity on scans, 12% and 39% behind on joins.** Four causes were found in the end. Two
@@ -445,7 +1084,7 @@ Measured on TPC-H it is not neutral. It costs at every selectivity tried:
 | 1 in ~7 | 116.6 ms | 162.0 ms | **0.72×** |
 | all rows | 110.6 ms | 111.7 ms | 0.99× |
 
-With filter reordering compounding it, Q6 went from 351 ms to **917 ms** at eight clients.
+With filter reordering compounding it, Q6 went from 357 ms to **917 ms** at eight clients.
 
 **Why it does not help is the useful part.** Late materialization saves decoding payload
 columns for rows a predicate eliminates — and on this data those rows were already
@@ -573,7 +1212,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 147 specific defects applied one at a time; all 147 fail the suite. Thirteen did not when first run; four catalogue entries turned out to be equivalent mutants no test could ever have caught, one entry was inert until corrected, and chasing another produced a documentation correction rather than a new test. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 357 specific defects applied one at a time; all 357 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -789,7 +1428,7 @@ On a 24-core machine with NVMe storage.
 | Cold `cargo check`, full critical dependency family | 32.9 s |
 | Vendored PostgreSQL build | ~2 min, 35 MB installed |
 | Synthetic generation | ~147 MB/s |
-| Bulk load, 10 tables | 99,235,351 rows / 10 GiB in 188.7 s (~526k rows/s) |
+| Bulk load, 10 tables | 99,235,357 rows / 10 GiB in 188.7 s (~526k rows/s) |
 | On-disk size after load | 14 GB |
 
 ### Query-engine settings
@@ -1067,9 +1706,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,121 tests, none of which needs a database
+cargo test --workspace           # 1,637 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 147 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 357 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

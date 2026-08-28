@@ -25,6 +25,7 @@ use sankhya_cdc_apply::BatchPolicy;
 use sankhya_cdc_model::{
     ColumnDescriptor, Message, RelationDescriptor, ReplicaIdentity, TupleData, TupleValue,
 };
+use sankhya_maintenance::{Maintainer, MaintenancePolicy};
 use sankhya_ingest::Pipeline;
 use sankhya_table::WriterConfig;
 use sankhya_table_delta::{live_files, read_actions, Action};
@@ -250,18 +251,18 @@ fn a_name_is_not_reused_even_after_the_file_leaves_the_live_set() {
     let mut first = pipeline(dir.path());
     run(&mut first, &stream(0, 6, 10));
     let live = live_files(&root).expect("log");
-    let version = live.version.expect("a version");
     let retired: Vec<String> = live.files.iter().map(|f| f.path.clone()).collect();
     drop(first);
 
-    // Compact everything away, as maintenance would.
-    let mut actions = vec![Action::Add(AddFile::with_rows("merged.parquet", 1, 0, 60))];
-    actions.extend(
-        retired
-            .iter()
-            .map(|n| Action::Remove(RemoveFile::rewritten(n.clone(), 1))),
-    );
-    commit(&root, version + 1, &actions).expect("compacting");
+    // Compact through the product's own maintenance, not by writing the log by hand.
+    //
+    // This used to commit an add for `merged.parquet` --- a file it never wrote --- plus a
+    // remove for every input. It made the assertion below pass while describing a warehouse
+    // that could not exist, and it called itself "as maintenance would" while doing none of
+    // what maintenance does.
+    let mut maintainer = Maintainer::new(MaintenancePolicy::default());
+    maintainer.tick(&root).expect("a maintenance tick");
+
     assert_eq!(live_files(&root).expect("log").files.len(), 1);
 
     // Restart and publish again.

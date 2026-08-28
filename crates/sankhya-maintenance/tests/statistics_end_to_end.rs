@@ -245,7 +245,7 @@ async fn statistics_survive_repeated_compaction() {
         assert!(amount.rows > 0);
         last_max = amount.max.clone();
 
-        sankhya_maintenance::apply(&mut live, &report);
+        sankhya_maintenance::apply(&mut live, &report, dir.path());
     }
 
     assert!(last_max.is_some(), "no compaction ran");

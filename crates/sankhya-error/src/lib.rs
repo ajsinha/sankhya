@@ -142,6 +142,16 @@ catalogue! {
         "the statement targets a range that has been archived",
         "Archived data is immutable. Record a compensating entry in the live tier, or \
          rehydrate the range read-only for inspection."),
+    NotSupported => ("SNK-C0006", Class::User,
+        "the statement uses a feature this build does not implement",
+        "The detail names the construct. It is refused rather than approximated: a \
+         statement that silently means something slightly different from what it says is \
+         worse than one that is rejected."),
+    StatementFailed => ("SNK-C0007", Class::User,
+        "the statement failed during execution",
+        "The detail names what failed --- usually a cast, a division, or a value outside \
+         the range of its type. If the statement should have worked, this is worth \
+         reporting with the detail attached."),
     NamingCollision => ("SNK-C0005", Class::User,
         "two distinct source identifiers map to the same storage path",
         "Rename one in the source, declare an explicit mapping, or exclude one. \

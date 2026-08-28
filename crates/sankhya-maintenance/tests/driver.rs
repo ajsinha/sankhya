@@ -387,7 +387,7 @@ fn ticking_converges_and_the_data_is_unchanged() {
         assert!(report.failed.is_empty(), "{:?}", report.failed);
 
         // The live set moves forward immediately; the files do not go anywhere yet.
-        apply(&mut live, &report);
+        apply(&mut live, &report, dir.path());
         pending.extend(report.merged.into_iter().map(|o| (o, 0u64)));
 
         // Retire what earlier ticks merged, once the grace period has passed. Safe now
@@ -430,7 +430,7 @@ fn a_directory_listing_would_have_double_counted() {
 
     let plan = plan_tick(&[partition_of(&live)], &policy(), &quiet());
     let report = execute_tick(&plan, dir.path(), 1, WriterConfig::default()).expect("ticking");
-    apply(&mut live, &report);
+    apply(&mut live, &report, dir.path());
 
     let live_rows: u64 = live.iter().map(|f| f.rows).sum();
     assert_eq!(live_rows, rows, "the live set is correct");
@@ -470,7 +470,7 @@ fn applying_a_tick_leaves_untouched_files_alone() {
         .collect();
 
     let report = execute_tick(&plan, dir.path(), 1, WriterConfig::default()).expect("ticking");
-    apply(&mut live, &report);
+    apply(&mut live, &report, dir.path());
 
     for original in &initial.files {
         if merged_names.contains(&original.name) {
@@ -486,5 +486,119 @@ fn applying_a_tick_leaves_untouched_files_alone() {
                 .expect("an untouched file must remain");
             assert_eq!(kept, original, "an untouched file was rewritten");
         }
+    }
+}
+
+// --- partitioned paths ---------------------------------------------------
+//
+// At the table root a bare file name and a path relative to the root are the same string,
+// so every test above passes whichever one the code uses. These distinguish them, and both
+// properties were wrong until a partitioned table made them observable.
+
+/// A table whose files live inside a partition directory.
+fn partitioned_table(dir: &std::path::Path) -> Vec<FileStat> {
+    let partition = dir.join("sank_data_date=2026-08-28");
+    std::fs::create_dir_all(&partition).expect("creating the partition");
+    let mut out = Vec::new();
+    for index in 0..4u64 {
+        let name = format!("sank_data_date=2026-08-28/part-{index:04}.parquet");
+        let report = sankhya_table::write_parquet(
+            dir,
+            &name,
+            &batch(index as i64 * 100, 50),
+            Lsn::new(index + 1),
+            WriterConfig::default(),
+        )
+        .expect("written");
+        out.push(FileStat {
+            name,
+            bytes: report.bytes,
+            rows: report.rows as u64,
+            covers_through: Lsn::new(index + 1),
+        });
+    }
+    out
+}
+
+#[test]
+fn a_merged_file_lands_inside_the_partition_its_rows_belong_to() {
+    // A merge outside the partition leaves the rows' dates disagreeing with the directory
+    // holding them, and the add action carries no partition value — so an external reader
+    // sees a file belonging to no partition at all.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let files = partitioned_table(dir.path());
+
+    let plan = plan_tick(
+        &[PartitionState {
+            table: "t".to_string(),
+            // Deliberately *not* a directory name: a partition identifier is a label, and
+            // deriving the output path from it is what broke this.
+            partition: "all".to_string(),
+            files,
+            ticks_since_write: 0,
+        }],
+        &DriverPolicy {
+            compaction: CompactionPolicy {
+                small_file_bytes: 64 * 1024 * 1024,
+                ..CompactionPolicy::default()
+            },
+            ..DriverPolicy::default()
+        },
+        &quiet(),
+    );
+    assert!(!plan.run.is_empty(), "nothing was planned");
+
+    let report = execute_tick(&plan, dir.path(), 1, WriterConfig::default()).expect("ticking");
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+
+    let merged = &report.merged.first().expect("one merge").output;
+    assert!(
+        merged.starts_with(dir.path().join("sank_data_date=2026-08-28")),
+        "the merged file landed outside its partition: {}",
+        merged.display()
+    );
+}
+
+#[test]
+fn applying_a_tick_retires_partitioned_inputs_from_the_live_set() {
+    // `apply` matched on the bare file name. With partitioned paths the live set holds
+    // `sank_data_date=…/part-0000.parquet` and the bare name is `part-0000.parquet`, so
+    // nothing ever matched: every merged input stayed live and the set grew by one phantom
+    // entry per tick.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let mut live = partitioned_table(dir.path());
+    let before = live.len();
+
+    let plan = plan_tick(
+        &[PartitionState {
+            table: "t".to_string(),
+            partition: "sank_data_date=2026-08-28".to_string(),
+            files: live.clone(),
+            ticks_since_write: 0,
+        }],
+        &DriverPolicy {
+            compaction: CompactionPolicy {
+                small_file_bytes: 64 * 1024 * 1024,
+                ..CompactionPolicy::default()
+            },
+            ..DriverPolicy::default()
+        },
+        &quiet(),
+    );
+    let report = execute_tick(&plan, dir.path(), 1, WriterConfig::default()).expect("ticking");
+    apply(&mut live, &report, dir.path());
+
+    assert!(
+        live.len() < before,
+        "no partitioned input left the live set: {} then {}",
+        before,
+        live.len()
+    );
+    for file in &live {
+        assert!(
+            file.name.contains('/'),
+            "a file lost its partition on the way into the live set: {}",
+            file.name
+        );
     }
 }

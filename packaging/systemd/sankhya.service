@@ -1,0 +1,45 @@
+[Unit]
+Description=SANKHYA — unified OLTP, OLAP and graph data server
+Documentation=https://github.com/ajsinha/sankhya
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/sankhya-server
+Restart=on-failure
+RestartSec=5s
+
+# The stop signal has to be one the server handles. It handles SIGINT and SIGTERM, and
+# systemd's default is SIGTERM, so this is a statement of fact rather than a change --- worth
+# writing down because changing it silently to something unhandled turns every restart into
+# a kill.
+KillSignal=SIGTERM
+
+# Longer than the server's drain deadline, which is 30s. `cargo xtask check-package` fails
+# the build if this number is not greater, because the two live in different files and
+# nothing else relates them: when this is the shorter of the two, every restart kills the
+# server mid-drain and clients see resets that look like crashes.
+TimeoutStopSec=45s
+
+# The server writes its warehouse, its diagnostic history and its backup manifests. Nothing
+# else needs to be writable.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ReadWritePaths=/var/lib/sankhya
+
+Environment=SANKHYA_WAREHOUSE=/var/lib/sankhya/warehouse
+Environment=SANKHYA_DATA_DIR=/var/lib/sankhya/.sankhya
+Environment=SANKHYA_LISTEN=0.0.0.0:5433
+# Loopback, deliberately. A metrics endpoint on every interface is a small permanent
+# disclosure of the deployment's shape; point a collector at it through a sidecar or a
+# node-local scrape rather than opening it.
+Environment=SANKHYA_METRICS_LISTEN=127.0.0.1:9464
+
+User=sankhya
+Group=sankhya
+
+[Install]
+WantedBy=multi-user.target

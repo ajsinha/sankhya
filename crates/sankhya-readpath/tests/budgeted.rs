@@ -23,6 +23,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use sankhya_governor::{Budget, Cancel, Deadline, Stopped};
 use sankhya_readpath::{resolve, BudgetedExec, Clock};
+use sankhya_publish::Publication;
 use sankhya_table::{write_parquet, WriterConfig};
 use sankhya_table_delta::{commit, create, Action, AddFile, Metadata};
 use sankhya_types::{Lsn, LsnRange};
@@ -56,22 +57,20 @@ fn rows(from: u64, to: u64) -> RecordBatch {
 
 /// A table of `files` fragments, enough that a scan produces several batches.
 fn publish(root: &std::path::Path, files: u64, per: u64) -> u64 {
-    commit(root, 0, &create(Metadata::new("t", DELTA_SCHEMA, 0))).expect("creating");
-    let mut adds = Vec::new();
+    // Through the product's writer rather than by assembling the log by hand.
+    let publication = Publication::external(root, "t");
+    publication.create(&schema()).expect("creating");
     for i in 0..files {
-        let name = format!("part-{i:04}.parquet");
         let from = i * per;
-        let report = write_parquet(
-            root,
-            &name,
-            &rows(from, from + per),
-            Lsn::new(from + per),
-            WriterConfig::default(),
-        )
-        .expect("publishing");
-        adds.push(Action::Add(AddFile::with_rows(name, report.bytes, 0, per)));
+        publication
+            .append(
+                i + 1,
+                &format!("part-{i:04}.parquet"),
+                &rows(from, from + per),
+                Lsn::new(from + per),
+            )
+            .expect("publishing");
     }
-    commit(root, 1, &adds).expect("publishing");
     files * per
 }
 

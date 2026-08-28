@@ -1,0 +1,16 @@
+[package]
+name         = "sankhya-cube-algo"
+description  = "The cube lattice and the additivity algebra: pure, and where the wrong answers come from."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 1
+
+[lints]
+workspace = true
+
+[dependencies]

@@ -181,16 +181,38 @@ fn file_counts_stay_within_policy_while_capture_keeps_writing() {
             })
             .collect();
 
-        let plan = plan_tick(
-            &[PartitionState {
+        // One `PartitionState` per partition, not one for the table.
+        //
+        // This used to lump every file into a partition called "all". That was true while
+        // ingest wrote flat files; it stopped being true when ingest began publishing
+        // through `sankhya-publish`, which partitions on `sank_data_date`. Merging across
+        // partitions would move rows out of the directory their own date names, and the
+        // count of files in one nominal partition then exceeds any threshold because it is
+        // really the count across all of them.
+        //
+        // The same correction the soak needed, for the same reason: partitioning multiplies
+        // what maintenance has to visit, and anything written when one table meant one unit
+        // of work is now wrong by the partition count.
+        let mut by_partition: std::collections::BTreeMap<String, Vec<FileStat>> =
+            std::collections::BTreeMap::new();
+        for file in &files {
+            let partition = file
+                .name
+                .rsplit_once('/')
+                .map_or_else(String::new, |(directory, _)| directory.to_string());
+            by_partition.entry(partition).or_default().push(file.clone());
+        }
+        let partitions: Vec<PartitionState> = by_partition
+            .iter()
+            .map(|(partition, files)| PartitionState {
                 table: "public.readings".to_string(),
-                partition: "all".to_string(),
+                partition: partition.clone(),
                 files: files.clone(),
                 ticks_since_write: 0,
-            }],
-            &policy,
-            &state,
-        );
+            })
+            .collect();
+
+        let plan = plan_tick(&partitions, &policy, &state);
 
         if !plan.run.is_empty() {
             let report =
@@ -205,16 +227,30 @@ fn file_counts_stay_within_policy_while_capture_keeps_writing() {
             )
             .expect("committing the tick");
             let mut carried = files;
-            apply(&mut carried, &report);
+            apply(&mut carried, &report, &table_root);
         }
 
         // The claim: the loop holds the count, rather than falling steadily behind.
+        // Per partition, because the threshold is a per-partition one: a scan pays per
+        // file *within the partitions it reads*, and a table of ninety well-compacted
+        // partitions is healthy however many files that totals.
         let after = live_files(&table_root).expect("log");
+        let mut worst = 0usize;
+        let mut counts: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        for file in &after.files {
+            let partition = file
+                .path
+                .rsplit_once('/')
+                .map_or_else(String::new, |(directory, _)| directory.to_string());
+            let count = counts.entry(partition).or_default();
+            *count += 1;
+            worst = worst.max(*count);
+        }
         assert!(
-            after.files.len() <= urgent,
-            "at tick {tick} the partition held {} live files and the urgent threshold is \
-             {urgent}; compaction is falling behind ingest",
-            after.files.len()
+            worst <= urgent,
+            "at tick {tick} a partition held {worst} live files and the urgent threshold is \
+             {urgent}; compaction is falling behind ingest. counts={counts:?}"
         );
     }
 

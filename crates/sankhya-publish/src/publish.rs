@@ -30,7 +30,15 @@ use arrow_array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef};
 use sankhya_schema::{is_reserved, DateAxis, DateSource, DATA_DATE_COLUMN};
 use sankhya_table::{write_parquet, WriterConfig};
-use sankhya_table_delta::{commit, schema_string, Action, AddFile, Metadata};
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use arrow_array::cast::AsArray;
+use arrow_array::{ArrayRef, Date32Array};
+use arrow_schema::{DataType, Field};
+use sankhya_schema::Granularity;
+use arrow_array::types::Date32Type;
+use arrow_array::{Array, UInt32Array};
+use sankhya_table_delta::{commit, create, schema_string, Action, AddFile, Metadata};
 use sankhya_types::Lsn;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -52,6 +60,13 @@ pub struct Publication {
     /// whether it means "when this happened" or "when we received it" --- which is exactly
     /// the question a default would let a publisher avoid answering.
     pub date_axis: DateAxis,
+    /// How files are encoded.
+    ///
+    /// Carried here because the caller that knows the workload knows the row-group size and
+    /// the compression level that suit it, and because a publisher that cannot say so would
+    /// have to write its own files to choose --- which is the second writer this crate exists
+    /// to make unnecessary.
+    pub writer: WriterConfig,
 }
 
 impl Publication {
@@ -69,7 +84,15 @@ impl Publication {
             // Ingest date until told otherwise, and recorded as such rather than left
             // undeclared, so a reader can tell "this means arrival" from "nobody said".
             date_axis: DateAxis::ingest_date(),
+            writer: WriterConfig::default(),
         }
+    }
+
+    /// The same, encoding files as the caller asks.
+    #[must_use]
+    pub const fn writing_with(mut self, writer: WriterConfig) -> Self {
+        self.writer = writer;
+        self
     }
 
     /// The same, taking each row's date from a source column.
@@ -108,9 +131,20 @@ impl Publication {
     /// Refuses a schema this system cannot round-trip exactly, naming the column, and
     /// refuses a declared key column that is not in the schema.
     pub fn create(&self, schema: &Schema) -> Result<(), PublishError> {
-        let json = schema_string(schema).map_err(|error| PublishError::UnrepresentableSchema {
-            detail: error.to_string(),
-        })?;
+        // The partition column is part of the table's schema, not merely of its layout.
+        //
+        // `FR-STORE-20` requires every analytical table to carry `sank_data_date` as a
+        // `DATE`, and the Delta protocol requires every name in `partitionColumns` to be a
+        // field of the schema. A table declaring a partition column absent from its schema
+        // is malformed twice over, and the reader that notices is somebody else's engine.
+        //
+        // Appended rather than prepended, so a source column's position is unchanged and a
+        // reader written against the source schema still finds its columns where they were.
+        let stored = with_date_column(schema);
+        let json =
+            schema_string(&stored).map_err(|error| PublishError::UnrepresentableSchema {
+                detail: error.to_string(),
+            })?;
 
         // A key column that is not in the schema would make every merge silently return
         // nothing for that key. Caught here, where the person who typed it is still present.
@@ -162,7 +196,15 @@ impl Publication {
         // operation rather than a bulk delete.
         metadata.partition_columns = vec![DATA_DATE_COLUMN.to_string()];
 
-        commit(&self.root, 0, &[Action::Metadata(metadata)]).map_err(|error| {
+        // Protocol *and* metadata. A Delta table without a protocol action does not declare
+        // the reader and writer versions it needs, and a reader is entitled to refuse it or
+        // to assume defaults it does not meet.
+        //
+        // This crate wrote metadata alone until the CDC pipeline was moved onto it, at which
+        // point a test that pipeline already had --- asserting the creating commit carries a
+        // protocol action --- failed. Its old, unsanctioned write path emitted one; the
+        // official one did not. Two paths converging is what exposed it.
+        commit(&self.root, 0, &create(metadata)).map_err(|error| {
             PublishError::Commit {
                 version: 0,
                 detail: error.to_string(),
@@ -209,7 +251,13 @@ impl Publication {
         Ok(())
     }
 
-    /// Publish one batch as a new file, and commit it.
+    /// Publish one batch, and commit it.
+    ///
+    /// **One batch can become several files.** The table is partitioned by its date axis, so
+    /// rows of different dates belong in different partitions; writing them to one file
+    /// would put a date in a partition it does not belong to, and every pruning query would
+    /// then read the wrong set or the whole table. All the files land in a **single commit**,
+    /// so a reader never sees half a batch.
     ///
     /// Statistics are recorded for every column, always. There is no option to skip them:
     /// a file without them cannot be pruned, so every query reads it, and the table gets
@@ -217,15 +265,88 @@ impl Publication {
     ///
     /// # Errors
     ///
-    /// Refuses a batch whose schema differs from the table's, and reports a failed write or
-    /// commit rather than leaving a file with no action referring to it.
+    /// Refuses a batch whose schema differs from the table's, a null in the date column, or
+    /// a failed write or commit --- rather than leaving a file with no action referring to it.
     pub fn append(
         &self,
         version: u64,
         file_name: &str,
         batch: &RecordBatch,
         covers_through: Lsn,
-    ) -> Result<Published, PublishError> {
+    ) -> Result<Vec<Published>, PublishError> {
+        let (written, actions) = self.write_files(version, file_name, batch, covers_through)?;
+        commit(&self.root, version, &actions).map_err(|error| PublishError::Commit {
+            version,
+            detail: error.to_string(),
+        })?;
+        Ok(written)
+    }
+
+    /// Publish a batch, taking a later version if another committer took ours.
+    ///
+    /// # Why this lives here rather than in the caller
+    ///
+    /// Capture is not the only committer: maintenance writes to the same log, and a
+    /// compaction between two publishes takes the version capture was about to use. Failing
+    /// there would mean a compaction can stop capture, which inverts the ordering rule ---
+    /// the source outranks maintenance, always.
+    ///
+    /// **The files are written once.** Only the commit is retried, and that is safe because
+    /// nothing about a file depends on the version: its name comes from the caller and its
+    /// directory from its rows' dates. Rewriting them per attempt would multiply the work by
+    /// the contention.
+    ///
+    /// # Errors
+    /// As [`Publication::append`], and [`PublishError::Commit`] when `attempts` versions were
+    /// all taken --- which means something is committing faster than this caller can follow,
+    /// and is worth surfacing rather than retrying for ever.
+    pub fn append_rebasing(
+        &self,
+        start: u64,
+        attempts: usize,
+        file_name: &str,
+        batch: &RecordBatch,
+        covers_through: Lsn,
+    ) -> Result<Rebased, PublishError> {
+        let (written, actions) = self.write_files(start, file_name, batch, covers_through)?;
+        let mut version = start;
+        for retries in 0..attempts.max(1) {
+            match commit(&self.root, version, &actions) {
+                Ok(_) => return Ok(Rebased { written, version, retries }),
+                Err(sankhya_table_delta::CommitError::VersionTaken(_)) => {
+                    version = sankhya_table_delta::newest_after(&self.root, None)
+                        .map_or(version.saturating_add(1), |v| v.saturating_add(1));
+                }
+                Err(error) => {
+                    return Err(PublishError::Commit {
+                        version,
+                        detail: error.to_string(),
+                    })
+                }
+            }
+        }
+        Err(PublishError::Commit {
+            version,
+            detail: format!(
+                "could not commit after {attempts} rebases; something else is committing to \
+                 this table faster than this writer can follow"
+            ),
+        })
+    }
+
+    /// Write a batch's files and build the actions that would publish them.
+    ///
+    /// Separated from the commit so a caller can retry the commit without rewriting the
+    /// files. Nothing here touches the log, so a crash between this and the commit leaves
+    /// files nobody references --- which is invisible to queries and reclaimed by the orphan
+    /// cleaner. The log always lags the filesystem, never leads it.
+    fn write_files(
+        &self,
+        version: u64,
+        file_name: &str,
+        batch: &RecordBatch,
+        covers_through: Lsn,
+    ) -> Result<(Vec<Published>, Vec<Action>), PublishError> {
         if file_name.contains('/') || file_name.contains("..") {
             // The name becomes a path relative to the table root. A separator in it writes
             // outside the table, and `..` writes outside the warehouse.
@@ -234,45 +355,263 @@ impl Publication {
             });
         }
 
-        let report = write_parquet(
-            &self.root,
-            file_name,
-            batch,
-            covers_through,
-            WriterConfig::default(),
-        )
-        .map_err(|error| PublishError::Write {
-            file: file_name.to_string(),
-            detail: error.to_string(),
-        })?;
+        let mut written = Vec::new();
+        let mut actions = Vec::new();
+        for (partition, rows) in self.partitions_of(batch)? {
+            let part = take_rows(batch, &rows)?;
+            // The file carries the column as well as the path. Delta permits a partition
+            // column to be absent from the data and reconstructed from `partitionValues`,
+            // and `FR-STORE-20` asks for it to be carried natively --- so a reader that
+            // ignores partition values, and any tool that opens the Parquet directly, still
+            // sees the date rather than a column that exists only in metadata.
+            let part = stamped(&part, &partition, self.date_axis.granularity)?;
+            let directory = format!("{DATA_DATE_COLUMN}={partition}");
+            let into = self.root.join(&directory);
+            std::fs::create_dir_all(&into).map_err(|error| PublishError::Write {
+                file: directory.clone(),
+                detail: error.to_string(),
+            })?;
 
-        // Statistics from the batch that was written, not from re-reading the file. Both
-        // would work; taking them from the batch means the file is never opened twice and
-        // means a discrepancy between them is impossible rather than merely unlikely.
-        let statistics = sankhya_table::column_stats(batch);
-        let add = AddFile::with_statistics(
-            file_name,
-            report.bytes,
-            0,
-            &sankhya_table_delta::from_column_stats(
-                u64::try_from(batch.num_rows()).unwrap_or(0),
-                &statistics,
-            ),
+            let report = write_parquet(
+                &into,
+                file_name,
+                &part,
+                covers_through,
+                self.writer,
+            )
+            .map_err(|error| PublishError::Write {
+                file: format!("{directory}/{file_name}"),
+                detail: error.to_string(),
+            })?;
+
+            // Statistics from the batch that was written, not from re-reading the file.
+            // Both would work; taking them from the batch means the file is never opened
+            // twice and means a discrepancy between them is impossible rather than merely
+            // unlikely.
+            let statistics = sankhya_table::column_stats(&part);
+            let mut add = AddFile::with_statistics(
+                // Relative to the table root, which is what the Delta protocol means by a
+                // file path, and what an external reader resolves against.
+                format!("{directory}/{file_name}"),
+                report.bytes,
+                0,
+                &sankhya_table_delta::from_column_stats(
+                    u64::try_from(part.num_rows()).unwrap_or(0),
+                    &statistics,
+                ),
+            );
+            // Declared in the metadata *and* supplied here. A table declaring a partition
+            // column whose files carry no value for it is malformed: an external engine
+            // reads the column as null for every row, and prunes nothing.
+            add.partition_values
+                .insert(DATA_DATE_COLUMN.to_string(), partition.clone());
+            actions.push(Action::Add(add));
+
+            written.push(Published {
+                file: format!("{directory}/{file_name}"),
+                bytes: report.bytes,
+                rows: part.num_rows(),
+                version,
+            });
+        }
+
+        Ok((written, actions))
+    }
+
+    /// One batch per partition the batch touches, in partition order.
+    ///
+    /// Exposed because the fan-out guards in [`crate::fanout`] need to know how wide a batch
+    /// is *before* writing it --- that is the whole point of a guard --- and because
+    /// discovering it by writing the files is what they exist to prevent.
+    ///
+    /// # Errors
+    /// As [`Publication::append`]: a missing or unreadable date column, or a null in it.
+    pub fn split_by_partition(
+        &self,
+        batch: &RecordBatch,
+    ) -> Result<Vec<(String, RecordBatch)>, PublishError> {
+        let mut out = Vec::new();
+        for (partition, rows) in self.partitions_of(batch)? {
+            out.push((partition, take_rows(batch, &rows)?));
+        }
+        Ok(out)
+    }
+
+    /// Publish several batches as one commit.
+    ///
+    /// Rows for the same partition land in **one file** however many batches they arrived
+    /// in, which is the property that turns per-batch fan-out into per-partition batching.
+    ///
+    /// # Errors
+    /// As [`Publication::append`].
+    pub fn append_all(
+        &self,
+        version: u64,
+        file_name: &str,
+        batches: &[RecordBatch],
+        covers_through: Lsn,
+    ) -> Result<Vec<Published>, PublishError> {
+        if batches.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Concatenated first, so a partition present in five batches becomes one file rather
+        // than five. Writing them separately would defeat the accumulation entirely.
+        let schema = batches.first().map_or_else(
+            || Arc::new(arrow_schema::Schema::empty()),
+            RecordBatch::schema,
         );
-
-        commit(&self.root, version, &[Action::Add(add)]).map_err(|error| PublishError::Commit {
-            version,
-            detail: error.to_string(),
+        let combined = arrow_select::concat::concat_batches(&schema, batches).map_err(|e| {
+            PublishError::Write {
+                file: file_name.to_string(),
+                detail: format!("combining {} batch(es): {e}", batches.len()),
+            }
         })?;
+        self.append(version, file_name, &combined, covers_through)
+    }
 
-        Ok(Published {
-            file: file_name.to_string(),
-            bytes: report.bytes,
-            rows: batch.num_rows(),
-            version,
-        })
+    /// Publish several batches as one commit, at the next free version.
+    ///
+    /// The version comes from the log rather than from the caller. A caller that tracks
+    /// versions itself has to be right about every commit somebody else makes, and it is not
+    /// in a position to be.
+    ///
+    /// # Errors
+    /// As [`Publication::append_rebasing`].
+    pub fn append_all_rebasing(
+        &self,
+        file_name: &str,
+        batches: &[RecordBatch],
+        covers_through: Lsn,
+    ) -> Result<Vec<Published>, PublishError> {
+        if batches.is_empty() {
+            return Ok(Vec::new());
+        }
+        let schema = batches.first().map_or_else(
+            || Arc::new(arrow_schema::Schema::empty()),
+            RecordBatch::schema,
+        );
+        let combined = arrow_select::concat::concat_batches(&schema, batches).map_err(|e| {
+            PublishError::Write {
+                file: file_name.to_string(),
+                detail: format!("combining {} batch(es): {e}", batches.len()),
+            }
+        })?;
+        let start = self.next_version();
+        self.append_rebasing(start, 16, file_name, &combined, covers_through)
+            .map(|rebased| rebased.written)
+    }
+
+    /// The version this table's next commit must take.
+    ///
+    /// Read from the log, because commit versions are contiguous by protocol and a counter
+    /// held anywhere else is a counter that can be wrong about somebody else's commit.
+    #[must_use]
+    pub fn next_version(&self) -> u64 {
+        // `newest_after`, not `live_files`.
+        //
+        // A live set reports the version of the newest commit *that contributed a file*. A
+        // table that has been created and holds no data yet has commits and no files, so the
+        // live set reports no version at all --- and a caller reading it as "no commits"
+        // starts at zero, finds zero taken, walks forward one at a time, and lands in a gap.
+        // That is not hypothetical: it stopped a soak twice, and the second time the log
+        // said so plainly --- "committing version 14 would leave a gap; the next version is 0".
+        sankhya_table_delta::newest_after(&self.root, None)
+            .map_or(0, |version| version.saturating_add(1))
+    }
+
+    /// Which rows of a batch belong to which partition.
+    ///
+    /// Ordered by partition value, so a batch published twice produces the same files in the
+    /// same order.
+    fn partitions_of(
+        &self,
+        batch: &RecordBatch,
+    ) -> Result<Vec<(String, Vec<u32>)>, PublishError> {
+        let mut groups: BTreeMap<String, Vec<u32>> = BTreeMap::new();
+        match &self.date_axis.source {
+            DateSource::Column { name } => {
+                let column = batch.column_by_name(name).ok_or_else(|| {
+                    PublishError::DateColumn {
+                        detail: format!("the date column '{name}' is not in the batch"),
+                    }
+                })?;
+                let days = column.as_primitive_opt::<Date32Type>().ok_or_else(|| {
+                    PublishError::DateColumn {
+                        detail: format!(
+                            "the date column '{name}' is {}, and must be a date",
+                            column.data_type()
+                        ),
+                    }
+                })?;
+                for row in 0..batch.num_rows() {
+                    if days.is_null(row) {
+                        // A per-row fallback to today makes the column mean "when it
+                        // happened" in some rows and "when we received it" in others,
+                        // inseparably and for ever.
+                        return Err(PublishError::DateColumn {
+                            detail: format!(
+                                "row {row} has no value in the date column '{name}'; a \
+                                 fallback would make the column mean two different things \
+                                 in one table"
+                            ),
+                        });
+                    }
+                    let partition = self.date_axis.partition_of(days.value(row));
+                    groups
+                        .entry(partition)
+                        .or_default()
+                        .push(u32::try_from(row).unwrap_or(0));
+                }
+            }
+            DateSource::IngestDate => {
+                // Every row of this batch arrived now, so they share one partition.
+                let partition = self.date_axis.partition_of(today());
+                groups.insert(
+                    partition,
+                    (0..batch.num_rows())
+                        .map(|row| u32::try_from(row).unwrap_or(0))
+                        .collect(),
+                );
+            }
+        }
+        Ok(groups.into_iter().collect())
     }
 }
+
+/// The rows of `batch` at `indices`.
+fn take_rows(batch: &RecordBatch, indices: &[u32]) -> Result<RecordBatch, PublishError> {
+    if indices.len() == batch.num_rows() {
+        return Ok(batch.clone());
+    }
+    let picks = UInt32Array::from(indices.to_vec());
+    let columns = batch
+        .columns()
+        .iter()
+        .map(|column| arrow_select::take::take(column.as_ref(), &picks, None))
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|error| PublishError::Write {
+            file: "partitioning a batch".to_string(),
+            detail: error.to_string(),
+        })?;
+    RecordBatch::try_new(batch.schema(), columns).map_err(|error| PublishError::Write {
+        file: "partitioning a batch".to_string(),
+        detail: error.to_string(),
+    })
+}
+
+/// Today, as days since the Unix epoch.
+///
+/// Only reached for a table whose date axis is the ingest date, which is the axis that says
+/// out loud that it means arrival.
+fn today() -> i32 {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    i32::try_from(seconds / 86_400).unwrap_or(0)
+}
+
+
 
 /// What one publication wrote.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -311,7 +650,9 @@ pub fn publish_table(
             return Err(PublishError::SchemaMismatch { batch: index });
         }
         let version = u64::try_from(index).unwrap_or(0).saturating_add(1);
-        written.push(publication.append(
+        // Extended rather than pushed: a batch spanning several dates becomes several
+        // files, one per partition, and the caller wants all of them.
+        written.extend(publication.append(
             version,
             &format!("part-{index:05}.parquet"),
             batch,
@@ -319,6 +660,20 @@ pub fn publish_table(
         )?);
     }
     Ok(written)
+}
+
+/// A publish that may have taken a later version than it asked for.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Rebased {
+    /// The files published.
+    pub written: Vec<Published>,
+    /// The version it landed at.
+    pub version: u64,
+    /// How many versions were taken before this one.
+    ///
+    /// Reported rather than discarded: sustained rebasing means capture and maintenance are
+    /// contending, which is a scheduling problem visible nowhere else.
+    pub retries: usize,
 }
 
 /// Why a publication could not proceed.
@@ -424,4 +779,78 @@ impl std::error::Error for PublishError {}
 #[must_use]
 pub fn is_table(root: &Path) -> bool {
     root.join("_delta_log").is_dir()
+}
+
+/// The table's schema, with the partition column appended.
+///
+/// Appended rather than prepended so a source column's position is unchanged: a reader
+/// written against the source schema still finds its columns where they were.
+fn with_date_column(schema: &Schema) -> Schema {
+    if schema.field_with_name(DATA_DATE_COLUMN).is_ok() {
+        return schema.clone();
+    }
+    let mut fields: Vec<Arc<Field>> = schema.fields().iter().map(Arc::clone).collect();
+    // Not nullable. A null partition value has no path to live at, so a nullable column
+    // here would promise something the layout cannot represent.
+    fields.push(Arc::new(Field::new(
+        DATA_DATE_COLUMN,
+        DataType::Date32,
+        false,
+    )));
+    Schema::new(fields)
+}
+
+/// The batch with its partition's date attached to every row.
+///
+/// The value comes from the partition, not from the source column, so a coarser granularity
+/// stamps the first day of the period --- which is what the partition path says, and a row
+/// whose stamp disagreed with the directory it sits in would be a table that reconciles
+/// differently depending on which of the two a reader trusts.
+fn stamped(
+    batch: &RecordBatch,
+    partition: &str,
+    granularity: Granularity,
+) -> Result<RecordBatch, PublishError> {
+    let days = days_of_partition(partition, granularity)?;
+    let mut columns: Vec<ArrayRef> = batch.columns().to_vec();
+    columns.push(Arc::new(Date32Array::from(vec![days; batch.num_rows()])));
+    let schema = Arc::new(with_date_column(batch.schema().as_ref()));
+    RecordBatch::try_new(schema, columns).map_err(|error| PublishError::Write {
+        file: "stamping the date column".to_string(),
+        detail: error.to_string(),
+    })
+}
+
+/// The first day of a partition, as days since the Unix epoch.
+fn days_of_partition(partition: &str, granularity: Granularity) -> Result<i32, PublishError> {
+    let parts: Vec<&str> = partition.split('-').collect();
+    let read = |at: usize, default: i32| -> i32 {
+        parts.get(at).and_then(|p| p.parse().ok()).unwrap_or(default)
+    };
+    let (year, month, day) = match granularity {
+        Granularity::Day => (read(0, 1970), read(1, 1), read(2, 1)),
+        Granularity::Month => (read(0, 1970), read(1, 1), 1),
+        Granularity::Year => (read(0, 1970), 1, 1),
+    };
+    days_from_civil(year, month, day).ok_or_else(|| PublishError::DateColumn {
+        detail: format!("'{partition}' is not a date this granularity can represent"),
+    })
+}
+
+/// Howard Hinnant's civil-to-days, the inverse of the one in `sankhya-schema`.
+///
+/// Written out rather than pulled from a dependency for the same reason as its inverse: a
+/// partition key computed slightly differently by two components is a table whose rows do
+/// not agree with the directories they sit in.
+fn days_from_civil(year: i32, month: i32, day: i32) -> Option<i32> {
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146_097 + doe - 719_468)
 }

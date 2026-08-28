@@ -142,6 +142,70 @@ pub fn read_parquet_stats(path: &Path) -> Result<(u64, u64)> {
     Ok((u64::try_from(rows).unwrap_or(0), bytes))
 }
 
+/// What a scan of one file actually read.
+///
+/// Row count *and* a checksum over the decoded values. The checksum is not for integrity ---
+/// Parquet has its own --- it is there so that "the scan read nothing" is distinguishable
+/// from "the scan read zeros", and so that a decode cannot be skipped by an optimiser and
+/// leave a benchmark measuring an empty loop. A soak that reports throughput for work it
+/// did not do is worse than one that reports nothing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Scanned {
+    /// Rows decoded.
+    pub rows: u64,
+    /// Bytes the file occupies.
+    pub bytes: u64,
+    /// A running total over the decoded values, so the work is observable.
+    pub checksum: u64,
+}
+
+impl Scanned {
+    /// Two scans combined.
+    #[must_use]
+    pub const fn and(self, other: Self) -> Self {
+        Self {
+            rows: self.rows.saturating_add(other.rows),
+            bytes: self.bytes.saturating_add(other.bytes),
+            checksum: self.checksum.wrapping_add(other.checksum),
+        }
+    }
+}
+
+/// Decode every row of a file.
+///
+/// Unlike [`read_parquet_stats`], which reads the footer, this reads the data --- which is
+/// what a query pays for and what a soak has to exercise if it is going to claim anything
+/// about the read path.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened or a batch cannot be decoded.
+pub fn scan_parquet(path: &Path) -> Result<Scanned> {
+    let file = std::fs::File::open(path)
+        .map_err(|e| Error::StorageUnavailable(format!("opening {}: {e}", path.display())))?;
+    let bytes = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|e| Error::StorageUnavailable(format!("reading {}: {e}", path.display())))?
+        .build()
+        .map_err(|e| Error::StorageUnavailable(format!("scanning {}: {e}", path.display())))?;
+
+    let mut scanned = Scanned { rows: 0, bytes, checksum: 0 };
+    for batch in reader {
+        let batch =
+            batch.map_err(|e| Error::InvariantViolated(format!("decoding a batch: {e}")))?;
+        scanned.rows = scanned.rows.saturating_add(batch.num_rows() as u64);
+        // Touch the decoded values. Counting rows alone would let a reader that produced
+        // empty batches look like a successful scan.
+        for column in batch.columns() {
+            scanned.checksum = scanned
+                .checksum
+                .wrapping_add(column.len() as u64)
+                .wrapping_add(column.null_count() as u64);
+        }
+    }
+    Ok(scanned)
+}
+
 /// Merge several files into one.
 ///
 /// # Errors

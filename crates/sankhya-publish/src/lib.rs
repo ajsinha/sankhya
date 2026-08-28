@@ -39,10 +39,12 @@
 #![doc(html_root_url = "https://docs.rs/sankhya-publish")]
 
 pub mod class;
+pub mod fanout;
 pub mod publish;
 pub mod repair;
 pub mod verify;
 
+pub use fanout::{Accumulator, FanOut, Strain};
 pub use class::{configuration, key_columns, TableClass, CLASS_KEY, KEY_COLUMNS_KEY};
 pub use publish::{is_table, publish_table, Publication, PublishError, Published};
 pub use repair::{apply, plan, NeedsAPerson, Outcome, Plan, Repair, RepairError};

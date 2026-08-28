@@ -1,8 +1,15 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/wordmark-dice-dark.png">
+    <img src="assets/wordmark-dice.png" alt="SANKHYA" width="300">
+  </picture>
+</p>
+
 # SANKHYA — Roadmap
 
 **Document ID:** SNK-RM-001
 **Version:** 0.1.0
-**Status:** Implementation — M0–M5 complete, M6 in progress
+**Status:** Implementation — M0–M6 complete, M7 in progress
 **Date:** 2026-08-26
 **Companions:** `REQUIREMENTS.md`, `ARCHITECTURE.md`, `IMPLEMENTATION_PLAN.md`
 
@@ -99,6 +106,28 @@ Published performance against public benchmark suites, on named hardware, with t
 
 ---
 
+### 0.8 — *Multidimensional*
+**Theme: the analysis people actually do, without leaving the system.**
+
+Slice, dice, roll up, drill down and pivot as navigation of one declared structure, rather than as a sequence of unrelated `GROUP BY` statements the user reassembles in a client. **On demand, with no cube-build step preceding the query.**
+
+**Available:** cubes as declared views over published tables — no second store · level-based and parent-child hierarchies, ragged ones natively rather than padded · alternate roll-ups and shared members with nothing double-counted · additive, semi-additive and non-additive measures, with the aggregation rule declared per dimension · deterministic consolidation · **both on-demand and materialised cuboids, chosen per cuboid and controlled by definition, configuration and session preference** · adaptive selection over the cuboid lattice under an operator budget, informed by the query log · materialised cuboids stored as ordinary published tables that Spark can read · write-back overlays for planning that never touch published data.
+
+**Why here rather than after scale-out:** this is a capability the system is meant to be differentiated by. Multi-node deployment is table stakes. Shipping the differentiator second gets the order backwards.
+
+**Three commitments that will be unpopular and are not negotiable:**
+
+- **A measure with no declared aggregation rule is refused**, not defaulted to summation. A closing balance summed across twelve months is a number that means nothing and looks exactly like a number that does.
+- **A cube returns bit-identical answers whether or not anything is materialised.** Materialisation is therefore a cache with no semantic content, not a second source of truth — which is what makes it safe to choose automatically. Almost nothing else in this category can make this claim, because it requires a deterministic reduction underneath.
+- **A materialised cuboid cannot go stale.** It is keyed by the snapshot it was built from, so a new commit does not produce a stale hit — it produces a miss. There is no invalidation protocol and no time-to-live, and the "the cube is stale" failure mode every product here has is structurally absent rather than carefully avoided.
+- **Two people may legitimately see different totals for the same cell**, because an aggregate is computed only over rows that principal may read. A total computed over rows the caller cannot see is a disclosure through arithmetic, and nothing about it looks wrong.
+
+**The test that matters:** every query returns bit-identical results with materialisation on and off, and a cube over a ragged hierarchy with alternate roll-ups reconciles against an independently computed answer with no member double-counted.
+
+See [`adr/0007-the-cube-model.md`](adr/0007-the-cube-model.md).
+
+---
+
 ### 1.0 — *Production*
 **Theme: the first release intended to be depended upon.**
 
@@ -119,7 +148,20 @@ The recommended configuration even after release is *archive and verify continuo
 
 ---
 
-### 1.2 — *Domain packs*
+### 1.2 — *Zero-copy clones*
+**Theme: a copy of a table that costs nothing until somebody writes to it.**
+
+**Available:** cloning a table or a whole schema at a version, in constant time and constant space · writes to either side diverging without touching the other · clones as first-class tables for reading, maintenance and time travel · a lineage record saying what a clone came from and at which version.
+
+**What it is for:** the things people currently do by copying a warehouse. An analyst branch to try a transformation against real data; a pre-release environment seeded from production this morning; a what-if scenario in a cube that must not perturb the published one; a point to roll back to before a bulk correction. Every one of those is affordable only if the copy is free.
+
+**Why it is scheduled here and not earlier.** A clone shares physical files with its origin, and that single fact reaches into every part of the system that assumes a file belongs to one table. **Retirement and orphan collection are the sharpest case: both decide a file is unreferenced by consulting one table's log, and under sharing that decision becomes wrong — the file may be the only copy of data a clone still reads.** Reference counting, or an equivalent, is not an implementation detail here; it is the feature. Shipping cloning on top of maintenance that cannot see across tables would delete a clone's data and call it tidying.
+
+**Gated on design, explicitly:** an accepted ADR covering shared-file lifetime, the maintenance interaction, and what a clone means for backup, tiering and the audit chain, before any code. This is the one capability on this roadmap whose failure mode is silent data loss in a table nobody was touching.
+
+---
+
+### 1.3 — *Domain packs*
 **Theme: the mechanism, used in anger.**
 
 **Available:** risk analytics and financial-crime packs, built on the same published extension API available to third parties, using no privileged access.
@@ -130,27 +172,28 @@ The recommended configuration even after release is *archive and verify continuo
 
 ## 4. Capability timeline
 
-| Capability | 0.1 | 0.2 | 0.3 | 0.4 | 0.5 | 0.6 | 0.7 | 1.0 | 1.1 | 1.2 |
-|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| Transactional store, managed or attached | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● |
-| Automatic capture and onboarding | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● |
-| Read-your-own-writes | | ● | ● | ● | ● | ● | ● | ● | ● | ● |
-| Exactly-once, reconciliation-proven | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● |
-| Schema evolution with quarantine | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● |
-| Source-safety escalation | | | ● | ● | ● | ● | ● | ● | ● | ● |
-| Analytical SQL at published performance | ▪ | ▪ | ▪ | ● | ● | ● | ● | ● | ● | ● |
-| Time travel and as-of queries | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● |
-| External-engine readability | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● |
-| Automatic maintenance | | | ▪ | ● | ● | ● | ● | ● | ● | ● |
-| Graph engine | | | | | ● | ● | ● | ● | ● | ● |
-| Extension API and declarative packs | | | | | ● | ● | ● | ● | ● | ● |
-| Multi-tenancy and row/column security | | | | | ▪ | ● | ● | ● | ● | ● |
-| Columnar and wire-protocol surfaces | | ▪ | ▪ | ▪ | ▪ | ● | ● | ● | ● | ● |
-| Audit and encryption | | | | | | ● | ● | ● | ● | ● |
-| Operability and packaging | | | | | | ▪ | ● | ● | ● | ● |
-| Multi-node and high availability | | | | | | | ▪ | ● | ● | ● |
-| Data tiering with purge | | | | | | | | | ● | ● |
-| Domain packs | | | | | | | | | ▪ | ● |
+| Capability | 0.1 | 0.2 | 0.3 | 0.4 | 0.5 | 0.6 | 0.7 | 1.0 | 1.1 | 1.2 | 1.3 |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| Transactional store, managed or attached | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| Automatic capture and onboarding | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| Read-your-own-writes | | ● | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| Exactly-once, reconciliation-proven | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| Schema evolution with quarantine | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| Source-safety escalation | | | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| Analytical SQL at published performance | ▪ | ▪ | ▪ | ● | ● | ● | ● | ● | ● | ● | ● |
+| Time travel and as-of queries | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| External-engine readability | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| Automatic maintenance | | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● |
+| Graph engine | | | | | ● | ● | ● | ● | ● | ● | ● |
+| Extension API and declarative packs | | | | | ● | ● | ● | ● | ● | ● | ● |
+| Multi-tenancy and row/column security | | | | | ▪ | ● | ● | ● | ● | ● | ● |
+| Columnar and wire-protocol surfaces | | ▪ | ▪ | ▪ | ▪ | ● | ● | ● | ● | ● | ● |
+| Audit and encryption | | | | | | ● | ● | ● | ● | ● | ● |
+| Operability and packaging | | | | | | ▪ | ● | ● | ● | ● | ● |
+| Multi-node and high availability | | | | | | | ▪ | ● | ● | ● | ● |
+| Zero-copy clones | | | | | | | | | | ▪ | ● |
+| Data tiering with purge | | | | | | | | | ● | ● | ● |
+| Domain packs | | | | | | | | | ▪ | ● | ● |
 
 ● available · ▪ partial or in development
 

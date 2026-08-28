@@ -21,6 +21,7 @@ arrow         = { version = "=59.2.0" }
 arrow-array   = { version = "=59.2.0" }
 arrow-schema  = { version = "=59.2.0" }
 arrow-buffer  = { version = "=59.2.0" }
+arrow-select  = { version = "=59.2.0" }
 arrow-ipc     = { version = "=59.2.0" }
 arrow-flight  = { version = "=59.2.0", features = ["flight-sql-experimental"] }
 parquet       = { version = "=59.2.0", default-features = false, features = ["arrow", "async", "zstd", "snap"] }
@@ -51,6 +52,8 @@ async-trait   = { version = "0.1" }
 thiserror     = { version = "2" }
 serde         = { version = "1", features = ["derive"] }
 serde_json    = { version = "1" }
+# YAML for configuration. `serde_yaml` is archived; this is the maintained fork.
+serde_yaml_ng = { version = "=0.10.0" }
 toml          = { version = "0.9" }
 
 tracing       = { version = "0.1" }

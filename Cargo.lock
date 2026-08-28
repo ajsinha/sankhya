@@ -3267,6 +3267,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sankhya-api-rest"
+version = "0.1.0"
+dependencies = [
+ "sankhya-api-flight",
+ "sankhya-error",
+ "sankhya-types",
+ "uuid",
+]
+
+[[package]]
 name = "sankhya-audit"
 version = "0.1.0"
 dependencies = [
@@ -3285,6 +3295,27 @@ dependencies = [
  "proptest",
  "sankhya-error",
  "sankhya-types",
+ "uuid",
+]
+
+[[package]]
+name = "sankhya-backup"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "arrow-array",
+ "arrow-schema",
+ "parquet",
+ "sankhya-error",
+ "sankhya-ingest",
+ "sankhya-publish",
+ "sankhya-table",
+ "sankhya-table-delta",
+ "sankhya-types",
+ "sankhya-version",
+ "serde",
+ "serde_json",
+ "tempfile",
  "uuid",
 ]
 
@@ -3337,6 +3368,43 @@ version = "0.1.0"
 [[package]]
 name = "sankhya-config"
 version = "0.1.0"
+dependencies = [
+ "serde_yaml_ng",
+ "tempfile",
+]
+
+[[package]]
+name = "sankhya-cube"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "proptest",
+ "sankhya-cube-algo",
+ "sankhya-error",
+ "sankhya-graph-algo",
+ "sankhya-math",
+]
+
+[[package]]
+name = "sankhya-cube-algo"
+version = "0.1.0"
+
+[[package]]
+name = "sankhya-cube-sql"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "async-trait",
+ "datafusion",
+ "parking_lot",
+ "proptest",
+ "sankhya-cube",
+ "sankhya-cube-algo",
+ "sankhya-graph-algo",
+ "tokio",
+]
 
 [[package]]
 name = "sankhya-datagen"
@@ -3347,6 +3415,24 @@ dependencies = [
  "rand_chacha 0.9.0",
  "sankhya-types",
  "serde",
+]
+
+[[package]]
+name = "sankhya-diagnostic"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "sankhya-error",
+ "sankhya-maintenance",
+ "sankhya-math",
+ "sankhya-publish",
+ "sankhya-table",
+ "sankhya-table-delta",
+ "sankhya-types",
+ "sankhya-version",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -3416,7 +3502,9 @@ dependencies = [
  "sankhya-cdc-apply",
  "sankhya-cdc-model",
  "sankhya-error",
+ "sankhya-maintenance",
  "sankhya-plan",
+ "sankhya-publish",
  "sankhya-schema",
  "sankhya-stats",
  "sankhya-table",
@@ -3437,6 +3525,7 @@ dependencies = [
  "proptest",
  "sankhya-cdc-apply",
  "sankhya-cdc-model",
+ "sankhya-config",
  "sankhya-error",
  "sankhya-ingest",
  "sankhya-plan",
@@ -3459,6 +3548,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sankhya-metrics"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+]
+
+[[package]]
 name = "sankhya-mv"
 version = "0.1.0"
 
@@ -3478,6 +3574,7 @@ dependencies = [
  "sankhya-datagen",
  "sankhya-error",
  "sankhya-math",
+ "sankhya-publish",
  "sankhya-readpath",
  "sankhya-table",
  "sankhya-table-delta",
@@ -3527,6 +3624,7 @@ version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
+ "arrow-select",
  "parquet",
  "sankhya-schema",
  "sankhya-stats",
@@ -3550,6 +3648,7 @@ dependencies = [
  "sankhya-cdc-model",
  "sankhya-governor",
  "sankhya-plan",
+ "sankhya-publish",
  "sankhya-schema",
  "sankhya-stats",
  "sankhya-table",
@@ -3586,11 +3685,17 @@ dependencies = [
  "sankhya-api-pg",
  "sankhya-audit",
  "sankhya-authz",
+ "sankhya-backup",
  "sankhya-catalog",
+ "sankhya-config",
+ "sankhya-diagnostic",
  "sankhya-error",
  "sankhya-governor",
  "sankhya-graph",
+ "sankhya-maintenance",
+ "sankhya-metrics",
  "sankhya-plan",
+ "sankhya-publish",
  "sankhya-readpath",
  "sankhya-session",
  "sankhya-table",
@@ -3695,6 +3800,10 @@ dependencies = [
  "time",
  "uuid",
 ]
+
+[[package]]
+name = "sankhya-version"
+version = "0.1.0"
 
 [[package]]
 name = "schannel"
@@ -3815,6 +3924,19 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
+]
+
+[[package]]
+name = "serde_yaml_ng"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b4db627b98b36d4203a7b458cf3573730f2bb591b28871d916dfa9efabfd41f"
+dependencies = [
+ "indexmap",
+ "itoa",
+ "ryu",
+ "serde",
+ "unsafe-libyaml",
 ]
 
 [[package]]
@@ -4485,6 +4607,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
+name = "unsafe-libyaml"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
+
+[[package]]
 name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4866,8 +4994,12 @@ dependencies = [
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "sankhya-error",
+ "sankhya-metrics",
+ "sankhya-version",
  "serde",
  "serde_json",
+ "tempfile",
  "toml",
 ]
 

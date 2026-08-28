@@ -1,8 +1,15 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/wordmark-dice-dark.png">
+    <img src="assets/wordmark-dice.png" alt="SANKHYA" width="300">
+  </picture>
+</p>
+
 # SANKHYA — Requirements Specification
 
 **Document ID:** SNK-RD-001
 **Version:** 0.1.0 (draft for review)
-**Status:** Implementation — M0–M5 complete, M6 in progress
+**Status:** Implementation — M0–M6 complete, M7 in progress
 **Date:** 2026-08-26
 **Supersedes:** `docs/initial_reqmt.docx` ("Unified Enterprise Data Architecture & Requirements Document", URARD)
 
@@ -797,7 +804,60 @@ Requirements are grouped by subsystem. Each carries a priority: **M** (mandatory
 | `FR-QUERY-28` | L | Automatic query rewrite onto materialized aggregates is deferred. v1 uses explicit addressing, which ships in weeks with near-zero correctness risk; automatic subsumption is a multi-month project requiring a property-test suite proving rewritten and base results agree |
 | `FR-QUERY-29` | M | Every result SHALL carry provenance: per-table snapshot identifiers, tiers consulted with coverage intervals, plan hash, policy version, function versions, engine version and freshness at plan time |
 
-### 5.5 Graph engine — `FR-GRAPH`
+### 5.5 Multidimensional analysis — `FR-CUBE`
+
+*Added 2026-08-27 by owner directive: native cubing --- slice and dice on demand, roll-up and
+consolidation --- is a capability this system is meant to be differentiated by, and it was
+absent from this document. `FR-QUERY-14` covers SQL's `GROUP BY CUBE` and `ROLLUP`, which are
+grouping constructs. They are not a cube: there is no dimension, no hierarchy, no declared
+measure and no consolidation.*
+
+**Why this system in particular.** Three properties it already has are the three a cube
+engine most needs, and no product on the market has all three in one process:
+
+- **Parent-child hierarchies are graphs.** A ragged organisation tree, an account structure
+  with alternate roll-ups, a shared member appearing under two parents --- these are exactly
+  what `FR-GRAPH`'s engine traverses. A consolidation path is a traversal.
+- **Consolidation is a large floating-point reduction**, and `FR-QUERY-10` already requires
+  those to be deterministic. Whether two runs of the same roll-up tie out is the question
+  finance asks first and most products answer badly.
+- **Every table already has a date axis** (`FR-OLTP-02a`), so a time dimension exists on
+  everything without anybody declaring one.
+
+| ID | Priority | Requirement |
+|---|---|---|
+| `FR-CUBE-01` | M | A cube SHALL be a **declared view over published tables**, not a second store. It SHALL hold no data of its own, exactly as the graph engine holds none: a cell exists because rows exist |
+| `FR-CUBE-02` | M | A cube SHALL declare its dimensions, hierarchies, levels and measures. A dimension SHALL resolve to a column or to a table joined to the fact source; nothing SHALL be inferred from a column's name |
+| `FR-CUBE-03` | M | **Every measure SHALL declare its aggregation rule for every dimension.** A measure with no declared rule SHALL be refused at definition time. Defaulting to summation is wrong for every balance, every rate and every ratio, and the resulting numbers are plausible |
+| `FR-CUBE-04` | M | The system SHALL distinguish **additive**, **semi-additive** and **non-additive** measures. A semi-additive measure SHALL name the dimension it is not additive over and the rule that applies there — typically *last* or *average* over time for a balance |
+| `FR-CUBE-05` | M | A plan applying an additive roll-up to a non-additive measure SHALL be **rejected at planning time**, naming the measure and the dimension. This is the same rule `FR-QUERY-12` states for precomputed measures, and a cube is where it is violated most often |
+| `FR-CUBE-06` | M | Hierarchies SHALL support both **level-based** (fixed depth) and **parent-child** (ragged, arbitrary depth) forms. Ragged hierarchies SHALL be supported natively rather than padded to a fixed depth, because padding invents members that do not exist and they appear in results |
+| `FR-CUBE-07` | M | A parent-child hierarchy SHALL be validated as acyclic **at definition time**, with the cycle reported. A cycle discovered during consolidation is an unbounded traversal, and the symptom is a query that never returns |
+| `FR-CUBE-08` | M | Alternate roll-ups and shared members SHALL be supported. A member reachable by two paths SHALL contribute **once** to any ancestor, and this SHALL be tested; double-counting through an alternate hierarchy is the classic silent cube defect |
+| `FR-CUBE-09` | M | Consolidation SHALL use the deterministic reduction of `FR-QUERY-10`. The same roll-up over the same snapshot SHALL produce bit-identical results |
+| `FR-CUBE-10` | M | A cube SHALL support **both** on-demand computation and materialised cuboids, per cuboid rather than per cube, with the mode selectable at three levels: pinned in the cube definition, budgeted in server configuration, and overridable as a session preference |
+| `FR-CUBE-11` | M | A materialised cuboid SHALL be keyed by *(cube definition version, snapshot identifier, cuboid specification)*. Per `FR-QUERY-20` a new commit therefore **cannot produce a stale hit** — the key misses and the answer is computed. There SHALL be no invalidation protocol and no time-to-live on a materialised cuboid |
+| `FR-CUBE-12` | M | **An aggregate SHALL be computed only over rows the principal may read.** Two principals querying the same cell may legitimately see different totals. A total computed over rows the caller cannot see is a disclosure through arithmetic, and it is invisible |
+| `FR-CUBE-13` | M | Where row-level policy reduces an aggregate's input, the result SHALL carry a completeness measure per `FR-QUERY-13`, so a filtered total is distinguishable from a complete one rather than being presented as the total |
+| `FR-CUBE-14` | M | Slice, dice, roll-up, drill-down and pivot SHALL be expressible **without moving data out of the system** and without a separate cube-build step preceding the query |
+| `FR-CUBE-15` | M | Cube storage SHALL be sparse. A dense representation is unusable past a handful of dimensions, and the number of dimensions is not something a user should have to ration |
+| `FR-CUBE-16` | M | A cube SHALL be queryable from SQL, the system's primary surface. **MDX is deliberately not planned**: it is a large language with a small and shrinking client population, and the cost is a multi-month parser and semantics implementation for compatibility with tools this system does not target |
+| `FR-CUBE-17` | M | Every cube result SHALL carry provenance per `FR-QUERY-29`, including the cube definition's version. A roll-up whose definition changed between two runs is a different number, and nothing else in the result says so |
+| `FR-CUBE-18` | S | The system SHOULD support write-back to a cube cell for planning and what-if analysis, as a **separate, explicitly-versioned overlay** over the published facts. It SHALL NOT modify published data, and a query SHALL state whether an overlay was applied |
+| `FR-CUBE-19` | M | Cube definitions SHALL be versioned and auditable. A change to a consolidation rule changes reported figures, and an audit that cannot say when a rule changed cannot explain why a number moved |
+| `FR-CUBE-20` | M | **A cube SHALL return bit-identical results whether or not any cuboid is materialised.** This is what makes materialisation a cache rather than a second source of truth, and it SHALL be tested by running queries both ways and comparing bits — not by comparing within a tolerance |
+| `FR-CUBE-21` | M | A query MAY be answered from a materialised **ancestor** cuboid only where the measure is additive along **every** dimension being further rolled up. A non-additive measure SHALL be answered from base data. This is the engine's principal silent-wrong-answer surface and SHALL be property-tested against the base-data answer |
+| `FR-CUBE-22` | M | A semi-additive measure SHALL be answerable from an ancestor **only along the dimensions it is additive over**. Being correct along most dimensions and wrong along one is worse than being wrong everywhere, because it survives casual checking |
+| `FR-CUBE-23` | M | Cuboid selection MAY be automatic, under an operator-set budget for space and refresh concurrency, informed by the observed query log rather than by a static estimate. A lattice of a thousand cuboids is not a thing a person can choose well from, and the attempt tunes the cube for imagined queries |
+| `FR-CUBE-24` | M | **Automation SHALL extend only to decisions whose being wrong costs latency.** Aggregation rules, hierarchy definitions, measure semantics and the completeness contract SHALL never be inferred, because being wrong about those changes an answer |
+| `FR-CUBE-25` | M | A session SHALL be able to disable use of materialised cuboids. With `FR-CUBE-11`'s keying this is a cost control rather than a correctness one, and it is the mechanism by which an audit run **proves** the materialised and computed paths agree |
+| `FR-CUBE-26` | M | A materialised cuboid SHALL be stored as an ordinary published table in the warehouse, readable by external engines like any other. The open-storage commitment SHALL NOT have an exception for the fast path |
+| `FR-CUBE-27` | M | Incremental refresh of a materialised cuboid SHALL be permitted only where the measure forms a commutative monoid, per `FR-QUERY-27`, and a mis-declaration SHALL be rejected at definition time |
+| `FR-CUBE-28` | M | A result SHALL record whether it was answered from base data, from an exact materialised cuboid, or by rolling up an ancestor, as part of the provenance `FR-QUERY-29` requires |
+
+---
+
+### 5.6 Graph engine — `FR-GRAPH`
 
 | ID | Pri | Requirement |
 |---|---|---|
@@ -823,7 +883,7 @@ Requirements are grouped by subsystem. Each carries a priority: **M** (mandatory
 | `FR-GRAPH-20` | M | The system SHALL serve analytical and transactional traffic while a graph is rehydrating, returning a typed unavailable-or-rebuilding error for graph requests rather than a generic failure or a hang |
 | `FR-GRAPH-21` | L | A standards-based graph query language is deferred to a later release and SHALL be implemented as a rewrite onto the v1 table functions, not as a second execution engine |
 
-### 5.6 Data tiering — `FR-TIER`
+### 5.7 Data tiering — `FR-TIER`
 
 | ID | Pri | Requirement |
 |---|---|---|
@@ -863,7 +923,7 @@ Requirements are grouped by subsystem. Each carries a priority: **M** (mandatory
 | `FR-TIER-34` | M | A scheduled run SHALL be attributable to people: audit records SHALL name the service principal **and** the human definer and approver of the schedule version in force. "The scheduler did it" is not an acceptable audit answer |
 | `FR-TIER-35` | M | The system SHALL produce a signed evidence pack per archive, generatable years later from the write-once manifest alone |
 
-### 5.7 API surfaces — `FR-API`
+### 5.8 API surfaces — `FR-API`
 
 | ID | Pri | Requirement |
 |---|---|---|
@@ -885,7 +945,7 @@ Requirements are grouped by subsystem. Each carries a priority: **M** (mandatory
 | `FR-API-16` | M | The client-facing snapshot token SHALL be opaque and format-agnostic. Leaking a format-specific version identifier into the wire format would make a later format addition a breaking change |
 | `FR-API-17` | M | As-of queries SHALL be expressible by version, timestamp or log position, always resolved through a durable snapshot registry — never by inferring from file modification times |
 
-### 5.8 Security, tenancy and governance — `FR-SEC`
+### 5.9 Security, tenancy and governance — `FR-SEC`
 
 | ID | Pri | Requirement |
 |---|---|---|
@@ -914,7 +974,7 @@ Requirements are grouped by subsystem. Each carries a priority: **M** (mandatory
 | `FR-SEC-23` | M | External engines reading the warehouse directly **bypass row- and column-level enforcement**. This limitation SHALL be stated plainly rather than obscured, and the compensating controls SHALL be specified: storage-level access control as the real enforcement boundary, per-tenant prefixes and scoped credentials, column encryption so unauthorized readers obtain ciphertext, and a published-versus-private classification determining what is externally readable at all |
 | `FR-SEC-24` | M | The extension API is a **security boundary** once third parties author packs, and SHALL be tested as one by an adversarial pack attempting to read another tenant's data, escape its sandbox, register a panicking or non-terminating function, exceed its budget, and shadow a core name — each rejected with a named error |
 
-### 5.9 Operations — `FR-OPS`
+### 5.10 Operations — `FR-OPS`
 
 | ID | Pri | Requirement |
 |---|---|---|
@@ -947,7 +1007,7 @@ Requirements are grouped by subsystem. Each carries a priority: **M** (mandatory
 | `FR-OPS-27` | M | In attached mode the system SHALL operate under a three-level consent model — observe, advise, act — defaulting to observe, with a hard prohibition on modifying server configuration, running blocking rewrites, terminating sessions it did not open, or dropping objects it did not create |
 | `FR-OPS-28` | M | Under sustained write pressure exceeding maintenance throughput, the system SHALL apply backpressure in a defined order, beginning with lengthening the commit interval — the highest-leverage lever, because writing fewer larger files attacks the cause rather than the symptom |
 
-### 5.10 Extensibility — `FR-EXT`
+### 5.11 Extensibility — `FR-EXT`
 
 | ID | Pri | Requirement |
 |---|---|---|

@@ -14,6 +14,7 @@
 use crate::session::{Connection, Handler, Phase};
 use bytes::BytesMut;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -55,24 +56,61 @@ impl PgListener {
         serve(stream, handler).await
     }
 
-    /// Serve connections until `shutdown` resolves.
+    /// How long a shutdown waits for connections already in flight.
+    ///
+    /// The number an orchestration manifest's termination grace has to exceed, which is why
+    /// it is a named constant rather than a literal: `packaging/` derives its figures from
+    /// this one, and `cargo xtask check-package` fails the build when they disagree. Two
+    /// numbers in two files maintained by two people, with nothing normally relating them,
+    /// is how a deploy comes to `SIGKILL` a server mid-drain.
+    pub const DRAIN: Duration = Duration::from_secs(30);
+
+    /// Serve connections until `shutdown` resolves, then drain.
     ///
     /// Each connection is spawned, so a slow client does not block the accept loop. On
-    /// shutdown the loop stops accepting; connections already running finish on their own,
+    /// shutdown the loop stops accepting and **waits** for connections already running,
     /// because cutting a client off mid-result is indistinguishable to them from a crash.
+    ///
+    /// # The wait is bounded, and an earlier version did not wait at all
+    ///
+    /// The first version returned the moment `shutdown` resolved. Its spawned tasks were
+    /// detached, so when the runtime was dropped they were cancelled abruptly --- and the
+    /// doc comment above this one claimed the opposite, which is how it survived review. A
+    /// client mid-result saw a reset on every deploy.
+    ///
+    /// The wait has a deadline for the other reason: an unbounded drain hangs a shutdown on
+    /// one stuck client, the orchestrator's patience runs out, and the process is killed
+    /// anyway --- with the difference that nobody chose the moment. Waiting a bounded time
+    /// and then closing is the version where the timeout is ours.
     pub async fn serve_until(
         self,
         handler: Arc<dyn Handler>,
         shutdown: impl std::future::Future<Output = ()> + Send,
     ) -> std::io::Result<()> {
+        self.serve_until_with_drain(handler, shutdown, Self::DRAIN)
+            .await
+    }
+
+    /// [`PgListener::serve_until`] with the drain deadline given, for tests.
+    pub async fn serve_until_with_drain(
+        self,
+        handler: Arc<dyn Handler>,
+        shutdown: impl std::future::Future<Output = ()> + Send,
+        drain: Duration,
+    ) -> std::io::Result<()> {
         tokio::pin!(shutdown);
+        // A `JoinSet` rather than detached tasks: something has to hold the handles or there
+        // is nothing to wait for. Finished connections are reaped in the same loop, so the
+        // set does not grow with every connection ever served.
+        let mut connections = tokio::task::JoinSet::new();
+
         loop {
             tokio::select! {
-                () = &mut shutdown => return Ok(()),
+                () = &mut shutdown => break,
                 accepted = self.listener.accept() => {
                     let (stream, _) = accepted?;
                     let handler = Arc::clone(&handler);
-                    tokio::spawn(async move {
+                    connections.spawn(async move {
                         // A failed connection is that connection's problem, not the
                         // server's. Logging and continuing is the only correct response.
                         if let Err(error) = serve(stream, handler).await {
@@ -80,13 +118,56 @@ impl PgListener {
                         }
                     });
                 }
+                Some(_) = connections.join_next(), if !connections.is_empty() => {}
             }
         }
+
+        if connections.is_empty() {
+            return Ok(());
+        }
+        tracing::info!(
+            in_flight = connections.len(),
+            "draining before shutdown"
+        );
+        let drained = tokio::time::timeout(drain, async {
+            while connections.join_next().await.is_some() {}
+        })
+        .await;
+        if drained.is_err() {
+            // Said out loud. A client cut off here sees the same thing it would see from a
+            // crash, and the operator should know it happened rather than deducing it from
+            // a support ticket.
+            tracing::warn!(
+                still_running = connections.len(),
+                seconds = drain.as_secs(),
+                "the drain deadline passed; cutting off connections still in flight"
+            );
+            connections.abort_all();
+        }
+        Ok(())
+    }
+}
+
+/// Tells the handler the connection has ended, on every path out of [`serve`].
+///
+/// A guard rather than a call before each `return`, because `serve` leaves through several
+/// of them and through `?` besides. A gauge incremented on accept and decremented on all but
+/// one exit climbs forever and reads as a connection leak that is not happening --- and the
+/// exit that gets missed is always an error path, which is when the number matters most.
+/// `Drop` also covers a panic, which no arrangement of explicit calls does.
+struct ConnectionGuard(Arc<dyn Handler>);
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.0.connection_closed();
     }
 }
 
 /// Drive one connection to completion.
 pub async fn serve(mut stream: TcpStream, handler: Arc<dyn Handler>) -> std::io::Result<()> {
+    handler.connection_opened();
+    let _guard = ConnectionGuard(Arc::clone(&handler));
+
     // Nagle's algorithm delays a small write waiting for a larger one. This protocol is a
     // conversation of small messages, and the delay is visible as latency on every query.
     stream.set_nodelay(true).ok();

@@ -165,7 +165,7 @@ async fn a_query_is_unaffected_by_compaction_running_underneath_it() {
 
     let report = execute_tick(&plan, dir.path(), 1, WriterConfig::default()).expect("ticking");
     assert!(report.failed.is_empty(), "{:?}", report.failed);
-    apply(&mut live, &report);
+    apply(&mut live, &report, dir.path());
 
     // After. Fewer files, same answer -- and the inputs are still on disk.
     assert!(live.len() < usize::try_from(FRAGMENTS).expect("small"));
@@ -240,7 +240,7 @@ async fn reading_the_directory_instead_of_the_live_set_gives_a_wrong_answer() {
     );
     let report = execute_tick(&plan, dir.path(), 1, WriterConfig::default()).expect("ticking");
     let merged_rows: u64 = report.merged.iter().map(|o| o.rows).sum();
-    apply(&mut live, &report);
+    apply(&mut live, &report, dir.path());
 
     // The live set is right.
     let live_total: u64 = live.iter().map(|f| f.rows).sum();

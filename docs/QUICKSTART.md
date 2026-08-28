@@ -1,6 +1,13 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/wordmark-dice-dark.png">
+    <img src="assets/wordmark-dice.png" alt="SANKHYA" width="300">
+  </picture>
+</p>
+
 # SANKHYA — Quickstart
 
-**Status:** Implementation — M0–M5 complete, M6 in progress
+**Status:** Implementation — M0–M6 complete, M7 in progress
 
 This guide reflects what works **today**, and says plainly what does not yet. Anything
 not listed here is not built.
@@ -46,9 +53,10 @@ cargo xtask check-all
 
 That runs every repository invariant: the layer graph, the file-length ceiling, the
 domain-vocabulary prohibition, the duplicate-dependency gate, the documentation checks,
-the feature pins, clippy under the workspace's denied lints, and the mutation
-catalogue's agreement with the source. **Each is proven to fail when violated**, not
-merely to pass.
+the feature pins, clippy under the workspace's denied lints, the mutation catalogue's
+agreement with the source, the generated metric and error catalogues' agreement with
+their declarations, and every counted figure the documentation claims. **Each is
+proven to fail when violated**, not merely to pass.
 
 ---
 
@@ -78,7 +86,7 @@ availability event.
 ## 3. Run the tests
 
 ```bash
-cargo test --workspace          # 1,121 tests, none of which needs a database
+cargo test --workspace          # 1,637 tests, none of which needs a database
 ```
 
 Everything here runs without a database, in well under a minute. Nothing is mocked: the
@@ -120,6 +128,13 @@ TPC-H data is generated rather than fixtured.
 | `sankhya-olap` `tests/exactness.rs` | An approximate answer is labelled approximate. A sketch-derived count never presents itself as exact |
 | `sankhya-governor` | Deadlines and cancellation are bounded at one batch per partition; an aggregation too large to run is refused up front, and the refusal says whether retrying could ever help |
 | `sankhya-math` | Reductions are deterministic regardless of partition order — the analytical counterpart to the `sankhya-types` property |
+| `sankhya-server` `tests/five_minutes.rs` | **This guide, executed.** Generate a warehouse, start the real binary, connect over the real wire protocol, query, run the diagnostic, take a backup and prove it — seven documented steps, timed, on every build. It is a test so it cannot rot |
+| `sankhya-api-rest` | A result too large for JSON comes back as a **Flight ticket rather than a refusal**, decided from the plan's estimate before anything is materialised; an estimate that was low abandons the response rather than truncating it; and a route matches its path whole |
+| `sankhya-diagnostic`'s soak module | A steady baseline passes and every shape of injected leak fails: memory retained, descriptors not returned, a sawtooth whose peaks climb, and an audit drifting to two records per query **while its total looks healthy**. A run that sampled nothing does not pass |
+| `sankhya-version` | An artefact from a newer release is refused **by name** rather than failing as a parse error somewhere in the middle; an older but supported one is read and never written back |
+| `sankhya-backup` | A manifest refuses to bind an analytical tier that is ahead of its source; a drill catches altered rows that every file-presence check passes; deleting a backup does not release its files; and the evidence keeps the failures |
+| `sankhya-metrics` | An undeclared metric cannot be recorded, a closed label refuses anything outside its set, and an identifier label stops adding series at its cap rather than growing without bound — and says it has |
+| `sankhya-diagnostic` | A projection is never invented from one sample, never drawn through a sawtooth, and never extrapolated further than the observation window supports. Findings sort by *when*, not by how bad. A check that could not run is never counted as one that found nothing |
 
 ### The checks that are not tests
 
@@ -127,25 +142,42 @@ Three gates catch things a test suite structurally cannot. All three fail the bu
 
 ```bash
 cargo xtask check-all            # every repository invariant — see below
-python3 tools/mutation-audit.py  # 147 deliberate defects, applied one at a time
+python3 tools/mutation-audit.py  # 357 deliberate defects, applied one at a time
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
+SANKHYA_RELEASE=1 cargo xtask check-package   # the release artifact's platform baseline
 ```
 
-**`check-all`** runs eight invariants: the layer graph is acyclic and points the right
+**`check-all`** runs eleven invariants: the layer graph is acyclic and points the right
 way, no file exceeds the length ceiling, no core crate names a domain concept, the
 dependency set has no critical duplicates, the documentation's links and version claims
 resolve and its status lines agree, test-only dependencies really are test-only, clippy
-is clean under the workspace's denied lints across every target, and no mutation is left
-applied to the source. Each is proven to fail when violated, not merely to pass.
+is clean under the workspace's denied lints across every target, no mutation is left
+applied to the source, the generated metric and error catalogues still match their
+declarations and every declared metric is actually recorded somewhere, and every figure a
+document claims — test counts, catalogue sizes — still matches what the repository holds. Each is proven to fail when violated, not
+merely to pass.
 
 **The mutation audit** is the answer to "the tests pass, but do they test anything?" It
-applies 147 specific defects one at a time and requires the suite to fail on each. Thirteen
-did not, the first time it ran. Expect it to take a while — it is 147 sequential
-`cargo test` runs, and it edits your source files as it goes, restoring each one after.
-Run it on a clean tree.
+applies 357 specific defects one at a time and requires the suite to fail on each. Twenty-nine
+did not, the first time each was run — the most recent three were written for the
+diagnostic, and one of those turned out to be pointing at the wrong copy of a duplicated
+guard, which is precisely the silent-pass this tool exists to catch. Expect it to take a
+while — it is 357 sequential `cargo test` runs, and it edits your source files as it goes,
+restoring each one after. Run it on a clean tree.
 
 **`check-performance`** is deliberately outside `check-all`: it generates a
 scale-factor-1 dataset and needs a machine that is not otherwise busy.
+
+**`check-package`** compares two numbers that live in different files and that nothing else
+relates — the server's drain deadline and every deployment manifest's termination grace. When
+the grace is the shorter of the two, every deploy kills the server mid-drain and clients see
+resets that look like crashes. It also reads the **platform baseline** the built binary
+actually requires. On a development build that is a warning; under `SANKHYA_RELEASE=1` it
+fails, because a binary built on a current distribution silently requires symbol versions the
+customer's enterprise distribution does not have, and the build machine cannot tell you so.
+Today this build needs `GLIBC_2.34` against a declared baseline of `2.28` — see
+[`STATUS.md`](STATUS.md) §10.4. Every supported platform, its baseline and what is published
+for it are in [`PLATFORMS.md`](PLATFORMS.md).
 
 ---
 
@@ -184,8 +216,8 @@ $ psql ... -c "SELECT region, count(*) AS n, round(sum(amount)) AS total
  region |  n  | total
 --------+-----+--------
  north  | 334 | 250250
- south  | 333 | 249251
-        | 333 | 249750
+ south  | 357 | 249251
+        | 357 | 249750
 (3 rows)
 ```
 
@@ -409,7 +441,139 @@ reported. See [`adr/0002-async-commit-and-decoding-visibility.md`](adr/0002-asyn
 
 ---
 
-## 7. Tidy up
+## 7. Check the health of a warehouse
+
+```bash
+./target/release/sankhya-server doctor
+```
+
+It reads the warehouse directly and does not start the server, because the day you want a
+diagnostic is often the day the server will not start.
+
+```
+SANKHYA doctor 0.1.0
+  warehouse ./warehouse
+  1 table(s)
+
+  [note] table sales.orders — 990 live files; no projection is possible from 1
+         observation(s): a time needs a rate, and a rate needs at least 2.
+
+0 check(s) clean, 1 finding(s) of which 0 have a date, 0 check(s) could not run
+```
+
+**That is the correct output for a first run, and it is the whole point.** `FR-OPS-17` asks
+for the time until a problem bites rather than its current value — and a time cannot be
+computed from one sample. So the first run reports the value, refuses the date, and names
+what is missing. Run it again after some load and it will tell you when:
+
+```
+  [warning] table sales.orders — 900 live files; at the current rate, about 1 day.
+         Compact it: `sankhya maintenance compact --table sales.orders`. …
+```
+
+Put it in cron — hourly is enough — and the projections become real:
+
+```cron
+17 * * * * SANKHYA_WAREHOUSE=/srv/sankhya/warehouse /usr/local/bin/sankhya-server doctor
+```
+
+Exit status is `0` clean, `1` findings, `2` a check could not run. The third exists so a
+monitoring system cannot read "I could not look" as "nothing found".
+
+Full detail, including why it refuses to project through a sawtooth, is in
+[`GUIDE.md` §10](GUIDE.md#10-the-diagnostic).
+
+---
+
+## 8. Watch what it is doing
+
+```bash
+curl -s http://127.0.0.1:9464/metrics
+```
+
+```
+sankhya_queries_total{outcome="ok"} 412
+sankhya_queries_total{outcome="refused"} 3
+sankhya_query_duration_seconds_bucket{outcome="ok",le="0.025"} 388
+sankhya_table_live_files{table="sales.orders"} 87
+sankhya_metrics_rejected_total{reason="over_cap"} 0
+```
+
+Its own port, one route, loopback by default. The full list is [`METRICS.md`](METRICS.md),
+which is **generated from the declarations** — recording a metric requires passing its
+declaration, so an undeclared metric cannot be typed, and a declared one that nothing records
+fails the build.
+
+Two things to know before you build a dashboard on it:
+
+- **`refused` is not `error`.** A quota held is the system working. An error-rate alert that
+  counts them together fires on correct behaviour.
+- **Watch `sankhya_metrics_rejected_total`.** Non-zero means a call site disagrees with the
+  catalogue, or a label has outgrown its cap and that metric is now incomplete.
+
+And when something fails:
+
+```
+ERROR:  [SNK-C0001] Error during planning: table 'sales.ordres' not found
+DETAIL:  Correct the statement. The detail names the offending element.
+```
+
+The code is permanent and is what [`ERRORS.md`](ERRORS.md) and the
+[runbooks](runbooks/) are indexed by. `DETAIL` is the catalogue's own remediation, so the
+client and the documentation cannot disagree.
+
+---
+
+## 9. Prove the backup
+
+```bash
+./target/release/sankhya-server backup     # record a manifest
+./target/release/sankhya-server drill      # prove it restores
+```
+
+A backup here is a **manifest**, not an archive: it binds the transactional backup you took,
+the table versions in the warehouse and the key generation to one point, and protects the
+files so they stay readable.
+
+```
+SANKHYA restore drill 0.1.0
+  backup:01a04442-936a-73a1-bfd1-964c8cd66330
+  sales.orders: verified, 1000 row(s)
+
+Proven. 1 table(s) read back and digested.
+```
+
+**It reads the data back and recomputes its digest.** Try it — corrupt a file and drill again:
+
+```bash
+printf garbage > warehouse/sales/orders/part-0000.parquet
+./target/release/sankhya-server drill; echo "exit=$?"
+```
+
+```
+  sales.orders: could not be read (…part-0000.parquet: Parquet file too small)
+
+NOT PROVEN. 1 of 1 table(s) did not verify — this backup would not restore what it claims
+to hold.
+exit=1
+```
+
+A file-presence check would have passed on that. It passes on almost every failure that
+actually happens, because a *missing* file is loud — what goes wrong is that a file is there
+and wrong.
+
+Exit `0` proven, `1` a table did not verify, `2` could not run. **Alert on `2` as well**: a
+monitor treating "could not look" as "nothing wrong" reports a backup as proven when nothing
+examined it.
+
+Both runs are kept in `<data-dir>/restore-drills.jsonl`, append-only and including the
+failures — a drill history with no failures describes either a very good system or a drill
+that does not really run, and nothing in the history says which. `doctor` reads the last
+**pass** from it, never the last attempt.
+
+---
+
+## 10. Tidy up
 
 ```bash
 $PGBIN/pg_ctl -D .build/pg stop -m fast
@@ -437,6 +601,11 @@ that admits less.
 | Mathematics | **Working.** Vectors and matrices as columns, and the kernels over them: elementwise, dot, norms, distances, statistics, calculus, and linear algebra through LU. Every reduction is bit-deterministic. Callable from SQL as `vec_*` and `mat_*`, with constructors that let a matrix be built and operated on without being stored. No QR, SVD or eigendecomposition |
 | Publishing and repair | **Working.** A library and command-line tool for writing an external table, and a verifier that does not assume it was used. Repair fixes only what can be derived from evidence and refuses anything needing a guess |
 | Query governance | **Working.** Deadlines and cancellation bounded at one batch per partition; admission control that refuses an aggregation too large to run rather than letting it take the process down, and says whether retrying could ever help |
+| Backup and restore | **Working for the analytical half.** A manifest binds table versions and a key generation to a consistent point and refuses to record an inconsistency; a drill reads the data back and digests it; the evidence is append-only. Backing up the transactional store is your own tooling's job — the manifest binds to it and does not take it |
+| Soak testing | **The harness works and is proven to detect a leak; the multi-day run at the ten-gigabyte scale is not done.** A short run against the real server, under concurrent writes, queries and maintenance, runs on every build. See [`SOAK.md`](SOAK.md) |
+| Packaging | **Checks, not artifacts.** The platform baseline is declared and the built binary is measured against it; every deployment manifest's termination grace is compared with the server's drain deadline. Container images and signing are not built |
+| Upgrade and rollback | **Tested as far as one release allows.** Every on-disk format carries a version, an artefact from a newer release is refused by name rather than failing as a parse error, and a corpus of earlier-release artefacts is read on every build. Running the *previous binary* needs a previous binary |
+| The diagnostic | **Working for three checks.** `doctor` walks the warehouse, records what it sees, and projects a date for compaction debt once it has two runs to compare, and reports how long the backup has been unproven. Storage headroom and replication lag are built as checks with nothing feeding them observations. The rest of `FR-OPS-16` — conformance, replica identity, archival consistency — is not built |
 | Graph engine | **Working.** A typed, time-aware adjacency hydrated from published tables — no second store, no graph write path, an edge exists because a row exists. Traversal, weighted and k-shortest loopless paths, simple cycles, components, centrality, communities and multiplicative influence, each bounded and each reporting its own truncation. Five SQL table functions make them joinable against ordinary tables. Nothing drives hydration on a timer |
 | The extension mechanism | **Working.** SANKHYA's own function traits rather than the engine's, so a pack survives the engine changing underneath it. Two reference packs from unrelated industries and one deliberately hostile pack whose every attempt is refused with a named error. A declarative tier expresses a pack as a file rather than a crate. **The loader is not wired into the server**: a running process exists, and nothing in it loads a bundle |
 | API surfaces | **Two of four.** Real `psql` connects, authenticates, runs catalogue queries and recovers from errors. **Arrow Flight SQL** streams results as Arrow batches over gRPC, with authorization at planning and a ticket bound to the tenant it was issued to. The gRPC control plane and the REST gateway are not built |

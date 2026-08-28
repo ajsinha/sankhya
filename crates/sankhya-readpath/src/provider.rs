@@ -359,15 +359,43 @@ fn exact(value: u64) -> datafusion::common::stats::Precision<usize> {
     datafusion::common::stats::Precision::Exact(usize::try_from(value).unwrap_or(usize::MAX))
 }
 
-/// A bound as the engine's optimizer wants it.
+/// A bound as the engine's optimizer wants it, **in the column's own type**.
 ///
 /// Returns `Absent` for anything that cannot be represented exactly. An approximate bound
 /// handed to an optimizer is worse than none: it will be trusted, and the resulting plan
 /// is chosen confidently on a wrong number.
-fn scalar_of(bound: Option<&Bound>) -> datafusion::common::stats::Precision<ScalarValue> {
+///
+/// # Why the type matters and not only the value
+///
+/// This returned `Int64` for every integer bound, whatever the column was. DataFusion's
+/// interval analysis compares a column against its statistics and refuses when the two are
+/// different types --- so a `UInt64` column with statistics reported as `Int64` fails the
+/// query outright with "Only intervals with the same data type are comparable".
+///
+/// It stayed hidden because no test had both: the fixtures that recorded statistics were
+/// hand-built and recorded none for the commit-position column, which is the only unsigned
+/// one. The moment those fixtures went through `Publication` --- which records statistics
+/// for every column, always --- four read tests failed. The bug was in the read path the
+/// whole time; the tests were writing their own logs and could not see it.
+fn scalar_of(
+    bound: Option<&Bound>,
+    data_type: &arrow_schema::DataType,
+) -> datafusion::common::stats::Precision<ScalarValue> {
+    use arrow_schema::DataType;
     use datafusion::common::stats::Precision;
     match bound {
-        Some(Bound::Int(v)) => Precision::Exact(ScalarValue::Int64(Some(*v))),
+        // Narrowed to the column's own width and signedness. A bound that will not fit is
+        // `Absent` rather than saturated: a wrong bound is trusted, and an absent one is not.
+        Some(Bound::Int(v)) => match data_type {
+            DataType::Int64 => Precision::Exact(ScalarValue::Int64(Some(*v))),
+            DataType::Int32 => i32::try_from(*v)
+                .map_or(Precision::Absent, |n| Precision::Exact(ScalarValue::Int32(Some(n)))),
+            DataType::UInt64 => u64::try_from(*v)
+                .map_or(Precision::Absent, |n| Precision::Exact(ScalarValue::UInt64(Some(n)))),
+            DataType::UInt32 => u32::try_from(*v)
+                .map_or(Precision::Absent, |n| Precision::Exact(ScalarValue::UInt32(Some(n)))),
+            _ => Precision::Absent,
+        },
         Some(Bound::Float(v)) if v.is_finite() => Precision::Exact(ScalarValue::Float64(Some(*v))),
         Some(Bound::Bytes(v)) => match std::str::from_utf8(v) {
             Ok(text) => Precision::Exact(ScalarValue::Utf8(Some(text.to_string()))),
@@ -439,8 +467,8 @@ fn column_statistics(
             ColumnStatistics {
                 byte_size,
                 null_count: exact(stats.nulls),
-                max_value: scalar_of(stats.max.as_ref()),
-                min_value: scalar_of(stats.min.as_ref()),
+                max_value: scalar_of(stats.max.as_ref(), field.data_type()),
+                min_value: scalar_of(stats.min.as_ref(), field.data_type()),
                 sum_value: Precision::Absent,
                 // Inexact on purpose. The sketch is accurate to a few percent, which is
                 // right for choosing a join order and wrong for concluding a column is

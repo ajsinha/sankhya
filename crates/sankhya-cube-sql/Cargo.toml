@@ -1,0 +1,28 @@
+[package]
+name         = "sankhya-cube-sql"
+description  = "Cube navigation exposed as SQL table functions, with provenance in every row."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 4
+
+[lints]
+workspace = true
+
+[dependencies]
+sankhya-cube      = { path = "../sankhya-cube" }
+sankhya-cube-algo = { path = "../sankhya-cube-algo" }
+datafusion        = { workspace = true }
+arrow-array       = { workspace = true }
+arrow-schema      = { workspace = true }
+async-trait       = "0.1"
+parking_lot       = { workspace = true }
+
+[dev-dependencies]
+tokio    = { version = "1", features = ["rt-multi-thread", "macros"] }
+proptest = { workspace = true }
+sankhya-graph-algo = { path = "../sankhya-graph-algo" }

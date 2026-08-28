@@ -1,8 +1,15 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/wordmark-dice-dark.png">
+    <img src="assets/wordmark-dice.png" alt="SANKHYA" width="300">
+  </picture>
+</p>
+
 # SANKHYA — System Architecture
 
 **Document ID:** SNK-AD-001
 **Version:** 0.1.0 (draft for review)
-**Status:** Implementation — M0–M5 complete, M6 in progress
+**Status:** Implementation — M0–M6 complete, M7 in progress
 **Date:** 2026-08-26
 **Companion documents:** `REQUIREMENTS.md` (SNK-RD-001), `IMPLEMENTATION_PLAN.md`, `ROADMAP.md`
 
@@ -1231,6 +1238,35 @@ That objective names bloom filters and late materialization as its preconditions
 
 **Multi-dimensional interleaved ordering is not used**, for two independent reasons: an open row-duplication defect in the implementation, and — separately — interleaving defeats the delta encoding on the sort columns, so it compresses worse than plain lexicographic ordering while also being harder for the optimizer to exploit.
 
+### 9.7a Data in, data stored, data out
+
+Three crates, three responsibilities, and the boundary between them is the point rather than
+a tidiness preference.
+
+| Crate | Responsibility |
+|---|---|
+| `sankhya-ingest` | **Everything by which data arrives.** Postgres change capture today; JSON and CSV files, Kafka streams and API invocations are further front-ends onto the same hand-off. It decodes, conditions and batches — it makes arriving data *handleable* — and then it publishes |
+| `sankhya-publish` | **The one writer to the warehouse.** Layout, partitioning, statistics, the commit and its rebasing all live here, and nothing else writes a data file or a log action |
+| *(not yet built)* | **Everything by which data leaves.** Emission out of SANKHYA, designed as its own crate for the same reason ingest is |
+
+**Why one writer and not three.** A second writer is not a stylistic complaint. It is a path
+that does not get the guarantees the first one enforces, and the evidence is concrete: while
+the ingest pipeline wrote its own files, its tables carried no partition columns and violated
+`FR-STORE-20`, which every table published through the other path satisfied. The soak had its
+own writer too, so its warehouses were flat and its ten-gigabyte runs reported `PASS` against
+a layout the product does not produce.
+
+Both were routed through `sankhya-publish`, and the convergence immediately surfaced defects
+in the writer itself: a creating commit that omitted its protocol action, and file-name
+recovery that could not parse a partitioned path and would have restarted a sequence at zero
+over live files. **Neither was findable while the paths were separate**, because each path
+only ever agreed with itself.
+
+`cargo xtask check-writers` enforces this: any crate that writes a data file or commits a log
+action must be named in an allowlist with a reason. The list is required to *shrink* — an
+entry that stops being needed is reported as stale, which is how the ingest entry came to be
+deleted rather than forgotten.
+
 ### 9.8 Partitioning
 
 Guardrails, all domain-neutral: a target partition size range; a ceiling on partition count per table, because every partition value is recorded in table metadata; a distinct-value ceiling above which partitioning causes path explosion; a null-fraction ceiling; a minimum table size below which partitioning is counterproductive; and a maximum depth.
@@ -1679,17 +1715,116 @@ Tracing spans a request from client through planning to storage requests, with s
 
 **No log line, trace attribute or metric label may contain tenant data.** Query text is data: a normalized plan hash is logged by default, with full text only under explicit policy and routed to the audit store rather than to standard output.
 
+### 17.1a The metric catalogue is the API
+
+Recording a metric takes the metric's **declaration**, not its name. There is no `counter("some_name")`, so an undeclared metric is not refused at runtime — it cannot be typed. Every exported series therefore carries a documented meaning, a unit, a group and a bound on its cardinality, because those are fields on the thing the call site had to pass.
+
+This is the inversion that matters. The usual arrangement makes a metric a string and documentation a separate, optional artefact, and the predictable result is a dashboard carrying series with no stated meaning, no unit and no owner, which somebody then builds an alert on.
+
+**The prohibition in §17.1 is enforced by the label's type, not by review.** A label declares one of exactly two things:
+
+- a **closed set** of permitted values, where anything else is refused and counted; or
+- a **deployment-scoped identifier** — a table, a tenant — under a **cap**.
+
+There is deliberately no third variant, so a label that varies per row, per query or per user has no way to be declared. Putting a value where a dimension belongs is simultaneously the tenant-data leak and the cardinality explosion, and one construct prevents both.
+
+Past the cap, new series are **refused and counted** rather than created. The choice is between three behaviours and only one is defensible: growing without bound takes the process down; dropping silently makes a dashboard quietly wrong; refusing and reporting makes the metric visibly incomplete. A gap gets noticed and a quiet inaccuracy does not.
+
+**Two properties are checked mechanically, and they are different properties.** That the published catalogue matches the declarations — generated, then regenerated and diffed on every build. And that the declarations match reality: every declared metric must be recorded somewhere in the source, or the catalogue is a wishlist published as documentation. Where the architecture names a metric this build cannot emit, the catalogue **states the gap rather than declaring a gauge that reads zero**, because a permanently-zero gauge is indistinguishable from a healthy subsystem.
+
+**A metric that may page must name a runbook**, and the field is not optional. The interval by which it precedes user-visible failure is recorded alongside it, because that interval is the entire justification for paging: an alert with no lead time fires when the user notices, which makes it a notification.
+
+### 17.1b Every error that reaches a client carries a code and a remediation
+
+The error catalogue drives six behaviours from one classification — retry policy, protocol status, SQL state, log level, metric labelling and alerting — and it is published, generated from the same declarations. Codes are permanent: removing or renumbering one breaks every runbook, alert rule and support script that references it.
+
+**The path a person actually takes has to go through it, and that is the part that gets missed.** A catalogue can be complete, classified and published while the wire path returns the engine's own message with a status guessed from substrings — so the errors a user meets most often are precisely the ones with no code and nothing to look up. Mapping engine failures onto catalogue entries is therefore a structural obligation, matched on the failure's **variant** rather than on its text: substring matching is a mapping that changes silently when a dependency rewords a message, and the symptom is a client that stops retrying something it should retry.
+
+**A refusal is not an error.** A quota held and a permission enforced are the system working; counting them with genuine failures makes a healthy system under load indistinguishable from a broken one, which is how an error-rate alert comes to fire on correct behaviour.
+
+**A statement the system will not honour is refused, never accepted and discarded.** Confirming work that did not occur is worse than failing: it is not an error, not a wrong number, and produces no evidence at all.
+
 ### 17.2 Health
 
 Distinct startup, liveness and readiness signals. **Readiness accounts for pipeline lag; liveness does not** — otherwise a lagging pipeline causes an orchestrator to kill a healthy node, converting a degradation into an outage.
 
 A separate status endpoint reports the full version matrix: binary, database, schema, table protocol, policy bundle, pack versions.
 
+### 17.2a The diagnostic reports a time, which forces it to keep a history
+
+`FR-OPS-17` requires the diagnostic to report **time until a problem becomes user-visible** rather than its current value: *"compaction debt is 400 GB"* is far less actionable than *"query latency on this table will double in about nine days"*.
+
+The architectural consequence is the part worth stating, because it is not in the requirement and it is easy to build around: **a time cannot be computed from one sample.** It needs a rate; a rate needs observations separated in time; and observations separated in time need somewhere to live between runs. A diagnostic that computes projections beautifully and keeps no history satisfies the requirement in code and never once in operation, because every run is the first run.
+
+So the diagnostic owns a small, append-only observation history, and three properties of it are deliberate:
+
+- **It is beside the warehouse, not inside it.** The warehouse is the thing being diagnosed, and may be on storage that is full or unwritable — which may itself be the finding.
+- **It is not a table in this system.** A diagnostic that needs a healthy database to report an unhealthy one is decoration. For the same reason `doctor` reads the warehouse directly rather than starting the server.
+- **It is text, and damage is expected.** A process killed mid-append leaves a torn line. That line is skipped and counted, and the count is reported. Refusing to start over a truncated line would remove the tool at the moment somebody reaches for it; hiding the count would let a history quietly losing half its lines still produce confident dates.
+
+**`Unknown` is a first-class outcome.** The diagnostic names what it is missing — too few observations, a poor linear fit, a crossing beyond what the observation window supports — rather than producing a date it cannot justify. This is uncomfortable on a first run and it is the correct discomfort: a projection invented from one sample is a number with a date attached, and a date is precisely what gets believed and scheduled around.
+
+**Findings are ordered by *when*, not by severity.** Severity orders a list by how loudly each item shouts; time orders it by which one must be dealt with first, and those are different orders. A warning that becomes an outage tomorrow outranks an error that has been stable for a month. An operator reading top-down should be reading a schedule.
+
+**"Could not run" is structurally separate from "found nothing", including in the exit status.** Both produce an empty finding list, and they are opposite facts. A monitoring system that treats "I could not look" as "nothing found" reports all-clear for a subsystem nobody examined — which is the specific failure the whole design is arranged against.
+
+See [`GUIDE.md` §10](GUIDE.md#10-the-diagnostic) for the operator-facing behaviour.
+
 ### 17.3 Backup and recovery
 
 Three artifacts must agree: the transactional backup, the table snapshots, and the key generation. A backup produces a **manifest binding all three to a consistent point**, verified on restore. Three backups that do not agree with each other are worse than one.
 
 Snapshots referenced by a backup are protected from expiry for its lifetime. **Restore drills are automated and periodic with retained evidence** — an untested backup is a rumour.
+
+### 17.3a There are two positions, and a manifest that records one has recorded the wrong one
+
+`source_restores_to` is where the transactional store lands. `queryable_at` is the highest position at which **every** table is complete — the minimum over their coverage, because a query joining two tables can only be answered where both of them reach.
+
+They are rarely equal. Tables publish at their own cadence, so at any instant some are further behind than others and the transactional store is ahead of all of them. A manifest recording one number and calling it "the consistent point" has recorded whichever of the two its author happened to think of, and the difference between them is not noise: it is **how much re-capture a restore implies** before a cross-table query can reach the source's position.
+
+**The rule enforced when the manifest is built: no table may cover a position past where the source restores to.** If one does, then after a restore the analytical tier holds rows the transactional store no longer has. Capture resumes behind them and republishes that range at different positions, so those rows arrive a second time under different identity — or sit there permanently as data with no origin. It is the shape of `SNK-S0002` one layer up, and it is **not detectable afterwards from either side alone**.
+
+Which is why it is checked at build rather than at restore. A manifest that records an inconsistency has recorded a broken backup as a backup, and the moment to discover that is not the moment you need it.
+
+### 17.3b A drill reads the data back, because presence checks pass on the failures that happen
+
+`FR-OPS-15` is unusually blunt — *"an untested backup is a rumour"* — and the reason the verification must read data rather than list files is that **a file-presence check passes on a truncated Parquet.** It passes on a file whose bytes were replaced with another table's. It passes on essentially every failure that actually occurs, because what goes wrong with a backup is almost never that a file is missing: a missing file is loud, and something notices.
+
+So a drill recomputes the digest recorded at backup time. It is expensive, it runs on a schedule rather than on a request, and it is the only version of this that establishes anything.
+
+**Both sides compute that digest through one implementation.** Two would eventually differ on a null convention, a value rendering or a column order; every drill would then fail on data that is perfectly fine; and after the third false alarm the drills would stop being run. A verification that cries wolf is worse than none, because it consumes the attention that a real failure needs.
+
+**A failure names its kind, because the two need different investigations.** A row count that matches with a different checksum means rows were *altered* — every file present and the right length. A different row count means rows were *lost or duplicated*. One points at a writer that touched a frozen version; the other at retention or a restore.
+
+### 17.3c Evidence that omits failures is not evidence
+
+The drill record is append-only, and a failure is written with the same ceremony as a pass. A history with no failures across three years describes either a very good system or a drill that does not really run, and nothing in the history distinguishes them.
+
+For the same reason, **"could not start" is recorded distinctly from "ran and passed"** — the identical distinction the diagnostic draws between a clean check and one that could not run, and the identical failure if they are merged: a report saying a backup was proven when nothing examined it.
+
+An operator asking *when did we last prove we could restore* is answered with the last **pass**, never the last attempt.
+
+### 17.3d Expiry and removal are separate, and the gap is the point
+
+Deleting a backup does not release the snapshots it protects. A grace period follows, and only then are the files sweepable.
+
+The failure this prevents is specific and unrecoverable: a backup deleted by mistake — by an operator clearing space, by a retention rule, by a script with the wrong argument — its files swept by the next pass, and no way back even if the manifest is restored from somewhere minutes later. `FR-STORE-21` makes the same trade for compaction, only adding files and removing them in a separate later job, and for the same reason. It costs storage that could have been reclaimed sooner and buys a window in which a mistake is still a mistake.
+
+### 17.3e A grace shorter than a drain kills a healthy server on every deploy
+
+Two numbers decide whether a shutdown is orderly, and they live apart: how long the server needs to finish work already in flight, and how long the orchestrator will wait before sending `SIGKILL`. Nothing normally relates them. They are edited by different people, in different files, for different reasons — and when the second is the shorter, every deploy severs connections mid-result and clients see something indistinguishable from a crash.
+
+So the relationship is **checked mechanically**: the drain deadline is read from the source and every deployment manifest's grace is compared against it.
+
+**The drain itself has to be bounded, and it has to exist.** An unbounded drain hangs a shutdown on one stuck client until the orchestrator's patience runs out and kills the process anyway, with the difference that nobody chose the moment. And a shutdown that does not wait at all cannot be given a correct grace, because there is nothing to wait for: it abandons work instantly, which reads as fast and is the failure the grace exists to prevent.
+
+### 17.3f A platform baseline nobody checks is a baseline nobody meets
+
+Bundled database binaries are dynamically linked, so a fully static artifact is not achievable and the alternative is a **declared platform baseline** — the oldest system the artifact runs on, expressed as a maximum symbol version and a set of shared objects.
+
+The declaration is not the interesting part. The check is. A binary built on a current distribution silently acquires symbol-version requirements from it; the symbols are present locally, so it links, runs and tests clean, and the failure appears the first time a customer on an enterprise distribution tries to start it. **Nothing on the build machine can surface this by construction** — the machine is the reason it happens.
+
+Two consequences follow. The check reads what the binary *requires* rather than what the build *intended*. And it fails only on a release build, because a developer's machine cannot satisfy a baseline only the release environment provides, and a check that fails every local build is a check everybody learns to ignore.
 
 ### 17.4 Determinism
 
@@ -1794,6 +1929,26 @@ The trade-off, stated plainly: scale-up gives lower latency, far simpler failure
 | `DEC-33` | One date axis on every table: `sank_data_date`, of type `DATE` | [ADR-0004](adr/0004-the-date-axis.md) |
 | `DEC-34` | The date is declared per table, never defaulted per row | [ADR-0004](adr/0004-the-date-axis.md) |
 | `DEC-35` | Array columns as `FixedSizeList`; kernels in-house because they must be deterministic | [ADR-0005](adr/0005-array-columns-and-numeric-kernels.md) |
+| `DEC-36` | The diagnostic keeps its own observation history, outside the system it diagnoses | §17.2a |
+| `DEC-37` | A projection is refused by name rather than invented; `Unknown` is an outcome, not an error | §17.2a |
+| `DEC-38` | Findings sort by when they bite, not by severity | §17.2a |
+| `DEC-39` | "Could not run" is separate from "found nothing", down to the exit status | §17.2a |
+| `DEC-40` | A metric is recorded by passing its declaration, so an undeclared metric is unrepresentable | §17.1a |
+| `DEC-41` | A label is a closed value set or a capped identifier, and nothing else; the tenant-data prohibition is a type, not a review item | §17.1a |
+| `DEC-42` | Over a cardinality cap, series are refused and counted — incomplete and visibly so | §17.1a |
+| `DEC-43` | Catalogues are generated into documentation, and every declared metric must also be recorded somewhere | §17.1a |
+| `DEC-44` | Every error that reaches a client carries a permanent code and the catalogue's remediation | §17.1b |
+| `DEC-45` | Engine failures are classified by variant, never by matching on message text | §17.1b |
+| `DEC-46` | A refusal is counted separately from an error | §17.1b |
+| `DEC-47` | A statement the system will not honour is refused, never confirmed and discarded | §17.1b |
+| `DEC-48` | A backup binds two positions — where the source lands and where every table is complete | §17.3a |
+| `DEC-49` | A manifest whose analytical tier is ahead of its source is refused at build, not flagged at restore | §17.3a |
+| `DEC-50` | A drill reads data back and recomputes the digest; both sides use one implementation | §17.3b |
+| `DEC-51` | Drill evidence is append-only, keeps failures, and separates "could not run" from "passed" | §17.3c |
+| `DEC-52` | A backup is expired, then removed after a grace period | §17.3d |
+| `DEC-53` | Shutdown drains in-flight connections, and the drain is bounded | §17.3e |
+| `DEC-54` | Every manifest's termination grace is checked against the drain deadline | §17.3e |
+| `DEC-55` | The platform baseline is declared and the binary is checked against it, failing only on a release build | §17.3f |
 
 ---
 

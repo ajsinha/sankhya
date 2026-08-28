@@ -199,7 +199,7 @@ CATALOGUE = [
 
     ("driver: leave superseded inputs in the live set",
      "crates/sankhya-maintenance/src/driver.rs",
-     "        live.retain(|f| !superseded.contains(std::ffi::OsStr::new(f.name.as_str())));",
+     "        live.retain(|f| !superseded.contains(&f.name));",
      "",
      "sankhya-maintenance"),
 
@@ -217,13 +217,13 @@ CATALOGUE = [
 
     ("driver: reuse one output name for every tick",
      "crates/sankhya-maintenance/src/driver.rs",
-     'let name = format!("compacted-{sequence:06}-{index:04}.parquet");',
-     'let name = format!("compacted-{index:04}.parquet");',
+     'format!("compacted-{sequence:06}-{index:04}.parquet")',
+     'format!("compacted-{index:04}.parquet")',
      "sankhya-maintenance"),
 
     ("log: let an add of an existing path duplicate it",
      "crates/sankhya-table-delta/src/log.rs",
-     "                Action::Add(add) => match self.position.get(&add.path).copied() {\n                    Some(index) => {\n                        if let Some(slot) = self.files.get_mut(index) {\n                            *slot = Some(add);\n                        }\n                    }\n                    None => {\n                        self.position.insert(add.path.clone(), self.files.len());\n                        self.files.push(Some(add));\n                    }\n                },",
+     "            Action::Add(add) => match self.position.get(&add.path).copied() {\n                Some(index) => {\n                    if let Some(slot) = self.files.get_mut(index) {\n                        *slot = Some(add);\n                    }\n                }\n                None => {\n                    self.position.insert(add.path.clone(), self.files.len());\n                    self.files.push(Some(add));\n                }\n            },",
      "                Action::Add(add) => {\n                    self.position.insert(add.path.clone(), self.files.len());\n                    self.files.push(Some(add));\n                }",
      "sankhya-table-delta"),
 
@@ -616,16 +616,28 @@ CATALOGUE = [
      "        actions.push(Action::Add(AddFile::with_rows(\n            name(&outcome.output),\n            outcome.bytes,\n            now,\n            outcome.rows,\n        )));",
      "sankhya-maintenance"),
 
-    ("ingest: publish a file without the statistics it could have carried",
-     "crates/sankhya-ingest/src/pipeline.rs",
-     "            let action = DeltaAction::Add(DeltaAdd::with_statistics(\n                file_name.clone(),\n                report.bytes,\n                0,\n                &statistics,\n            ));",
-     "            let action = DeltaAction::Add(DeltaAdd::with_rows(\n                file_name.clone(),\n                report.bytes,\n                0,\n                u64::try_from(report.rows).unwrap_or(0),\n            ));",
-     "sankhya-ingest"),
+    ("publish: publish a file without the statistics it could have carried",
+     "crates/sankhya-publish/src/publish.rs",
+     "            let statistics = sankhya_table::column_stats(&part);",
+     "            let statistics = sankhya_table::column_stats(&part.slice(0, 0));",
+     "sankhya-publish"),
+
+    ("publish: fail instead of rebasing on a version conflict",
+     "crates/sankhya-publish/src/publish.rs",
+     "                Err(sankhya_table_delta::CommitError::VersionTaken(_)) => {",
+     "                Err(sankhya_table_delta::CommitError::VersionTaken(_)) if false => {",
+     "sankhya-publish"),
+
+    ("publish: retry a failure that is not a version race",
+     "crates/sankhya-publish/src/publish.rs",
+     "                Err(error) => {\n                    return Err(PublishError::Commit {\n                        version,\n                        detail: error.to_string(),\n                    })\n                }",
+     "                Err(_) => {}",
+     "sankhya-publish"),
 
     ("log: replay by scanning the file list instead of indexing it",
      "crates/sankhya-table-delta/src/log.rs",
-     "                Action::Add(add) => match self.position.get(&add.path).copied() {\n                    Some(index) => {\n                        if let Some(slot) = self.files.get_mut(index) {\n                            *slot = Some(add);\n                        }\n                    }\n                    None => {\n                        self.position.insert(add.path.clone(), self.files.len());\n                        self.files.push(Some(add));\n                    }\n                },",
-     "                Action::Add(add) => {\n                    if let Some(existing) =\n                        self.files.iter_mut().flatten().find(|f| f.path == add.path)\n                    {\n                        *existing = add;\n                    } else {\n                        self.files.push(Some(add));\n                    }\n                }",
+     "            Action::Add(add) => match self.position.get(&add.path).copied() {\n                Some(index) => {\n                    if let Some(slot) = self.files.get_mut(index) {\n                        *slot = Some(add);\n                    }\n                }\n                None => {\n                    self.position.insert(add.path.clone(), self.files.len());\n                    self.files.push(Some(add));\n                }\n            },",
+     "            Action::Add(add) => {\n                if let Some(existing) =\n                    self.files.iter_mut().flatten().find(|f| f.path == add.path)\n                {\n                    *existing = add;\n                } else {\n                    self.files.push(Some(add));\n                }\n            }",
      "sankhya-table-delta"),
 
     ("cache: trust the cached version instead of asking the log",
@@ -832,18 +844,6 @@ CATALOGUE = [
      "        if let Err(stopped) = Ok::<(), Stopped>(()) {",
      "sankhya-readpath"),
 
-    ("ingest: fail a publish instead of rebasing on a version conflict",
-     "crates/sankhya-ingest/src/pipeline.rs",
-     "            Err(sankhya_table_delta::CommitError::VersionTaken(_)) => {\n                version = newest().map_or(version.saturating_add(1), |v| v.saturating_add(1));\n            }",
-     "            Err(sankhya_table_delta::CommitError::VersionTaken(v)) => {\n                return Err(Error::StorageUnavailable(format!(\"version {v} is taken\")));\n            }",
-     "sankhya-ingest"),
-
-    ("ingest: retry a failure that is not a version race",
-     "crates/sankhya-ingest/src/pipeline.rs",
-     "            Err(e) => return Err(Error::StorageUnavailable(e.to_string())),\n        }\n    }\n\n    Err(Error::StorageUnavailable(format!(",
-     "            Err(_) => continue,\n        }\n    }\n\n    Err(Error::StorageUnavailable(format!(",
-     "sankhya-ingest"),
-
     ("alloc: count a reallocation as a fresh allocation",
      "crates/sankhya-alloc/src/lib.rs",
      "            if new_size >= layout.size() {\n                self.record_growth(new_size - layout.size());",
@@ -1011,6 +1011,1335 @@ CATALOGUE = [
      'format!("SELECT * FROM {t} WHERE {COMMIT_LSN} <= {}", target.get())',
      'format!("SELECT * FROM {t}")',
      "sankhya-readpath"),
+
+    # Anchored on the line above, because the identical guard appears in `line()` first and
+    # an unanchored find patches that one instead -- where it is equivalent, since a fit
+    # through one point fails anyway. The entry SURVIVED for exactly that reason, which is
+    # the failure mode this catalogue's own header warns about.
+    ("diagnostic: project a date from a single observation",
+     "crates/sankhya-diagnostic/src/projection.rs",
+     """        if self.observations.len() < MINIMUM_OBSERVATIONS {
+            return Projection::Unknown {""",
+     """        if false {
+            return Projection::Unknown {""",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: read the direction of concern from the slope",
+     "crates/sankhya-diagnostic/src/projection.rs",
+     """        let already = match concern {
+            Concern::RisingTo => latest.value >= threshold,
+            Concern::FallingTo => latest.value <= threshold,
+        };""",
+     """        let already = match self.line().map_or(true, |fit| fit.slope >= 0.0) {
+            true => latest.value >= threshold,
+            false => latest.value <= threshold,
+        };""",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: project a date through a sawtooth",
+     "crates/sankhya-diagnostic/src/projection.rs",
+     "        if fit.r_squared < LINEAR_ENOUGH && self.observations.len() > MINIMUM_OBSERVATIONS {",
+     "        if false {",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: ask the direction before the fit, so a sawtooth reads as receding",
+     "crates/sankhya-diagnostic/src/projection.rs",
+     "        const LINEAR_ENOUGH: f64 = 0.80;",
+     "        const LINEAR_ENOUGH: f64 = 0.0;",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: extrapolate arbitrarily far past the observed window",
+     "crates/sankhya-diagnostic/src/projection.rs",
+     "        if seconds > horizon_seconds {",
+     "        if false {",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: sort findings by severity rather than by when",
+     "crates/sankhya-diagnostic/src/check.rs",
+     "        self.findings.sort_by_key(Finding::urgency);",
+     "        self.findings.sort_by(|a, b| b.severity.cmp(&a.severity));",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: go silent when near the line with no rate yet",
+     "crates/sankhya-diagnostic/src/check.rs",
+     "    if !matches!(projection, Projection::Unknown { .. }) {\n        return false;\n    }",
+     "    if true {\n        return false;\n    }",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: count a table that could not be read as a clean one",
+     "crates/sankhya-diagnostic/src/collect.rs",
+     'Err(why) => report.skipped(COMPACTION_DEBT, format!("table {}: {why}", table.name)),',
+     "Err(_) => report.clean(COMPACTION_DEBT),",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: report before recording, so every date is one run stale",
+     "crates/sankhya-diagnostic/src/collect.rs",
+     "                let observation = Observation::new(now, files as f64);",
+     "                let observation = Observation::new(now, f64::from(0u8));",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: accept a NaN from the history file",
+     "crates/sankhya-diagnostic/src/history.rs",
+     "    if !value.is_finite() {\n        return None;\n    }",
+     "    if false {\n        return None;\n    }",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: let a tab in a subject forge a field",
+     "crates/sankhya-diagnostic/src/history.rs",
+     "        measure.subject.replace('\\t', \" \"),",
+     "        measure.subject,",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: treat a damaged history line as if it had parsed",
+     "crates/sankhya-diagnostic/src/history.rs",
+     "                None => history.damaged_lines += 1,",
+     "                None => {}",
+     "sankhya-diagnostic"),
+
+    ("math: call a constant series a bad linear fit",
+     "crates/sankhya-math/src/stats.rs",
+     "        Err(VectorError::ZeroMagnitude) => 1.0,",
+     "        Err(VectorError::ZeroMagnitude) => 0.0,",
+     "sankhya-math"),
+    ("metrics: let a closed label accept any value",
+     "crates/sankhya-metrics/src/metric.rs",
+     "            Values::Closed(allowed) => allowed.contains(&value),",
+     "            Values::Closed(_) => true,",
+     "sankhya-metrics"),
+
+    ("metrics: stop requiring every declared label to be supplied",
+     "crates/sankhya-metrics/src/registry.rs",
+     "        if labels.len() != metric.labels.len() {",
+     "        if false {",
+     "sankhya-metrics"),
+
+    ("metrics: let an identifier label grow without bound",
+     "crates/sankhya-metrics/src/registry.rs",
+     "        if seen.len() >= cap {",
+     "        if false {",
+     "sankhya-metrics"),
+
+    ("metrics: share one cardinality budget across every metric",
+     "crates/sankhya-metrics/src/registry.rs",
+     '            .entry((metric.name, declared.name))',
+     '            .entry(("", declared.name))',
+     "sankhya-metrics"),
+
+    ("metrics: drop the +Inf bucket from a histogram",
+     "crates/sankhya-metrics/src/registry.rs",
+     '            let with_inf = render_labels(labels, Some("+Inf"));',
+     '            let with_inf = render_labels(labels, Some("999999"));',
+     "sankhya-metrics"),
+
+    ("metrics: stop escaping label values, so one table name breaks the scrape",
+     "crates/sankhya-metrics/src/registry.rs",
+     '        .map(|(name, value)| format!("{name}=\\"{}\\"", escape(value)))',
+     '        .map(|(name, value)| format!("{name}=\\"{value}\\""))',
+     "sankhya-metrics"),
+
+    ("metrics: omit a metric that has recorded nothing",
+     "crates/sankhya-metrics/src/registry.rs",
+     '                let _ = writeln!(out, "# TYPE {} {}", metric.name, metric.kind.as_str());\n                continue;',
+     "                continue;",
+     "sankhya-metrics"),
+
+    ("server: count a refusal as an error",
+     "crates/sankhya-server/src/wiring.rs",
+     '            state if state.starts_with("53") || state.starts_with("28") => "refused",',
+     '            state if state.starts_with("53") || state.starts_with("28") => "error",',
+     "sankhya-server"),
+
+    ("server: time only the queries that succeeded",
+     "crates/sankhya-server/src/wiring.rs",
+     '        self.metrics.observe(\n            &catalogue::QUERY_DURATION_SECONDS,\n            &[("outcome", label)],\n            started.elapsed().as_secs_f64(),\n        );',
+     '        if outcome.is_ok() {\n            self.metrics.observe(\n                &catalogue::QUERY_DURATION_SECONDS,\n                &[("outcome", label)],\n                started.elapsed().as_secs_f64(),\n            );\n        }',
+     "sankhya-server"),
+
+    ("server: decrement the connection gauge only on a clean exit",
+     "crates/sankhya-api-pg/src/listener.rs",
+     "    let _guard = ConnectionGuard(Arc::clone(&handler));",
+     "    let _guard = ();",
+     "sankhya-server"),
+
+    ("server: accept a write and discard it",
+     "crates/sankhya-server/src/execute.rs",
+     "    refuse_if_not_a_read(&plan)?;",
+     "    let _ = refuse_if_not_a_read(&plan);",
+     "sankhya-server"),
+
+    ("server: check the statement shape after the engine has already run the DDL",
+     "crates/sankhya-server/src/execute.rs",
+     "    let plan = context\n        .state()\n        .create_logical_plan(sql)\n        .await\n        .map_err(|error| plan_failure(&error))?;\n    refuse_if_not_a_read(&plan)?;\n\n    let frame = context\n        .execute_logical_plan(plan)\n        .await\n        .map_err(|error| plan_failure(&error))?;",
+     "    let frame = context.sql(sql).await.map_err(|error| plan_failure(&error))?;\n    refuse_if_not_a_read(frame.logical_plan())?;",
+     "sankhya-server"),
+
+    ("server: stop unwrapping the engine's diagnostic wrapper",
+     "crates/sankhya-server/src/execute.rs",
+     "        E::Diagnostic(_, inner) | E::Context(_, inner) => classify(inner),",
+     "        E::Context(_, inner) => classify(inner),",
+     "sankhya-server"),
+
+    ("server: send the engine's message with no catalogue code",
+     "crates/sankhya-server/src/execute.rs",
+     '        message: format!("[{}] {}", classified.code(), error),',
+     "        message: error.to_string(),",
+     "sankhya-server"),
+
+    ("server: drop the remediation before it reaches the client",
+     "crates/sankhya-server/src/execute.rs",
+     "        detail: Some(classified.remediation().to_string()),",
+     "        detail: None,",
+     "sankhya-server"),
+
+    ("server: serve any path that starts with /metrics",
+     "crates/sankhya-server/src/scrape.rs",
+     '    path == "/metrics"',
+     '    path.starts_with("/metrics")',
+     "sankhya-server"),
+
+    ("backup: record a manifest whose tables are ahead of the source",
+     "crates/sankhya-backup/src/manifest.rs",
+     "        if !ahead.is_empty() {",
+     "        if false {",
+     "sankhya-backup"),
+
+    ("backup: report only the first table that is ahead",
+     "crates/sankhya-backup/src/manifest.rs",
+     "            .filter(|table| table.covers_to > source.restores_to)",
+     "            .filter(|table| table.covers_to > source.restores_to)\n            .take(1)",
+     "sankhya-backup"),
+
+    ("backup: take the queryable position from the source rather than the slowest table",
+     "crates/sankhya-backup/src/manifest.rs",
+     "        let queryable_at = tables\n            .iter()\n            .map(|table| table.covers_to)\n            .min()\n            .unwrap_or(Lsn::new(0));",
+     "        let queryable_at = source.restores_to;",
+     "sankhya-backup"),
+
+    ("backup: record a backup of no tables",
+     "crates/sankhya-backup/src/manifest.rs",
+     "        if tables.is_empty() {\n            return Err(InconsistentBackup::NoTables);\n        }",
+     "",
+     "sankhya-backup"),
+
+    ("backup: leave the tables in the order they arrived",
+     "crates/sankhya-backup/src/manifest.rs",
+     "        tables.sort_by(|a, b| a.table.cmp(&b.table));",
+     "",
+     "sankhya-backup"),
+
+    ("backup: write the checksum as a number and lose its low bits",
+     "crates/sankhya-backup/src/manifest.rs",
+     "            checksum: digest.checksum().to_string(),",
+     "            checksum: (digest.checksum() as f64).to_string(),",
+     "sankhya-backup"),
+
+    ("backup: read an unparseable checksum as zero",
+     "crates/sankhya-backup/src/manifest.rs",
+     "        let checksum: u128 = self.checksum.parse().ok()?;",
+     "        let checksum: u128 = self.checksum.parse().unwrap_or(0);",
+     "sankhya-backup"),
+
+    ("backup: release a deleted backup's files immediately",
+     "crates/sankhya-backup/src/protect.rs",
+     "        if now < expired.saturating_add(GRACE_MICROS) {\n            return false;\n        }",
+     "",
+     "sankhya-backup"),
+
+    ("backup: restart the grace period on every expiry call",
+     "crates/sankhya-backup/src/protect.rs",
+     "        let entry = self.expired_at.entry(backup).or_insert(now);",
+     "        let entry = self.expired_at.entry(backup).and_modify(|at| *at = now).or_insert(now);",
+     "sankhya-backup"),
+
+    ("backup: release a backup past its own horizon without a grace period",
+     "crates/sankhya-backup/src/protect.rs",
+     "            Some(until) if now >= *until => Standing::Grace {\n                until: until.saturating_add(GRACE_MICROS),\n            },",
+     "            Some(until) if now >= *until => Standing::Released,",
+     "sankhya-backup"),
+
+    ("backup: call a drill over no tables a pass",
+     "crates/sankhya-backup/src/drill.rs",
+     "        self.could_not_start.is_none()\n            && !self.tables.is_empty()",
+     "        self.could_not_start.is_none()",
+     "sankhya-backup"),
+
+    ("backup: treat a drill that could not start as a pass",
+     "crates/sankhya-backup/src/drill.rs",
+     "        let verdict = if self.could_not_start.is_some() {\n            \"could-not-start\"\n        } else if self.passed() {",
+     "        let verdict = if self.passed() {",
+     "sankhya-backup"),
+
+    ("backup: stop at the first table that fails to verify",
+     "crates/sankhya-backup/src/drill.rs",
+     "        tables.push((snapshot.table.clone(), outcome));",
+     "        let stop = !outcome.is_verified();\n        tables.push((snapshot.table.clone(), outcome));\n        if stop {\n            break;\n        }",
+     "sankhya-backup"),
+
+    ("backup: report the last drill attempt rather than the last pass",
+     "crates/sankhya-backup/src/drill.rs",
+     '        .filter(|line| line.contains("\\"verdict\\": \\"pass\\""))',
+     "",
+     "sankhya-backup"),
+
+    ("backup: compare only the row count and not the checksum",
+     "crates/sankhya-backup/src/drill.rs",
+     "                Ok(found) if found == expected => TableOutcome::Verified {",
+     "                Ok(found) if found.rows() == expected.rows() => TableOutcome::Verified {",
+     "sankhya-backup"),
+
+    ("backup: digest a null and an empty string identically",
+     "crates/sankhya-backup/src/warehouse.rs",
+     "                if batch.column(index).is_null(row) {\n                    None\n                } else {\n                    Some(text.as_str())\n                }",
+     "                Some(text.as_str())",
+     "sankhya-backup"),
+
+    # Named against `sankhya-backup` rather than the crate the code lives in: time travel
+    # has no test of its own in the log crate, and the test that actually notices is the one
+    # asserting a backup still verifies after the table moves on. An entry pointed at the
+    # wrong crate reports SURVIVED while the defect is caught, which trains you to read
+    # survivors as noise.
+    ("delta: replay past the requested version during time travel",
+     "crates/sankhya-table-delta/src/log.rs",
+     "        if at > version {\n            break;\n        }",
+     "",
+     "sankhya-backup"),
+
+    ("diagnostic: treat a never-proven backup as merely approaching its objective",
+     "crates/sankhya-diagnostic/src/check.rs",
+     "    let Some(last) = last_pass else {",
+     "    let Some(last) = last_pass.or(Some(now)) else {",
+     "sankhya-diagnostic"),
+
+    ("server: print the configured address rather than the one actually bound",
+     "crates/sankhya-server/src/main.rs",
+     "    let bound = listener\n        .local_addr()\n        .map_or_else(|_| settings_listen.clone(), |address| address.to_string());",
+     "    let bound = settings_listen.clone();",
+     "sankhya-server"),
+
+    # This one hung the test rather than failing it, the first time it was run: the banner
+    # was read with no deadline, so a server that printed nothing blocked forever and took
+    # the build with it. A test that hangs is strictly worse than one that fails, because a
+    # failure names what broke. The entry stays because it is the only thing that proved it.
+    ("server: stop announcing the port at all",
+     "crates/sankhya-server/src/main.rs",
+     '    println!("  listening on {bound}");',
+     "",
+     "sankhya-server"),
+
+    ("listener: return from shutdown without waiting for connections in flight",
+     "crates/sankhya-api-pg/src/listener.rs",
+     "        let drained = tokio::time::timeout(drain, async {\n            while connections.join_next().await.is_some() {}\n        })\n        .await;",
+     "        let drained: Result<(), ()> = Ok(());",
+     "sankhya-api-pg"),
+
+    ("listener: drop the drain deadline and wait forever",
+     "crates/sankhya-api-pg/src/listener.rs",
+     "        let drained = tokio::time::timeout(drain, async {",
+     "        let drained = tokio::time::timeout(Duration::from_secs(86_400), async {",
+     "sankhya-api-pg"),
+
+    ("packaging: give the orchestrator less grace than the server needs to drain",
+     "packaging/kubernetes/deployment.yaml",
+     "      terminationGracePeriodSeconds: 45",
+     "      terminationGracePeriodSeconds: 20",
+     "xtask"),
+
+    ("package: compare glibc versions as strings",
+     "xtask/src/package.rs",
+     "        .filter_map(|token| token.strip_prefix(\"GLIBC_\"))\n        .filter_map(|version| {\n            let mut parts = version.split('.');\n            let major = parts.next()?.parse::<u32>().ok()?;\n            let minor = parts.next().unwrap_or(\"0\").parse::<u32>().ok()?;\n            Some((major, minor))\n        })\n        .max()",
+     "        .filter_map(|token| token.strip_prefix(\"GLIBC_\"))\n        .max()\n        .and_then(|version| {\n            let mut parts = version.split('.');\n            let major = parts.next()?.parse::<u32>().ok()?;\n            let minor = parts.next().unwrap_or(\"0\").parse::<u32>().ok()?;\n            Some((major, minor))\n        })",
+     "xtask"),
+
+    ("package: match the whole symbol rather than the part after the @",
+     "xtask/src/package.rs",
+     "        .filter_map(|token| token.rsplit('@').next())\n",
+     "",
+     "xtask"),
+
+    ("package: report only the first way an artifact misses its baseline",
+     "xtask/src/package.rs",
+     "    for object in &requires.shared_objects {",
+     "    for object in requires.shared_objects.iter().take(0) {",
+     "xtask"),
+
+    ("version: read an artefact from a newer release instead of refusing it",
+     "crates/sankhya-version/src/lib.rs",
+     "        if found > self.current {",
+     "        if false {",
+     "sankhya-version"),
+
+    ("version: read an artefact older than the supported floor",
+     "crates/sankhya-version/src/lib.rs",
+     "        if found < self.oldest_readable {",
+     "        if false {",
+     "sankhya-version"),
+
+    ("version: write back an older format instead of degrading to read-only",
+     "crates/sankhya-version/src/lib.rs",
+     "        if found < self.current {",
+     "        if false {",
+     "sankhya-version"),
+
+    ("version: call a one-way upgrade reversible",
+     "crates/sankhya-version/src/lib.rs",
+     "        !matches!(self.rollback, Rollback::OneWay { .. })",
+     "        true",
+     "sankhya-version"),
+
+    ("backup: parse the whole manifest before looking at its version",
+     "crates/sankhya-backup/src/manifest.rs",
+     "        let stamped: Stamp = serde_json::from_str(text)",
+     "        let stamped: Manifest = serde_json::from_str(text)",
+     "sankhya-backup"),
+
+    ("backup: report a manifest from the future as damage",
+     "crates/sankhya-backup/src/manifest.rs",
+     "            Compatibility::Refused { why } => Err(UnreadableManifest::FromTheFuture(why)),",
+     "            Compatibility::Refused { why } => Err(UnreadableManifest::Malformed(why)),",
+     "sankhya-backup"),
+
+    ("backup: treat an unstamped manifest as format zero rather than the original",
+     "crates/sankhya-backup/src/manifest.rs",
+     "const fn one() -> u32 {\n    1\n}",
+     "const fn one() -> u32 {\n    0\n}",
+     "sankhya-backup"),
+
+    # The whole guard, not just its condition. `if false` on an `if let` leaves the binding
+    # unused and the mutation does not compile -- and a mutation that does not compile tests
+    # nothing while looking in the catalogue exactly like one that does.
+    ("diagnostic: read a history from a newer release anyway",
+     "crates/sankhya-diagnostic/src/history.rs",
+     """                    if let Compatibility::Refused { why } = DIAGNOSTIC_HISTORY.admits(found) {
+                        return Err(HistoryError::FromTheFuture {
+                            path: path.clone(),
+                            why,
+                        });
+                    }""",
+     "",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: write the format header onto every append",
+     "crates/sankhya-diagnostic/src/history.rs",
+     "        let fresh = !path.exists();",
+     "        let fresh = true;",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: drop the format header when compacting",
+     "crates/sankhya-diagnostic/src/history.rs",
+     '        let mut buffer = format!("{HISTORY_HEADER_PREFIX}{}\\n", DIAGNOSTIC_HISTORY.current);',
+     "        let mut buffer = String::new();",
+     "sankhya-diagnostic"),
+
+    ("diagnostic: count a comment line as damage",
+     "crates/sankhya-diagnostic/src/history.rs",
+     "                if text.starts_with('#') {\n                    continue;\n                }",
+     "",
+     "sankhya-diagnostic"),
+
+    ("soak: extrapolate past what the run observed",
+     "crates/sankhya-diagnostic/src/soak/judge.rs",
+     "    if horizon > supported {",
+     "    if false {",
+     "sankhya-diagnostic"),
+
+    ("soak: judge from a handful of samples",
+     "crates/sankhya-diagnostic/src/soak/judge.rs",
+     "    if samples.len() < fewest {",
+     "    if false {",
+     "sankhya-diagnostic"),
+
+    ("soak: call an unjudgeable measure steady",
+     "crates/sankhya-diagnostic/src/soak/report.rs",
+     "        !self.verdicts.is_empty() && self.verdicts.iter().all(|(_, verdict)| verdict.passed())",
+     "        self.verdicts.iter().all(|(_, verdict)| !matches!(verdict, Verdict::Growing { .. }))",
+     "sankhya-diagnostic"),
+
+    ("soak: skip the warm-up exclusion",
+     "crates/sankhya-diagnostic/src/soak/report.rs",
+     "    samples.get(WARM_UP_SAMPLES..).unwrap_or(&[])",
+     "    samples",
+     "sankhya-diagnostic"),
+
+    ("soak: trend a sawtooth's raw samples rather than its peaks",
+     "crates/sankhya-diagnostic/src/soak/judge.rs",
+     "            let peaks = peaks_of(samples, PEAK_WINDOWS);",
+     "            let peaks: Vec<Observation> = samples.to_vec();",
+     "sankhya-diagnostic"),
+
+    ("soak: take a sawtooth's entitlement from its peaks rather than from the run",
+     "crates/sankhya-diagnostic/src/soak/judge.rs",
+     "rising_to_at_least(measure, &peaks, limit, horizon, now, FEWEST_PEAKS, span_of(samples))",
+     "rising_to_at_least(measure, &peaks, limit, horizon, now, FEWEST_PEAKS, span_of(&peaks))",
+     "sankhya-diagnostic"),
+
+    ("soak: count an empty peak window as zero",
+     "crates/sankhya-diagnostic/src/soak/judge.rs",
+     "        else {\n            continue;\n        };\n        peaks.push(Observation::new(peak.at, peak.value));",
+     "        else {\n            peaks.push(Observation::new(start, 0.0));\n            continue;\n        };\n        peaks.push(Observation::new(peak.at, peak.value));",
+     "sankhya-diagnostic"),
+
+    ("soak: judge a per-unit-of-work measure by its total",
+     "crates/sankhya-diagnostic/src/soak/judge.rs",
+     "            let Some(ratios) = ratio(samples, reference) else {",
+     "            let Some(ratios) = Some(samples.to_vec()) else {",
+     "sankhya-diagnostic"),
+
+    ("soak: record a reading that could not be taken as zero",
+     "crates/sankhya-diagnostic/src/soak/sample.rs",
+     "            None => *self.missed.entry(measure.to_string()).or_default() += 1,",
+     "            None => self\n                .taken\n                .entry(measure.to_string())\n                .or_default()\n                .push(Observation::new(at, 0.0)),",
+     "sankhya-diagnostic"),
+
+    ("rest: encode a large result as JSON instead of handing back a ticket",
+     "crates/sankhya-api-rest/src/size.rs",
+     "    if estimate.rows > MAX_ROWS {",
+     "    if false {",
+     "sankhya-api-rest"),
+
+    ("rest: ignore the byte estimate and judge only by row count",
+     "crates/sankhya-api-rest/src/size.rs",
+     "    if estimate.bytes as usize > MAX_BYTES {",
+     "    if false {",
+     "sankhya-api-rest"),
+
+    ("rest: keep encoding after the response outgrew the cap",
+     "crates/sankhya-api-rest/src/size.rs",
+     "        if self.bytes > MAX_BYTES || self.rows > MAX_ROWS {\n            self.exceeded = true;\n            return false;\n        }",
+     "",
+     "sankhya-api-rest"),
+
+    ("rest: let a small row reopen a budget that has already refused",
+     "crates/sankhya-api-rest/src/size.rs",
+     "        if self.exceeded {\n            return false;\n        }",
+     "",
+     "sankhya-api-rest"),
+
+    ("rest: truncate an overrun response rather than abandoning it",
+     "crates/sankhya-api-rest/src/size.rs",
+     "        self.exceeded.then(|| {",
+     "        false.then(|| {",
+     "sankhya-api-rest"),
+
+    ("rest: echo the whole statement into a message",
+     "crates/sankhya-api-rest/src/size.rs",
+     "    if statement.chars().count() <= KEEP {",
+     "    if true {",
+     "sankhya-api-rest"),
+
+    ("rest: match routes by prefix",
+     "crates/sankhya-api-rest/src/plane.rs",
+     "        .find(|route| route.method == method && route.path == bare)",
+     "        .find(|route| route.method == method && bare.starts_with(route.path))",
+     "sankhya-api-rest"),
+
+    ("rest: ignore the method when matching a route",
+     "crates/sankhya-api-rest/src/plane.rs",
+     "        .find(|route| route.method == method && route.path == bare)",
+     "        .find(|route| route.path == bare)",
+     "sankhya-api-rest"),
+
+    ("rest: require a credential on the liveness probe",
+     "crates/sankhya-api-rest/src/plane.rs",
+     '        path: "/health",\n        shape: Shape::Document,\n        authenticated: false,',
+     '        path: "/health",\n        shape: Shape::Document,\n        authenticated: true,',
+     "sankhya-api-rest"),
+
+    ("logging: stop catching an interpolated statement",
+     "xtask/src/logging.rs",
+     "    if !MACROS.iter().any(|macro_name| line.contains(macro_name)) {",
+     "    if true {",
+     "xtask"),
+
+    ("logging: allow #[instrument] to record every argument",
+     "xtask/src/logging.rs",
+     "    !trimmed.contains(\"skip_all\") && !trimmed.contains(\"skip(\")",
+     "    false",
+     "xtask"),
+
+    ("logging: ignore the word boundary after a forbidden field name",
+     "xtask/src/logging.rs",
+     "        let after_ok = !haystack",
+     "        let after_ok = true || !haystack",
+     "xtask"),
+
+    # Counting a shared member once per path cannot be expressed here: `consolidates`
+    # returns a `BTreeSet`, so the duplicate is unrepresentable rather than merely avoided —
+    # the same shape as an undeclared metric. Changing the return type does not compile,
+    # which is the type doing its job. So the mutation targets the other way this goes wrong:
+    # consolidating over every descendant rather than over the leaves, which counts each
+    # internal node as well as the grain beneath it.
+    ("cube: consolidate over every descendant rather than over the leaves",
+     "crates/sankhya-cube-algo/src/hierarchy.rs",
+     "        let children = self.children_of(member);\n        if children.is_empty() {\n            reached.insert(member);\n            return Ok(());\n        }",
+     "        let children = self.children_of(member);\n        reached.insert(member);\n        if children.is_empty() {\n            return Ok(());\n        }",
+     "sankhya-cube-algo"),
+
+    ("cube: stop detecting cycles during consolidation",
+     "crates/sankhya-cube-algo/src/hierarchy.rs",
+     "        if on_path.contains(&member) {",
+     "        if false {",
+     "sankhya-cube-algo"),
+
+    ("cube: skip the members of a hierarchy that has no roots",
+     "crates/sankhya-cube-algo/src/hierarchy.rs",
+     "        if self.roots().is_empty() && !self.members().is_empty() {",
+     "        if false {",
+     "sankhya-cube-algo"),
+
+    ("cube: default an undeclared aggregation rule to summation",
+     "crates/sankhya-cube-algo/src/measure.rs",
+     "            .map(|along| along.rule)",
+     "            .map(|along| along.rule)\n            .or(Some(Rule::Sum))",
+     "sankhya-cube-algo"),
+
+    ("cube: report only the first dimension a measure fails to declare",
+     "crates/sankhya-cube-algo/src/measure.rs",
+     "        let missing: Vec<String> = dimensions",
+     "        let missing: Vec<String> = dimensions\n            .iter()\n            .take(1)\n            .copied()\n            .collect::<Vec<_>>()",
+     "sankhya-cube-algo"),
+
+    ("cube: let a mean compose, so an average of averages is an average",
+     "crates/sankhya-cube-algo/src/measure.rs",
+     "        matches!(self, Self::Sum | Self::Last | Self::First | Self::Max | Self::Min)",
+     "        !matches!(self, Self::None)",
+     "sankhya-cube-algo"),
+
+    ("cube: answer a query from a cuboid that lacks a dimension it needs",
+     "crates/sankhya-cube-algo/src/ancestor.rs",
+     "    if query.iter().any(|wanted| !materialised.contains(wanted)) {\n        return None;\n    }",
+     "",
+     "sankhya-cube-algo"),
+
+    ("cube: treat an undeclared axis as a refusal rather than a definition error",
+     "crates/sankhya-cube-algo/src/ancestor.rs",
+     "            None => {\n                return Answerable::Undeclared {",
+     "            None => {\n                #[allow(unused)]\n                return Answerable::No {\n                    measure: measure.name.to_string(),\n                    dimension: (*dimension).to_string(),\n                    rule: Rule::None,\n                };\n                #[allow(unreachable_code)]\n                return Answerable::Undeclared {",
+     "sankhya-cube-algo"),
+
+    ("cube: count benefit without asking whether the measure permits the roll-up",
+     "crates/sankhya-cube-algo/src/lattice.rs",
+     "        if !candidate.answers(query, measure) {\n            continue;\n        }",
+     "        if rolled_away(&query.dimensions(), &candidate.dimensions()).is_none() {\n            continue;\n        }",
+     "sankhya-cube-algo"),
+
+    ("cube: credit every candidate with the full saving, ignoring what is already held",
+     "crates/sankhya-cube-algo/src/lattice.rs",
+     "        let current = already\n            .iter()\n            .map(|c| &c.cuboid)\n            .chain(std::iter::once(base))",
+     "        let current = []\n            .iter()\n            .map(|c: &Chosen| &c.cuboid)\n            .chain(std::iter::once(base))",
+     "sankhya-cube-algo"),
+
+    ("cube: select past the budget",
+     "crates/sankhya-cube-algo/src/lattice.rs",
+     "            if spent.saturating_add(price) > budget_rows {\n                continue;\n            }",
+     "",
+     "sankhya-cube-algo"),
+
+    ("cube: buy a cuboid that gains nothing",
+     "crates/sankhya-cube-algo/src/lattice.rs",
+     "            if gain == 0 {\n                continue;\n            }",
+     "",
+     "sankhya-cube-algo"),
+
+    ("cube: compare benefit per row with integer division",
+     "crates/sankhya-cube-algo/src/lattice.rs",
+     "    u128::from(benefit) * u128::from(than_cost.max(1))\n        > u128::from(than_benefit) * u128::from(cost.max(1))",
+     "    benefit / cost.max(1) > than_benefit / than_cost.max(1)",
+     "sankhya-cube-algo"),
+
+    ("cube: treat two cuboids naming the same dimensions as different",
+     "crates/sankhya-cube-algo/src/lattice.rs",
+     "        let unique: BTreeSet<String> = dimensions",
+     "        let unique: Vec<String> = dimensions",
+     "sankhya-cube-algo"),
+
+    # --- the cube definition: the refusal that stops wrong numbers ---------
+
+    ("cube: default an undeclared measure to summation instead of refusing",
+     "crates/sankhya-cube/src/validate.rs",
+     "        if let Err(undeclared) = measure.covers(&declared) {",
+     "        if let Err(undeclared) = Ok::<(), sankhya_cube_algo::Undeclared>(()) {",
+     "sankhya-cube"),
+
+    ("cube: report only the first rejection, so a fix takes one build each",
+     "crates/sankhya-cube/src/validate.rs",
+     "    out.sort();\n    out.dedup();\n    out\n}",
+     "    out.sort();\n    out.dedup();\n    out.into_iter().take(1).collect()\n}",
+     "sankhya-cube"),
+
+    ("cube: accept a cyclic hierarchy at definition time",
+     "crates/sankhya-cube/src/validate.rs",
+     "            if let Err(Cyclic { cycle }) = hierarchy.validate() {",
+     "            if let Err(Cyclic { cycle }) = Ok::<(), Cyclic>(()) {",
+     "sankhya-cube"),
+
+    ("cube: let a validated cube be built from a rejected definition",
+     "crates/sankhya-cube/src/model.rs",
+     "        if !rejections.is_empty() {",
+     "        if rejections.is_empty() && !rejections.is_empty() {",
+     "sankhya-cube"),
+
+    ("cube: ignore a measure's aggregation rules when fingerprinting the definition",
+     "crates/sankhya-cube/src/version.rs",
+     "            feed(&mut h, rule.rule.as_str().as_bytes());",
+     "",
+     "sankhya-cube"),
+
+    ("cube: fingerprint fields without a length prefix, so two cubes share a key",
+     "crates/sankhya-cube/src/version.rs",
+     "    for byte in (bytes.len() as u64).to_le_bytes() {\n        *h = (*h ^ u64::from(byte)).wrapping_mul(PRIME);\n    }",
+     "",
+     "sankhya-cube"),
+
+    ("cube: fingerprint levels as a set, losing the drill-down order",
+     "crates/sankhya-cube/src/version.rs",
+     "        for level in &dimension.levels {",
+     "        for level in { let mut s: Vec<&crate::model::Level> = dimension.levels.iter().collect(); s.sort_by(|a, b| a.name.cmp(&b.name)); s } {",
+     "sankhya-cube"),
+
+    ("cube: skip the stray-rule check, so a misspelling reads as one problem",
+     "crates/sankhya-cube/src/validate.rs",
+     "            if !names.contains(rule.dimension) {",
+     "            if false {",
+     "sankhya-cube"),
+
+    # --- consolidation: the three ways a total goes silently wrong ---------
+
+    ("cube: consolidate to the leaves, dropping facts attached at an inner member",
+     "crates/sankhya-cube/src/consolidate.rs",
+     "    let members: BTreeSet<VertexId> = found.found.iter().map(|r| r.vertex).collect();",
+     "    let members: BTreeSet<VertexId> = found.found.iter().filter(|r| graph.out_degree(r.vertex, child_edges) == 0).map(|r| r.vertex).collect();",
+     "sankhya-cube"),
+
+    ("cube: leave the root out of its own total",
+     "crates/sankhya-cube/src/consolidate.rs",
+     "    let members: BTreeSet<VertexId> = found.found.iter().map(|r| r.vertex).collect();",
+     "    let members: BTreeSet<VertexId> = found.found.iter().filter(|r| r.via.is_some()).map(|r| r.vertex).collect();",
+     "sankhya-cube"),
+
+    ("cube: let a truncated consolidation be reported as a total",
+     "crates/sankhya-cube/src/consolidate.rs",
+     "        self.truncation\n            .explain()\n            .map(|why| Incomplete::Truncated { why })",
+     "        None",
+     "sankhya-cube"),
+
+    ("cube: stop detecting a hierarchy that consolidates a member into itself",
+     "crates/sankhya-cube/src/consolidate.rs",
+     "                .any(|arc| arc.target == root)",
+     "                .any(|arc| arc.target == root && false)",
+     "sankhya-cube"),
+
+    ("cube: deny a total whenever any cycle exists below the root",
+     "crates/sankhya-cube/src/consolidate.rs",
+     "                .any(|arc| arc.target == root)",
+     "                .any(|arc| members.contains(&arc.target))",
+     "sankhya-cube"),
+
+    ("cube: consolidate along every edge type rather than the declared roll-up",
+     "crates/sankhya-cube/src/consolidate.rs",
+     "    let found = reachable(graph, &[root], child_edges, budget);",
+     "    let found = reachable(graph, &[root], &graph.all_edge_types(), budget);",
+     "sankhya-cube"),
+
+    # --- the sparse cube and the navigation operations ---------------------
+
+    ("cube: read an absent cell as zero",
+     "crates/sankhya-cube/src/cells.rs",
+     "        if self.values.is_empty() {\n            return None;\n        }",
+     "        if self.values.is_empty() {\n            return Some(0.0);\n        }",
+     "sankhya-cube"),
+
+    ("cube: sum a cell without fixing the order, so two runs differ",
+     "crates/sankhya-cube/src/cells.rs",
+     "            Rule::Sum => Some(deterministic_sum(&self.values)),",
+     "            Rule::Sum => Some(self.values.iter().sum()),",
+     "sankhya-cube"),
+
+    ("cube: report a cell of nothing but NaN as absent",
+     "crates/sankhya-cube/src/cells.rs",
+     "        best.or(Some(f64::NAN))",
+     "        best",
+     "sankhya-cube"),
+
+    ("cube: pad an address of the wrong width instead of refusing it",
+     "crates/sankhya-cube/src/cells.rs",
+     "        if address.len() != self.dimensions.len() {\n            return Err(WrongWidth {",
+     "        if false {\n            return Err(WrongWidth {",
+     "sankhya-cube"),
+
+    ("cube: give a non-composing measure a value from its partial aggregates",
+     "crates/sankhya-cube/src/cells.rs",
+     "            Rule::None => None,",
+     "            Rule::None => Some(deterministic_sum(&self.values)),",
+     "sankhya-cube"),
+
+    ("cube: roll up a positional measure without a stated member order",
+     "crates/sankhya-cube/src/navigate.rs",
+     "    if positional && order == Ordered::Unstated {",
+     "    if false {",
+     "sankhya-cube"),
+
+    ("cube: take contributions in visit order, so a closing balance is January's",
+     "crates/sankhya-cube/src/navigate.rs",
+     "        if positional {\n            values.sort_by_key(|(at, _)| *at);\n        }",
+     "",
+     "sankhya-cube"),
+
+    ("cube: place a member missing from the stated order rather than refusing",
+     "crates/sankhya-cube/src/navigate.rs",
+     "                    return Err(Refused::MemberNotOrdered {\n                        dimension: dimension.to_string(),\n                        member: member.to_string(),\n                    })",
+     "                    0",
+     "sankhya-cube"),
+
+    ("cube: treat an undeclared dimension as a refusal rather than a definition gap",
+     "crates/sankhya-cube/src/navigate.rs",
+     "        None => Err(Refused::Undeclared {",
+     "        None => Err(Refused::NotComposable {",
+     "sankhya-cube"),
+
+    ("cube: keep the sliced axis, leaving a degenerate dimension behind",
+     "crates/sankhya-cube/src/navigate.rs",
+     "        .filter(|(index, _)| *index != axis)\n        .map(|(_, name)| name.clone())\n        .collect();\n\n    let mut out = Cells::over(remaining);\n    for address in cells.addresses() {\n        if address.get(axis).map(String::as_str) != Some(member) {",
+     "        .map(|(_, name)| name.clone())\n        .collect();\n\n    let mut out = Cells::over(remaining);\n    for address in cells.addresses() {\n        if address.get(axis).map(String::as_str) != Some(member) {",
+     "sankhya-cube"),
+
+    ("cube: drop a dice restriction naming an absent dimension without saying so",
+     "crates/sankhya-cube/src/navigate.rs",
+     "            None => ignored.push((*dimension).to_string()),",
+     "            None => {}",
+     "sankhya-cube"),
+
+    ("cube: lose the axes a partial pivot did not name",
+     "crates/sankhya-cube/src/navigate.rs",
+     "    for axis in 0..cells.dimensions().len() {\n        if !axes.contains(&axis) {\n            axes.push(axis);\n        }\n    }",
+     "",
+     "sankhya-cube"),
+
+    ("cube: invent a parent for a member that has none, padding a ragged hierarchy",
+     "crates/sankhya-cube/src/navigate.rs",
+     "            if let Some(parent) = parents(member) {\n                if let Some(slot) = moved.get_mut(axis) {\n                    *slot = parent;\n                }\n            }",
+     "            if let Some(slot) = moved.get_mut(axis) {\n                *slot = parents(member).unwrap_or_else(|| \"unknown\".to_string());\n            }",
+     "sankhya-cube"),
+
+    # --- completeness: a filtered total wearing a complete one's clothes ---
+
+    ("cube: report an aggregate over no rows at all as complete",
+     "crates/sankhya-cube/src/complete.rs",
+     "        if considered == 0 {\n            return None;\n        }",
+     "        if considered == 0 {\n            return Some(1.0);\n        }",
+     "sankhya-cube"),
+
+    ("cube: call an aggregate over nothing complete",
+     "crates/sankhya-cube/src/complete.rs",
+     "        self.withheld == 0 && self.contributed > 0",
+     "        self.withheld == 0",
+     "sankhya-cube"),
+
+    ("cube: combine completeness by keeping one side and ignoring the other",
+     "crates/sankhya-cube/src/complete.rs",
+     "            contributed: self.contributed.saturating_add(other.contributed),\n            withheld: self.withheld.saturating_add(other.withheld),",
+     "            contributed: self.contributed,\n            withheld: self.withheld,",
+     "sankhya-cube"),
+
+    ("cube: accept a completeness threshold that is not a fraction",
+     "crates/sankhya-cube/src/complete.rs",
+     "        if !fraction.is_finite() || !(0.0..=1.0).contains(&fraction) {",
+     "        if false {",
+     "sankhya-cube"),
+
+    ("cube: reject a threshold that is exactly met",
+     "crates/sankhya-cube/src/complete.rs",
+     "            .is_some_and(|seen| seen >= self.at_least)",
+     "            .is_some_and(|seen| seen > self.at_least)",
+     "sankhya-cube"),
+
+    ("cube: return a partial total when the threshold is not met",
+     "crates/sankhya-cube/src/complete.rs",
+     "        if threshold.met_by(&self.completeness) {\n            return Ok(&self.value);\n        }",
+     "        if true {\n            return Ok(&self.value);\n        }",
+     "sankhya-cube"),
+
+    ("cube: drop completeness when a value is mapped",
+     "crates/sankhya-cube/src/complete.rs",
+     "            completeness: self.completeness,\n        }\n    }\n}",
+     "            completeness: Completeness::complete(self.completeness.contributed()),\n        }\n    }\n}",
+     "sankhya-cube"),
+
+    # --- exact summation, and where an answer comes from -------------------
+
+    ("math: round an exact sum at every step instead of once at the end",
+     "crates/sankhya-math/src/reduce.rs",
+     "            let (high, low) = two_sum(carry, *component);\n            if is_nonzero(low) {\n                next.push(low);\n            }",
+     "            let (high, low) = two_sum(carry, *component);\n            if false {\n                next.push(low);\n            }",
+     "sankhya-math"),
+
+    ("math: drop the error term from a two-sum, making the expansion merely careful",
+     "crates/sankhya-math/src/reduce.rs",
+     "    let error = (a - a_virtual) + (b - b_virtual);",
+     "    let error = 0.0;",
+     "sankhya-math"),
+
+    ("math: hide a non-finite value inside an exact sum",
+     "crates/sankhya-math/src/reduce.rs",
+     "        if !value.is_finite() {",
+     "        if false {",
+     "sankhya-math"),
+
+    ("math: keep zero components, so an expansion grows without bound",
+     "crates/sankhya-math/src/reduce.rs",
+     "        if is_nonzero(carry) {\n            next.push(carry);\n        }",
+     "        next.push(carry);",
+     "sankhya-math"),
+
+    ("cube: store a materialised partial rounded, so the fast path drifts from the slow one",
+     "crates/sankhya-cube/src/navigate.rs",
+     "            let _ = out.add_reduced(coarser, rule, exact);\n            continue;",
+     "            let _ = out.add(coarser, exact.to_f64());\n            continue;",
+     "sankhya-cube"),
+
+    ("cube: roll a partial aggregate up as its rounded value",
+     "crates/sankhya-cube/src/navigate.rs",
+     "        if contributions.rule_used().is_some() {\n            slot.push((at, contributions.exact_sum()));",
+     "        if contributions.rule_used().is_some() {\n            slot.push((at, Exact::of(&[contributions.exact_sum().to_f64()])));",
+     "sankhya-cube"),
+
+    ("cube: let a reduced cell answer with whatever rule is asked for",
+     "crates/sankhya-cube/src/cells.rs",
+     "        if self.reduced_under.is_some() {",
+     "        if false {",
+     "sankhya-cube"),
+
+    ("cube: name a materialised table without length-prefixing its dimensions",
+     "crates/sankhya-cube/src/materialise.rs",
+     "            out.push_str(&format!(\"_{}_{dimension}\", dimension.len()));",
+     "            out.push_str(&format!(\"_{dimension}\"));",
+     "sankhya-cube"),
+
+    ("cube: leave the snapshot out of a materialisation key",
+     "crates/sankhya-cube/src/materialise.rs",
+     "            self.definition,\n            self.snapshot",
+     "            self.definition,\n            0",
+     "sankhya-cube"),
+
+    ("cube: let a session widen materialisation past what is configured",
+     "crates/sankhya-cube/src/materialise.rs",
+     "            Session::PinnedOnly => available\n                .iter()\n                .filter(|cuboid| self.pinned.contains(cuboid))\n                .collect(),",
+     "            Session::PinnedOnly => available.iter().collect(),",
+     "sankhya-cube"),
+
+    ("cube: honour a session that asks for no materialisation by using it anyway",
+     "crates/sankhya-cube/src/materialise.rs",
+     "            Session::Off => Vec::new(),",
+     "            Session::Off => available.iter().collect(),",
+     "sankhya-cube"),
+
+    ("cube: answer from an ancestor the measure does not permit",
+     "crates/sankhya-cube/src/materialise.rs",
+     "        if !permits(candidate, query, measure) {\n            continue;\n        }",
+     "",
+     "sankhya-cube"),
+
+    ("cube: choose an ancestor by iteration order rather than by width",
+     "crates/sankhya-cube/src/materialise.rs",
+     "            (candidate.width(), candidate.dimensions())\n                < (current.width(), current.dimensions())",
+     "            candidate.width() < current.width()",
+     "sankhya-cube"),
+
+    # --- the write-back overlay: keeping a what-if distinguishable ---------
+
+    ("cube: serve an overlaid figure without saying which scenario it came from",
+     "crates/sankhya-cube/src/overlay.rs",
+     "            overlay: Some(self.name.clone()),",
+     "            overlay: None,",
+     "sankhya-cube"),
+
+    ("cube: apply an overlay written against a different cube definition",
+     "crates/sankhya-cube/src/overlay.rs",
+     "        if definition != self.definition {",
+     "        if false {",
+     "sankhya-cube"),
+
+    ("cube: show unadjusted children beneath an adjusted total",
+     "crates/sankhya-cube/src/overlay.rs",
+     "                Allocation::Refuse => {\n                    return Err(NotApplicable::FinerThanWritten {\n                        overlay: self.name.clone(),\n                        written_at: entry.grain.clone(),\n                        asked_at: dimensions.clone(),\n                    })\n                }",
+     "                Allocation::Refuse => continue,",
+     "sankhya-cube"),
+
+    ("cube: divide an allocation equally when there is nothing to be proportional to",
+     "crates/sankhya-cube/src/overlay.rs",
+     "    if beneath.is_empty() || total == 0.0 {",
+     "    if false {",
+     "sankhya-cube"),
+
+    ("cube: add an overlay entry into a total it is not part of",
+     "crates/sankhya-cube/src/overlay.rs",
+     "            if finer.is_empty() {\n                // The cube is *coarser* than the entry. Adding a leaf figure into a total\n                // it is not part of would double-count, so it is left alone.\n                continue;\n            }",
+     "",
+     "sankhya-cube"),
+
+    ("cube: collapse a delta into a replacement, losing what the planner meant",
+     "crates/sankhya-cube/src/overlay.rs",
+     "        Adjustment::Delta(by) => existing.unwrap_or(0.0) + by,",
+     "        Adjustment::Delta(by) => by,",
+     "sankhya-cube"),
+
+    # --- the SQL surface: provenance that survives a projection ------------
+
+    ("cube-sql: refuse an unknown cube without naming the ones that exist",
+     "crates/sankhya-cube-sql/src/catalog.rs",
+     "                known: cubes.keys().cloned().collect(),",
+     "                known: Vec::new(),",
+     "sankhya-cube-sql"),
+
+    ("cube-sql: report a cube awaiting its first load as a missing name",
+     "crates/sankhya-cube-sql/src/catalog.rs",
+     "            Some(None) => Err(Unresolved::NothingPublished {\n                name: name.to_string(),\n            }),",
+     "            Some(None) => Err(Unresolved::NoSuchCube {\n                name: name.to_string(),\n                known: Vec::new(),\n            }),",
+     "sankhya-cube-sql"),
+
+    ("cube-sql: ignore an unrecognised option instead of refusing the query",
+     "crates/sankhya-cube-sql/src/args.rs",
+     "            if !KNOWN_OPTIONS.contains(&key.as_str()) {",
+     "            if false {",
+     "sankhya-cube-sql"),
+
+    ("cube-sql: drop the overlay name from the rows",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "        Arc::new(StringArray::from(vec![overlay; rows])),",
+     "        Arc::new(StringArray::from(vec![None::<&str>; rows])),",
+     "sankhya-cube-sql"),
+
+    ("cube-sql: leave the snapshot out of the rows",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "        Arc::new(UInt64Array::from(vec![published.snapshot; rows])),",
+     "        Arc::new(UInt64Array::from(vec![0_u64; rows])),",
+     "sankhya-cube-sql"),
+
+    ("cube-sql: apply no overlay when one is named",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "    let Some(name) = args.string(\"overlay\") else {",
+     "    let Some(name) = None::<String> else {",
+     "sankhya-cube-sql"),
+
+    ("cube-sql: accept a restriction naming a dimension the cube lacks",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "    if !diced.ignored.is_empty() {",
+     "    if false {",
+     "sankhya-cube-sql"),
+
+    ("cube-sql: default an unknown measure rather than naming the ones that exist",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "    published.cube.measure(&name).copied().ok_or_else(|| {",
+     "    published.cube.measures().first().copied().ok_or_else(|| {",
+     "sankhya-cube-sql"),
+
+    ("cube-sql: skip the completeness threshold a query asked for",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "    let Some(required) = args.number(\"min_completeness\")? else {",
+     "    let Some(required) = None::<f64> else {",
+     "sankhya-cube-sql"),
+
+    # --- hydration: rows that could not be placed --------------------------
+
+    ("cube: drop a row with a null dimension key instead of counting it",
+     "crates/sankhya-cube/src/hydrate.rs",
+     "        let Some(address) = address_of(&keys, row) else {\n            absorbed.unplaced = absorbed.unplaced.saturating_add(1);\n            continue;\n        };",
+     "        let Some(address) = address_of(&keys, row) else {\n            continue;\n        };",
+     "sankhya-cube"),
+
+    ("cube: place a null member under the empty string, inventing a member",
+     "crates/sankhya-cube/src/hydrate.rs",
+     "        if column.is_null(row) {\n            return None;\n        }",
+     "",
+     "sankhya-cube"),
+
+    ("cube: read a null measure as zero",
+     "crates/sankhya-cube/src/hydrate.rs",
+     "        let Some(value) = values.at(row) else {\n            absorbed.unplaced = absorbed.unplaced.saturating_add(1);\n            continue;\n        };",
+     "        let value = values.at(row).unwrap_or(0.0);",
+     "sankhya-cube"),
+
+    ("cube: skip a dimension whose join column the fact table lacks",
+     "crates/sankhya-cube/src/hydrate.rs",
+     "        let column = batch.column_by_name(&dimension.joins_on).ok_or_else(|| {",
+     "        let Some(column) = batch.column_by_name(&dimension.joins_on) else { continue }; let column = Ok::<_, NotHydratable>(column).map_err(|_: NotHydratable| {",
+     "sankhya-cube"),
+
+    ("cube-sql: compute completeness from the rows that survived",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "        let completeness = published.completeness;\n        check_completeness(&completeness, &args)?;\n\n        let rolled",
+     "        let completeness = Completeness::complete(narrowed.len() as u64);\n        check_completeness(&completeness, &args)?;\n\n        let rolled",
+     "sankhya-cube-sql"),
+
+    # --- date partitioning: declared and applied ---------------------------
+
+    ("publish: write files flat while declaring a partition column",
+     "crates/sankhya-publish/src/publish.rs",
+     "            add.partition_values\n                .insert(DATA_DATE_COLUMN.to_string(), partition.clone());",
+     "",
+     "sankhya-publish"),
+
+    ("publish: put every row of a batch in one partition whatever its date",
+     "crates/sankhya-publish/src/publish.rs",
+     "                    let partition = self.date_axis.partition_of(days.value(row));",
+     "                    let partition = self.date_axis.partition_of(days.value(0));",
+     "sankhya-publish"),
+
+    ("publish: file a row with no date under today instead of refusing",
+     "crates/sankhya-publish/src/publish.rs",
+     "                    if days.is_null(row) {",
+     "                    if false {",
+     "sankhya-publish"),
+
+    ("publish: commit each partition of a batch separately",
+     "crates/sankhya-publish/src/publish.rs",
+     "        commit(&self.root, version, &actions).map_err(|error| PublishError::Commit {",
+     "        for one in actions.chunks(1) { commit(&self.root, version, one).ok(); }\n        commit(&self.root, version, &[]).map_err(|error| PublishError::Commit {",
+     "sankhya-publish"),
+
+    ("publish: declare a partition column the schema does not contain",
+     "crates/sankhya-publish/src/publish.rs",
+     "        let stored = with_date_column(schema);",
+     "        let stored = schema.clone();",
+     "sankhya-publish"),
+
+    ("publish: leave the date column out of the file it partitions by",
+     "crates/sankhya-publish/src/publish.rs",
+     "            let part = stamped(&part, &partition, self.date_axis.granularity)?;",
+     "",
+     "sankhya-publish"),
+
+    ("publish: stamp a row with its own date rather than its partition's",
+     "crates/sankhya-publish/src/publish.rs",
+     "        Granularity::Month => (read(0, 1970), read(1, 1), 1),",
+     "        Granularity::Month => (read(0, 1970), read(1, 1), 2),",
+     "sankhya-publish"),
+
+    # --- fan-out: FR-CDC-14's guard ---------------------------------------
+
+    ("publish: write a partition however small, restoring the tiny-file fan-out",
+     "crates/sankhya-publish/src/fanout.rs",
+     "            if entry.bytes >= self.fan_out.min_file_bytes {",
+     "            if true {",
+     "sankhya-publish"),
+
+    ("publish: defer a partition for ever, so a slow one is never readable",
+     "crates/sankhya-publish/src/fanout.rs",
+     "            } else if entry.waited >= self.fan_out.max_deferred_batches {",
+     "            } else if false {",
+     "sankhya-publish"),
+
+    ("publish: ignore the per-commit partition cap",
+     "crates/sankhya-publish/src/fanout.rs",
+     "        if !everything && ready.len() > self.fan_out.max_partitions_per_commit {",
+     "        if false {",
+     "sankhya-publish"),
+
+    ("publish: absorb sustained fan-out silently instead of reporting it",
+     "crates/sankhya-publish/src/fanout.rs",
+     "        self.batches >= 8",
+     "        false && self.batches >= 8",
+     "sankhya-publish"),
+
+    ("publish: report a fan-out of zero before any batch has arrived",
+     "crates/sankhya-publish/src/fanout.rs",
+     "        (self.batches > 0).then(|| self.partitions_touched as f64 / self.batches as f64)",
+     "        Some(self.partitions_touched as f64 / self.batches.max(1) as f64)",
+     "sankhya-publish"),
+
+    ("publish: write each deferred batch as its own file, defeating accumulation",
+     "crates/sankhya-publish/src/publish.rs",
+     "        let combined = arrow_select::concat::concat_batches(&schema, batches)",
+     "        let combined = Ok::<_, arrow_schema::ArrowError>(batches[0].clone())",
+     "sankhya-publish"),
+
+    ("publish: take the next version from the live set, missing an empty table's commits",
+     "crates/sankhya-publish/src/publish.rs",
+     "        sankhya_table_delta::newest_after(&self.root, None)\n            .map_or(0, |version| version.saturating_add(1))",
+     "        sankhya_table_delta::live_files(&self.root).ok().and_then(|s| s.version).map_or(0, |v| v.saturating_add(1))",
+     "sankhya-publish"),
+
+    ("publish: omit the protocol action from a creating commit",
+     "crates/sankhya-publish/src/publish.rs",
+     "        commit(&self.root, 0, &create(metadata)).map_err(|error| {",
+     "        commit(&self.root, 0, &[Action::Metadata(metadata)]).map_err(|error| {",
+     "sankhya-publish"),
+
+    # --- a soak watches the resource it can exhaust ------------------------
+
+    ("soak: stop watching what the warehouse consumes",
+     "crates/sankhya-diagnostic/src/soak/measure.rs",
+     "        name: \"warehouse_bytes\",",
+     "        name: \"warehouse_bytes_unwatched\",",
+     "sankhya-diagnostic"),
+
+    ("soak: measure a directory tree as empty",
+     "crates/sankhya-diagnostic/src/soak/sample.rs",
+     "                Ok(metadata) => *total = total.saturating_add(metadata.len()),",
+     "                Ok(metadata) => { let _ = metadata; }",
+     "sankhya-diagnostic"),
+
+    ("soak: count the log as part of what the data consumes",
+     "crates/sankhya-diagnostic/src/soak/sample.rs",
+     "    if !path.exists() {\n        return None;\n    }",
+     "    if false {\n        return None;\n    }",
+     "sankhya-diagnostic"),
+
+    # --- compaction lands in the partition its rows belong to --------------
+
+    ("maintenance: log a merged file by its bare name, losing its partition",
+     "crates/sankhya-maintenance/src/driver.rs",
+     "            p.strip_prefix(table_root)\n                .unwrap_or(p)\n                .to_string_lossy()\n                .into_owned()\n        };\n\n        // Everything the merge learned",
+     "            p.file_name().map_or_else(|| p.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned())\n        };\n\n        // Everything the merge learned",
+     "sankhya-maintenance"),
+
+    ("maintenance: retire live files by bare name, so a partitioned one never leaves",
+     "crates/sankhya-maintenance/src/driver.rs",
+     "        let superseded: BTreeSet<String> =\n            outcome.inputs_retained.iter().map(|p| relative(p)).collect();",
+     "        let superseded: BTreeSet<String> = outcome.inputs_retained.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).collect();",
+     "sankhya-maintenance"),
+
+    ("maintenance: write a merged file outside the partition its rows belong to",
+     "crates/sankhya-maintenance/src/driver.rs",
+     "        let name = if directory_of_inputs.is_empty() {",
+     "        let directory_of_inputs = String::new();\n        let name = if directory_of_inputs.is_empty() {",
+     "sankhya-maintenance"),
+
+    # --- clustering: declared, and applied only when settled ---------------
+
+    ("maintenance: cluster a table nobody declared a clustering for",
+     "crates/sankhya-maintenance/src/layout.rs",
+     "    config\n        .list(&clustering_key(schema, table))\n        .unwrap_or_default()",
+     "    config\n        .list(&clustering_key(schema, table))\n        .unwrap_or_else(|| vec![\"id\".to_string()])",
+     "sankhya-maintenance"),
+
+    ("maintenance: accept a clustering on a column the table does not have",
+     "crates/sankhya-maintenance/src/layout.rs",
+     "    if missing.is_empty() {",
+     "    if true {",
+     "sankhya-maintenance"),
+
+    ("maintenance: sort a partition that is still receiving writes",
+     "crates/sankhya-maintenance/src/execute.rs",
+     "    let clustering: &[String] = if plan.settled { clustering } else { &[] };",
+     "    let clustering: &[String] = clustering;",
+     "sankhya-maintenance"),
+
+    # --- configuration: precedence, resolution and refusal -----------------
+
+    ("config: leave an unresolved reference in the value instead of refusing",
+     "crates/sankhya-config/src/resolve.rs",
+     "            return Err(Unresolved::NoSuchKey {",
+     "            return Ok(format!(\"{out}${{{name}}}{rest}\"));\n            #[allow(unreachable_code)] return Err(Unresolved::NoSuchKey {",
+     "sankhya-config"),
+
+    ("config: resolve a circular reference until it runs out of stack",
+     "crates/sankhya-config/src/resolve.rs",
+     "        if visiting.contains(name) {",
+     "        if false {",
+     "sankhya-config"),
+
+    ("config: let a file outrank an environment variable",
+     "crates/sankhya-config/src/lib.rs",
+     "        for (key, value) in environment {\n            settings.insert(key.clone(), Origin::from(value.clone(), Source::Environment));\n        }",
+     "",
+     "sankhya-config"),
+
+    ("config: let the environment outrank a command-line argument",
+     "crates/sankhya-config/src/lib.rs",
+     "        for (key, value) in arguments {\n            settings.insert(key.clone(), Origin::from(value.clone(), Source::CommandLine));\n        }",
+     "",
+     "sankhya-config"),
+
+    ("config: ignore a .local overlay",
+     "crates/sankhya-config/src/lib.rs",
+     "            if let Some(overlay) = local_overlay(&path) {",
+     "            if let Some(overlay) = None::<PathBuf> {",
+     "sankhya-config"),
+
+    ("config: default an unparseable typed value instead of refusing it",
+     "crates/sankhya-config/src/lib.rs",
+     "        parse(&origin.value).map(Some).ok_or_else(|| ConfigError::NotA {",
+     "        Ok(parse(&origin.value)).map_err(|_: ()| ConfigError::NotA {",
+     "sankhya-config"),
+
+    ("config: read a boolean that is neither true nor false as false",
+     "crates/sankhya-config/src/lib.rs",
+     "                _ => None,\n            }\n        })\n    }\n\n    /// A setting as a duration",
+     "                _ => Some(false),\n            }\n        })\n    }\n\n    /// A setting as a duration",
+     "sankhya-config"),
+
+    ("config: print a secret",
+     "crates/sankhya-config/src/secret.rs",
+     "        f.write_str(\"<redacted>\")",
+     "        f.write_str(&self.0)",
+     "sankhya-config"),
+
+    ("config: report a changed secret's old value",
+     "crates/sankhya-config/src/lib.rs",
+     "            if looks_secret(key) {\n                parts.push(format!(\"{key} changed\"));",
+     "            if false {\n                parts.push(format!(\"{key} changed\"));",
+     "sankhya-config"),
+
+    ("config: replace a working configuration with a broken one on reload",
+     "crates/sankhya-config/src/lib.rs",
+     "        let fresh = Self::load_with(&files, environment, arguments)?;",
+     "        let fresh = Self::load_with(&files, environment, arguments).unwrap_or_default();",
+     "sankhya-config"),
+
+    ("config: load part of a malformed file rather than none of it",
+     "crates/sankhya-config/src/lib.rs",
+     "            let parsed = parse::file(path).map_err(ConfigError::Unreadable)?;",
+     "            let parsed = parse::file(path).unwrap_or_default();",
+     "sankhya-config"),
+
+    # --- the invariants document names every check, and no others ----------
+
+    ("docs: name a check in INVARIANTS.md that does not run",
+     "xtask/src/main.rs",
+     "        if !KNOWN_CHECKS.contains(&check.as_str()) {",
+     "        if false {",
+     "xtask"),
+
+    ("docs: run a check that INVARIANTS.md documents nowhere",
+     "xtask/src/main.rs",
+     "        if !named.contains(*check) {",
+     "        if false {",
+     "xtask"),
+
+    # --- the soak writes nothing outside the project root ------------------
+
+    ("soak: accept a warehouse outside the project root",
+     "crates/sankhya-diagnostic/tests/soak_run.rs",
+     "    if !resolved.starts_with(&root) {",
+     "    if false {",
+     "sankhya-diagnostic"),
+
+    ("soak: check the unresolved path, so `..` walks out of the root",
+     "crates/sankhya-diagnostic/tests/soak_run.rs",
+     "    let anchor = absolute\n        .ancestors()\n        .find(|candidate| candidate.exists())\n        .unwrap_or(root);",
+     "    let anchor = root;",
+     "sankhya-diagnostic"),
+
+    # --- the guide's examples are executed, or accounted for ---------------
+
+    ("docs: name a source file in prose that does not exist",
+     "xtask/src/main.rs",
+     "            if !root.join(&named).exists() {",
+     "            if false {",
+    ("docs: name a check in INVARIANTS.md that does not run",
+     "xtask/src/main.rs",
+     "        if !KNOWN_CHECKS.contains(&check.as_str()) {",
+     "        if false {",
+     "xtask"),
+
+    ("docs: run a check that INVARIANTS.md documents nowhere",
+     "xtask/src/main.rs",
+     "        if !named.contains(*check) {",
+     "        if false {",
+     "xtask"),
+
+     "xtask"),
+
 ]
 
 

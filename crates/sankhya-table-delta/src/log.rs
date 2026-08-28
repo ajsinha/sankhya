@@ -523,6 +523,31 @@ pub fn live_files(table_root: &Path) -> Result<LiveSet, CommitError> {
     advance(table_root, &base)
 }
 
+/// The live set as it stood at a particular version.
+///
+/// Time travel, and the operation a restore drill is built on: a backup names a version, and
+/// proving the backup means reading what that version saw rather than what is there now.
+///
+/// A full replay from the beginning rather than from a checkpoint, deliberately. A
+/// checkpoint reflects some version and the one wanted here is usually older, so starting
+/// from a checkpoint would mean *unwinding* commits — and the log records what each commit
+/// added and removed, not what it replaced, so unwinding is not something it supports. The
+/// cost is linear in the history and this runs once per drill.
+///
+/// # Errors
+///
+/// Returns an error if the log cannot be read or is malformed.
+pub fn live_files_at(table_root: &Path, version: Version) -> Result<LiveSet, CommitError> {
+    let mut replay = Replay::default();
+    for (at, action) in read_actions(table_root)? {
+        if at > version {
+            break;
+        }
+        replay.apply(at, action);
+    }
+    Ok(replay.into_live_set())
+}
+
 /// The live set as of the newest commit, starting from a known earlier one.
 ///
 /// Reads only the commits after `base.version`, so a caller that already knows the state
@@ -583,34 +608,44 @@ impl Replay {
         let actions = read_actions_after(table_root, self.version)?;
         let count = actions.len();
         for (version, action) in actions {
-            self.version = Some(version);
-            match action {
-                // `position` is only ever written alongside a push to `files`, so every
-                // index it holds is in range. Resolving through `get_mut` rather than
-                // indexing keeps that invariant from being the only thing standing
-                // between a malformed log and a panic during replay.
-                Action::Add(add) => match self.position.get(&add.path).copied() {
-                    Some(index) => {
-                        if let Some(slot) = self.files.get_mut(index) {
-                            *slot = Some(add);
-                        }
-                    }
-                    None => {
-                        self.position.insert(add.path.clone(), self.files.len());
-                        self.files.push(Some(add));
-                    }
-                },
-                Action::Remove(remove) => {
-                    if let Some(index) = self.position.remove(&remove.path) {
-                        if let Some(slot) = self.files.get_mut(index) {
-                            *slot = None;
-                        }
-                    }
-                }
-                Action::Protocol { .. } | Action::Metadata(_) => {}
-            }
+            self.apply(version, action);
         }
         Ok(count)
+    }
+
+    /// Apply one commit's action.
+    ///
+    /// Factored out of [`Replay::advance`] so that replaying *to a version* and replaying to
+    /// the end share the ordering rules exactly. Two copies of this would eventually
+    /// disagree about a file added, removed and added again, and the disagreement would show
+    /// up as a restore drill failing against data that is fine.
+    fn apply(&mut self, version: Version, action: Action) {
+        self.version = Some(version);
+        match action {
+            // `position` is only ever written alongside a push to `files`, so every
+            // index it holds is in range. Resolving through `get_mut` rather than
+            // indexing keeps that invariant from being the only thing standing
+            // between a malformed log and a panic during replay.
+            Action::Add(add) => match self.position.get(&add.path).copied() {
+                Some(index) => {
+                    if let Some(slot) = self.files.get_mut(index) {
+                        *slot = Some(add);
+                    }
+                }
+                None => {
+                    self.position.insert(add.path.clone(), self.files.len());
+                    self.files.push(Some(add));
+                }
+            },
+            Action::Remove(remove) => {
+                if let Some(index) = self.position.remove(&remove.path) {
+                    if let Some(slot) = self.files.get_mut(index) {
+                        *slot = None;
+                    }
+                }
+            }
+            Action::Protocol { .. } | Action::Metadata(_) => {}
+        }
     }
 
     /// The live set as it now stands.

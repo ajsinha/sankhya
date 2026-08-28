@@ -5,7 +5,12 @@
 //! gate. Each exists because the corresponding mistake is cheap to make, expensive
 //! to unwind, and invisible in review.
 
-use std::collections::BTreeMap;
+mod catalogues;
+mod logging;
+mod buildtree;
+mod package;
+
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -131,6 +136,15 @@ fn main() -> ExitCode {
 
     let run_all = task.is_empty() || task == "check-all";
 
+    if run_all || task == "check-tests" {
+        failed |= !check_tests(&root);
+    }
+    if run_all || task == "check-invariants" {
+        failed |= !check_invariants(&root);
+    }
+    if run_all || task == "check-writers" {
+        failed |= !check_writers(&root);
+    }
     if run_all || task == "check-layers" {
         failed |= !check_layers(&root);
     }
@@ -155,10 +169,41 @@ fn main() -> ExitCode {
     if run_all || task == "check-mutations" {
         failed |= !check_mutations(&root);
     }
+    if run_all || task == "check-catalogues" {
+        failed |= !catalogues::check(&root);
+    }
+    // Not a check: it writes. Kept out of `check-all` for that reason.
+    if task == "write-catalogues" {
+        match catalogues::write(&root) {
+            Ok(()) => println!("wrote {} and {}", catalogues::METRICS_DOC, catalogues::ERRORS_DOC),
+            Err(error) => {
+                eprintln!("could not write the catalogues: {error}");
+                failed = true;
+            }
+        }
+    }
+    if run_all || task == "check-logging" {
+        failed |= !logging::check(&root);
+    }
+    if run_all || task == "check-build-tree" {
+        failed |= !buildtree::check(&root);
+    }
+    if run_all || task == "check-package" {
+        failed |= !package::check(&root);
+    }
     if run_all || task == "check-doc-numbers" {
         let mut docs = Vec::new();
         collect_markdown(&root, &mut docs);
         failed |= !check_doc_numbers(&root, &docs);
+    }
+    // Last, and part of `check-all` on purpose: `check-tests` has just rebuilt the
+    // workspace, so this is the moment the superseded generation exists and is identifiable.
+    // A sweep that runs before the build sweeps the wrong thing.
+    if run_all || task == "sweep" {
+        failed |= !buildtree::sweep(&root, false);
+    }
+    if task == "sweep-dry-run" {
+        failed |= !buildtree::sweep(&root, true);
     }
     // Deliberately not in `check-all`: it generates a scale-factor-1 dataset and runs
     // for minutes, and it needs a machine that is not otherwise busy. It belongs to the
@@ -178,14 +223,24 @@ fn main() -> ExitCode {
                 | "check-lints"
                 | "check-mutations"
                 | "check-doc-numbers"
+                | "check-writers"
+                | "check-invariants"
+                | "check-tests"
+                | "check-logging"
+                | "check-package"
+                | "check-build-tree"
+                | "sweep"
+                | "sweep-dry-run"
+                | "check-catalogues"
+                | "write-catalogues"
                 | "check-performance"
         )
     {
         eprintln!(
             "usage: cargo xtask \
-             [check-all|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
+             [check-all|check-tests|check-invariants|check-writers|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
              |check-features|check-lints|check-mutations|check-doc-numbers\
-             |check-performance]"
+             |check-catalogues|write-catalogues|check-logging|check-package|check-build-tree|sweep|sweep-dry-run|check-performance]"
         );
         return ExitCode::from(2);
     }
@@ -466,9 +521,6 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The ceiling bounds cognitive load. It is not satisfied structurally: a split that
-/// widens visibility or separates an invariant from its enforcement is a violation of
-/// this rule, not compliance with it, and must be rejected in review.
 fn check_loc(root: &Path) -> bool {
     println!("== check-loc ==");
     let mut files = Vec::new();
@@ -674,7 +726,8 @@ fn check_docs(root: &Path) -> bool {
         docs.len()
     );
 
-    ok &= check_status_agreement(&docs);
+    ok &= check_named_sources(root, &docs);
+    ok &= check_status_agreement(root, &docs);
 
     ok
 }
@@ -1217,7 +1270,7 @@ fn check_mutations(root: &Path) -> bool {
 ///
 /// Only files declaring a `**Status:**` header line participate. Prose status paragraphs
 /// are left alone: this checks the machine-readable claim, not the writing.
-fn check_status_agreement(docs: &[PathBuf]) -> bool {
+fn check_status_agreement(root: &Path, docs: &[PathBuf]) -> bool {
     let mut seen: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
     for doc in docs {
@@ -1250,8 +1303,646 @@ fn check_status_agreement(docs: &[PathBuf]) -> bool {
         return false;
     }
 
-    if let Some((status, files)) = seen.iter().next() {
-        println!("   {} documents agree on status: {status}", files.len());
+    let Some((status, files)) = seen.iter().next() else {
+        return true;
+    };
+
+    // Agreement is not accuracy.
+    //
+    // This check passed for a week while every document said "M0–M5 complete, M6 in
+    // progress" and M7 was half built. Seven documents agreeing is exactly what a stale
+    // line looks like: nothing disagrees with it, because they were all written at the same
+    // moment and none of them has moved since.
+    //
+    // So the agreed line is checked against something that *does* move --- STATUS.md's
+    // milestone table, which is edited as work lands. Every milestone that table calls
+    // unfinished must be named in the status line.
+    let unfinished = unfinished_milestones(root);
+    let mut ok = true;
+    for milestone in &unfinished {
+        if !status.contains(milestone.as_str()) {
+            eprintln!(
+                "  STALE STATUS  the status line does not mention {milestone}, which \
+                 docs/STATUS.md lists as in progress: {status:?}"
+            );
+            ok = false;
+        }
     }
+    // The README carries the same claim as a badge and a paragraph rather than a
+    // `**Status:**` line, so the agreement check above cannot see it --- which is why it was
+    // the last document still saying "M5 complete" after every other had moved.
+    ok &= readme_names(root, &unfinished);
+
+    if ok {
+        println!(
+            "   {} documents agree on status, and it names every milestone in progress \
+             ({}): {status}",
+            files.len(),
+            if unfinished.is_empty() {
+                "none".to_string()
+            } else {
+                unfinished.join(", ")
+            }
+        );
+    }
+    ok
+}
+
+/// Whether the README's badge and status section name every milestone in progress.
+///
+/// A separate check because the README states its status in two places and in neither of the
+/// forms the rest of the documentation uses. Both are checked: a badge that disagrees with
+/// the prose beneath it is the version most people see.
+fn readme_names(root: &Path, in_progress: &[String]) -> bool {
+    let Ok(text) = std::fs::read_to_string(root.join("README.md")) else {
+        return true;
+    };
+    let badge: String = text
+        .lines()
+        .filter(|line| line.contains("img.shields.io/badge/status"))
+        .collect();
+    let status: String = text
+        .split("## Status")
+        .nth(1)
+        .map(|rest| rest.lines().take(6).collect())
+        .unwrap_or_default();
+
+    let mut ok = true;
+    for milestone in in_progress {
+        if !badge.contains(milestone.as_str()) {
+            eprintln!("  STALE STATUS  README.md's status badge does not mention {milestone}");
+            ok = false;
+        }
+        if !status.contains(milestone.as_str()) {
+            eprintln!("  STALE STATUS  README.md's Status section does not mention {milestone}");
+            ok = false;
+        }
+    }
+    ok
+}
+
+/// Milestones `docs/STATUS.md` describes as in progress.
+///
+/// Read from the milestone table rather than declared here, so that recording a milestone as
+/// finished in one place is what makes the status line allowed to stop mentioning it. The
+/// table is edited as work lands; the status line is not, which is the whole problem.
+fn unfinished_milestones(root: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(root.join("docs/STATUS.md")) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("| **M") {
+            continue;
+        }
+        let Some(name) = trimmed
+            .strip_prefix("| **")
+            .and_then(|rest| rest.split("**").next())
+        else {
+            continue;
+        };
+        // In progress, specifically --- not merely unfinished. A status line naming every
+        // milestone nobody has started yet is noise, and noise is what gets skipped when
+        // the line does need changing. What must be named is what is in flight.
+        if !trimmed.to_lowercase().contains("in progress") {
+            continue;
+        }
+        for part in name.split(['–', '-']) {
+            let part = part.trim().trim_start_matches("**");
+            if part.starts_with('M') && part.len() >= 2 {
+                out.push(part.to_string());
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Every source file a document names by path must exist.
+///
+/// # Why this is not covered by the link check
+///
+/// The link check follows markdown links. This catches a path written in prose or in
+/// backticks --- which is how documentation usually names a file, and which nothing verified.
+///
+/// It was added after `GUIDE.md` was found to say *"Every example here is executed by a test.
+/// `crates/sankhya-server/tests/guide.rs` runs the SQL on this page and checks the answers,
+/// so an example that stops working breaks the build rather than misleading a reader"* --- of
+/// a file that did not exist. The promise was not merely stale: it asserted a verification
+/// that was never happening, which is worse than saying nothing, because a reader who
+/// believes it stops checking the examples themselves.
+fn check_named_sources(root: &Path, docs: &[PathBuf]) -> bool {
+    let mut ok = true;
+    let mut checked = 0usize;
+    for doc in docs {
+        let Ok(text) = std::fs::read_to_string(doc) else {
+            continue;
+        };
+        let rel = doc.strip_prefix(root).unwrap_or(doc).display().to_string();
+        for named in named_source_paths(&text) {
+            checked += 1;
+            if !root.join(&named).exists() {
+                eprintln!("  MISSING SOURCE  {rel}: names `{named}`, which does not exist");
+                ok = false;
+            }
+        }
+    }
+    if ok {
+        println!("   {checked} source path(s) named in prose all exist");
+    }
+    ok
+}
+
+/// Paths under `crates/` ending in `.rs` that a document mentions.
+///
+/// Deliberately narrow: a broad pattern over prose produces false positives, and a lint that
+/// fires on ordinary writing gets switched off.
+fn named_source_paths(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for token in text.split(|c: char| c.is_whitespace() || c == '`' || c == '(' || c == ')') {
+        let token = token.trim_matches(|c: char| matches!(c, ',' | '.' | ';' | ':' | '*' | '"'));
+        if token.starts_with("crates/") && token.ends_with(".rs") && !token.contains("..") {
+            out.push(token.to_string());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::{check_named_sources, named_source_paths, unfinished_milestones};
+    use std::path::Path;
+
+    /// The hash is the generation; everything either side of it is the identity.
+    #[test]
+        /// A file whose name it cannot parse is a file it has no business deleting.
+    #[test]
+        /// The newest generations survive and the superseded ones go.
+    ///
+    /// Written because the sweep deletes files, and the only thing worse than a build tree
+    /// that grows without bound is a cleanup that removes the build you are standing on.
+    #[test]
+        /// A dry run reports exactly what a real run would remove, and removes none of it.
+    #[test]
+        /// Set a file's modification time, so generation order is stated rather than raced for.
+        /// The extractor finds paths written in prose and in backticks.
+    ///
+    /// Tested because the check that uses it had none, and a check nobody tests is a check
+    /// that can be quietly disabled by a one-character edit --- which is exactly what a
+    /// mutation of it demonstrated.
+    #[test]
+    fn a_source_path_is_found_however_it_is_written() {
+        let text = "See `crates/sankhya-cube/src/cells.rs` and                     crates/sankhya-publish/src/publish.rs, plus (crates/x/tests/y.rs).";
+        let found = named_source_paths(text);
+        assert!(found.contains(&"crates/sankhya-cube/src/cells.rs".to_string()), "{found:?}");
+        assert!(found.contains(&"crates/sankhya-publish/src/publish.rs".to_string()), "{found:?}");
+        assert!(found.contains(&"crates/x/tests/y.rs".to_string()), "{found:?}");
+    }
+
+    #[test]
+    fn ordinary_prose_is_not_mistaken_for_a_path() {
+        // A lint that fires on ordinary writing gets switched off, which is worse than a
+        // narrower one that is always obeyed.
+        let text = "The crates are described below. See rust files and .rs extensions.";
+        assert!(named_source_paths(text).is_empty(), "{:?}", named_source_paths(text));
+    }
+
+    #[test]
+    fn a_path_is_reported_once_however_often_it_appears() {
+        let text = "`crates/a/src/b.rs` and again crates/a/src/b.rs";
+        assert_eq!(named_source_paths(text).len(), 1);
+    }
+
+    /// Every named path in this repository's own documentation exists.
+    ///
+    /// The check running against the real tree, so the test fails for the same reason the
+    /// build does rather than for a reason invented here.
+    #[test]
+    fn the_documentation_names_only_files_that_exist() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the workspace root is the xtask crate's parent")
+            .to_path_buf();
+        let mut docs = Vec::new();
+        super::collect_markdown(&root, &mut docs);
+        assert!(!docs.is_empty(), "no documents were found to check");
+        assert!(
+            super::check_named_sources(&root, &docs),
+            "documentation names a source file that does not exist"
+        );
+    }
+
+    /// A document naming a file that does not exist must **fail** the check.
+    ///
+    /// The positive test above --- "this repository's own docs are clean" --- passes just as
+    /// happily when the check never reports anything, which a mutation demonstrated. A check
+    /// is only tested by a case it has to reject.
+    #[test]
+    fn a_document_naming_a_missing_file_is_rejected() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let doc = dir.path().join("rotten.md");
+        std::fs::write(&doc, "See `crates/nothing/src/absent.rs` for details.")
+            .expect("writing the document");
+        assert!(
+            !check_named_sources(dir.path(), &[doc]),
+            "a document naming a file that does not exist was accepted"
+        );
+    }
+
+    #[test]
+    fn a_document_naming_a_file_that_exists_is_accepted() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        std::fs::create_dir_all(dir.path().join("crates/real/src")).expect("creating");
+        std::fs::write(dir.path().join("crates/real/src/there.rs"), "// present")
+            .expect("writing the source");
+        let doc = dir.path().join("fine.md");
+        std::fs::write(&doc, "See `crates/real/src/there.rs`.").expect("writing the document");
+        assert!(check_named_sources(dir.path(), &[doc]));
+    }
+
+    #[test]
+    /// A document naming a check that does not exist must be rejected.
+    #[test]
+    fn an_invariant_naming_a_check_that_does_not_run_is_rejected() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        std::fs::create_dir_all(dir.path().join("docs")).expect("creating docs");
+        // Every real check, plus one that does not exist.
+        let mut text = String::from("| a rule | a reason | `check-imaginary` |\n");
+        for check in super::KNOWN_CHECKS {
+            text.push_str(&format!("| r | w | `{check}` |\n"));
+        }
+        std::fs::write(dir.path().join("docs/INVARIANTS.md"), text).expect("writing");
+        assert!(
+            !super::check_invariants(dir.path()),
+            "a document naming a check that does not run was accepted"
+        );
+    }
+
+    /// A check that runs and is documented nowhere must be rejected.
+    ///
+    /// The direction that found six of them on the day it was written.
+    #[test]
+    fn a_check_nobody_documented_is_rejected() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        std::fs::create_dir_all(dir.path().join("docs")).expect("creating docs");
+        std::fs::write(
+            dir.path().join("docs/INVARIANTS.md"),
+            "| a rule | a reason | `check-layers` |\n",
+        )
+        .expect("writing");
+        assert!(!super::check_invariants(dir.path()));
+    }
+
+    #[test]
+    fn the_real_invariants_document_names_every_check_and_no_others() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the workspace root")
+            .to_path_buf();
+        assert!(super::check_invariants(&root));
+    }
+
+    fn milestones_in_progress_are_read_from_the_status_table() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the workspace root")
+            .to_path_buf();
+        let found = unfinished_milestones(&root);
+        // Read from STATUS.md rather than declared here, so this asserts the mechanism and
+        // not a copy of the answer.
+        assert!(!found.is_empty(), "no milestone is in progress, which cannot be right");
+        assert!(found.iter().all(|m| m.starts_with('M')), "{found:?}");
+    }
+}
+
+/// Who may write to a warehouse.
+///
+/// # The invariant
+///
+/// **There is one official writer to the warehouse, and it is `sankhya-publish`.** Every
+/// other crate that writes data files or commits table-log actions is a second writer, and a
+/// second writer is not a stylistic complaint --- it is a path that does not get the
+/// guarantees the first one enforces.
+///
+/// That is not hypothetical here. `sankhya-publish` declares `partitionColumns` and lays
+/// files out under `sank_data_date=…/`, as `FR-STORE-20` requires. The soak had its own
+/// writer, so its warehouses were flat and non-conforming, and --- worse --- a soak that
+/// bypasses the write path cannot find a defect in it. The publish path declared a partition
+/// column it never wrote for months while a ten-gigabyte soak reported `PASS` beside it.
+///
+/// # Why an allowlist rather than a ban
+///
+/// One caller is genuinely not a second writer: `sankhya-maintenance` rewrites files that are
+/// already published, which is a different operation from admitting new data. It is named
+/// here with that reason rather than exempted silently.
+///
+/// `sankhya-ingest` was here, as a violation rather than an exemption: the CDC arrival path
+/// wrote its own files and committed its own log, which is why its tables had no partition
+/// columns and violated `FR-STORE-20`. It now publishes through `Publication`, so the entry
+/// is gone --- and the check reported it as stale before anybody remembered to remove it,
+/// which is the property that keeps a list like this honest.
+///
+/// The rest are violations that exist today. Listing them makes them visible and makes the
+/// list shrink; the check's value is that **nothing new can be added without appearing
+/// here**, which is the property a rule kept in somebody's head does not have.
+const MAY_WRITE: &[(&str, &str)] = &[
+    (
+        "sankhya-publish",
+        "the one official writer: it is what FR-STORE-20's partitioning and the date axis \
+         are implemented in",
+    ),
+    (
+        "sankhya-maintenance",
+        "rewrites already-published files rather than admitting new data — compaction and \
+         retention, not ingestion. It must preserve the layout publish established",
+    ),
+];
+
+/// Calls that write to a warehouse.
+/// Tests that write to a warehouse directly, and are waiting to be routed through the
+/// product's own entry points.
+///
+/// # Why this list exists rather than a looser rule
+///
+/// `check-writers` used to skip every file under `tests/`, on the reasoning that tests drive
+/// the writers rather than being writers. That stopped being true. The soak grouped files by
+/// partition, merged them, committed the removals by hand --- and never retired the inputs,
+/// because sequencing maintenance correctly is the product's job and the soak had quietly
+/// taken it on. A run targeting ten gigabytes consumed sixty and died with a full disk.
+///
+/// The rule is now enforced for tests too. These files predate it. The list may **shrink and
+/// never grow**: a file that stops writing is removed from it, and a file that starts writing
+/// fails the check. That converts a backlog into something that gets paid down instead of
+/// something that gets rediscovered.
+const SECOND_WRITER_BACKLOG: &[&str] = &[
+    // Empty, and it stays empty. Every entry was converted: fixtures now publish through
+    // `Publication`, maintenance simulations call `Maintainer::tick`, and the states the
+    // product refuses to write come from `sankhya_table_delta::malformed`.
+];
+
+const WRITES: &[&str] = &["write_parquet(", "compact_files(", "compact_files_sorted("];
+
+/// Calls that commit to a table log.
+const COMMITS: &[&str] = &["commit(&", "delta_commit(", "commit(root", "commit(table_root"];
+
+fn check_writers(root: &Path) -> bool {
+    println!("== check-writers ==");
+    let mut files = Vec::new();
+    rust_files(&root.join("crates"), &mut files);
+
+    let mut ok = true;
+    let mut writers: BTreeMap<String, usize> = BTreeMap::new();
+    // Which backlog entries still write. One that no longer does must leave the list, or the
+    // ratchet only ever holds and never tightens.
+    let mut backlog_seen: BTreeSet<String> = BTreeSet::new();
+    for file in &files {
+        let rel = file.strip_prefix(root).unwrap_or(file).display().to_string();
+        // The storage crates *are* the implementation being called, so they are not callers
+        // of it --- and their own tests must call them, or the implementation is untested.
+        if rel.contains("sankhya-table/") || rel.contains("sankhya-table-delta/") {
+            continue;
+        }
+        // A test inside the crate that owns writing is testing it. A test anywhere else that
+        // writes is *performing server work*, and that exemption used to be blanket.
+        //
+        // It is how the soak came to group files by partition, merge them, and commit the
+        // removals by hand --- then forget to retire the inputs, and fill a disk. The rule
+        // said only two crates may write to a warehouse; the check simply was not looking at
+        // tests, so a test became the third writer and nothing said so.
+        if rel.contains("/tests/")
+            && MAY_WRITE.iter().any(|(name, _)| rel.contains(&format!("crates/{name}/")))
+        {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        let Some(crate_name) = rel
+            .strip_prefix("crates/")
+            .and_then(|rest| rest.split('/').next())
+        else {
+            continue;
+        };
+        for (number, line) in text.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or(line);
+            // For a test, the rule is about the *log*, not about bytes on disk.
+            //
+            // `write_parquet` writes a file. A file with no action referring to it is
+            // invisible to every reader --- it is an orphan, and retention sweeps it. What
+            // makes a second writer dangerous is mutating table state, and table state is
+            // the log. So a test that writes a parquet and never commits is not a second
+            // writer, and a test that commits is one however it produced the bytes.
+            let calls: &[&str] = if rel.contains("/tests/") {
+                COMMITS
+            } else {
+                &[]
+            };
+            let flagged = if rel.contains("/tests/") {
+                calls.iter().any(|call| code.contains(call))
+            } else {
+                WRITES.iter().chain(COMMITS).any(|call| code.contains(call))
+            };
+            if flagged {
+                *writers.entry(crate_name.to_string()).or_default() += 1;
+                if SECOND_WRITER_BACKLOG.contains(&rel.as_str()) {
+                    backlog_seen.insert(rel.clone());
+                    continue;
+                }
+                if !MAY_WRITE.iter().any(|(name, _)| *name == crate_name) {
+                    eprintln!(
+                        "  SECOND WRITER  {rel}:{}: `{}` writes to a warehouse, and only \
+                         sankhya-publish may. Route it through `Publication`, or add it to \
+                         MAY_WRITE with a reason somebody can evaluate",
+                        number + 1,
+                        crate_name
+                    );
+                    ok = false;
+                }
+            }
+        }
+    }
+
+    for (name, reason) in MAY_WRITE {
+        if !writers.contains_key(*name) {
+            eprintln!(
+                "  STALE ENTRY    `{name}` is allowed to write and no longer does — delete \
+                 the entry. An allowlist that only grows stops being read"
+            );
+            ok = false;
+        }
+        assert!(reason.len() > 40, "an allowlist entry needs a usable reason");
+    }
+
+    // The ratchet. A file that has been cleaned up must leave the list on the same commit,
+    // or the backlog stops describing the work left and starts hiding it.
+    for stale in SECOND_WRITER_BACKLOG {
+        if !backlog_seen.contains(*stale) {
+            eprintln!(
+                "  CLEANED UP     {stale} no longer writes to a warehouse. Remove it from \
+                 SECOND_WRITER_BACKLOG: a backlog that outlives the work it describes is a \
+                 list nobody believes"
+            );
+            ok = false;
+        }
+    }
+
+    if ok {
+        let named: Vec<String> = writers
+            .iter()
+            .map(|(name, count)| format!("{name} ({count})"))
+            .collect();
+        println!(
+            "   {} test file(s) still write directly, and the list may only shrink",
+            SECOND_WRITER_BACKLOG.len()
+        );
+        println!("   only declared writers touch a warehouse: {}", named.join(", "));
+    }
+    ok
+}
+
+/// Every check `docs/INVARIANTS.md` names must exist.
+///
+/// # Why a document about enforcement needs enforcing
+///
+/// `INVARIANTS.md` lists the rules this system holds and, for each, where it is enforced.
+/// That third column is the whole value of the document: a rule with a check behind it is a
+/// guarantee, and a rule without one is a hope. If the column can name a check that has been
+/// renamed or deleted, the document quietly turns every hope into an apparent guarantee ---
+/// which is the precise failure the document was written about.
+///
+/// So the names are extracted and looked up. A rule honestly marked *nothing yet* is left
+/// alone; it is already saying it is not enforced.
+fn check_invariants(root: &Path) -> bool {
+    println!("== check-invariants ==");
+    let path = root.join("docs/INVARIANTS.md");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        eprintln!("  MISSING        docs/INVARIANTS.md does not exist");
+        return false;
+    };
+
+    let mut named: BTreeSet<String> = BTreeSet::new();
+    for token in text.split(|c: char| !(c.is_alphanumeric() || c == '-')) {
+        if token.starts_with("check-") && token.len() > 6 {
+            named.insert(token.to_string());
+        }
+    }
+
+    let mut ok = true;
+    for check in &named {
+        if !KNOWN_CHECKS.contains(&check.as_str()) {
+            eprintln!(
+                "  UNKNOWN CHECK  docs/INVARIANTS.md names `{check}`, which xtask does not \
+                 run. A document that can name a check nobody runs turns every rule in it \
+                 into an apparent guarantee"
+            );
+            ok = false;
+        }
+    }
+
+    // The reverse: a check that enforces something nobody wrote down.
+    for check in KNOWN_CHECKS {
+        if !named.contains(*check) {
+            eprintln!(
+                "  UNDOCUMENTED   `{check}` runs on every build and docs/INVARIANTS.md does \
+                 not say what it protects. A rule nobody can find is a rule nobody keeps"
+            );
+            ok = false;
+        }
+    }
+
+    if ok {
+        println!("   {} named check(s), all of which run", named.len());
+    }
+    ok
+}
+
+/// Every check this tool runs.
+///
+/// Listed once, so the documentation check and the dispatch cannot disagree about what
+/// exists.
+const KNOWN_CHECKS: &[&str] = &[
+    "check-invariants",
+    "check-writers",
+    "check-layers",
+    "check-loc",
+    "check-vocabulary",
+    "check-dupes",
+    "check-docs",
+    "check-features",
+    "check-lints",
+    "check-mutations",
+    "check-catalogues",
+    "check-logging",
+    "check-package",
+    "check-doc-numbers",
+    "check-build-tree",
+    "check-tests",
+];
+
+/// Run the test suite.
+///
+/// # Why this was not here, and why that was the problem
+///
+/// `check-all` ran thirteen static checks --- layers, lints, documentation, mutations --- and
+/// **not the tests**. `cargo test --workspace` appeared in this file exactly once, in a doc
+/// comment describing what somebody else should run.
+///
+/// The consequence is the failure mode this project keeps finding in other people's work and
+/// had in its own: a green report that was true about what it checked and silent about what
+/// it did not. A maintenance test failed for some time while every commit said "all checks
+/// passed", because the count of tests was obtained by *counting test functions* rather than
+/// by running them --- a number that is equally correct whether they pass or not.
+///
+/// It is slow, and that is why it was left out. Slow is not a reason for a check to be
+/// absent; it is a reason for it to be last.
+fn check_tests(root: &Path) -> bool {
+    println!("== check-tests ==");
+    let started = std::time::Instant::now();
+    let output = std::process::Command::new(env!("CARGO"))
+        .arg("test")
+        .arg("--workspace")
+        .arg("--quiet")
+        .current_dir(root)
+        .output();
+
+    let Ok(output) = output else {
+        eprintln!("  COULD NOT RUN  cargo test could not be started");
+        return false;
+    };
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    if !output.status.success() {
+        // The failing lines, not the whole run. A wall of output is a wall nobody reads.
+        for line in text.lines().filter(|line| {
+            line.contains("panicked at")
+                || line.starts_with("test result: FAILED")
+                || line.starts_with("error")
+        }) {
+            eprintln!("  {line}");
+        }
+        eprintln!("  FAILED         the test suite does not pass");
+        return false;
+    }
+
+    let passed: u64 = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("test result: ok. "))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .filter_map(|count| count.parse::<u64>().ok())
+        .sum();
+    println!(
+        "   {passed} test(s) passed in {:.0}s",
+        started.elapsed().as_secs_f64()
+    );
     true
 }

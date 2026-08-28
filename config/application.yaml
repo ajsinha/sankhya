@@ -1,0 +1,86 @@
+# SANKHYA — default configuration.
+#
+# Precedence, highest first:
+#   1. --key=value on the command line
+#   2. an environment variable (see the table in docs/GUIDE.md for the legacy SANKHYA_* names)
+#   3. config/application.local.yaml — git-ignored, for what a machine needs and must not commit
+#   4. this file
+#
+# `${NAME}` refers to another setting, an environment variable or an argument.
+# `${NAME:default}` makes the reference optional. An unresolved reference with no default
+# fails the load rather than reaching a connection string as a literal `${NAME}`.
+
+server:
+  # Loopback by default. A listener on every interface should be a decision somebody made.
+  listen: 127.0.0.1:5433
+  # A metrics endpoint on every interface is a small permanent disclosure of the
+  # deployment's shape, so the safe choice is the one an operator gets by not deciding.
+  metrics_listen: 127.0.0.1:9464
+  # Spelled as an opt-*out*, so the insecure choice has to be made deliberately.
+  require_password: true
+
+warehouse:
+  # Where published tables live: <path>/<schema>/<table>.
+  path: ./warehouse
+  # The position to read as of. Everything published, for a server with no ingest running
+  # in this process to advance it.
+  read_as_of: 18446744073709551615
+
+data:
+  # Where the diagnostic keeps its observation history — beside the warehouse rather than
+  # inside it, because the warehouse is the thing being diagnosed and may be the subject of
+  # the finding.
+  dir: ${warehouse.path}/../.sankhya
+
+# Per-table physical layout.
+#
+# `clustering` is a SORT ORDER applied when a partition is compacted and has settled. It
+# adds no directories and is reversible: a table clustered on the wrong column is fixed by
+# editing this line and waiting for the next compaction.
+#
+# Prefer it to a second partition column. ARCHITECTURE §9.8: "partitioning is a physical
+# commitment that is expensive or impossible to undo; clustering is cheap to change at the
+# next compaction. When uncertain, prefer the reversible decision — sort, do not partition."
+#
+# Undeclared means unclustered. Nothing is inferred: the engine cannot tell a meaningful
+# query boundary from a merely low-cardinality column.
+#
+# table:
+#   sales:
+#     orders:
+#       clustering: order_date,region
+
+# How the warehouse keeps itself in shape.
+#
+# Compaction merges small files and retirement removes what a merge replaced, once its grace
+# period has run. Both happen on a thread the server owns; nothing outside the server drives
+# them, and no client needs to know they exist.
+#
+# Nothing ran either of these before: maintenance shipped as a library that only tests
+# called, so a running server accumulated files for as long as it was up.
+maintenance:
+  # How often a maintenance pass runs. A pass is bounded work, so this is the rate the
+  # warehouse catches up at, not how long it spends. Suffixes: s, m, h.
+  #
+  # 0 disables maintenance entirely, for the one honest case: another process is doing it.
+  # Two maintainers on one warehouse are two committers racing for the same version.
+  interval: 30s
+
+  # Ticks between compaction passes. 1 --- every tick --- because a pass is already bounded
+  # by max_files_per_pass, and a partition below the merge thresholds costs only the decision
+  # not to merge it.
+  #
+  # Raise it to trade promptness for quiet: a deployment whose queries are latency-sensitive
+  # can compact every fourth tick and still keep up, so long as writes arrive slower than
+  # four ticks of merging. Set it too high and small files accumulate faster than they are
+  # merged, which shows up as live-file count climbing rather than sawtoothing.
+  compact_every: 1
+
+  # Ticks between sweeps for files the log does not name. 120 --- an hour at the default
+  # interval --- because a sweep walks the whole table directory, returns nothing most of the
+  # time, and what it collects is not urgent.
+  #
+  # An orphan appears only when a merge writes its output and then loses the race to commit
+  # it. The age policy will not let one be removed until it is a week old in any case, so
+  # sweeping more often finds the same files and deletes none of them sooner.
+  orphan_sweep_every: 120

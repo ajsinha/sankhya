@@ -26,6 +26,9 @@ use sankhya_authz::policy::{Action, PolicySet, TableRef};
 use sankhya_authz::principal::{Authentication, Principal, Role, TenantId};
 use sankhya_error::protocol::{statuses_for_denied, statuses_for_unauthenticated};
 use sankhya_governor::quota::{Quota, Quotas};
+use sankhya_metrics::catalogue;
+use sankhya_metrics::Registry;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use crate::execute::{run, session_for, ServableTable};
@@ -45,12 +48,32 @@ pub struct Settings {
     pub read_as_of: sankhya_types::Lsn,
     /// The tenant every connection belongs to, until federated identity is wired in.
     pub tenant: TenantId,
+    /// How the warehouse maintains itself, or `None` to leave it alone.
+    ///
+    /// # Why this is a policy and not an interval
+    ///
+    /// A tick does two jobs on different cadences --- compaction, and collecting files
+    /// nothing refers to --- and how often each runs is a property of the deployment, not a
+    /// constant somebody guessed. Carrying the whole policy means adding a third cadence
+    /// later is a field on the policy rather than another parallel scalar here, and the
+    /// defaults live in one place next to the reasoning for them.
+    ///
+    /// `None` disables maintenance, which exists for the one honest case: another process is
+    /// doing it. Two maintainers on one warehouse are two committers racing for the same
+    /// version.
+    pub maintenance: Option<sankhya_maintenance::MaintenancePolicy>,
     /// Whether a password is required.
     ///
     /// A setting rather than a constant because a development sandbox needs to run without
     /// one --- and because making it explicit means the log can say which it is, so nobody
     /// discovers by accident that their server is open.
     pub require_password: bool,
+    /// Where the metrics endpoint listens, or `None` not to serve one.
+    ///
+    /// Its own address rather than a path on the wire-protocol port, so it can be bound to
+    /// an interface clients cannot reach. Defaulting to loopback rather than to every
+    /// interface, because the safe choice should be the one you get by not thinking.
+    pub metrics_listen: Option<String>,
 }
 
 /// Everything the server owns.
@@ -68,6 +91,15 @@ pub struct Server {
     /// invite a table that is described but not readable, or readable but not described.
     servable: Vec<ServableTable>,
     clock: parking_lot::Mutex<i64>,
+    /// How many connections are open, so the gauge can be set from either hook.
+    ///
+    /// A counter rather than reading the gauge back: two connections closing at once would
+    /// both read the same value and both write one less than it.
+    connections: AtomicUsize,
+    /// Everything this process exports.
+    ///
+    /// Shared rather than owned, because the scrape endpoint reads it from another task.
+    metrics: Arc<Registry>,
     /// Runs the async query path from the synchronous handler trait.
     ///
     /// The wire protocol handler is synchronous because the protocol is a conversation of
@@ -105,7 +137,53 @@ impl Server {
             tables,
             servable,
             clock: parking_lot::Mutex::new(0),
+            connections: AtomicUsize::new(0),
+            metrics: Arc::new(Registry::new()),
             runtime: tokio::runtime::Handle::current(),
+        }
+    }
+
+    /// What this process exports, for the scrape endpoint.
+    #[must_use]
+    pub fn metrics(&self) -> Arc<Registry> {
+        Arc::clone(&self.metrics)
+    }
+
+    /// Record the current live file count of every servable table.
+    ///
+    /// Called on scrape rather than on a timer, so the gauge is never stale --- a gauge
+    /// refreshed on a schedule is wrong for as long as the schedule is slow, and a scrape
+    /// arriving between refreshes reads a number from the previous era. The log cache makes
+    /// this cheap: nothing has changed unless a commit landed.
+    pub fn refresh_table_gauges(&self) {
+        for table in &self.servable {
+            let Ok(files) = table.live_file_count() else {
+                // A table that will not replay is the diagnostic's business, not the metrics
+                // endpoint's. Recording a zero here would report an empty table.
+                continue;
+            };
+            #[allow(clippy::cast_precision_loss)]
+            self.metrics.set(
+                &catalogue::TABLE_LIVE_FILES,
+                &[("table", &table.reference.to_string())],
+                files as f64,
+            );
+        }
+        // The registry's own refusals, exported like everything else. A dashboard that
+        // cannot see these cannot tell an incomplete metric from a quiet one.
+        let rejections = self.metrics.rejections();
+        for (reason, count) in [
+            ("value_not_permitted", rejections.value_not_permitted),
+            ("label_not_declared", rejections.label_not_declared),
+            ("label_missing", rejections.label_missing),
+            ("over_cap", rejections.over_cap),
+        ] {
+            #[allow(clippy::cast_precision_loss)]
+            self.metrics.set(
+                &catalogue::METRICS_REJECTED_TOTAL,
+                &[("reason", reason)],
+                count as f64,
+            );
         }
     }
 
@@ -126,9 +204,11 @@ impl Server {
         } else {
             "NO AUTHENTICATION — every connection is accepted"
         };
+        // The bound address is printed separately by the caller, which is the only thing
+        // that knows it. Repeating the *configured* one here printed ":0" beside the real
+        // port, which is worse than saying nothing.
         format!(
-            "listening on {}, tenant {}, {auth}, {} policy rule(s), {} table(s) known",
-            self.settings.listen,
+            "tenant {}, {auth}, {} policy rule(s), {} table(s) known",
             self.settings.tenant,
             self.policy.len(),
             self.tables.len()
@@ -203,6 +283,12 @@ impl Server {
         self.audit
             .lock()
             .append(Entry::by(principal, table, action, decision, at));
+        // Counted here rather than derived from the chain's length on scrape, so that the
+        // number rises at the moment of the append. A gauge read from the chain would be
+        // equally true and would not distinguish "the audit stopped recording" from "the
+        // scrape stopped running", and only one of those is an emergency.
+        self.metrics
+            .increment(&catalogue::AUDIT_RECORDS_TOTAL, &[], 1.0);
     }
 }
 
@@ -241,6 +327,62 @@ impl Handler for Server {
     }
 
     fn query(&self, sql: &str) -> Result<QueryResult, QueryFailure> {
+        let started = std::time::Instant::now();
+        let outcome = self.run_statement(sql);
+
+        // Recorded on every path out, including the refusals above the query path. A
+        // duration histogram that only sees successes describes a system that never fails,
+        // and the tail an operator is looking for is made of failures.
+        let label = outcome_label(&outcome);
+        self.metrics
+            .increment(&catalogue::QUERIES_TOTAL, &[("outcome", label)], 1.0);
+        self.metrics.observe(
+            &catalogue::QUERY_DURATION_SECONDS,
+            &[("outcome", label)],
+            started.elapsed().as_secs_f64(),
+        );
+        if let Ok(result) = &outcome {
+            #[allow(clippy::cast_precision_loss)]
+            self.metrics.increment(
+                &catalogue::ROWS_RETURNED_TOTAL,
+                &[],
+                result.rows.len() as f64,
+            );
+        }
+        outcome
+    }
+
+    fn connection_opened(&self) {
+        let live = self.connections.fetch_add(1, Ordering::Relaxed) + 1;
+        #[allow(clippy::cast_precision_loss)]
+        self.metrics
+            .set(&catalogue::CONNECTIONS_ACTIVE, &[], live as f64);
+    }
+
+    fn connection_closed(&self) {
+        let live = self.connections.fetch_sub(1, Ordering::Relaxed).saturating_sub(1);
+        #[allow(clippy::cast_precision_loss)]
+        self.metrics
+            .set(&catalogue::CONNECTIONS_ACTIVE, &[], live as f64);
+    }
+
+    fn visible_tables(&self) -> Vec<CatalogTable> {
+        self.list_visible_tables()
+    }
+
+    fn server_version(&self) -> String {
+        env!("CARGO_PKG_VERSION").to_string()
+    }
+}
+
+impl Server {
+    /// Everything `query` does, without the measuring.
+    ///
+    /// Split out so that the counter and the histogram are recorded on **every** path out of
+    /// the statement, including the two refusals that never reach the query path. A
+    /// duration histogram fed only by the successful path describes a system that never
+    /// fails, and the tail an operator goes looking for is made of failures.
+    fn run_statement(&self, sql: &str) -> Result<QueryResult, QueryFailure> {
         // Admission first. A statement refused for quota must not reach anything else, and
         // must be distinguishable from one refused for permission — the client's correct
         // response differs.
@@ -296,7 +438,8 @@ impl Handler for Server {
         outcome
     }
 
-    fn visible_tables(&self) -> Vec<CatalogTable> {
+    /// Everything `visible_tables` does.
+    fn list_visible_tables(&self) -> Vec<CatalogTable> {
         // Filtered by policy, because a catalogue that listed tables the caller cannot read
         // would disclose their existence — the leak the policy component refuses to permit
         // anywhere else, arriving through the back door of a schema browser.
@@ -316,9 +459,24 @@ impl Handler for Server {
             .cloned()
             .collect()
     }
+}
 
-    fn server_version(&self) -> String {
-        env!("CARGO_PKG_VERSION").to_string()
+/// Which outcome label a result carries.
+///
+/// The distinction between `refused` and `error` is the one worth keeping: a refusal is the
+/// system working — a quota held, a permission enforced — and an error is not. Counting them
+/// together makes a healthy system under load look like a broken one.
+pub(crate) fn outcome_label(outcome: &Result<QueryResult, QueryFailure>) -> &'static str {
+    match outcome {
+        Ok(_) => "ok",
+        Err(failure) => match failure.sqlstate.as_str() {
+            // Class 53 is insufficient resources, 28 invalid authorization, 42501
+            // insufficient privilege. All three are the system doing its job.
+            state if state.starts_with("53") || state.starts_with("28") => "refused",
+            "42501" => "refused",
+            "57014" => "cancelled",
+            _ => "error",
+        },
     }
 }
 

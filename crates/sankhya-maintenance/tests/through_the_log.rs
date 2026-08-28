@@ -205,7 +205,7 @@ async fn publish_compact_commit_query() {
         version += 1;
         commit_tick(root, version, &report, i64::try_from(ticks).expect("small"))
             .expect("committing the tick");
-        apply(&mut live, &report);
+        apply(&mut live, &report, root);
     }
 
     // Fewer live files, same answer -- and every superseded file still on disk.

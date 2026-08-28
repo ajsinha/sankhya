@@ -1,11 +1,23 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/wordmark-dice-dark.png">
+    <img src="assets/wordmark-dice.png" alt="SANKHYA" width="300">
+  </picture>
+</p>
+
 # SANKHYA — a guide, by example
 
-**Status:** Implementation — M0–M5 complete, M6 in progress
+**Status:** Implementation — M0–M6 complete, M7 in progress
 
-Every example here is **executed by a test**. `crates/sankhya-server/tests/guide.rs` runs the
-SQL on this page and checks the answers, so an example that stops working breaks the build
-rather than misleading a reader. Where an example needs something that does not exist yet,
-it says so instead of pretending.
+Every example here is **executed or accounted for by a test**.
+`crates/sankhya-server/tests/guide.rs` extracts the SQL from this page — this page, not a
+copy of it — starts the real server and runs what can run: ten statements at the last count.
+The rest query tables you would bring yourself, and each is listed in that test with the
+reason it cannot run here. A block that is neither executed nor listed fails the build, so an
+example cannot quietly become neither.
+
+That sentence used to claim all of them ran, and the file it named did not exist. It does
+now, and it counts.
 
 The [quickstart](QUICKSTART.md) gets a server running. This shows what to do with it.
 
@@ -22,7 +34,10 @@ The [quickstart](QUICKSTART.md) gets a server running. This shows what to do wit
 7. [Graph traversal from SQL](#7-graph-traversal-from-sql)
 8. [Security, and what it refuses](#8-security-and-what-it-refuses)
 9. [Verifying and repairing a table](#9-verifying-and-repairing-a-table)
-10. [What is not built](#10-what-is-not-built)
+10. [The diagnostic](#10-the-diagnostic)
+11. [Metrics, and what a failure tells you](#11-metrics-and-what-a-failure-tells-you)
+12. [Backups, and proving one](#12-backups-and-proving-one)
+13. [What is not built](#13-what-is-not-built)
 
 ---
 
@@ -478,18 +493,366 @@ directory, at three in the morning.
 
 ---
 
-## 10. What is not built
+## 10. The diagnostic
+
+```
+sankhya-server doctor
+```
+
+It reads the warehouse directly and does **not** start the server. That is deliberate: the
+day you want a diagnostic is frequently the day the server will not start, and a diagnostic
+that needs a healthy server to report an unhealthy one is decoration.
+
+### What it prints
+
+```
+SANKHYA doctor 0.1.0
+  warehouse /srv/sankhya/warehouse
+  1 table(s)
+
+  [warning] table sales.orders — 900 live files; at the current rate, about 1 day.
+         Compact it: `sankhya maintenance compact --table sales.orders`. If this recurs,
+         the maintenance duty cycle is too low for this table's write rate — raising it is
+         the durable fix and compacting by hand is not.
+
+1 check(s) clean, 1 finding(s) of which 1 have a date, 0 check(s) could not run
+```
+
+Two things in that line are the whole design.
+
+**"about 1 day", not "900 files."** `FR-OPS-17` asks for the time until a problem becomes
+user-visible rather than its current value, on the grounds that *"compaction debt is 400 GB"*
+is far less actionable than *"query latency on this table will double in about nine days"*.
+
+**"of which 1 have a date."** Which brings us to the part that surprises people.
+
+### The first run gives you no dates, and says so
+
+A time cannot be computed from one sample. "900 files" and "growing by 100 files a day" are
+different kinds of fact and only the second yields a date. So the first run of `doctor` on a
+new installation looks like this:
+
+```
+  [note] table sales.orders — 990 live files; no projection is possible from 1
+         observation(s): a time needs a rate, and a rate needs at least 2.
+```
+
+It reports the value, refuses the date, and names what is missing. The alternative — a
+projection invented from one sample — is a number with a date attached, and a date is
+exactly what gets believed and scheduled around.
+
+**Run it on a schedule.** Hourly from cron is what makes the projections real:
+
+```cron
+17 * * * * SANKHYA_WAREHOUSE=/srv/sankhya/warehouse /usr/local/bin/sankhya-server doctor
+```
+
+Observations are appended to `.sankhya/diagnostic-history.tsv` beside the warehouse — plain
+tab-separated text, so `tail` answers "what did it see last night?" without any tooling. It
+is bounded, and it is deliberately *not* a table in the system being diagnosed.
+
+### The four answers, and why there are four
+
+| Answer | Meaning |
+|---|---|
+| **Already** | Past the threshold now. An incident, not a warning |
+| **Crossing** | A date, with a confidence. Two observations give `Weak` and say so in the text; five or more give `Firm` |
+| **Receding** | Moving away from the threshold, or flat. **Not reported** — a large number that is shrinking needs no attention, and reporting it teaches an operator to skim |
+| **Beyond / Unknown** | It will not say. See below |
+
+It refuses to give a date in four distinct situations, and each refusal names itself:
+
+- **Too few observations.** Fewer than two. The first run, always.
+- **Not linear.** The measurements do not follow a line closely enough. A sawtooth — debt
+  accumulating and being compacted away — fits a line badly *by construction*, and a date
+  drawn through one reports where in the cycle the samples happened to fall.
+- **Beyond the horizon.** It crosses on this trend, but further out than the observation
+  window supports. Four days of samples projecting six months ahead is arithmetic, not
+  evidence. The horizon is three times the observed span.
+- **No elapsed time.** Every observation shares an instant.
+
+A measure that is *near* the threshold still speaks up without a date, at `note` severity —
+silence at 990 of 1,000 files reads as health, and it is not.
+
+### Findings are ordered by *when*, not by *how bad*
+
+A `note` that becomes an outage tomorrow is printed above a `critical` that has been stable
+for a month. Severity orders a list by how loudly each item shouts; time orders it by which
+one has to be dealt with first. Reading top-down should be reading a schedule.
+
+### "Could not run" is its own section, and its own exit status
+
+```
+Could not run:
+  [compaction-debt] table sales.archive: log version 7 is malformed
+```
+
+A table nobody could look at and a table that is fine both produce no findings. If they land
+in the same empty list, the report says "all clear" about something it never examined.
+
+| Exit | Meaning |
+|---|---|
+| `0` | Clean |
+| `1` | Findings |
+| `2` | At least one check could not run |
+
+The third status exists so a monitoring system cannot treat "I could not look" as "nothing
+found".
+
+### What it checks today
+
+| Check | Threshold | Status |
+|---|---|---|
+| `compaction-debt` | 1,000 live files per table | Built |
+| `storage-headroom` | free space reaching zero | Built as a check; nothing feeds it observations yet, because reading free space needs a platform call this workspace's `forbid(unsafe_code)` will not permit. The caller passes the number in |
+| `replication-lag` | a freshness objective the caller supplies | Built as a check; not yet wired, because nothing in this process advances a replication position |
+
+`FR-OPS-16` lists more — conformance, replica identity, archival consistency. Those are not
+built, and [`STATUS.md`](STATUS.md) is the authoritative list.
+
+---
+
+## 11. Metrics, and what a failure tells you
+
+### The scrape endpoint
+
+```bash
+curl -s http://127.0.0.1:9464/metrics
+```
+
+Its own port (`SANKHYA_METRICS_LISTEN`, default `127.0.0.1:9464`), one route, exact match.
+Loopback by default, because a metrics endpoint on every interface is a small permanent
+disclosure of the deployment's shape and the safe choice should be the one you get by not
+deciding.
+
+```
+# HELP sankhya_queries_total Statements that reached execution, by how they ended.
+# TYPE sankhya_queries_total counter
+sankhya_queries_total{outcome="ok"} 412
+sankhya_queries_total{outcome="refused"} 3
+sankhya_table_live_files{table="sales.orders"} 87
+```
+
+Every metric appears even at zero, so a dashboard can tell **"no events" from "not wired
+up"**. The full list is [`METRICS.md`](METRICS.md), which is generated from the declarations
+and checked against them on every build.
+
+### `refused` is not `error`
+
+A quota held and a permission enforced are the system working. Counting them alongside
+genuine failures makes a healthy system under load look like a broken one — which is how an
+error-rate alert comes to fire on correct behaviour. Four outcomes: `ok`, `error`, `refused`,
+`cancelled`.
+
+### Labels cannot carry your data
+
+A label is one of exactly two kinds:
+
+- **Closed** — a named set of permitted values. `outcome` is one of four strings; anything
+  else is refused and counted. Such a label cannot be handed a customer's name however the
+  call site is written.
+- **Identifier** — a deployment-scoped name like a table, under a cap. Past the cap new
+  series are refused and `sankhya_metrics_rejected_total{reason="over_cap"}` rises. The
+  metric goes **incomplete and says so**, rather than growing without bound.
+
+There is no third kind, so a label that varies per row has no way to be declared. That is
+`ARCHITECTURE.md` §17.1's tenant-data prohibition made structural rather than left as a
+review item.
+
+Watch `sankhya_metrics_rejected_total`. Non-zero means a call site disagrees with the
+catalogue, or something has outgrown its cap.
+
+### What a failed query tells you
+
+```
+psql> SELECT * FROM sales.ordres;
+ERROR:  [SNK-C0001] Error during planning: table 'sales.ordres' not found
+DETAIL:  Correct the statement. The detail names the offending element.
+```
+
+Three things, and each is doing a job:
+
+| | |
+|---|---|
+| **`SNK-C0001`** | A permanent code. It is what a support conversation is conducted in and what a runbook is indexed by. Codes never change meaning and are never renumbered |
+| **The message** | What happened |
+| **`DETAIL`** | What to do about it — the catalogue's own remediation, so the client and [`ERRORS.md`](ERRORS.md) cannot say different things |
+
+The SQLSTATE comes from the error's **class**, not from its wording. Every driver in this
+ecosystem branches on those five characters, and a plausible message with the wrong ones
+produces a client that connects, appears to work, and mishandles every failure.
+
+The letter after `SNK-` is the class: `C` the caller's request, `R` a limit, `F` a conflict,
+`T` transient, `X` cancelled, `S` a fault that pages. Every `S` code has a runbook in
+[`runbooks/`](runbooks/).
+
+### A table that does not exist and one you may not read are the same error
+
+Deliberately. Saying "you may not read that" confirms it exists, and existence is frequently
+the secret. Only the tables a principal may read are registered, so the engine says "not
+found" either way — the same code, the same state, the same words.
+
+### Writes are refused, not accepted and discarded
+
+```
+psql> CREATE TABLE public.staging (id BIGINT);
+ERROR:  [SNK-C0006] data definition is not served over this connection; this server is
+        a read path over a published warehouse
+DETAIL:  Write to the transactional store and let capture publish it, or publish an
+         external table with `sankhya-publish`. See GUIDE.md §3.
+```
+
+This once returned `CREATE TABLE` and did nothing durable — the table existed for the rest of
+that connection and vanished on reconnect. The refusal names the supported route, because a
+refusal that only says no sends somebody looking for a flag to turn it on, and there is no
+flag.
+
+### Exit statuses
+
+`sankhya-server doctor` exits `0` clean, `1` findings, `2` a check could not run. The third
+exists so a monitoring system cannot read "I could not look" as "nothing found".
+
+---
+
+## 12. Backups, and proving one
+
+```bash
+sankhya-server backup     # record a manifest
+sankhya-server drill      # prove it restores
+```
+
+### What a backup actually is here
+
+A **manifest**, not an archive. This system does not copy your data somewhere; it binds three
+artefacts — the transactional backup you took, the table versions in the warehouse, and the
+key generation — to one point, and protects the files so they stay readable.
+
+```
+SANKHYA backup 0.1.0
+  sales.orders at version 1, 1000 row(s)
+
+  backup:01a04442-936a-73a1-bfd1-964c8cd66330
+  queryable at 4821
+  manifest /srv/sankhya/.sankhya/backup-manifest.json
+
+This backup is unproven until it has been drilled: `sankhya-server drill`.
+```
+
+### Two positions, and they are not the same number
+
+| | |
+|---|---|
+| `source_restores_to` | Where the transactional store lands |
+| `queryable_at` | The highest position at which **every** table is complete |
+
+The second is the minimum over the tables' coverage, because a query joining two tables can
+only be answered where both of them reach. Tables publish at their own cadence, so these are
+rarely equal, and the gap between them is **how much re-capture a restore implies** before a
+cross-table query can reach the source's position.
+
+A backup binds to the second. Recording only the first and calling it "the consistent point"
+is the commonest way this goes wrong.
+
+### The manifest refuses to exist rather than record a disagreement
+
+**No table may cover a position past where the source restores to.** If one does, the backup
+is refused:
+
+```
+refusing to record a backup whose analytical tier is ahead of its source. After restoring
+it, 1 table(s) would hold rows the transactional store no longer has; capture would resume
+behind them and republish that range at different positions. Not detectable afterwards from
+either side alone: sales.items covers to 900 and the source restores to 800
+```
+
+Every offending table is named, not just the first — fixing them one at a time means learning
+about the next only after another full backup.
+
+### A drill reads the data back
+
+```
+SANKHYA restore drill 0.1.0
+  backup:01a04442-936a-73a1-bfd1-964c8cd66330
+  sales.orders: verified, 1000 row(s)
+
+Proven. 1 table(s) read back and digested.
+```
+
+Not a file-presence check. **A presence check passes on a truncated Parquet**, on a file whose
+bytes were replaced with another table's, and on essentially every failure that actually
+happens — because what goes wrong with a backup is almost never that a file is missing. A
+missing file is loud. What goes wrong is that a file is there and wrong.
+
+So the drill recomputes the digest. It is expensive and it is the only version of this that
+means anything. And the failure it reports distinguishes two situations that need different
+investigations:
+
+| | |
+|---|---|
+| `expected 1000 row(s) and found 940` | Rows were **lost or duplicated** |
+| `the row count matches at 1000 and the data does not` | Rows were **altered** — every file present, right length, wrong contents |
+
+| Exit | Meaning |
+|---|---|
+| `0` | Proven |
+| `1` | A table did not verify |
+| `2` | The drill could not run |
+
+**Alert on `2` as well as `1`.** A monitor treating "could not run" as "nothing wrong"
+reports a backup as proven when nothing looked at it.
+
+### The evidence keeps the failures
+
+`<data-dir>/restore-drills.jsonl`, append-only:
+
+```
+{"at": 1787851608943991, "backup": "backup:01a0…", "verdict": "pass", "tables": 1}
+{"at": 1787851616975478, "backup": "backup:01a0…", "verdict": "FAIL", "tables": 1,
+ "failures": "sales.orders: could not be read (…part-0000.parquet: Parquet file too small)"}
+```
+
+A drill history with no failures in three years describes either a very good system or a
+drill that does not really run, and nothing in the history says which. So failures are
+written with the same ceremony as passes, and a drill that could not *start* is recorded
+distinctly from one that ran and passed.
+
+`doctor` reports the last **pass**, never the last attempt — an operator asking "when did we
+last prove we could restore" must not be answered with the time of a failure.
+
+### Deleting a backup does not immediately release its files
+
+Seven days of grace between expiry and removal. The failure it prevents: a backup deleted by
+mistake, its files swept before anybody notices, and no way back even if the manifest is
+recovered five minutes later.
+
+### What this does not cover
+
+**The transactional half.** This system binds itself to a PostgreSQL backup somebody else
+took. It records the location and digest; it does not take one and does not verify one. A
+passing drill means the analytical tier restores and says nothing about the source. Proving
+that is a separate drill against your database backup tooling.
+
+Full detail in [`runbooks/restore-drill.md`](runbooks/restore-drill.md).
+
+---
+
+## 13. What is not built
 
 Stated explicitly, because a guide that implies more than exists is worse than one that
 admits less. [`STATUS.md`](STATUS.md) is the authoritative version.
 
 | | |
 |---|---|
-| **The gRPC control plane and REST gateway** | Not built |
+| **The gRPC transport, and every write path on the control plane** | Not built. The gateway's route table and the size decision `FR-API-06` turns on both exist and are tested; wiring them to tonic and to an audited write path is the remainder. Jobs and archive operations are absent on purpose — with no scheduler, a jobs endpoint would list nothing forever and a client could not tell that from a system with nothing to list |
+| **Backing up the transactional store** | Not built, and deliberately not planned as this system's job. The manifest binds to a PostgreSQL backup taken by your own tooling |
+| **Distributed tracing** | Not built. Metrics and the error catalogue exist; spans do not |
+| **A multi-day soak** | Not run. The harness exists, is proven to detect a leak, and runs short on every build — see [`SOAK.md`](SOAK.md). The scheduled run is a change of duration and scale |
+| **Container images and signing** | Not built. The platform baseline and the manifests' termination grace are checked; the artifacts a release pipeline produces are not |
 | **Ingest on a timer** | Not built. Capture, apply and publication all work and none of them is driven by a running process, so everything the server serves is already published |
 | **Graph hydration on a timer** | Not built. An epoch is built when something builds it |
 | **The pack loader in the server** | Not built. Packs load into a registry; nothing in the running process does that |
 | **Partitioning, bloom filters, the result cache** | Not built. The date axis and its declaration exist; nothing yet writes partitioned directories |
+| **Most of `FR-OPS-16`'s checks** | Not built. `doctor` covers compaction debt end to end; storage headroom and replication lag exist as checks with nothing feeding them |
 | **QR, SVD, eigendecomposition** | Deliberately absent. They are where an in-house implementation is worse than none — a subtly wrong SVD produces plausible singular values |
 
 ---

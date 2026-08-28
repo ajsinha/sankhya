@@ -8,8 +8,7 @@
 
 use arrow_array::{Float64Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use sankhya_table::{write_parquet, WriterConfig};
-use sankhya_table_delta::{commit, create, Action, AddFile, Metadata};
+use sankhya_publish::Publication;
 use sankhya_types::Lsn;
 use std::sync::Arc;
 
@@ -29,11 +28,13 @@ fn write_a_warehouse() {
     let table_root = root.join("sales").join("orders");
     std::fs::create_dir_all(&table_root).expect("creating");
 
-    let delta = sankhya_table_delta::schema_string(&schema).expect("representable");
-    commit(&table_root, 0, &create(Metadata::new("orders", delta, 0))).expect("creating");
+    // Through the product's own writer. Building the log here would mean this fixture
+    // encodes the storage layout, and goes on encoding whichever one it was written
+    // against long after the writer has moved on.
+    let publication = Publication::external(&table_root, "orders");
+    publication.create(&schema).expect("creating");
 
     // Several files, so the read path has something to prune and to parallelise over.
-    let mut adds = Vec::new();
     for file in 0..4u64 {
         let ids: Vec<i64> = (0..250)
             .map(|i| i64::try_from(file * 250 + i).unwrap())
@@ -65,17 +66,14 @@ fn write_a_warehouse() {
         )
         .expect("a valid batch");
 
-        let name = format!("part-{file:04}.parquet");
-        let report = write_parquet(
-            &table_root,
-            &name,
-            &batch,
-            Lsn::new((file + 1) * 250),
-            WriterConfig::default(),
-        )
-        .expect("writing");
-        adds.push(Action::Add(AddFile::with_rows(name, report.bytes, 0, 250)));
+        publication
+            .append(
+                file + 1,
+                &format!("part-{file:04}.parquet"),
+                &batch,
+                Lsn::new((file + 1) * 250),
+            )
+            .expect("publishing");
     }
-    commit(&table_root, 1, &adds).expect("publishing");
     println!("wrote {}", table_root.display());
 }

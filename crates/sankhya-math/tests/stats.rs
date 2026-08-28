@@ -253,3 +253,16 @@ fn an_empty_series_has_no_range_rather_than_a_zero_one() {
     assert_eq!(range(&[]), None);
     assert_eq!(mean(&[]), Err(VectorError::Empty));
 }
+
+#[test]
+fn a_constant_series_is_fitted_perfectly_by_a_horizontal_line() {
+    // 0/0 in the correlation, but not ambiguous in the fit: slope zero, intercept the
+    // constant, every residual exactly zero. Reporting r² = 0 here says "not described by a
+    // line" about the straightest series there is, and a caller using r² to ask how linear
+    // something is then treats a flat measure as noise.
+    let fit = linear_fit(&[1.0, 2.0, 3.0, 4.0], &[7.0, 7.0, 7.0, 7.0])
+        .expect("a varying predictor admits a fit");
+    close(fit.slope, 0.0);
+    close(fit.intercept, 7.0);
+    close(fit.r_squared, 1.0);
+}

@@ -14,3 +14,7 @@ layer = 1
 workspace = true
 
 [dependencies]
+serde_yaml_ng = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

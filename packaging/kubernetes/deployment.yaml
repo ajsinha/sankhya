@@ -1,0 +1,83 @@
+# A deployment, with the two settings that are usually wrong.
+#
+# 1. `terminationGracePeriodSeconds` must exceed the server's drain deadline (30s), or every
+#    rollout SIGKILLs a server mid-drain and clients see resets that look like crashes. The
+#    two numbers live in different files and nothing normally relates them, so
+#    `cargo xtask check-package` compares them and fails the build when they disagree.
+#
+# 2. The readiness probe accounts for pipeline lag and the liveness probe does not.
+#    ARCHITECTURE §17.2: a liveness probe that fails on lag causes the orchestrator to kill a
+#    healthy node, converting a degradation into an outage.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sankhya
+  labels:
+    app.kubernetes.io/name: sankhya
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sankhya
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sankhya
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9464"
+        prometheus.io/path: "/metrics"
+    spec:
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: sankhya
+          image: ghcr.io/ajsinha/sankhya:0.1.0
+          args: []
+          ports:
+            - name: pgwire
+              containerPort: 5433
+            - name: metrics
+              containerPort: 9464
+          env:
+            - name: SANKHYA_WAREHOUSE
+              value: /var/lib/sankhya/warehouse
+            - name: SANKHYA_DATA_DIR
+              value: /var/lib/sankhya/.sankhya
+            - name: SANKHYA_LISTEN
+              value: 0.0.0.0:5433
+            # Bound to every interface inside the pod, not on the host: the pod boundary is
+            # what keeps this private here, where a loopback bind would stop the sidecar
+            # scraping it.
+            - name: SANKHYA_METRICS_LISTEN
+              value: 0.0.0.0:9464
+          # Liveness: is the process alive. Nothing about lag, deliberately.
+          livenessProbe:
+            tcpSocket:
+              port: pgwire
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          # Readiness: is it worth sending traffic to. This is where lag belongs.
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/sankhya
+          resources:
+            requests:
+              cpu: "2"
+              memory: 4Gi
+            limits:
+              memory: 8Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: sankhya-data

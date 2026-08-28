@@ -1,0 +1,34 @@
+[package]
+name         = "sankhya-diagnostic"
+description  = "Operator diagnostics that report time until impact rather than a current value."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 3
+
+[lints]
+workspace = true
+
+[dependencies]
+sankhya-types       = { path = "../sankhya-types" }
+sankhya-version     = { path = "../sankhya-version" }
+sankhya-error       = { path = "../sankhya-error" }
+sankhya-math        = { path = "../sankhya-math" }
+sankhya-table-delta = { path = "../sankhya-table-delta" }
+
+[dev-dependencies]
+# The soak drives the product's own write and maintenance paths. Dev-dependencies, because
+# the soak is a test: nothing here is compiled into anything that ships.
+sankhya-publish     = { path = "../sankhya-publish" }
+sankhya-maintenance = { path = "../sankhya-maintenance" }
+sankhya-table       = { path = "../sankhya-table" }
+sankhya-table-delta = { path = "../sankhya-table-delta" }
+sankhya-types       = { path = "../sankhya-types" }
+arrow-array         = { workspace = true }
+arrow-schema        = { workspace = true }
+tempfile = { workspace = true }
+serde_json = { workspace = true }

@@ -14,12 +14,17 @@ layer = 5
 workspace = true
 
 [dependencies]
+sankhya-backup = { path = "../sankhya-backup" }
+sankhya-metrics = { path = "../sankhya-metrics" }
+sankhya-config     = { path = "../sankhya-config" }
+sankhya-diagnostic = { path = "../sankhya-diagnostic" }
 sankhya-api-pg   = { path = "../sankhya-api-pg" }
 sankhya-authz    = { path = "../sankhya-authz" }
 sankhya-audit    = { path = "../sankhya-audit" }
 sankhya-catalog  = { path = "../sankhya-catalog" }
 sankhya-readpath = { path = "../sankhya-readpath" }
 sankhya-table-delta = { path = "../sankhya-table-delta" }
+sankhya-maintenance = { path = "../sankhya-maintenance" }
 sankhya-plan     = { path = "../sankhya-plan" }
 datafusion       = { workspace = true }
 arrow-array      = { workspace = true }
@@ -36,6 +41,8 @@ tracing-subscriber = { workspace = true }
 
 
 [dev-dependencies]
+sankhya-publish = { path = "../sankhya-publish" }
+sankhya-diagnostic = { path = "../sankhya-diagnostic" }
 sankhya-graph = { path = "../sankhya-graph" }
 sankhya-api-pg = { path = "../sankhya-api-pg" }
 arrow-array = { workspace = true }

@@ -1,0 +1,33 @@
+[package]
+name         = "sankhya-backup"
+description  = "Backup manifests binding a transactional backup, table snapshots and a key generation to one consistent point."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 3
+
+[lints]
+workspace = true
+
+[dependencies]
+sankhya-types       = { path = "../sankhya-types" }
+sankhya-version     = { path = "../sankhya-version" }
+sankhya-error       = { path = "../sankhya-error" }
+sankhya-table-delta = { path = "../sankhya-table-delta" }
+sankhya-ingest      = { path = "../sankhya-ingest" }
+arrow-array  = { workspace = true }
+arrow-schema = { workspace = true }
+arrow        = { workspace = true }
+parquet      = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+uuid       = { workspace = true }
+
+[dev-dependencies]
+sankhya-publish = { path = "../sankhya-publish" }
+tempfile = { workspace = true }
+sankhya-table = { path = "../sankhya-table" }
