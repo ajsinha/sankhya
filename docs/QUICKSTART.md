@@ -142,7 +142,7 @@ Three gates catch things a test suite structurally cannot. All three fail the bu
 
 ```bash
 cargo xtask check-all            # every repository invariant — see below
-python3 tools/mutation-audit.py  # 389 deliberate defects, applied one at a time
+python3 tools/mutation-audit.py  # 391 deliberate defects, applied one at a time
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
 SANKHYA_RELEASE=1 cargo xtask check-package   # the release artifact's platform baseline
 ```
@@ -158,11 +158,11 @@ document claims — test counts, catalogue sizes — still matches what the repo
 merely to pass.
 
 **The mutation audit** is the answer to "the tests pass, but do they test anything?" It
-applies 389 specific defects one at a time and requires the suite to fail on each. Twenty-nine
+applies 391 specific defects one at a time and requires the suite to fail on each. Twenty-nine
 did not, the first time each was run — the most recent three were written for the
 diagnostic, and one of those turned out to be pointing at the wrong copy of a duplicated
 guard, which is precisely the silent-pass this tool exists to catch. Expect it to take a
-while — it is 389 sequential `cargo test` runs, and it edits your source files as it goes,
+while — it is 391 sequential `cargo test` runs, and it edits your source files as it goes,
 restoring each one after. Run it on a clean tree.
 
 **`check-performance`** is deliberately outside `check-all`: it generates a

@@ -1708,6 +1708,20 @@ CATALOGUE = [
      "        exact.values().append_value(sum.to_f64());",
      "sankhya-cube"),
 
+    # --- the guide's examples, and whether they actually work ------------------
+
+    ("server: let a refused guide example pass as a query that matched nothing",
+     "crates/sankhya-server/tests/common/mod.rs",
+     "    if count_tags(&buffer, b'E') > 0 {",
+     "    if false {",
+     "sankhya-server"),
+
+    ("server: leave the analytical functions unregistered, so the guide documents nothing",
+     "crates/sankhya-server/src/execute.rs",
+     "    sankhya_olap::register_constructors(&context);",
+     "    // sankhya_olap::register_constructors(&context);",
+     "sankhya-server"),
+
     # --- cuboids nothing can ask for, and nothing was collecting ---------------
 
     ("maintenance: delete a directory the cuboid sweep cannot recognise",

@@ -97,6 +97,21 @@ pub fn session_for(
     tables: &[ServableTable],
 ) -> Result<(SessionContext, usize), QueryFailure> {
     let context = SessionContext::new();
+
+    // The analytical functions the guide documents in its own sections.
+    //
+    // `sankhya-olap` was not a dependency of this crate at all, so every vector, matrix,
+    // statistic and calculus function a reader was told to type answered `Invalid function`.
+    // The guide's own test could not see it: it counted returned rows, and a refused
+    // statement returns none --- so a broken example was indistinguishable from one that
+    // legitimately matched nothing.
+    //
+    // Third time today that a whole SQL surface turned out to be unreachable from the thing
+    // that serves SQL. The others were `sankhya-maintenance` and `sankhya-cube-sql`.
+    sankhya_olap::register_constructors(&context);
+    sankhya_olap::register_vector_functions(&context);
+    sankhya_olap::register_matrix_functions(&context);
+
     let mut registered = 0usize;
 
     for table in tables {

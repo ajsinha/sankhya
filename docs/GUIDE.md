@@ -32,6 +32,7 @@ The [quickstart](QUICKSTART.md) gets a server running. This shows what to do wit
 5. [Vectors and matrices](#5-vectors-and-matrices)
 6. [Statistics and calculus](#6-statistics-and-calculus)
 7. [Graph traversal from SQL](#7-graph-traversal-from-sql)
+7b. [Cubes — slice, dice and roll up](#7b-cubes--slice-dice-and-roll-up)
 8. [Security, and what it refuses](#8-security-and-what-it-refuses)
 9. [Verifying and repairing a table](#9-verifying-and-repairing-a-table)
 10. [The diagnostic](#10-the-diagnostic)
@@ -362,6 +363,144 @@ short list looks exactly like a short answer.
 table function, so bounds arrive as `'max_depth=3, min_conservation=0.9'` — with every key
 checked against a known set, so a misspelled bound is refused rather than silently taking
 its default.
+
+---
+
+## 7b. Cubes — slice, dice and roll up
+
+A `GROUP BY` knows the column names you typed. A **cube** knows a *model*: which columns are
+dimensions, which are measures, and — the part that decides whether an answer is correct —
+**how each measure may be combined along each dimension**.
+
+That last one is why this is not a convenience over `GROUP BY`. Summing a closing balance
+across twelve months gives a number of the right magnitude, the right sign, and no meaning.
+A cube refuses it.
+
+### Finding out what exists
+
+A cube is discoverable, so a client offers a picker instead of hardcoding a model that will
+drift from it.
+
+```sql
+SELECT cube, fact_table, dimensions, measures FROM cubes();
+```
+
+```sql
+SELECT dimension, level, depth, column FROM cube_dimensions('sales');
+```
+
+`depth` is the level's position from coarse to fine. It is a column rather than the row order
+because the order is a fact about the model — sort the result without it and you draw a list
+where there is a hierarchy.
+
+```sql
+SELECT measure, dimension, rule, composes FROM cube_measures('sales');
+```
+
+`composes` says whether a measure can be rolled up **at all**. Offering "roll up by period" on
+something that cannot is offering a button that does not work, and finding out when the query
+fails is worse than never offering it.
+
+### Rolling up
+
+```sql
+SELECT region, amount FROM cube_rollup('sales', 'amount', 'by=region');
+```
+
+Roll-up means rolling a dimension **away**. The sample cube has `region` and `period`, so
+asking `by=region` combines every period into one figure per region.
+
+### Slicing
+
+```sql
+SELECT region, amount FROM cube_slice('sales', 'amount', 'where=period:q1');
+```
+
+A slice narrows to one member. It is a restriction on the question, not a loss of data — which
+is why it does not change the completeness reported below.
+
+### Every answer says what it is
+
+A cube result carries provenance columns, and they exist because a number on its own cannot be
+reconciled with anything.
+
+```sql
+SELECT region, amount, snapshot, completeness, withheld, materialised
+FROM cube_rollup('sales', 'amount', 'by=region');
+```
+
+| Column | What it tells you |
+|---|---|
+| `snapshot` | the table version this was computed at, so a cube figure can be reconciled with a relational one taken at another moment |
+| `completeness` | what fraction of the input reached the cube |
+| `withheld` | how many rows did not, whether from policy or because they could not be placed |
+| `materialised` | whether the answer came from a stored cuboid or from the base data |
+| `from_cuboid` | which one, when it did |
+
+**`completeness` is the one to understand.** Two people with different permissions ask the
+same question and correctly get different totals, because an aggregate is computed over the
+rows the caller may read. Most systems make an operator choose between a true total and a
+visible one; here every answer states how much of its input it saw, so a filtered total is
+distinguishable by looking at it rather than by knowing which role you were in.
+
+A query may insist:
+
+```sql
+SELECT region, amount
+FROM cube_rollup('sales', 'amount', 'by=region, min_completeness=0.5');
+```
+
+### What a cube refuses, and why that is the point
+
+```sql
+-- ERROR: a ratio cannot be derived from its parts
+SELECT region, margin_pct FROM cube_rollup('sales', 'margin_pct', 'by=region');
+```
+
+`margin_pct` is a ratio. There is no operation over the parts that yields the whole — the
+margin of two regions is not the sum, the mean, or anything else derivable from the two
+margins. So it is declared as composing along nothing, and the refusal happens **while the
+query is planned**, not after a plausible number has been computed.
+
+Averaging is refused for the same reason. An average of averages is an average only when every
+group is the same size, and groups are never the same size.
+
+A measure declared with no rule at all is refused when the cube is declared, naming the
+measure. A cube whose measures have not been thought about should not become a cube.
+
+### Three lifetimes
+
+| | Persisted | Materialised | Maintained by | Ends when |
+|---|---|---|---|---|
+| **Ephemeral** | no | no | nothing | the session ends |
+| **Declared** | yes | no | nothing | it is dropped |
+| **Maintained** | yes | yes | the warehouse | it is dropped |
+
+**Ephemeral is the default**, deliberately. Exploring should not require deciding whether a
+question deserves to be durable, and a warehouse should not accumulate a definition per
+abandoned question. Persisting is the deliberate act.
+
+A **Declared** cube costs one small file and computes on demand. It is the right choice for a
+cube asked about occasionally, and for any cube whose readers have different permissions — a
+stored aggregate is only usable by callers entitled to exactly the rows it was built from, so
+materialising a cube read by twenty differently-restricted analysts mostly produces cells
+nobody may use.
+
+A **Maintained** cube adds `target_lag`, and the warehouse keeps it within that lag whether or
+not anybody is logged in. It is a **staleness target, not a schedule**: `target_lag = 5` means
+*the cells may be at most five commits behind*, not *rebuild every five commits*. A schedule
+rebuilds when nothing has changed and fails to rebuild when a build takes longer than its
+interval; a target says what you actually want.
+
+Staleness here is exact rather than estimated, because a stored cuboid records the version it
+was computed at. **A cuboid past its target is never served as though it were fresh** — the
+answer falls back to live aggregation, which is slower and right, and says `materialised =
+false` so you can see which you got.
+
+### What is not here
+
+MDX, deliberately — see [ADR-0007](adr/0007-the-cube-model.md). And a cube is registered
+against a warehouse rather than written in SQL: `CREATE CUBE` is not a statement yet.
 
 ---
 

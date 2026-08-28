@@ -25,7 +25,7 @@
 
 mod common;
 
-use common::{query, start, write_warehouse};
+use common::{query_outcome, start, write_warehouse};
 
 /// Blocks that cannot run here, and why.
 ///
@@ -65,6 +65,12 @@ const NOT_RUN: &[(&str, &str)] = &[
     (
         "FROM salaries",
         "illustrates a row policy over a table the reader defines",
+    ),
+    (
+        "\\dt",
+        "psql's own meta-commands, which the client expands before anything reaches the \
+         server. They belong in the guide because a reader will type them, and they are not \
+         SQL for this test to run",
     ),
 ];
 
@@ -157,17 +163,23 @@ fn every_guide_example_is_executed_or_accounted_for() {
             // A refusal example must refuse. The wire client reports rows, so an error is a
             // query that returns none *and* is documented as an error --- checked together so
             // an empty result cannot pass as a refusal.
-            let rows = std::panic::catch_unwind(|| query(server.port, &statement));
+            let rows = query_outcome(server.port, &statement);
             match (expects_error, rows) {
-                (true, Ok(rows)) => assert_eq!(
-                    rows, 0,
-                    "block {index} is documented as an error and returned {rows} row(s): \
-                     {statement}"
+                // A documented refusal must actually be refused. Accepting "returned no
+                // rows" was the same flaw one level up: a statement that succeeds and matches
+                // nothing is indistinguishable from one the server rejected, so an example
+                // documented as an error could quietly have stopped being one.
+                (true, Ok(rows)) => panic!(
+                    "block {index} is documented as an error and succeeded with {rows} \
+                     row(s): {statement}"
                 ),
                 (true, Err(_)) => {}
                 (false, Ok(_)) => {}
-                (false, Err(_)) => {
-                    panic!("block {index} failed and is not documented as an error: {statement}")
+                (false, Err(why)) => {
+                    panic!(
+                        "block {index} failed and is not documented as an error: {statement}\n\
+                         {why}"
+                    )
                 }
             }
             ran += 1;
