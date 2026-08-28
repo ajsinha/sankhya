@@ -2164,6 +2164,74 @@ CATALOGUE = [
      "        commit(&self.root, 0, &[Action::Metadata(metadata)]).map_err(|error| {",
      "sankhya-publish"),
 
+    # --- configuration: precedence, resolution and refusal -----------------
+
+    ("config: leave an unresolved reference in the value instead of refusing",
+     "crates/sankhya-config/src/resolve.rs",
+     "            return Err(Unresolved::NoSuchKey {",
+     "            return Ok(format!(\"{out}${{{name}}}{rest}\"));\n            #[allow(unreachable_code)] return Err(Unresolved::NoSuchKey {",
+     "sankhya-config"),
+
+    ("config: resolve a circular reference until it runs out of stack",
+     "crates/sankhya-config/src/resolve.rs",
+     "        if visiting.contains(name) {",
+     "        if false {",
+     "sankhya-config"),
+
+    ("config: let a file outrank an environment variable",
+     "crates/sankhya-config/src/lib.rs",
+     "        for (key, value) in environment {\n            settings.insert(key.clone(), Origin::from(value.clone(), Source::Environment));\n        }",
+     "",
+     "sankhya-config"),
+
+    ("config: let the environment outrank a command-line argument",
+     "crates/sankhya-config/src/lib.rs",
+     "        for (key, value) in arguments {\n            settings.insert(key.clone(), Origin::from(value.clone(), Source::CommandLine));\n        }",
+     "",
+     "sankhya-config"),
+
+    ("config: ignore a .local overlay",
+     "crates/sankhya-config/src/lib.rs",
+     "            if let Some(overlay) = local_overlay(&path) {",
+     "            if let Some(overlay) = None::<PathBuf> {",
+     "sankhya-config"),
+
+    ("config: default an unparseable typed value instead of refusing it",
+     "crates/sankhya-config/src/lib.rs",
+     "        parse(&origin.value).map(Some).ok_or_else(|| ConfigError::NotA {",
+     "        Ok(parse(&origin.value)).map_err(|_: ()| ConfigError::NotA {",
+     "sankhya-config"),
+
+    ("config: read a boolean that is neither true nor false as false",
+     "crates/sankhya-config/src/lib.rs",
+     "                _ => None,\n            }\n        })\n    }\n\n    /// A setting as a duration",
+     "                _ => Some(false),\n            }\n        })\n    }\n\n    /// A setting as a duration",
+     "sankhya-config"),
+
+    ("config: print a secret",
+     "crates/sankhya-config/src/secret.rs",
+     "        f.write_str(\"<redacted>\")",
+     "        f.write_str(&self.0)",
+     "sankhya-config"),
+
+    ("config: report a changed secret's old value",
+     "crates/sankhya-config/src/lib.rs",
+     "            if looks_secret(key) {\n                parts.push(format!(\"{key} changed\"));",
+     "            if false {\n                parts.push(format!(\"{key} changed\"));",
+     "sankhya-config"),
+
+    ("config: replace a working configuration with a broken one on reload",
+     "crates/sankhya-config/src/lib.rs",
+     "        let fresh = Self::load_with(&files, environment, arguments)?;",
+     "        let fresh = Self::load_with(&files, environment, arguments).unwrap_or_default();",
+     "sankhya-config"),
+
+    ("config: load part of a malformed file rather than none of it",
+     "crates/sankhya-config/src/lib.rs",
+     "            let parsed = parse::file(path).map_err(ConfigError::Unreadable)?;",
+     "            let parsed = parse::file(path).unwrap_or_default();",
+     "sankhya-config"),
+
     # --- the invariants document names every check, and no others ----------
 
     ("docs: name a check in INVARIANTS.md that does not run",

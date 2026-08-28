@@ -76,6 +76,17 @@ Every rule here exists because a document said something untrue and nothing noti
 | No log statement records what a caller supplied | A log line carrying tenant data is a disclosure that survives in backups, and `#[instrument]` without `skip_all` records every argument | `check-logging` |
 | A release binary starts on the oldest platform it claims to support | The build machine's glibc is not the deployment target's, and it cannot tell you that — see [`PLATFORMS.md`](PLATFORMS.md) | `check-package` |
 
+## 4b. Configuration
+
+| Rule | Why | Enforced by |
+|---|---|---|
+| A malformed configuration file **fails the load** | A process with three of its four settings behaves plausibly and wrongly, and the missing one is discovered by whatever it breaks | `sankhya-config` tests |
+| An unresolved `${...}` with no default **fails the load** | A placeholder is visible in a config dump and invisible in a connection string, which is where the value goes. It turns a configuration error into a network one, at a distance from its cause | `sankhya-config` tests |
+| An unparseable typed value is **refused**, never defaulted | `port=eighty` silently becoming 8080 is a deployment behaving as though it were configured when it is not | `sankhya-config` tests |
+| Every value knows **where it came from** | "The timeout is thirty seconds" does not answer "why is the timeout thirty seconds", and the value is identical whether it came from a file, the environment or a flag | `sankhya-config` tests |
+| A secret does not print itself, and reading it takes a word a reviewer can see | A password in a log line survives in every backup of that log; rotating it does not remove it | `sankhya-config` tests |
+| A reload **says what changed**, and keeps the working configuration if the new one is broken | A reload nobody is told about is indistinguishable from a bug, and a process on a good configuration must not be pushed onto a bad one because somebody saved mid-edit | `sankhya-config` tests |
+
 ## 5. Evidence
 
 | Rule | Why | Enforced by |
