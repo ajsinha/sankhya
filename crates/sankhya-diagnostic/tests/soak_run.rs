@@ -322,6 +322,13 @@ fn soak() {
     let mut unread = 0_u64;
     // How many cube navigations answered.
     let mut cube_rounds = 0_u64;
+    // One runtime for the whole run. Built per navigation, it created and dropped
+    // thread-local state forty times over forty-five minutes, and the allocator kept the
+    // high-water mark --- which reads, from outside, exactly like a leak in the product.
+    let cube_runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime for the cube path");
     // One accumulator per table, living for the whole run: deferral only works if what was
     // deferred is still there next round.
     let publications: Vec<Publication> = roots.iter().map(|root| publication(root)).collect();
@@ -393,7 +400,7 @@ fn soak() {
         // for nothing.
         if round % 4 == 0 {
             if let Some(first) = roots.first() {
-                cube_rounds += u64::from(navigate_the_cube(first));
+                cube_rounds += u64::from(navigate_the_cube(&cube_runtime, first));
             }
         }
 
@@ -770,13 +777,18 @@ fn declare_soak_cube(warehouse: &Path, table_root: &Path) {
 
 /// Hydrate the cube from the table and roll it up, returning whether it answered.
 ///
+/// The runtime is the caller's. Building one **per call** --- which this did --- creates and
+/// drops thread-local state forty times over a run, and an allocator does not return that
+/// promptly. It is a test doing infrastructure work, which is the thing the golden rule
+/// exists to catch, and it was in the harness rather than the product.
+///
 /// # Why this is worth doing every few rounds
 ///
 /// Hydration reads the whole fact table, so doing it every round would make the soak a
 /// measurement of hydration rather than of the system. Every fourth round exercises the path
 /// --- cells built, held, dropped --- often enough that a leak in it accumulates visibly over
 /// forty-five minutes, and rarely enough that the write and compaction paths still dominate.
-fn navigate_the_cube(table_root: &Path) -> bool {
+fn navigate_the_cube(runtime: &tokio::runtime::Runtime, table_root: &Path) -> bool {
     use datafusion::prelude::SessionContext;
 
     let Ok(definition) = sankhya_cube::catalogue::load(
@@ -813,10 +825,6 @@ fn navigate_the_cube(table_root: &Path) -> bool {
     let catalog = Arc::new(sankhya_cube_sql::catalog::CubeCatalog::new());
     sankhya_cube_sql::functions::register(&context, Arc::clone(&catalog));
 
-    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-        Ok(runtime) => runtime,
-        Err(_) => return false,
-    };
     runtime.block_on(async {
         if sankhya_cube_sql::publish::publish_from_fact_table(
             &context,
