@@ -3498,6 +3498,7 @@ dependencies = [
  "sankhya-cdc-model",
  "sankhya-error",
  "sankhya-plan",
+ "sankhya-publish",
  "sankhya-schema",
  "sankhya-stats",
  "sankhya-table",

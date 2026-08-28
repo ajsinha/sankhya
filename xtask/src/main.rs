@@ -1568,6 +1568,12 @@ mod tests {
 /// already published, which is a different operation from admitting new data. It is named
 /// here with that reason rather than exempted silently.
 ///
+/// `sankhya-ingest` was here, as a violation rather than an exemption: the CDC arrival path
+/// wrote its own files and committed its own log, which is why its tables had no partition
+/// columns and violated `FR-STORE-20`. It now publishes through `Publication`, so the entry
+/// is gone --- and the check reported it as stale before anybody remembered to remove it,
+/// which is the property that keeps a list like this honest.
+///
 /// The rest are violations that exist today. Listing them makes them visible and makes the
 /// list shrink; the check's value is that **nothing new can be added without appearing
 /// here**, which is the property a rule kept in somebody's head does not have.
@@ -1581,13 +1587,6 @@ const MAY_WRITE: &[(&str, &str)] = &[
         "sankhya-maintenance",
         "rewrites already-published files rather than admitting new data — compaction and \
          retention, not ingestion. It must preserve the layout publish established",
-    ),
-    (
-        "sankhya-ingest",
-        "VIOLATION, not an exemption. The CDC arrival path writes its own files and commits \
-         its own log, which is why its tables have no partition columns and violate \
-         FR-STORE-20 — the requirement holds on the batch path and not on the streaming one, \
-         which is where most data lands. Tracked; this entry must be deleted, not kept",
     ),
 ];
 

@@ -1238,6 +1238,35 @@ That objective names bloom filters and late materialization as its preconditions
 
 **Multi-dimensional interleaved ordering is not used**, for two independent reasons: an open row-duplication defect in the implementation, and — separately — interleaving defeats the delta encoding on the sort columns, so it compresses worse than plain lexicographic ordering while also being harder for the optimizer to exploit.
 
+### 9.7a Data in, data stored, data out
+
+Three crates, three responsibilities, and the boundary between them is the point rather than
+a tidiness preference.
+
+| Crate | Responsibility |
+|---|---|
+| `sankhya-ingest` | **Everything by which data arrives.** Postgres change capture today; JSON and CSV files, Kafka streams and API invocations are further front-ends onto the same hand-off. It decodes, conditions and batches — it makes arriving data *handleable* — and then it publishes |
+| `sankhya-publish` | **The one writer to the warehouse.** Layout, partitioning, statistics, the commit and its rebasing all live here, and nothing else writes a data file or a log action |
+| *(not yet built)* | **Everything by which data leaves.** Emission out of SANKHYA, designed as its own crate for the same reason ingest is |
+
+**Why one writer and not three.** A second writer is not a stylistic complaint. It is a path
+that does not get the guarantees the first one enforces, and the evidence is concrete: while
+the ingest pipeline wrote its own files, its tables carried no partition columns and violated
+`FR-STORE-20`, which every table published through the other path satisfied. The soak had its
+own writer too, so its warehouses were flat and its ten-gigabyte runs reported `PASS` against
+a layout the product does not produce.
+
+Both were routed through `sankhya-publish`, and the convergence immediately surfaced defects
+in the writer itself: a creating commit that omitted its protocol action, and file-name
+recovery that could not parse a partitioned path and would have restarted a sequence at zero
+over live files. **Neither was findable while the paths were separate**, because each path
+only ever agreed with itself.
+
+`cargo xtask check-writers` enforces this: any crate that writes a data file or commits a log
+action must be named in an allowlist with a reason. The list is required to *shrink* — an
+entry that stops being needed is reported as stale, which is how the ingest entry came to be
+deleted rather than forgotten.
+
 ### 9.8 Partitioning
 
 Guardrails, all domain-neutral: a target partition size range; a ceiling on partition count per table, because every partition value is recorded in table metadata; a distinct-value ceiling above which partitioning causes path explosion; a null-fraction ceiling; a minimum table size below which partitioning is counterproductive; and a maximum depth.

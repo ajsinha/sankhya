@@ -3,16 +3,12 @@
 use sankhya_cdc_apply::{BatchPolicy, Batcher, MutationPlan};
 use sankhya_cdc_model::{Decoder, Message, RelationDescriptor};
 use sankhya_error::{Error, Result};
+use sankhya_publish::Publication;
 use sankhya_schema::{
     classify_change, onboard_relation, Compatibility, Onboarded, OnboardingWarning,
 };
-use sankhya_table::{column_stats, encode_batch, write_parquet, WriterConfig};
-use sankhya_table_delta::{
-    commit as delta_commit, create as delta_create, from_column_stats as delta_from_column_stats,
-    newest_after as delta_newest, read_actions as delta_read_actions,
-    schema_string as delta_schema_string, Action as DeltaAction, AddFile as DeltaAdd,
-    Metadata as DeltaMetadata,
-};
+use sankhya_table::{encode_batch, WriterConfig};
+use sankhya_table_delta::{read_actions as delta_read_actions, Action as DeltaAction};
 use sankhya_types::Lsn;
 
 /// How many times a publish will rebase before giving up.
@@ -22,61 +18,6 @@ use sankhya_types::Lsn;
 /// only other committer is maintenance, which commits on a duty cycle.
 const REBASE_ATTEMPTS: usize = 16;
 
-/// A commit that succeeded, possibly after losing a version race.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Rebased {
-    pub version: u64,
-    /// How many versions were taken from under us before one stuck.
-    pub retries: usize,
-}
-
-/// Commit at `start`, moving to the next free version when something else took it.
-///
-/// # Why capture rebases rather than failing
-///
-/// Capture is not the only committer. Maintenance commits to the same log, so a
-/// compaction between two publishes takes the version capture was about to use. Failing
-/// there would mean a compaction can stop capture, which inverts the ordering rule: the
-/// source outranks maintenance, always.
-///
-/// Retrying is safe because nothing about the *file* depends on the version. Its name
-/// comes from the sequence, so the same already-written file is committed at whichever
-/// version turns out to be free.
-///
-/// Taking the two operations as closures is what makes the bound testable: a real
-/// runaway committer is hard to arrange and easy to describe.
-///
-/// # Errors
-///
-/// Returns an error if a commit fails for any reason other than the version being taken,
-/// or if `attempts` rebases were not enough.
-fn commit_rebasing<C, N>(
-    start: u64,
-    attempts: usize,
-    mut commit_at: C,
-    mut newest: N,
-) -> Result<Rebased>
-where
-    C: FnMut(u64) -> std::result::Result<u64, sankhya_table_delta::CommitError>,
-    N: FnMut() -> Option<u64>,
-{
-    let mut version = start;
-
-    for retries in 0..attempts {
-        match commit_at(version) {
-            Ok(_) => return Ok(Rebased { version, retries }),
-            Err(sankhya_table_delta::CommitError::VersionTaken(_)) => {
-                version = newest().map_or(version.saturating_add(1), |v| v.saturating_add(1));
-            }
-            Err(e) => return Err(Error::StorageUnavailable(e.to_string())),
-        }
-    }
-
-    Err(Error::StorageUnavailable(format!(
-        "could not commit after {attempts} rebases; something else is committing to this \
-         table faster than capture can follow"
-    )))
-}
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -539,7 +480,15 @@ impl Pipeline {
                         .filter_map(|(_, action)| match action {
                             DeltaAction::Add(add) => add
                                 .path
-                                .strip_suffix(".parquet")
+                                // The path is relative to the table root and now carries the
+                                // partition directory: `sank_data_date=2024-03-01/0000.parquet`.
+                                // Parsing the whole thing yields nothing, the sequence
+                                // restarts at zero, and the next write overwrites a live
+                                // file. That is the failure this recovery exists to prevent,
+                                // and partitioning reintroduced it.
+                                .rsplit('/')
+                                .next()
+                                .and_then(|name| name.strip_suffix(".parquet"))
                                 .and_then(|stem| stem.parse::<u64>().ok()),
                             _ => None,
                         })
@@ -555,97 +504,79 @@ impl Pipeline {
             let file_name = format!("{:08}.parquet", state.sequence);
             state.sequence = state.sequence.saturating_add(1);
 
-            let report = write_parquet(
+            // Through `sankhya-publish`, which is the one library that writes to a
+            // warehouse.
+            //
+            // This path used to write its own files and commit its own log, and the
+            // consequence was a whole class of table the product could not otherwise
+            // produce: no partition columns, flat files, in violation of `FR-STORE-20`,
+            // which every table published through the other path satisfies. A second writer
+            // is not a stylistic complaint --- it is a path that does not get the guarantees
+            // the first one enforces.
+            //
+            // The date axis is the ingest date, and it says so: `FR-STORE-21` requires a
+            // table naming no source column to use the ingest date **and record that it
+            // does**. Nothing here can do better --- `Mutation` carries a commit position and
+            // no timestamp --- and a per-row guess would make the column mean "when this
+            // happened" in some rows and "when we received it" in others.
+            let publication = Publication::external(
                 &directory,
-                &file_name,
-                &batch,
-                plan.covers_through,
-                self.writer,
-            )?;
-
-            // Commit *after* the file is written, never before.
-            //
-            // The two failure windows are not symmetric. A file on disk but not in the
-            // log is invisible: no query sees it, and the orphan cleaner reclaims it.
-            // A file in the log but not on disk makes every query on the table fail.
-            // So the log always lags the filesystem, never leads it.
-            //
-            // A crash in between leaves an uncommitted file, and the resent stream
-            // rewrites it under the same sequence-derived name before committing. That
-            // is why the names are sequence-derived rather than time-derived.
-            let table_root = directory.clone();
-            if state.next_version == 0 {
-                let schema_json = delta_schema_string(&state.onboarded.schema.arrow_schema())
+                state.onboarded.location.source_table.clone(),
+            )
+            .writing_with(self.writer);
+            if state.next_version == 0 && !sankhya_publish::is_table(&directory) {
+                publication
+                    .create(&state.onboarded.schema.arrow_schema())
                     .map_err(|e| Error::InvariantViolated(e.to_string()))?;
-                delta_commit(
-                    &table_root,
-                    0,
-                    &delta_create(DeltaMetadata::new(
-                        state.onboarded.location.source_table.clone(),
-                        schema_json,
-                        0,
-                    )),
-                )
-                .map_err(|e| Error::StorageUnavailable(e.to_string()))?;
                 state.next_version = 1;
             }
 
-            // Statistics from the batch that was just encoded, so a file is prunable
-            // from the moment it is published rather than only after maintenance has
-            // been over it. The batch is already in memory and already the exact
-            // contents of the file, so this costs no read.
-            let statistics = delta_from_column_stats(
-                u64::try_from(report.rows).unwrap_or(0),
-                &column_stats(&batch),
-            );
+            // Rebasing, because capture is not the only committer: a compaction between two
+            // publishes takes the version capture was about to use. Failing there would mean
+            // maintenance can stop capture, which inverts the ordering rule --- the source
+            // outranks maintenance, always.
+            let rebased = publication
+                .append_rebasing(
+                    state.next_version,
+                    REBASE_ATTEMPTS,
+                    &file_name,
+                    &batch,
+                    plan.covers_through,
+                )
+                .map_err(|e| Error::StorageUnavailable(e.to_string()))?;
+            state.next_version = rebased.version.saturating_add(1);
+            state.rebases = state.rebases.saturating_add(rebased.retries);
 
-            // Rebase and retry on a version conflict, because capture is not the only
-            // committer.
-            //
-            // Maintenance commits to the same log -- a compaction between two publishes
-            // takes the version capture was about to use. That is the protocol working
-            // as designed, and failing here would mean a compaction could stop capture,
-            // which inverts the ordering rule: the source outranks maintenance, always.
-            //
-            // The retry is safe because nothing about the *file* depends on the version.
-            // Its name comes from the sequence, so the same already-written file is
-            // committed at whichever version turns out to be free.
-            let action = DeltaAction::Add(DeltaAdd::with_statistics(
-                file_name.clone(),
-                report.bytes,
-                0,
-                &statistics,
-            ));
-
-            match commit_rebasing(
-                state.next_version,
-                REBASE_ATTEMPTS,
-                |version| delta_commit(&table_root, version, std::slice::from_ref(&action)),
-                || delta_newest(&table_root, None),
-            ) {
-                Ok(Rebased { version, retries }) => {
-                    state.next_version = version.saturating_add(1);
-                    state.rebases = state.rebases.saturating_add(retries);
-                }
-                Err(e) => return Err(e),
-            }
+            let rows: usize = rebased.written.iter().map(|p| p.rows).sum();
+            let bytes: u64 = rebased.written.iter().map(|p| p.bytes).sum();
+            let files = rebased.written.len();
 
             state.published_through = plan.covers_through;
 
-            self.stats.rows_captured = self.stats.rows_captured.saturating_add(report.rows);
-            self.stats.files_published = self.stats.files_published.saturating_add(1);
-            self.stats.bytes_published = self.stats.bytes_published.saturating_add(report.bytes);
+            self.stats.rows_captured = self.stats.rows_captured.saturating_add(rows);
+            self.stats.files_published = self
+                .stats
+                .files_published
+                .saturating_add(files);
+            self.stats.bytes_published = self.stats.bytes_published.saturating_add(bytes);
             if plan.covers_through > self.stats.applied_through {
                 self.stats.applied_through = plan.covers_through;
             }
 
-            published.push(PublishedFile {
-                table: state.onboarded.location.source_table.clone(),
-                path: report.path,
-                rows: report.rows,
-                bytes: report.bytes,
-                covers_through: plan.covers_through,
-            });
+            // One entry per file, because a batch spanning several dates becomes several
+            // files --- one per partition. Reporting only the first would understate what was
+            // published, and the caller uses these to reconcile.
+            for one in rebased.written {
+                published.push(PublishedFile {
+                    table: state.onboarded.location.source_table.clone(),
+                    // Relative to the table root, which is what the log records and what a
+                    // reader resolves against.
+                    path: PathBuf::from(one.file),
+                    rows: one.rows,
+                    bytes: one.bytes,
+                    covers_through: plan.covers_through,
+                });
+            }
         }
         Ok(published)
     }
@@ -682,106 +613,5 @@ impl Pipeline {
     #[must_use]
     pub fn published_through(&self, relation_id: u32) -> Option<Lsn> {
         self.tables.get(&relation_id).map(|s| s.published_through)
-    }
-}
-
-#[cfg(test)]
-mod rebase_tests {
-    // Tests may panic — see the note on the integration tests. The workspace denies
-    // these because a server must not panic on data it did not choose.
-    #![allow(
-        clippy::expect_used,
-        clippy::unwrap_used,
-        clippy::panic,
-        clippy::indexing_slicing,
-        clippy::float_cmp
-    )]
-    use super::{commit_rebasing, Rebased, REBASE_ATTEMPTS};
-    use sankhya_table_delta::CommitError;
-    use std::cell::Cell;
-
-    #[test]
-    fn a_free_version_commits_without_rebasing() {
-        let got = commit_rebasing(5, 4, |v| Ok(v), || None).expect("committing");
-        assert_eq!(
-            got,
-            Rebased {
-                version: 5,
-                retries: 0
-            }
-        );
-    }
-
-    #[test]
-    fn a_taken_version_moves_on_and_reports_the_retry() {
-        // The ordinary case: maintenance committed between two publishes.
-        let taken = Cell::new(true);
-        let got = commit_rebasing(
-            5,
-            4,
-            |v| {
-                if taken.replace(false) {
-                    return Err(CommitError::VersionTaken(v));
-                }
-                Ok(v)
-            },
-            || Some(9),
-        )
-        .expect("committing after one rebase");
-
-        assert_eq!(
-            got,
-            Rebased {
-                version: 10,
-                retries: 1
-            }
-        );
-    }
-
-    #[test]
-    fn a_runaway_committer_produces_a_diagnosable_failure_rather_than_a_hang() {
-        // The bound. Without it this loops forever, and a capture pipeline that appears
-        // to hang is far harder to diagnose than one that says what it could not do.
-        let attempts = Cell::new(0usize);
-        let err = commit_rebasing(
-            0,
-            4,
-            |v| {
-                attempts.set(attempts.get() + 1);
-                Err(CommitError::VersionTaken(v))
-            },
-            || Some(attempts.get() as u64),
-        )
-        .expect_err("it must give up");
-
-        assert_eq!(attempts.get(), 4, "it tried a different number of times");
-        assert!(format!("{err}").contains("faster than capture can follow"));
-    }
-
-    #[test]
-    fn a_failure_that_is_not_a_version_race_is_not_retried() {
-        // Rebasing helps with contention and nothing else. Retrying an unwritable
-        // directory sixteen times turns one error into sixteen and reports the last.
-        let attempts = Cell::new(0usize);
-        let err = commit_rebasing(
-            0,
-            8,
-            |_| {
-                attempts.set(attempts.get() + 1);
-                Err(CommitError::Io("the disk is full".to_string()))
-            },
-            || None,
-        )
-        .expect_err("it must not retry");
-
-        assert_eq!(attempts.get(), 1);
-        assert!(format!("{err}").contains("the disk is full"));
-    }
-
-    #[test]
-    fn the_bound_is_generous_enough_for_real_contention() {
-        // The only other committer is maintenance, on a duty cycle. A bound of one or
-        // two would turn ordinary contention into a capture failure.
-        assert!(REBASE_ATTEMPTS >= 8);
     }
 }

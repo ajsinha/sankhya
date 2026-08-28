@@ -19,6 +19,7 @@ sankhya-error     = { path = "../sankhya-error" }
 sankhya-schema    = { path = "../sankhya-schema" }
 sankhya-cdc-model = { path = "../sankhya-cdc-model" }
 sankhya-cdc-apply = { path = "../sankhya-cdc-apply" }
+sankhya-publish     = { path = "../sankhya-publish" }
 sankhya-table       = { path = "../sankhya-table" }
 sankhya-table-delta = { path = "../sankhya-table-delta" }
 sankhya-plan      = { path = "../sankhya-plan" }

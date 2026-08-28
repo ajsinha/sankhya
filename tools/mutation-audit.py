@@ -616,11 +616,23 @@ CATALOGUE = [
      "        actions.push(Action::Add(AddFile::with_rows(\n            name(&outcome.output),\n            outcome.bytes,\n            now,\n            outcome.rows,\n        )));",
      "sankhya-maintenance"),
 
-    ("ingest: publish a file without the statistics it could have carried",
-     "crates/sankhya-ingest/src/pipeline.rs",
-     "            let action = DeltaAction::Add(DeltaAdd::with_statistics(\n                file_name.clone(),\n                report.bytes,\n                0,\n                &statistics,\n            ));",
-     "            let action = DeltaAction::Add(DeltaAdd::with_rows(\n                file_name.clone(),\n                report.bytes,\n                0,\n                u64::try_from(report.rows).unwrap_or(0),\n            ));",
-     "sankhya-ingest"),
+    ("publish: publish a file without the statistics it could have carried",
+     "crates/sankhya-publish/src/publish.rs",
+     "            let statistics = sankhya_table::column_stats(&part);",
+     "            let statistics = sankhya_table::column_stats(&part.slice(0, 0));",
+     "sankhya-publish"),
+
+    ("publish: fail instead of rebasing on a version conflict",
+     "crates/sankhya-publish/src/publish.rs",
+     "                Err(sankhya_table_delta::CommitError::VersionTaken(_)) => {",
+     "                Err(sankhya_table_delta::CommitError::VersionTaken(_)) if false => {",
+     "sankhya-publish"),
+
+    ("publish: retry a failure that is not a version race",
+     "crates/sankhya-publish/src/publish.rs",
+     "                Err(error) => {\n                    return Err(PublishError::Commit {\n                        version,\n                        detail: error.to_string(),\n                    })\n                }",
+     "                Err(_) => {}",
+     "sankhya-publish"),
 
     ("log: replay by scanning the file list instead of indexing it",
      "crates/sankhya-table-delta/src/log.rs",
@@ -831,18 +843,6 @@ CATALOGUE = [
      "        if let Err(stopped) = this.budget.check_periodically(this.batches, (this.clock)()) {",
      "        if let Err(stopped) = Ok::<(), Stopped>(()) {",
      "sankhya-readpath"),
-
-    ("ingest: fail a publish instead of rebasing on a version conflict",
-     "crates/sankhya-ingest/src/pipeline.rs",
-     "            Err(sankhya_table_delta::CommitError::VersionTaken(_)) => {\n                version = newest().map_or(version.saturating_add(1), |v| v.saturating_add(1));\n            }",
-     "            Err(sankhya_table_delta::CommitError::VersionTaken(v)) => {\n                return Err(Error::StorageUnavailable(format!(\"version {v} is taken\")));\n            }",
-     "sankhya-ingest"),
-
-    ("ingest: retry a failure that is not a version race",
-     "crates/sankhya-ingest/src/pipeline.rs",
-     "            Err(e) => return Err(Error::StorageUnavailable(e.to_string())),\n        }\n    }\n\n    Err(Error::StorageUnavailable(format!(",
-     "            Err(_) => continue,\n        }\n    }\n\n    Err(Error::StorageUnavailable(format!(",
-     "sankhya-ingest"),
 
     ("alloc: count a reallocation as a fresh allocation",
      "crates/sankhya-alloc/src/lib.rs",

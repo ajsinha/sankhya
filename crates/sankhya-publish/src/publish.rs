@@ -38,7 +38,7 @@ use arrow_schema::{DataType, Field};
 use sankhya_schema::Granularity;
 use arrow_array::types::Date32Type;
 use arrow_array::{Array, UInt32Array};
-use sankhya_table_delta::{commit, schema_string, Action, AddFile, Metadata};
+use sankhya_table_delta::{commit, create, schema_string, Action, AddFile, Metadata};
 use sankhya_types::Lsn;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -60,6 +60,13 @@ pub struct Publication {
     /// whether it means "when this happened" or "when we received it" --- which is exactly
     /// the question a default would let a publisher avoid answering.
     pub date_axis: DateAxis,
+    /// How files are encoded.
+    ///
+    /// Carried here because the caller that knows the workload knows the row-group size and
+    /// the compression level that suit it, and because a publisher that cannot say so would
+    /// have to write its own files to choose --- which is the second writer this crate exists
+    /// to make unnecessary.
+    pub writer: WriterConfig,
 }
 
 impl Publication {
@@ -77,7 +84,15 @@ impl Publication {
             // Ingest date until told otherwise, and recorded as such rather than left
             // undeclared, so a reader can tell "this means arrival" from "nobody said".
             date_axis: DateAxis::ingest_date(),
+            writer: WriterConfig::default(),
         }
+    }
+
+    /// The same, encoding files as the caller asks.
+    #[must_use]
+    pub const fn writing_with(mut self, writer: WriterConfig) -> Self {
+        self.writer = writer;
+        self
     }
 
     /// The same, taking each row's date from a source column.
@@ -181,7 +196,15 @@ impl Publication {
         // operation rather than a bulk delete.
         metadata.partition_columns = vec![DATA_DATE_COLUMN.to_string()];
 
-        commit(&self.root, 0, &[Action::Metadata(metadata)]).map_err(|error| {
+        // Protocol *and* metadata. A Delta table without a protocol action does not declare
+        // the reader and writer versions it needs, and a reader is entitled to refuse it or
+        // to assume defaults it does not meet.
+        //
+        // This crate wrote metadata alone until the CDC pipeline was moved onto it, at which
+        // point a test that pipeline already had --- asserting the creating commit carries a
+        // protocol action --- failed. Its old, unsanctioned write path emitted one; the
+        // official one did not. Two paths converging is what exposed it.
+        commit(&self.root, 0, &create(metadata)).map_err(|error| {
             PublishError::Commit {
                 version: 0,
                 detail: error.to_string(),
@@ -356,7 +379,7 @@ impl Publication {
                 file_name,
                 &part,
                 covers_through,
-                WriterConfig::default(),
+                self.writer,
             )
             .map_err(|error| PublishError::Write {
                 file: format!("{directory}/{file_name}"),
