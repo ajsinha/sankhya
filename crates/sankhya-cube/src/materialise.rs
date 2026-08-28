@@ -112,6 +112,62 @@ impl Key {
     }
 }
 
+/// The cube and key a rendered table name refers to.
+///
+/// # Why a name can be read back at all
+///
+/// Because it was written to be. Each part is either fixed width — the definition, snapshot
+/// and scope are sixteen hex digits each — or length-prefixed, which is why the cube's name
+/// carries its own length. That prefix was put there so two different cuboids could not
+/// render identically; it also makes the rendering reversible, and reversibility is what lets
+/// a sweep decide whether a cuboid on disk is still worth keeping without a side table
+/// recording what it already said.
+///
+/// Returns `None` for anything that is not one of ours, which is the important half: a
+/// directory this cannot parse is a directory it must not delete.
+#[must_use]
+pub fn parse(table: &str) -> Option<(String, Key)> {
+    let rest = table.strip_prefix("__cube_")?;
+    let (length, rest) = rest.split_once('_')?;
+    let length: usize = length.parse().ok()?;
+    if rest.len() < length {
+        return None;
+    }
+    let (cube, rest) = rest.split_at(length);
+    let rest = rest.strip_prefix('_')?;
+
+    let (definition, rest) = rest.split_at_checked(16)?;
+    let rest = rest.strip_prefix('_')?;
+    let (snapshot, rest) = rest.split_at_checked(16)?;
+    let rest = rest.strip_prefix('_')?;
+    let (scope, mut rest) = rest.split_at_checked(16)?;
+
+    let mut dimensions: Vec<String> = Vec::new();
+    while let Some(tail) = rest.strip_prefix('_') {
+        let (length, tail) = tail.split_once('_')?;
+        let length: usize = length.parse().ok()?;
+        if tail.len() < length {
+            return None;
+        }
+        let (dimension, tail) = tail.split_at(length);
+        dimensions.push(dimension.to_string());
+        rest = tail;
+    }
+    if !rest.is_empty() {
+        return None;
+    }
+
+    Some((
+        cube.to_string(),
+        Key {
+            definition: u64::from_str_radix(definition, 16).ok()?,
+            snapshot: u64::from_str_radix(snapshot, 16).ok()?,
+            scope: u64::from_str_radix(scope, 16).ok()?,
+            cuboid: Cuboid::of(&dimensions),
+        },
+    ))
+}
+
 /// What a caller may ask of materialisation for one query.
 ///
 /// One-directional by construction: every variant narrows. There is no `Session` value that

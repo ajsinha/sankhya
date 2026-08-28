@@ -300,3 +300,68 @@ fn a_scope_cannot_be_confused_with_a_snapshot() {
         Key::new(1, 9, 5, cuboid).table("figures")
     );
 }
+
+// --- a name that can be read back --------------------------------------------
+
+#[test]
+fn a_rendered_name_reads_back_as_the_key_that_wrote_it() {
+    // Reversibility is what lets a sweep decide whether a cuboid on disk is still worth
+    // keeping, without a side table recording what the name already says — and a side table
+    // is one more thing that can disagree with the files.
+    let key = Key::new(0xdead_beef, 42, 0x0bad_f00d, Cuboid::of(&["region", "period"]));
+    let rendered = key.table("figures");
+
+    let (cube, read) = sankhya_cube::materialise::parse(&rendered).expect("ours");
+    assert_eq!(cube, "figures");
+    assert_eq!(read, key);
+}
+
+#[test]
+fn a_name_with_awkward_parts_still_reads_back() {
+    // The length prefixes exist because `a_b` and `c` must not render like `a` and `b_c`.
+    // The same prefixes are what make the rendering reversible, so the awkward cases are
+    // exactly the ones worth checking.
+    for (cube, dimensions) in [
+        ("a_b", vec!["c"]),
+        ("a", vec!["b_c"]),
+        ("has_many_underscores", vec!["x_y", "z"]),
+        ("", vec!["region"]),
+    ] {
+        let key = Key::new(1, 2, 3, Cuboid::of(&dimensions));
+        let rendered = key.table(cube);
+        let (read_cube, read_key) =
+            sankhya_cube::materialise::parse(&rendered).expect("ours: {rendered}");
+        assert_eq!(read_cube, cube, "{rendered}");
+        assert_eq!(read_key, key, "{rendered}");
+    }
+}
+
+#[test]
+fn a_directory_that_is_not_ours_does_not_parse() {
+    // The important half. Something a sweep cannot parse is something it must not delete,
+    // and a warehouse holds directories this code did not write.
+    for name in [
+        "orders",
+        "_delta_log",
+        "__cube_",
+        "__cube_5_short",
+        "__cube_2_ab_notahexnumber_0000000000000000_0000000000000000",
+        "__cube_2_ab_0000000000000001_0000000000000002_0000000000000003_trailing",
+    ] {
+        assert!(
+            sankhya_cube::materialise::parse(name).is_none(),
+            "`{name}` is not a cuboid and must not be read as one"
+        );
+    }
+}
+
+#[test]
+fn a_cuboid_with_no_dimensions_reads_back() {
+    // The grand total: one cell, no dimensions. A parser that required at least one would
+    // refuse to collect the cuboid most likely to be materialised.
+    let key = Key::new(1, 2, 3, Cuboid::of::<&str>(&[]));
+    let rendered = key.table("figures");
+    let (cube, read) = sankhya_cube::materialise::parse(&rendered).expect("ours");
+    assert_eq!(cube, "figures");
+    assert_eq!(read, key);
+}

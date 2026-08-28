@@ -1708,6 +1708,32 @@ CATALOGUE = [
      "        exact.values().append_value(sum.to_f64());",
      "sankhya-cube"),
 
+    # --- cuboids nothing can ask for, and nothing was collecting ---------------
+
+    ("maintenance: delete a directory the cuboid sweep cannot recognise",
+     "crates/sankhya-maintenance/src/cuboid.rs",
+     "        let Some((cube, key)) = sankhya_cube::materialise::parse(&name) else {",
+     "        let Some((cube, key)) = sankhya_cube::materialise::parse(&name).or_else(|| Some((String::new(), sankhya_cube::materialise::Key::unrestricted(0, 0, sankhya_cube::algo::Cuboid::of::<&str>(&[]))))) else {",
+     "sankhya-maintenance"),
+
+    ("maintenance: collect a cuboid whose cube has no known version, on a guess",
+     "crates/sankhya-maintenance/src/cuboid.rs",
+     "        let Some(&version) = current.get(&cube) else {",
+     "        let Some(&version) = current.get(&cube).or(Some(&u64::MAX)) else {",
+     "sankhya-maintenance"),
+
+    ("maintenance: collect a cuboid that is still within the tolerated drift",
+     "crates/sankhya-maintenance/src/cuboid.rs",
+     "        if drift <= behind {\n            continue;\n        }",
+     "        if false {\n            continue;\n        }",
+     "sankhya-maintenance"),
+
+    ("server: never sweep, so superseded cuboids accumulate for the life of the warehouse",
+     "crates/sankhya-server/src/wiring.rs",
+     "        self.retire_superseded_cuboids();",
+     "        // self.retire_superseded_cuboids();",
+     "sankhya-server"),
+
     ("server: refresh a cube nobody marked maintained, charging storage nobody asked for",
      "crates/sankhya-server/src/wiring.rs",
      "            let Some(_) = cube.target_lag() else {\n                // Declared, not maintained. Nothing to build, and building it anyway would\n                // charge an operator storage they did not ask for.\n                continue;\n            };",

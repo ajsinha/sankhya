@@ -710,3 +710,54 @@ async fn what_the_refresher_builds_is_the_unrestricted_scope() {
         "and no restricted scope was, because the refresher has no principal to build one for"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_refresher_collects_cuboids_the_table_has_left_behind() {
+    // The population bound. Cuboids multiply by cubes, cuboids per cube, scopes and *live
+    // snapshots* — and the last factor was bounded by nothing. A cuboid at an old snapshot
+    // can never be selected, so it is garbage the moment the table advances, and neither the
+    // orphan sweep (which finds files within a table) nor retirement (which retires
+    // compaction inputs) could see it: it is a whole table no log mentions.
+    let dir = maintained_warehouse();
+    let server = server_over(&dir, policy("reader", None));
+    let cube = &server.cubes()[0];
+
+    // A cuboid from far enough in the past that nothing could ask for it.
+    let stale = sankhya_cube::materialise::Key::unrestricted(
+        cube.version(),
+        1,
+        sankhya_cube::algo::Cuboid::of(&["region"]),
+    );
+    let mut cells = sankhya_cube::cells::Cells::over(vec!["region".to_string()]);
+    cells.add(vec!["north".to_string()], 1.0).expect("well-formed");
+    sankhya_maintenance::cuboid::materialise(dir.path(), &stale, cube.name(), &cells, CubeRule::Sum)
+        .expect("materialising a stale cuboid");
+    assert!(sankhya_maintenance::cuboid::exists(dir.path(), &stale, cube.name()));
+
+    // Pretend the table has moved a long way past it.
+    for version in 2..200u64 {
+        let root = dir.path().join("sales").join("orders");
+        let more = RecordBatch::try_new(
+            schema(),
+            vec![
+                Arc::new(Int64Array::from(vec![version as i64])),
+                Arc::new(StringArray::from(vec!["north"])),
+                Arc::new(Float64Array::from(vec![1.0])),
+            ],
+        )
+        .expect("a valid batch");
+        if Publication::external(&root, "orders")
+            .append_rebasing(version, 8, &format!("part-{version:05}.parquet"), &more, Lsn::new(version))
+            .is_err()
+        {
+            break;
+        }
+    }
+
+    server.refresh_maintained_cubes();
+
+    assert!(
+        !sankhya_maintenance::cuboid::exists(dir.path(), &stale, cube.name()),
+        "a cuboid nothing can ask for is collected, or the population grows without bound"
+    );
+}

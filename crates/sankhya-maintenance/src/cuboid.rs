@@ -179,3 +179,118 @@ pub fn unmeetable(target_lag: Option<u64>, versions_during_refresh: u64) -> Opti
          time and can never be used: raise the target, or reduce what is materialised"
     ))
 }
+
+// --- retiring cuboids nothing can ask for ------------------------------------
+
+/// What a sweep of the cuboid store decided.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Swept {
+    /// Cuboid tables removed, by name.
+    pub removed: Vec<String>,
+    /// Bytes reclaimed.
+    pub bytes_reclaimed: u64,
+    /// Directories deliberately left, with the reason.
+    ///
+    /// Keeping one is never an error. It costs storage; removing one wrongly costs a query,
+    /// or somebody else's data.
+    pub retained: Vec<(String, String)>,
+}
+
+/// Remove cuboids no query can ask for.
+///
+/// # What makes one collectable
+///
+/// A cuboid is found by a key embedding the snapshot it was computed at, and a query asks at
+/// the table's **current** version. So a cuboid at an older snapshot cannot be selected by
+/// anything: its key can never match. It is garbage the moment the table advances.
+///
+/// Nothing collected it. The orphan sweep finds unreferenced files *within* a table, and a
+/// superseded cuboid is a whole table that no log mentions --- so it fell between the two
+/// mechanisms that exist. That is the same shape as the defect that filled a disk during the
+/// soak: something producing garbage, and nothing reclaiming it.
+///
+/// # What protects one
+///
+/// `behind` is how many versions of drift to tolerate before removing. It is not the target
+/// lag and should not be confused with it: `target_lag` decides what may be *served*, and
+/// this decides what may be *deleted*, which must be strictly more generous. A query that
+/// resolved a cuboid a moment ago is still reading it, and a file deleted from under a
+/// running scan is an error naming a path the caller never mentioned.
+///
+/// A directory that cannot be parsed as a cuboid is **retained with a reason**, always. A
+/// warehouse holds directories this code did not write, and a sweep that deletes what it does
+/// not recognise is a sweep that eventually deletes something that mattered.
+pub fn retire_superseded(
+    warehouse: &Path,
+    current: &std::collections::BTreeMap<String, u64>,
+    behind: u64,
+) -> Swept {
+    let mut swept = Swept::default();
+    let store = warehouse.join(CUBOIDS);
+    let Ok(entries) = std::fs::read_dir(&store) else {
+        // No cuboid store is not an error. A warehouse that has never materialised anything
+        // is the ordinary case.
+        return swept;
+    };
+
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|entry| entry.metadata().is_ok_and(|meta| meta.is_dir()))
+        .filter_map(|entry| entry.file_name().to_str().map(ToString::to_string))
+        .collect();
+    // Sorted, so two runs sweep in the same order and a log of what went is comparable.
+    names.sort();
+
+    for name in names {
+        let Some((cube, key)) = sankhya_cube::materialise::parse(&name) else {
+            swept.retained.push((
+                name,
+                "not a cuboid this version wrote; a sweep that deletes what it does not \
+                 recognise eventually deletes something that mattered"
+                    .to_string(),
+            ));
+            continue;
+        };
+        let Some(&version) = current.get(&cube) else {
+            swept.retained.push((
+                name,
+                format!(
+                    "no current version is known for cube `{cube}`, so how far behind this \
+                     is cannot be decided --- and deleting on a guess is how a cache becomes \
+                     a data loss"
+                ),
+            ));
+            continue;
+        };
+        let drift = lag(key.snapshot, version);
+        if drift <= behind {
+            continue;
+        }
+
+        let path = store.join(&name);
+        let bytes = tree_bytes(&path);
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {
+                swept.bytes_reclaimed = swept.bytes_reclaimed.saturating_add(bytes);
+                swept.removed.push(name);
+            }
+            Err(error) => swept.retained.push((name, error.to_string())),
+        }
+    }
+    swept
+}
+
+/// How many bytes a directory holds.
+fn tree_bytes(at: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(at) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| match entry.metadata() {
+            Ok(meta) if meta.is_dir() => tree_bytes(&entry.path()),
+            Ok(meta) => meta.len(),
+            Err(_) => 0,
+        })
+        .sum()
+}

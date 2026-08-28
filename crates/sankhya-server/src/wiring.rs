@@ -132,6 +132,18 @@ pub struct Server {
     runtime: tokio::runtime::Handle,
 }
 
+/// How many versions of drift a superseded cuboid is allowed before it is removed.
+///
+/// **Not** a `target_lag`. That decides what may be *served* and is a per-cube setting; this
+/// decides what may be *deleted* and must be strictly more generous, because a query that
+/// resolved a cuboid a moment ago is still reading it and a file deleted from under a running
+/// scan fails naming a path the caller never mentioned.
+///
+/// A hundred versions is far beyond any query's lifetime and still collects a cuboid within
+/// minutes on a table under continuous ingest. The cost of it being too large is storage; the
+/// cost of it being too small is a query that fails.
+const CUBOID_DRIFT_TOLERATED: u64 = 100;
+
 /// Whether a statement asks for a cube at all.
 ///
 /// Text, not a parse. The alternative is planning the statement twice --- once to discover
@@ -617,7 +629,50 @@ impl Server {
                 }
             }
         }
+        // Built, then swept. In that order: a cuboid written this pass is at the current
+        // version and cannot be collected by the sweep below, and doing it the other way
+        // round would leave the newest garbage until the next pass.
+        self.retire_superseded_cuboids();
         refreshed
+    }
+
+    /// Remove cuboids no query can ask for.
+    ///
+    /// A cuboid is found by a key embedding its snapshot, and a query asks at the table's
+    /// current version --- so a cuboid at an older snapshot is garbage the moment the table
+    /// advances. Nothing collected it: the orphan sweep finds unreferenced files *within* a
+    /// table, and a superseded cuboid is a whole table no log mentions, so it fell between
+    /// the two mechanisms that exist.
+    ///
+    /// The tolerance is deliberately more generous than any `target_lag`. That decides what
+    /// may be **served**; this decides what may be **deleted**, and a query that resolved a
+    /// cuboid a moment ago is still reading it.
+    fn retire_superseded_cuboids(&self) {
+        if self.cubes.is_empty() {
+            return;
+        }
+        let current: std::collections::BTreeMap<String, u64> = self
+            .cubes
+            .iter()
+            .map(|cube| {
+                (
+                    cube.name().to_string(),
+                    self.snapshot_of(cube.fact_table()),
+                )
+            })
+            .collect();
+        let swept = sankhya_maintenance::cuboid::retire_superseded(
+            &self.settings.warehouse,
+            &current,
+            CUBOID_DRIFT_TOLERATED,
+        );
+        if !swept.removed.is_empty() {
+            println!(
+                "  retired {} superseded cuboid(s), {:.1} MB",
+                swept.removed.len(),
+                swept.bytes_reclaimed as f64 / (1024.0 * 1024.0)
+            );
+        }
     }
 
     /// Hydrate a cube over every row, with no policy applied.
