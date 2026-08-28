@@ -3682,6 +3682,7 @@ dependencies = [
  "sankhya-authz",
  "sankhya-backup",
  "sankhya-catalog",
+ "sankhya-config",
  "sankhya-diagnostic",
  "sankhya-error",
  "sankhya-governor",

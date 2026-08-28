@@ -29,47 +29,105 @@ mod scrape;
 mod warehouse;
 mod wiring;
 
+use std::collections::BTreeMap;
 use sankhya_authz::principal::TenantId;
 use std::sync::Arc;
 use wiring::{start, Settings};
 
-/// Read configuration from the environment, with defaults that are safe to run.
+/// Read configuration: files first, then the environment, then the command line.
 ///
-/// Environment rather than a file, for now: one fewer format to parse and one fewer thing
-/// to get wrong while the surface is this small. `SANKHYA_NO_PASSWORD` is spelled as an
-/// opt-*out* so that the insecure choice has to be made deliberately.
-fn settings() -> Settings {
-    let listen = std::env::var("SANKHYA_LISTEN").unwrap_or_else(|_| "127.0.0.1:5433".to_string());
-    let require_password = std::env::var("SANKHYA_NO_PASSWORD").is_err();
-    // Loopback by default. A metrics endpoint on every interface is a small permanent
-    // disclosure of the deployment's shape, and the safe choice should be the one an
-    // operator gets by not deciding.
+/// # Why not the environment alone
+///
+/// It was the environment alone, on the reasoning that one fewer format is one fewer thing
+/// to get wrong. That holds while the surface is three settings. It stops holding when an
+/// operator has to answer *why is this value what it is* --- an environment variable set
+/// three layers up in a container spec is invisible from the machine, and a value that
+/// cannot explain itself is one nobody can safely change.
+///
+/// So settings come from `config/application.yaml` and its `.local` overlay, and every one
+/// of them can say where it came from. See [`sankhya_config`].
+///
+/// # The legacy names still work
+///
+/// `SANKHYA_WAREHOUSE` and its siblings are documented and deployed, so they are mapped onto
+/// the settings they configure rather than dropped. They arrive as environment values, which
+/// is a higher precedence than a file --- which is what an operator setting one expects.
+fn settings() -> Result<Settings, String> {
+    let files = configuration_files();
+    let config = sankhya_config::Configuration::load_with(
+        &files,
+        &legacy_environment(),
+        &BTreeMap::new(),
+    )
+    .map_err(|error| error.to_string())?;
+
+    let listen = config.get_or("server.listen", "127.0.0.1:5433").to_string();
     let metrics_listen = Some(
-        std::env::var("SANKHYA_METRICS_LISTEN").unwrap_or_else(|_| "127.0.0.1:9464".to_string()),
+        config
+            .get_or("server.metrics_listen", "127.0.0.1:9464")
+            .to_string(),
     );
-    let warehouse = std::env::var("SANKHYA_WAREHOUSE")
-        .unwrap_or_else(|_| "./warehouse".to_string())
-        .into();
-    // The position to read as of. With no ingest running in this process there is nothing
-    // advancing it, so it is read once — and `u64::MAX` means "everything published",
-    // which is what a read-only server over a static warehouse wants.
+    let require_password = config
+        .boolean("server.require_password")
+        .map_err(|error| error.to_string())?
+        .unwrap_or(true);
+    let warehouse: std::path::PathBuf = config.get_or("warehouse.path", "./warehouse").into();
     let read_as_of = sankhya_types::Lsn::new(
-        std::env::var("SANKHYA_READ_AS_OF")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
+        config
+            .integer("warehouse.read_as_of")
+            .map_err(|error| error.to_string())?
+            .and_then(|value| u64::try_from(value).ok())
             .unwrap_or(u64::MAX),
     );
     // A fixed tenant until federated identity is wired in. Deterministic so that a restart
     // does not orphan the audit chain and the storage prefix from the previous run.
     let tenant = TenantId::from_uuid(uuid::Uuid::from_u128(1));
-    Settings {
+    Ok(Settings {
         listen,
         warehouse,
         read_as_of,
         tenant,
         require_password,
         metrics_listen,
+    })
+}
+
+/// The configuration files, lowest precedence first.
+///
+/// `SANKHYA_CONFIG` names an explicit file, which is what a deployment with several
+/// instances on one machine needs. Otherwise the file beside the binary's working directory.
+fn configuration_files() -> Vec<std::path::PathBuf> {
+    std::env::var("SANKHYA_CONFIG").map_or_else(
+        |_| vec![std::path::PathBuf::from("config/application.yaml")],
+        |named| named.split(',').map(std::path::PathBuf::from).collect(),
+    )
+}
+
+/// The documented `SANKHYA_*` variables, under the settings they configure.
+///
+/// Listed rather than derived. A rule that turns `SANKHYA_FOO_BAR` into `foo.bar` would also
+/// turn every unrelated variable into a setting, and a deployment's environment holds a great
+/// many unrelated variables.
+fn legacy_environment() -> BTreeMap<String, String> {
+    const MAPPED: &[(&str, &str)] = &[
+        ("SANKHYA_LISTEN", "server.listen"),
+        ("SANKHYA_METRICS_LISTEN", "server.metrics_listen"),
+        ("SANKHYA_WAREHOUSE", "warehouse.path"),
+        ("SANKHYA_READ_AS_OF", "warehouse.read_as_of"),
+        ("SANKHYA_DATA_DIR", "data.dir"),
+    ];
+    let mut out = BTreeMap::new();
+    for (variable, setting) in MAPPED {
+        if let Ok(value) = std::env::var(variable) {
+            out.insert((*setting).to_string(), value);
+        }
     }
+    // Spelled as an opt-out, so the insecure choice is deliberate: the variable's presence
+    // is the signal, whatever it holds.
+    if std::env::var("SANKHYA_NO_PASSWORD").is_ok() {
+        out.insert("server.require_password".to_string(), "false".to_string());
+    }
+    out
 }
 
 /// Where the diagnostic keeps its observation history.
@@ -108,7 +166,17 @@ async fn main() -> std::io::Result<()> {
         )
         .init();
 
-    let settings = settings();
+    // A configuration that does not load stops the server here, with the reason, rather
+    // than at whatever the missing setting was for. `sankhya-config` refuses a malformed
+    // file, an unresolved reference and an unparseable value; each of those is a deployment
+    // that would otherwise come up behaving as though it were configured.
+    let settings = match settings() {
+        Ok(settings) => settings,
+        Err(why) => {
+            eprintln!("sankhya: {why}");
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, why));
+        }
+    };
     let settings_metrics = settings.metrics_listen.clone();
     let settings_listen = settings.listen.clone();
 

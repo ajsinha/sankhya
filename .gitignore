@@ -50,3 +50,4 @@ lcov.info
 # Python bytecode from the tooling in tools/
 __pycache__/
 *.pyc
+config/application.local.*
