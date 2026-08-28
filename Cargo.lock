@@ -3416,8 +3416,13 @@ dependencies = [
 name = "sankhya-diagnostic"
 version = "0.1.0"
 dependencies = [
+ "arrow-array",
+ "arrow-schema",
  "sankhya-error",
+ "sankhya-maintenance",
  "sankhya-math",
+ "sankhya-publish",
+ "sankhya-table",
  "sankhya-table-delta",
  "sankhya-types",
  "sankhya-version",
@@ -3680,7 +3685,6 @@ dependencies = [
  "sankhya-plan",
  "sankhya-readpath",
  "sankhya-session",
- "sankhya-soak",
  "sankhya-table",
  "sankhya-table-delta",
  "sankhya-types",
@@ -3698,19 +3702,6 @@ dependencies = [
  "sankhya-authz",
  "sankhya-types",
  "uuid",
-]
-
-[[package]]
-name = "sankhya-soak"
-version = "0.1.0"
-dependencies = [
- "arrow-array",
- "arrow-schema",
- "sankhya-diagnostic",
- "sankhya-table",
- "sankhya-table-delta",
- "sankhya-types",
- "tempfile",
 ]
 
 [[package]]

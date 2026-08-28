@@ -1,4 +1,4 @@
-//! Judging a long run.
+//! Judging a long run: does any bounded measure grow without bound?
 //!
 //! # What a soak is for, and what it is not
 //!
@@ -29,8 +29,20 @@
 //!
 //! A soak that would have been green anyway is an untested backup by another name. So a test
 //! injects a leak and requires the harness to fail on it --- see `tests/leak.rs`.
-
-#![doc(html_root_url = "https://docs.rs/sankhya-soak")]
+//!
+//! # Why this lives in the diagnostic rather than in a crate of its own
+//!
+//! It was a separate `sankhya-soak` crate, and `sankhya-server` carried a dependency on it
+//! so that one test could ask whether a measure was growing. That is the wrong shape twice
+//! over: a soak is a *test*, so it must not add infrastructure; and "does this measure grow
+//! without bound" is not a test question --- it is what [`crate::check`] asks of a running
+//! system, using the same projection machinery.
+//!
+//! The two differ on one point, deliberately. [`crate::projection`] gates on linearity,
+//! because a diagnostic projecting a date from a wandering series would be inventing one.
+//! A soak measure is noisy and flat when healthy, so that gate reported everything
+//! unjudgeable --- so [`judge`] reads the slope directly. One module with two readings, not
+//! two crates with one each.
 
 pub mod judge;
 pub mod measure;

@@ -1,38 +1,51 @@
-//! The scheduled soak: a real warehouse, real load, sampled and judged, for as long as it
-//! is given.
+//! The scheduled soak: a real warehouse, real load, sampled and judged.
 //!
-//! # Why this is a binary and not a test
+//! # A test, and only a test
 //!
-//! `M6` exit criterion 4 asks for a **multi-day run at the ten-gigabyte scale**. That is not
-//! a `cargo test` — a build that took days would not be a build — so the harness runs short
-//! in the suite to prove it works, and long here to prove the system does.
+//! It was a binary in a crate of its own, with its own writer and its own compaction. That
+//! shape had two consequences and both were bad. A soak that writes through its own code is
+//! measuring its own code --- it went near neither `sankhya-publish` nor
+//! `sankhya-maintenance`, which is why the publish path could declare a partition column it
+//! never wrote and no run ever noticed. And a test does not ship, so a test has no business
+//! being a binary.
 //!
-//! The two differ in exactly two numbers: how much data, and how long. Everything else, the
-//! judgement included, is the same code.
+//! So: every write here goes through [`sankhya_publish::Publication`], every merge through
+//! [`sankhya_maintenance::run_compaction`], and this file owns nothing either of them owns.
+//! A defect in the write path now fails the soak.
+//!
+//! # Running it
+//!
+//! Ignored by default, because it takes forty-five minutes:
 //!
 //! ```text
-//! sankhya-soak --gb 10 --tables 10 --minutes 240 --at /var/tmp/soak
+//! SANKHYA_SOAK_MINUTES=45 \
+//!   cargo test -p sankhya-diagnostic --test soak_run -- --ignored --nocapture
 //! ```
 //!
-//! # It reports as it goes
-//!
-//! A run that reports only at the end is a run nobody watches, and a soak that nobody watches
-//! is one whose failure is discovered when somebody remembers to look. So progress goes to
-//! standard output every couple of minutes with a timestamp, and the judged report is written
-//! after every interval rather than only at the finish --- if the process is killed at hour
-//! nine, hour eight's verdict is on disk.
+//! Configured by environment rather than argv, because a test harness has no argv of its
+//! own. `SANKHYA_SOAK_GB`, `SANKHYA_SOAK_TABLES`, `SANKHYA_SOAK_MINUTES`,
+//! `SANKHYA_SOAK_SCHEMA`, `SANKHYA_SOAK_AT` --- the last defaulting inside the project root
+//! and refused if it points outside it.
+
+#![allow(clippy::panic, clippy::expect_used, clippy::unwrap_used)]
+
 
 // A binary may print. That is what it is for.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
-use arrow_array::{Int64Array, RecordBatch, StringArray};
+use arrow_array::{Date32Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use sankhya_soak::report::supported_horizon;
-use sankhya_soak::sample::{file_bytes, open_files, resident_bytes, Samples};
-use sankhya_soak::Report;
-use sankhya_table::{scan_parquet, write_parquet, Scanned, WriterConfig};
-use sankhya_table_delta::{commit, create, live_files, Action, AddFile, Metadata, RemoveFile};
+use sankhya_diagnostic::soak::report::supported_horizon;
+use sankhya_diagnostic::soak::sample::{file_bytes, open_files, resident_bytes, Samples};
+use sankhya_diagnostic::soak::Report;
+use sankhya_maintenance::{
+    plan_compaction, run_compaction, CompactionPolicy, FileStat, PartitionState,
+};
+use sankhya_publish::Publication;
+use sankhya_table::{scan_parquet, Scanned, WriterConfig};
+use sankhya_table_delta::{commit, live_files, Action, AddFile, RemoveFile};
 use sankhya_types::Lsn;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -148,40 +161,45 @@ counts are sampled every 15s and judged every 120s, so a run killed at hour nine
 hour eight's verdict behind.
 ";
 
-fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("{USAGE}");
-        return;
-    }
-    let gb: f64 = flag(&args, "--gb")
+/// Run a soak.
+///
+/// **A test, not a binary.** A soak is a test of the product, so it must not add
+/// infrastructure of its own: it drives `sankhya-publish` for every write and
+/// `sankhya-maintenance` for every merge, and owns nothing that could drift from them. An
+/// earlier version shipped as `sankhya-soak` with its own writer --- and the consequence was
+/// a harness that could not have caught the defect living in the write path it bypassed.
+///
+/// Ignored by default, because it takes forty-five minutes. Run it deliberately:
+///
+/// ```text
+/// SANKHYA_SOAK_MINUTES=45 cargo test -p sankhya-soak --test soak_run -- --ignored --nocapture
+/// ```
+///
+/// Configured by environment rather than by arguments, because a test harness has no argv of
+/// its own.
+#[test]
+#[ignore = "a soak takes forty-five minutes; run it deliberately"]
+fn soak() {
+    let env = |name: &str| std::env::var(name).ok();
+    let gb: f64 = env("SANKHYA_SOAK_GB")
         .and_then(|v| v.parse().ok())
         .unwrap_or(10.0);
-    let tables: usize = flag(&args, "--tables")
+    let tables: usize = env("SANKHYA_SOAK_TABLES")
         .and_then(|v| v.parse().ok())
         .unwrap_or(10);
-    let minutes: u64 = flag(&args, "--minutes")
+    let minutes: u64 = env("SANKHYA_SOAK_MINUTES")
         .and_then(|v| v.parse().ok())
         .unwrap_or(45);
-    // No default. A default warehouse is a path the caller did not choose, and this binary
-    // writes gigabytes into it --- which is exactly what happened when somebody ran the
-    // binary with no arguments to see what it did.
-    let schema = flag(&args, "--schema").unwrap_or_else(|| "soak".to_string());
+    let schema = env("SANKHYA_SOAK_SCHEMA").unwrap_or_else(|| "soak".to_string());
+
     let Some(root) = project_root() else {
-        eprintln!("{}  cannot find the project root from here", stamp());
-        std::process::exit(2);
+        panic!("cannot find the project root from here");
     };
-    // Defaulted inside the project, and *confined* to it. An earlier version defaulted to
-    // `/var/tmp`, and running the binary to find out what it did left three quarters of a
-    // gigabyte outside the repository. A default is not the problem --- a default nobody can
-    // see, in a place nobody will look, is.
-    let at = flag(&args, "--at").map_or_else(|| root.join(DEFAULT_WAREHOUSE), PathBuf::from);
+    // Defaulted inside the project, and confined to it.
+    let at = env("SANKHYA_SOAK_AT").map_or_else(|| root.join(DEFAULT_WAREHOUSE), PathBuf::from);
     let at = match confined(&root, &at) {
         Ok(path) => path,
-        Err(why) => {
-            eprintln!("{}  {why}", stamp());
-            std::process::exit(2);
-        }
+        Err(why) => panic!("{why}"),
     };
 
     println!("{}  soak starting", stamp());
@@ -416,18 +434,44 @@ fn stamp() -> String {
 /// thread name — which is the mirror of the mistake this binary already made in the other
 /// direction, where swallowing a write error let it soak an idle warehouse and call it
 /// healthy. Neither extreme says what went wrong; both waste the run.
+#[allow(clippy::panic)]
 fn die(what: &str) -> ! {
     eprintln!("{}  cannot start: {what}", stamp());
     std::process::exit(2)
 }
 
+/// The soak's table, which is a *conforming* analytical table.
+///
+/// `FR-STORE-20` requires every analytical table to carry `sank_data_date` and be
+/// partitioned on it, with no exemption for size or purpose. An earlier version of this
+/// harness had `id, region, payload` and no date at all --- a warehouse that could not have
+/// passed the product's own requirement, which is exactly why it never exercised the
+/// partitioning code and never caught the defect that lived there.
+///
+/// `event_date` is the source column the axis is declared on. The `sank_data_date` column
+/// itself is added by `sankhya-publish`, not here: a harness that writes it by hand would be
+/// asserting against its own arithmetic rather than the product's.
 fn schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("region", DataType::Utf8, true),
+        Field::new("event_date", DataType::Date32, false),
         Field::new("payload", DataType::Utf8, false),
     ]))
 }
+
+/// How many days of data a table spreads across.
+///
+/// Ninety, so the run exercises a realistic number of partitions --- enough that partition
+/// directories, per-partition compaction and the log's partition-value records all carry
+/// weight, and not so many that the fill spends its time on directory creation.
+const DAYS: i64 = 90;
+
+/// The first day of the soak's date range, as days since the Unix epoch.
+///
+/// Fixed rather than derived from the clock, so two runs produce the same partitions and a
+/// comparison between them is a comparison of the system rather than of the calendar.
+const FIRST_DAY: i32 = 19_723;
 
 fn create_table(root: &Path) {
     // Only if it is not already a table. Resuming a soak against a warehouse that is
@@ -439,12 +483,20 @@ fn create_table(root: &Path) {
     if let Err(error) = std::fs::create_dir_all(root) {
         die(&format!("{} could not be created: {error}", root.display()));
     }
-    let Ok(delta) = sankhya_table_delta::schema_string(&schema()) else {
-        die("the soak schema has no faithful table representation");
-    };
-    if let Err(error) = commit(root, 0, &create(Metadata::new("soak", delta, 0))) {
+    if let Err(error) = publication(root).create(&schema()) {
         die(&format!("{} could not be created: {error}", root.display()));
     }
+}
+
+/// The publication a soak table is written through.
+///
+/// **Through `sankhya-publish`, not through `write_parquet` directly.** The harness used to
+/// own its write path, and the consequence was a soak that never ran the code that ships:
+/// the publish path declared a partition column it never wrote for months, and no soak could
+/// have noticed because no soak went near it. A harness that exercises its own writer is
+/// measuring the harness.
+fn publication(root: &Path) -> Publication {
+    Publication::external(root, "soak").dated_by("event_date")
 }
 
 /// One batch of rows, sized so a file is a few megabytes.
@@ -465,11 +517,18 @@ fn batch(from: i64, rows: usize) -> RecordBatch {
         .iter()
         .map(|i| format!("{:x}{:x}{:x}", i.wrapping_mul(2_654_435_761), i, i ^ 0x5A5A))
         .collect();
+    // Spread across the range rather than all on one day, so a batch genuinely spans
+    // partitions and the write path has to split it.
+    let dates: Vec<i32> = ids
+        .iter()
+        .map(|i| FIRST_DAY + i32::try_from(i.rem_euclid(DAYS)).unwrap_or(0))
+        .collect();
     match RecordBatch::try_new(
         schema(),
         vec![
             Arc::new(Int64Array::from(ids)),
             Arc::new(StringArray::from(regions)),
+            Arc::new(Date32Array::from(dates)),
             Arc::new(StringArray::from(payloads)),
         ],
     ) {
@@ -558,6 +617,7 @@ fn scan_some(root: &Path, round: u64) -> Scanned {
 /// three and a half minutes to regenerate ten gigabytes that are already there.
 fn fill(root: &Path, target_bytes: f64, since: &Instant) -> u64 {
     const ROWS_PER_FILE: usize = 200_000;
+    let publication = publication(root);
     let existing = live_files(root).ok();
     let mut written: u64 = existing
         .as_ref()
@@ -576,32 +636,22 @@ fn fill(root: &Path, target_bytes: f64, since: &Instant) -> u64 {
     }
     while (written as f64) < target_bytes {
         let name = format!("part-{version:06}.parquet");
-        let report = match write_parquet(
-            root,
+        // Through `sankhya-publish`, which splits the batch across the partitions its dates
+        // fall in and commits every file in one version. A batch of two hundred thousand
+        // rows spread over ninety days becomes ninety files, which is what a real fill does.
+        let published = match publication.append(
+            version,
             &name,
             &batch(row, ROWS_PER_FILE),
             Lsn::new(version),
-            WriterConfig::default(),
         ) {
-            Ok(report) => report,
-            Err(error) => die(&format!("{}/{name} could not be written: {error}", root.display())),
+            Ok(published) => published,
+            Err(error) => die(&format!("{} could not be filled: {error}", root.display())),
         };
-        if let Err(error) = commit(
-            root,
-            version,
-            &[Action::Add(AddFile::with_rows(
-                &name,
-                report.bytes,
-                0,
-                ROWS_PER_FILE as u64,
-            ))],
-        ) {
-            die(&format!("{}/{name} could not be published: {error}", root.display()));
-        }
-        written += report.bytes;
+        written += published.iter().map(|p| p.bytes).sum::<u64>();
         row += ROWS_PER_FILE as i64;
         version += 1;
-        if version % 20 == 0 {
+        if version % 5 == 0 {
             println!(
                 "{}      {:.2} GB after {:.0}s",
                 stamp(),
@@ -627,7 +677,7 @@ fn next_version(root: &Path) -> u64 {
         .map_or(0, |version| version + 1)
 }
 
-/// One more file, as ingest would publish it.
+/// One more file, published the way anything else publishes.
 ///
 /// Returns whether it landed. **Nothing here is swallowed**: a harness that discards write
 /// errors measures an idle system and reports that it is healthy, which is the exact class
@@ -635,80 +685,108 @@ fn next_version(root: &Path) -> u64 {
 fn append_one(root: &Path, sequence: u64) -> bool {
     let version = next_version(root);
     let name = format!("live-{sequence:06}.parquet");
-    let Ok(report) = write_parquet(
-        root,
-        &name,
-        &batch(i64::try_from(sequence).unwrap_or(0) * 10_000, 5_000),
-        Lsn::new(version),
-        WriterConfig::default(),
-    ) else {
-        return false;
-    };
-    commit(
-        root,
-        version,
-        &[Action::Add(AddFile::with_rows(&name, report.bytes, 0, 5_000))],
-    )
-    .is_ok()
+    publication(root)
+        .append(
+            version,
+            &name,
+            &batch(i64::try_from(sequence).unwrap_or(0) * 10_000, 5_000),
+            Lsn::new(version),
+        )
+        .is_ok()
 }
 
-/// Merge the files this run appended, leaving the base dataset alone.
+/// Compact one partition, through the product's own maintenance path.
 ///
-/// **Only the `live-` files.** The first version removed every live file and replaced them
-/// with one small batch — which is not compaction, it is deletion: ten gigabytes would have
-/// stopped being live at the first duty cycle and the remaining hours would have soaked an
-/// empty warehouse.
+/// # Why this is not the harness's own merge
 ///
-/// Real compaction merges what it removes. This one is honest about being a stand-in: it
-/// merges only the small files the run itself produced, which is the shape that makes
-/// `live_files` a sawtooth, and never touches the base.
+/// It used to be. The previous version removed *n* files from the log and added one holding
+/// **regenerated synthetic rows** --- it never read its inputs. It preserved the row count in
+/// metadata and produced a file whose contents had nothing to do with the data it replaced.
+/// A function called `compact_appended` that does not compact is the same defect as a
+/// partition column that is never written: the name asserts something the body does not do.
+///
+/// So compaction is `sankhya-maintenance`: `plan_compaction` decides whether a partition is
+/// worth merging, `run_compaction` merges the actual files, and `retire_inputs` removes the
+/// inputs only after verifying the replacement holds the rows they held. A soak driving the
+/// product's maintenance is a soak that can find a defect in it.
+///
+/// Returns whether anything was merged. One partition per call, rotating, so the duty cycle
+/// still produces the sawtooth `live_files` is judged on.
 fn compact_appended(root: &Path, sequence: u64) -> bool {
     let Ok(live) = live_files(root) else {
         return false;
     };
-    // Its own previous output as well as the newly appended files.
-    //
-    // The first version merged only `live-` files, so every duty cycle left one more
-    // `compacted-` file behind that nothing ever touched again — a permanent climb of one
-    // file per cycle. **A compaction that never re-compacts its own output is not
-    // compaction**, and the sawtooth judge would eventually have flagged it: correctly, and
-    // about the harness rather than about the system, four hours into a run.
-    let appended: Vec<&sankhya_table_delta::AddFile> = live
-        .files
-        .iter()
-        .filter(|file| file.path.starts_with("live-") || file.path.starts_with("compacted-"))
-        .collect();
-    if appended.len() < 2 {
+    if live.files.is_empty() {
         return false;
     }
 
-    let rows: u64 = appended.iter().filter_map(|file| file.rows()).sum();
+    // Group by the partition each file sits in. Compaction is per-partition by definition:
+    // merging across partitions would move rows out of the directory their date names.
+    let mut by_partition: BTreeMap<String, Vec<FileStat>> = BTreeMap::new();
+    for file in &live.files {
+        let partition = file
+            .path
+            .rsplit_once('/')
+            .map_or_else(String::new, |(directory, _)| directory.to_string());
+        by_partition.entry(partition).or_default().push(FileStat {
+            name: file.path.clone(),
+            bytes: file.size,
+            rows: file.rows().unwrap_or(0),
+            covers_through: Lsn::new(live.version.unwrap_or(0)),
+        });
+    }
+
+    // One partition per duty cycle, chosen by the round so every partition is visited.
+    let partitions: Vec<String> = by_partition.keys().cloned().collect();
+    let Some(chosen) = partitions.get(sequence as usize % partitions.len().max(1)) else {
+        return false;
+    };
+    let Some(files) = by_partition.get(chosen) else {
+        return false;
+    };
+
+    let state = PartitionState {
+        table: "soak".to_string(),
+        partition: chosen.clone(),
+        files: files.clone(),
+        ticks_since_write: 0,
+    };
+    // A policy scaled to the soak's file sizes. The shipping defaults target 256 MB, and a
+    // harness writing five-thousand-row files would never reach that in forty-five minutes
+    // --- so the *thresholds* are the harness's and the *decision* is the product's.
+    let policy = CompactionPolicy {
+        target_bytes: 64 * 1024 * 1024,
+        small_file_bytes: 8 * 1024 * 1024,
+        ..CompactionPolicy::default()
+    };
+    let Some(plan) = plan_compaction(&policy, &state) else {
+        return false;
+    };
+
+    let name = format!("{chosen}/compacted-{sequence:06}.parquet");
+    let Ok(outcome) = run_compaction(&plan, root, &name, WriterConfig::default(), &[]) else {
+        return false;
+    };
+
     let version = next_version(root);
-    let mut actions: Vec<Action> = appended
+    let mut actions: Vec<Action> = plan
+        .inputs
         .iter()
         .map(|file| {
             Action::Remove(RemoveFile::rewritten(
-                file.path.clone(),
+                file.name.clone(),
                 i64::try_from(version).unwrap_or(0),
             ))
         })
         .collect();
-
-    let name = format!("compacted-{sequence:06}.parquet");
-    #[allow(clippy::cast_possible_truncation)]
-    let Ok(report) = write_parquet(
-        root,
+    actions.push(Action::Add(AddFile::with_rows(
         &name,
-        &batch(0, rows.min(200_000) as usize),
-        Lsn::new(version),
-        WriterConfig::default(),
-    ) else {
-        return false;
-    };
-    actions.push(Action::Add(AddFile::with_rows(&name, report.bytes, 0, rows)));
+        outcome.bytes,
+        0,
+        outcome.rows,
+    )));
     commit(root, version, &actions).is_ok()
 }
-
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]

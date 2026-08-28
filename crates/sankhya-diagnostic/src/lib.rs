@@ -18,6 +18,7 @@ pub mod check;
 pub mod collect;
 pub mod history;
 pub mod projection;
+pub mod soak;
 
 pub use check::{
     compaction_debt, human_bytes, replication_lag, restore_drill, storage_headroom, Finding,

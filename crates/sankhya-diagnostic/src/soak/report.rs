@@ -1,8 +1,8 @@
 //! What a run concluded, in the shape somebody reads.
 
-use crate::judge::{judge, Verdict};
-use crate::measure::{Bound, Watched, WATCHED};
-use crate::sample::Samples;
+use crate::soak::judge::{judge, Verdict};
+use crate::soak::measure::{Bound, Watched, WATCHED};
+use crate::soak::sample::Samples;
 use std::fmt::Write as _;
 
 /// Everything a run concluded.
@@ -31,10 +31,10 @@ pub struct Report {
 pub fn supported_horizon(samples: &Samples) -> i64 {
     WATCHED
         .iter()
-        .map(|measure| crate::judge::span_of(settled(samples.of(measure.name))))
+        .map(|measure| crate::soak::judge::span_of(settled(samples.of(measure.name))))
         .max()
         .unwrap_or(0)
-        .saturating_mul(crate::judge::EXTRAPOLATION_FACTOR)
+        .saturating_mul(crate::soak::judge::EXTRAPOLATION_FACTOR)
 }
 
 /// The samples after the warm-up prefix.
@@ -42,7 +42,7 @@ pub fn supported_horizon(samples: &Samples) -> i64 {
 /// A slice rather than a copy, and an empty slice when the run was shorter than the prefix —
 /// which the judgement then reports as inconclusive rather than as steady.
 #[must_use]
-fn settled(samples: &[sankhya_diagnostic::projection::Observation]) -> &[sankhya_diagnostic::projection::Observation] {
+fn settled(samples: &[crate::projection::Observation]) -> &[crate::projection::Observation] {
     samples.get(WARM_UP_SAMPLES..).unwrap_or(&[])
 }
 
@@ -121,8 +121,8 @@ impl Report {
             "soak: {} over {}, judged against a {} horizon, first {} sample(s) discarded as \
              warm-up\n",
             if self.passed() { "PASS" } else { "FAIL" },
-            sankhya_diagnostic::projection::human_duration(self.span_seconds),
-            sankhya_diagnostic::projection::human_duration(self.horizon_seconds),
+            crate::projection::human_duration(self.span_seconds),
+            crate::projection::human_duration(self.horizon_seconds),
             self.warm_up,
         );
         for (measure, verdict) in &self.verdicts {
@@ -131,7 +131,7 @@ impl Report {
                 Verdict::Growing { seconds, latest, means } => format!(
                     "GROWING — at {latest:.0} {} and reaching its limit in about {}.\n      {means}",
                     measure.unit,
-                    sankhya_diagnostic::projection::human_duration(*seconds)
+                    crate::projection::human_duration(*seconds)
                 ),
                 Verdict::Breached { latest, means } => format!(
                     "BREACHED — {latest:.0} {} is already past the limit.\n      {means}",

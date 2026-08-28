@@ -101,7 +101,7 @@ end; it establishes nothing about duration, and does not claim to.
 
 ### The harness is proven to notice
 
-`crates/sankhya-soak/tests/leak.rs` injects one failure of each shape and requires the run to
+`crates/sankhya-diagnostic/tests/leak.rs` injects one failure of each shape and requires the run to
 fail on it:
 
 | Injected | Caught as |

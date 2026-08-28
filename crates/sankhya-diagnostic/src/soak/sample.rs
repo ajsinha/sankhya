@@ -9,7 +9,7 @@
 //! could not, not zero --- zero is a perfectly steady measure, and a harness reporting a
 //! steady zero passes every run while measuring nothing.
 
-use sankhya_diagnostic::projection::Observation;
+use crate::projection::Observation;
 
 /// Resident memory, in bytes.
 #[must_use]

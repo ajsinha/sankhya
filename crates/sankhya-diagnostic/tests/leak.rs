@@ -13,10 +13,10 @@
     clippy::cast_precision_loss
 )]
 
-use sankhya_soak::judge::{peaks_of, ratio, Verdict};
-use sankhya_soak::measure::watched;
-use sankhya_soak::sample::Samples;
-use sankhya_soak::Report;
+use sankhya_diagnostic::soak::judge::{peaks_of, ratio, Verdict};
+use sankhya_diagnostic::soak::measure::watched;
+use sankhya_diagnostic::soak::sample::Samples;
+use sankhya_diagnostic::soak::Report;
 
 const MINUTE: i64 = 60 * 1_000_000;
 
@@ -36,8 +36,8 @@ fn horizon(minutes: i64) -> i64 {
     // inconclusive — the harness refusing an extrapolation the test had asked for by
     // accident, which is the harness working.
     let judged_minutes =
-        minutes - i64::try_from(sankhya_soak::report::WARM_UP_SAMPLES).unwrap_or(0) - 1;
-    judged_minutes * 60 * sankhya_soak::judge::EXTRAPOLATION_FACTOR
+        minutes - i64::try_from(sankhya_diagnostic::soak::report::WARM_UP_SAMPLES).unwrap_or(0) - 1;
+    judged_minutes * 60 * sankhya_diagnostic::soak::judge::EXTRAPOLATION_FACTOR
 }
 
 /// Samples of one measure, one a minute, from a function of the minute number.
@@ -311,7 +311,7 @@ fn a_ratio_is_formed_only_at_instants_both_measures_share() {
 fn every_watched_measure_says_what_a_breach_means() {
     // A soak report naming a measure and a slope is a puzzle. One saying what the slope
     // implies is a finding.
-    for measure in sankhya_soak::WATCHED {
+    for measure in sankhya_diagnostic::soak::WATCHED {
         assert!(
             measure.means.len() > 60,
             "{} does not say what a breach means",
@@ -359,7 +359,7 @@ fn a_long_run_with_too_few_samples_is_still_inconclusive() {
     //
     // So: a generous span, sampled far too sparsely to say anything.
     let mut samples = Samples::new();
-    for i in 0..(sankhya_soak::report::WARM_UP_SAMPLES as i64 + 4) {
+    for i in 0..(sankhya_diagnostic::soak::report::WARM_UP_SAMPLES as i64 + 4) {
         samples.record("resident_bytes", i * 20 * MINUTE, Some(400.0 + i as f64));
     }
 
@@ -390,7 +390,7 @@ fn the_warm_up_prefix_is_actually_discarded() {
     // The exclusion is a fixed, declared count on purpose. Discarding *until the series looks
     // flat* would hide every leak by construction, because a leak is precisely a series that
     // does not go flat.
-    let warm_up = sankhya_soak::report::WARM_UP_SAMPLES as i64;
+    let warm_up = sankhya_diagnostic::soak::report::WARM_UP_SAMPLES as i64;
     let mut samples = Samples::new();
     for i in 0..120_i64 {
         let value = if i < warm_up {

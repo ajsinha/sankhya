@@ -25,8 +25,8 @@
 
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use sankhya_soak::sample::{file_bytes, open_files, resident_bytes, Samples};
-use sankhya_soak::Report;
+use sankhya_diagnostic::soak::sample::{file_bytes, open_files, resident_bytes, Samples};
+use sankhya_diagnostic::soak::Report;
 use sankhya_table::{write_parquet, WriterConfig};
 use sankhya_table_delta::{commit, create, Action, AddFile, Metadata};
 use sankhya_types::Lsn;
@@ -64,7 +64,7 @@ const PAUSE_MILLIS: u64 = 120;
 /// The scheduled multi-day run judges against weeks because it observes for days. A test
 /// borrowing that horizon extrapolates by a factor of millions — which is exactly how the
 /// first version of this reported a memory leak that was a process warming up. The harness
-/// refuses that now, and `sankhya_soak::report::supported_horizon` is what a run should ask
+/// refuses that now, and `sankhya_diagnostic::soak::report::supported_horizon` is what a run should ask
 /// for instead.
 
 fn schema() -> Arc<Schema> {
@@ -234,7 +234,7 @@ async fn a_short_run_under_concurrent_load_is_judged() {
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     let now = started.elapsed().as_micros() as i64;
-    let report = Report::of(&samples, sankhya_soak::report::supported_horizon(&samples), now);
+    let report = Report::of(&samples, sankhya_diagnostic::soak::report::supported_horizon(&samples), now);
 
     // Printed whether or not it passes. A soak that reports only failures gives nobody the
     // trend, and the trend is how a slow drift is noticed before it is a failure.

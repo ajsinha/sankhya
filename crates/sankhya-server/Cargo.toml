@@ -39,7 +39,7 @@ tracing-subscriber = { workspace = true }
 
 
 [dev-dependencies]
-sankhya-soak = { path = "../sankhya-soak" }
+sankhya-diagnostic = { path = "../sankhya-diagnostic" }
 sankhya-graph = { path = "../sankhya-graph" }
 sankhya-api-pg = { path = "../sankhya-api-pg" }
 arrow-array = { workspace = true }

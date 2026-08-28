@@ -24,8 +24,8 @@
 //! It is the same distinction the diagnostic draws between a clean check and one that could
 //! not run, arrived at from the other direction.
 
-use crate::measure::{Bound, Watched};
-use sankhya_diagnostic::projection::{Observation, Trend};
+use crate::soak::measure::{Bound, Watched};
+use crate::projection::{Observation, Trend};
 
 /// How many windows a sawtooth is split into to find its peaks.
 ///
