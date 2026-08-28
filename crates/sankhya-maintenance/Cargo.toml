@@ -14,6 +14,7 @@ layer = 3
 workspace = true
 
 [dependencies]
+sankhya-config      = { path = "../sankhya-config" }
 sankhya-types = { path = "../sankhya-types" }
 sankhya-error = { path = "../sankhya-error" }
 sankhya-table = { path = "../sankhya-table" }

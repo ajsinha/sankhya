@@ -3523,6 +3523,7 @@ dependencies = [
  "proptest",
  "sankhya-cdc-apply",
  "sankhya-cdc-model",
+ "sankhya-config",
  "sankhya-error",
  "sankhya-ingest",
  "sankhya-plan",

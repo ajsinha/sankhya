@@ -31,3 +31,21 @@ data:
   # inside it, because the warehouse is the thing being diagnosed and may be the subject of
   # the finding.
   dir: ${warehouse.path}/../.sankhya
+
+# Per-table physical layout.
+#
+# `clustering` is a SORT ORDER applied when a partition is compacted and has settled. It
+# adds no directories and is reversible: a table clustered on the wrong column is fixed by
+# editing this line and waiting for the next compaction.
+#
+# Prefer it to a second partition column. ARCHITECTURE §9.8: "partitioning is a physical
+# commitment that is expensive or impossible to undo; clustering is cheap to change at the
+# next compaction. When uncertain, prefer the reversible decision — sort, do not partition."
+#
+# Undeclared means unclustered. Nothing is inferred: the engine cannot tell a meaningful
+# query boundary from a merely low-cardinality column.
+#
+# table:
+#   sales:
+#     orders:
+#       clustering: order_date,region

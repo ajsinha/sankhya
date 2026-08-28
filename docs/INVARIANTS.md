@@ -42,6 +42,8 @@ presented as an enforced one is the exact failure mode the rest of this document
 | A partition column is in the **schema**, the **path**, and the **add action** | Delta requires all three. A column present in only one of them reads as null for every row in Spark and Trino | `sankhya-publish` tests |
 | A batch spanning partitions becomes several files in **one commit** | A reader must never see half a batch | `sankhya-publish` tests |
 | A batch touching many partitions does not write one tiny file per partition | `FR-CDC-14`. Unguarded, a 5,000-row append over ninety days writes ninety files of fifty-five rows | `sankhya-publish` tests |
+| Clustering is **declared**, never inferred | The engine cannot tell a meaningful query boundary from a merely low-cardinality column. Guessing sorts a table for queries nobody runs, at every compaction, for ever | `sankhya-maintenance` tests |
+| A partition still receiving writes is merged **without** sorting | Ordering it produces a layout correct until the next append, for the cost of a full sort every pass | `sankhya-maintenance` tests |
 | Commit versions are contiguous | A gap makes it impossible to tell whether a log has more commits without listing all of them | `sankhya-table-delta`, `sankhya-publish` tests |
 | The log lags the filesystem, never leads it | A file on disk with no log entry is invisible and reclaimable. A log entry with no file makes every query fail | `sankhya-ingest` crash-safety tests |
 

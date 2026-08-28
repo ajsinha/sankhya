@@ -2164,6 +2164,26 @@ CATALOGUE = [
      "        commit(&self.root, 0, &[Action::Metadata(metadata)]).map_err(|error| {",
      "sankhya-publish"),
 
+    # --- clustering: declared, and applied only when settled ---------------
+
+    ("maintenance: cluster a table nobody declared a clustering for",
+     "crates/sankhya-maintenance/src/layout.rs",
+     "    config\n        .list(&clustering_key(schema, table))\n        .unwrap_or_default()",
+     "    config\n        .list(&clustering_key(schema, table))\n        .unwrap_or_else(|| vec![\"id\".to_string()])",
+     "sankhya-maintenance"),
+
+    ("maintenance: accept a clustering on a column the table does not have",
+     "crates/sankhya-maintenance/src/layout.rs",
+     "    if missing.is_empty() {",
+     "    if true {",
+     "sankhya-maintenance"),
+
+    ("maintenance: sort a partition that is still receiving writes",
+     "crates/sankhya-maintenance/src/execute.rs",
+     "    let clustering: &[String] = if plan.settled { clustering } else { &[] };",
+     "    let clustering: &[String] = clustering;",
+     "sankhya-maintenance"),
+
     # --- configuration: precedence, resolution and refusal -----------------
 
     ("config: leave an unresolved reference in the value instead of refusing",
