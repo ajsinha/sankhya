@@ -293,6 +293,23 @@ the orphan sweep finds unreferenced files *within* a table, and this is a whole 
 mentions. The same shape as the defect that filled a disk in the soak, reintroduced by adding
 cuboids and closed the same afternoon.
 
+### The cube path under sustained load
+
+`PASS` over 44 judged minutes with all seven measures steady, on the first soak to exercise a
+cube — 157 rounds, 2.41 billion rows scanned, the cube answered 39 times, maintenance
+reclaimed 11.42 GB. See [SOAK.md](SOAK.md) for the two defects the earlier runs found and why
+neither was visible to a unit test.
+
+Resident memory settles at **2.2 GB against a 779 MB baseline without cubes**. That difference
+is measured rather than assumed, and it is a plateau rather than a climb: the last reading
+*fell* by 128 MB, and a leak does not give memory back.
+
+The remaining cost is `Contributions` retaining every raw `f64` per cell — roughly 1.5 GB of
+plateau. It is real and it does not grow, which changes it from a correctness risk to an
+optimisation with a known price. Doing it means swapping `deterministic_sum` for `Exact`, which
+moves `Sum` in the last bit and lands directly on exit criterion 3's bit-identity tests — so it
+is worth doing deliberately rather than under the impression that something is leaking.
+
 **What is still not there.** Cube selection waits on the recorded query log §11.6 asks for —
 building the selector before the signal exists would repeat the error M7 already made once.
 And a cuboid is pre-built only for the unrestricted scope.

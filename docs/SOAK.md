@@ -12,6 +12,40 @@
 
 ---
 
+## The run of 2026-08-28, and the two defects it found
+
+`PASS` over 44 judged minutes against a two-hour horizon, all seven measures steady. 157
+rounds, 1,570 files published, **29.7 GB / 2.41 billion rows** scanned, the cube answered 39
+times, and maintenance reclaimed 11.42 GB across 1,234 ticks.
+
+Getting there took three runs, and the first two are the reason this page exists.
+
+| Run | Resident memory | What was in it |
+|---|---|---|
+| Before cube coverage | 779 MB, steady | no cube path at all |
+| First with cubes | **5,876 MB, climbing** | `collect()` on the whole fact table, plus a tokio runtime per navigation |
+| Second | 1,821 MB, climbing | streaming hydration |
+| Third | **2,246 MB, steady** | one runtime for the run |
+
+**Neither defect was visible to any unit test**, and both were introduced the same day the
+cube path was added to this harness.
+
+The first was in the product: `publish_from_fact_table` called `frame.collect()`, materialising
+every batch of the fact table before absorbing any of it, when `absorb` takes one batch at a
+time. Decompressed Arrow runs two to four times the Parquet on disk, so a one-gigabyte table
+was two to four gigabytes resident.
+
+The second was in this harness: `navigate_the_cube` built a fresh runtime and `SessionContext`
+on every call. Creating and dropping those forty times leaves a high-water mark the allocator
+does not return, and from outside it reads exactly like a leak in the product. A test doing
+infrastructure work, which is what the golden rule exists to catch.
+
+**And the judge was right where reading the numbers was not.** Watching the series interval by
+interval, the growth looked linear and alarming — 173, 118, 81, 55, 61, 72, 26, 40, 39, 32, 20,
+20, 45, 3, 17, 32, 30, 1 MB. Fitted across the whole series it projects no crossing of the 8 GB
+limit within two hours, and the final reading *fell* by 128 MB. A leak does not give memory
+back. Eyeballing a noisy series is how a plateau gets reported as a leak, and the opposite.
+
 ## What the run exercises
 
 Writes through `sankhya-publish`, reads through the read path, maintenance on the warehouse's
