@@ -761,19 +761,38 @@ fn compact_appended(root: &Path, sequence: u64) -> bool {
         });
     }
 
-    // One partition per duty cycle, chosen by the round so every partition is visited.
-    let partitions: Vec<String> = by_partition.keys().cloned().collect();
-    let Some(chosen) = partitions.get(sequence as usize % partitions.len().max(1)) else {
-        return false;
-    };
-    let Some(files) = by_partition.get(chosen) else {
-        return false;
-    };
+    // **Every** partition the policy selects, not one.
+    //
+    // An earlier version compacted one partition per duty cycle, rotating. With ninety
+    // partitions per table that revisits a given one every seven hundred rounds, files
+    // accumulate to twenty-eight per partition, and the judge breaches `live_files` --- saying,
+    // correctly, that compaction is not keeping up with the write rate. It was not: the
+    // harness was doing a ninetieth of the work real maintenance does.
+    //
+    // The lesson is the same one the fan-out guards taught. Partitioning multiplies the
+    // number of things maintenance has to visit, and anything that assumed one table meant
+    // one unit of work is now wrong by the partition count.
+    let mut merged = false;
+    for (partition, files) in &by_partition {
+        if compact_partition(root, partition, files, sequence) {
+            merged = true;
+        }
+    }
+    merged
+}
 
+/// Compact one partition, if the policy says it is worth it.
+fn compact_partition(
+    root: &Path,
+    partition: &str,
+    files: &[FileStat],
+    sequence: u64,
+) -> bool {
+    let chosen = partition;
     let state = PartitionState {
         table: "soak".to_string(),
-        partition: chosen.clone(),
-        files: files.clone(),
+        partition: chosen.to_string(),
+        files: files.to_vec(),
         ticks_since_write: 0,
     };
     // A policy scaled to the soak's file sizes. The shipping defaults target 256 MB, and a
@@ -788,7 +807,11 @@ fn compact_appended(root: &Path, sequence: u64) -> bool {
         return false;
     };
 
-    let name = format!("{chosen}/compacted-{sequence:06}.parquet");
+    let name = if chosen.is_empty() {
+        format!("compacted-{sequence:06}.parquet")
+    } else {
+        format!("{chosen}/compacted-{sequence:06}.parquet")
+    };
     let Ok(outcome) = run_compaction(&plan, root, &name, WriterConfig::default(), &[]) else {
         return false;
     };
