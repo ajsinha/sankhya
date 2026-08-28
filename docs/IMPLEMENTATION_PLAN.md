@@ -390,6 +390,22 @@ M4 complete.
 > corrected the same day, and it is the shape of error this milestone exists to prevent
 > elsewhere.
 >
+> **2026-08-28: the first judged run, and still not the criterion.** Forty-five minutes at
+> acceptance scale came back `PASS` with every one of the seven watched measures *steady* ---
+> the first run of this harness to reach a verdict at all rather than dying inconclusive.
+> 168 rounds, 1,680 files published, 2.58 billion rows scanned, resident memory ending at
+> 779 MB, and maintenance reclaiming 29.91 GB across 911 ticks.
+>
+> The two runs before it are the reason that reads as evidence rather than as a number. One
+> exhausted the disk at t+2833s and wrote a zero-byte report explaining why; the other died
+> one sample short of `live_files`' first verdict. Both were fixed at the cause: nothing was
+> driving retirement, and nothing was watching the resource the run could exhaust.
+>
+> **Forty-five minutes is still not multi-day.** The criterion asks for a scheduled pipeline
+> and this was one run started by hand. What it now establishes is that a run of that length
+> *can* produce a verdict, which is the precondition the scheduled pipeline needs and did not
+> have. The criterion stays open.
+>
 > **Criterion 7 is not met.** §10.8's size decision and route table are built and tested;
 > the gRPC transport and every write path are not. `STATUS.md` records what each section
 > found.
