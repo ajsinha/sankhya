@@ -89,6 +89,25 @@ fn cube_of(catalog: &CubeCatalog, args: &Arguments) -> Result<Published> {
 /// under rules nobody chose.
 fn measure_of(published: &Published, args: &Arguments) -> Result<Measure> {
     let name = args.string_at(1, "measure name")?;
+    // The cells hold **one** measure's values, and it is not necessarily the one asked for.
+    //
+    // Refused rather than answered. Resolving the rule from the definition and applying it to
+    // whatever values happen to be hydrated produces a number of the right shape and the
+    // right magnitude, computed from the wrong column, with nothing anywhere to say so ---
+    // `Last` over `amount` looks exactly like a closing balance.
+    if published.measure != name {
+        return plan_err!(
+            "cube '{}' is hydrated for measure '{}' and the query asks for '{}'. Answering \
+             would apply '{}'s rule to '{}'s values, which is a wrong number rather than an \
+             error --- publish the cube for '{}' and ask again",
+            published.cube.name(),
+            published.measure,
+            name,
+            name,
+            published.measure,
+            name
+        );
+    }
     published.cube.measure(&name).cloned().ok_or_else(|| {
         let known: Vec<&str> = published.cube.measures().iter().map(|m| m.name.as_str()).collect();
         plan_datafusion_err!(

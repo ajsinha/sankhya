@@ -58,6 +58,7 @@ pub async fn publish_from_fact_table(
         Published {
             cube,
             cells: Arc::new(cells),
+            measure: measure.name.clone(),
             snapshot,
             completeness: absorbed.completeness(),
         },
@@ -75,6 +76,7 @@ pub fn publish_cells(
     name: &str,
     cube: Arc<Cube>,
     cells: sankhya_cube::cells::Cells,
+    measure: &str,
     snapshot: u64,
     completeness: Completeness,
 ) {
@@ -83,6 +85,7 @@ pub fn publish_cells(
         Published {
             cube,
             cells: Arc::new(cells),
+            measure: measure.to_string(),
             snapshot,
             completeness,
         },

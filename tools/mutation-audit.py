@@ -2046,6 +2046,12 @@ CATALOGUE = [
      "    published.cube.measures().first().cloned().ok_or_else(|| {",
      "sankhya-cube-sql"),
 
+    ("cube-sql: answer for a measure the published cells do not hold",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "    if published.measure != name {",
+     "    if false {",
+     "sankhya-cube-sql"),
+
     ("cube-sql: skip the completeness threshold a query asked for",
      "crates/sankhya-cube-sql/src/functions.rs",
      "    let Some(required) = args.number(\"min_completeness\")? else {",

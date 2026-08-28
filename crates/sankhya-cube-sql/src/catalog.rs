@@ -24,6 +24,21 @@ pub struct Published {
     pub cube: Arc<Cube>,
     /// The cells, at the finest grain published.
     pub cells: Arc<Cells>,
+    /// **Which measure these cells hold.**
+    ///
+    /// `Cells` is a map from address to contributions and carries no measure of its own, so
+    /// a set of cells is the values of exactly one measure --- whichever one hydration was
+    /// given. Nothing tied that to the measure a query later names.
+    ///
+    /// The consequence was a wrong number rather than an error: hydrate for `amount`, ask
+    /// for `closing_balance`, and the rule resolved from the definition (`Last`) was applied
+    /// to amount's values. Right shape, right magnitude, no complaint anywhere. It is
+    /// unreachable only while nothing serves cubes, and becomes reachable the moment
+    /// something does.
+    ///
+    /// Recorded here so the mismatch is refused by name. Serving several measures means a
+    /// `Published` per *(cube, measure)*, which is the next change and not this one.
+    pub measure: String,
     /// The snapshot they were read at.
     ///
     /// Half of the materialisation key, and the half a query result must carry so a cube

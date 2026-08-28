@@ -70,10 +70,37 @@ fn session() -> (SessionContext, Arc<CubeCatalog>) {
         Published {
             cube: Arc::clone(&cube),
             cells: Arc::new(cells),
+            // Stated, because cells hold one measure's values and the query names a
+            // measure: a mismatch is a wrong number rather than an error.
+            measure: "amount".to_string(),
             snapshot: 4_242,
             // Stated, not defaulted: `Published` has no default completeness, so a fixture
             // cannot quietly claim a cube saw all of its input.
             completeness: Completeness::complete(3),
+        },
+    );
+
+    // A second entry, hydrated for `ratio`.
+    //
+    // Cells hold one measure's values, so a query naming a measure the cells are not for is
+    // refused before anything is computed. That refusal is correct and it is not what the
+    // composition test is about --- so the non-composing measure gets cells of its own, and
+    // the planner's refusal is the one under test rather than the hydration mismatch.
+    let mut ratio_cells = Cells::over(vec!["region".to_string(), "period".to_string()]);
+    for (region, period, value) in [
+        ("north", "jan", 0.4_f64),
+        ("south", "jan", 0.6),
+    ] {
+        ratio_cells.add(address(&[region, period]), value).expect("well-formed");
+    }
+    catalog.publish(
+        "figures_ratio",
+        Published {
+            cube: Arc::clone(&cube),
+            cells: Arc::new(ratio_cells),
+            measure: "ratio".to_string(),
+            snapshot: 4_242,
+            completeness: Completeness::complete(2),
         },
     );
 
@@ -250,12 +277,39 @@ async fn a_restriction_on_a_dimension_the_cube_lacks_is_refused() {
 }
 
 #[tokio::test]
+async fn asking_for_a_measure_the_cells_do_not_hold_is_refused() {
+    // `Cells` is a map from address to contributions and carries no measure of its own, so a
+    // published set of cells is the values of exactly *one* measure --- whichever hydration
+    // was given. The measure a query names is resolved separately, from the definition.
+    //
+    // Nothing tied those together. Hydrate for `amount`, ask for `closing_balance`, and the
+    // rule resolved from the definition is applied to amount's values: a number of the right
+    // shape and the right magnitude, computed from the wrong column, with no complaint
+    // anywhere. It was unreachable only because nothing served cubes yet.
+    let (context, _) = session();
+    let refused = context
+        .sql("SELECT * FROM cube_rollup('figures', 'ratio', 'by=region')")
+        .await
+        .expect_err("answered for a measure the cells are not for");
+    let message = refused.to_string();
+    assert!(
+        message.contains("hydrated for measure 'amount'") && message.contains("asks for 'ratio'"),
+        "the refusal names both measures, because which one is wrong is the whole point: \
+         {message}"
+    );
+    assert!(
+        message.contains("wrong number rather than an error"),
+        "and says why it refuses rather than answering: {message}"
+    );
+}
+
+#[tokio::test]
 async fn rolling_up_a_measure_that_does_not_compose_is_refused_at_planning_time() {
     // M7's exit criterion 2, at the surface a caller uses: rejected while planning, not
     // computed and then explained afterwards.
     let (context, _) = session();
     let refused = context
-        .sql("SELECT * FROM cube_rollup('figures', 'ratio', 'by=region')")
+        .sql("SELECT * FROM cube_rollup('figures_ratio', 'ratio', 'by=region')")
         .await
         .expect_err("rolled a ratio across time");
     assert!(
