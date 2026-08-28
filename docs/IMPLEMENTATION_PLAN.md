@@ -9,7 +9,7 @@
 
 **Document ID:** SNK-IP-001
 **Version:** 0.1.0 (draft for review)
-**Status:** Implementation — M0–M5 complete, M6 closing, M7 in progress
+**Status:** Implementation — M0–M6 complete, M7 in progress
 **Date:** 2026-08-26
 **Companions:** `REQUIREMENTS.md` (SNK-RD-001), `ARCHITECTURE.md` (SNK-AD-001), `ROADMAP.md`
 
@@ -378,6 +378,11 @@ M4 complete.
 
 **Weeks 24–30 · 18–22 ew**
 
+> **Closed 2026-08-28.** Six of seven exit criteria met, criterion 4 accepted on a
+> forty-five-minute judged run by owner decision, and criterion 7 carried into M8. Both are
+> written out below rather than summarised, so that a reader a year from now can see what was
+> accepted and what was deferred without reconstructing it from commits.
+>
 > **Progress, 2026-08-27. Five of seven exit criteria met.** §10.1 the diagnostic,
 > §10.2 the metric and error catalogues, §10.3 backup and the restore drill, §10.4 the
 > packaging checks, §10.5 the timed journey and §10.6 the version axes are built —
@@ -401,14 +406,27 @@ M4 complete.
 > one sample short of `live_files`' first verdict. Both were fixed at the cause: nothing was
 > driving retirement, and nothing was watching the resource the run could exhaust.
 >
-> **Forty-five minutes is still not multi-day.** The criterion asks for a scheduled pipeline
-> and this was one run started by hand. What it now establishes is that a run of that length
-> *can* produce a verdict, which is the precondition the scheduled pipeline needs and did not
-> have. The criterion stays open.
+> **Forty-five minutes is not multi-day, and the criterion is accepted as met anyway.**
+> Owner decision, 2026-08-28. The criterion as written asks for a scheduled pipeline; the
+> evidence is one run started by hand. That gap is recorded here rather than argued away,
+> because a criterion quietly redefined to match its evidence is the failure this milestone
+> exists to prevent, and a criterion *deliberately* accepted on lesser evidence by the person
+> who owns the bar is a different thing entirely.
 >
-> **Criterion 7 is not met.** §10.8's size decision and route table are built and tested;
-> the gRPC transport and every write path are not. `STATUS.md` records what each section
-> found.
+> What was weighed: every watched measure came back steady over a full judged run, the two
+> defects that made previous runs worthless were fixed at the cause rather than worked
+> around, and the multi-day pipeline is scheduling work that gates nothing else in M6.
+>
+> **The residual risk is a slow leak that forty-five minutes cannot see.** The horizon on
+> this run was two hours; anything with a doubling time longer than that is invisible to it.
+> The scheduled multi-day run is the thing that would find it, and it is carried into M8 with
+> the operability work rather than dropped.
+>
+> **Criterion 7 is not met, and is carried forward rather than waived.** §10.8's size
+> decision and route table are built and tested; the gRPC transport and every write path are
+> not. Closing M6 does not make this true, and it is not covered by the 2026-08-28 decision
+> above, which was about criterion 4 only. The transport work moves to M8. `STATUS.md`
+> records what each section found.
 
 ### Entry
 M5 complete.

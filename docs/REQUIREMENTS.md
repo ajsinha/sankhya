@@ -9,7 +9,7 @@
 
 **Document ID:** SNK-RD-001
 **Version:** 0.1.0 (draft for review)
-**Status:** Implementation — M0–M5 complete, M6 closing, M7 in progress
+**Status:** Implementation — M0–M6 complete, M7 in progress
 **Date:** 2026-08-26
 **Supersedes:** `docs/initial_reqmt.docx` ("Unified Enterprise Data Architecture & Requirements Document", URARD)
 

@@ -7,7 +7,7 @@
 
 # SANKHYA — The soak: method, results, and what four attempts taught
 
-**Status:** Implementation — M0–M5 complete, M6 closing, M7 in progress
+**Status:** Implementation — M0–M6 complete, M7 in progress
 **Milestone:** M6 §10.7 · **Exit criterion 4**
 
 ---
