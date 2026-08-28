@@ -251,6 +251,81 @@ impl Publication {
         batch: &RecordBatch,
         covers_through: Lsn,
     ) -> Result<Vec<Published>, PublishError> {
+        let (written, actions) = self.write_files(version, file_name, batch, covers_through)?;
+        commit(&self.root, version, &actions).map_err(|error| PublishError::Commit {
+            version,
+            detail: error.to_string(),
+        })?;
+        Ok(written)
+    }
+
+    /// Publish a batch, taking a later version if another committer took ours.
+    ///
+    /// # Why this lives here rather than in the caller
+    ///
+    /// Capture is not the only committer: maintenance writes to the same log, and a
+    /// compaction between two publishes takes the version capture was about to use. Failing
+    /// there would mean a compaction can stop capture, which inverts the ordering rule ---
+    /// the source outranks maintenance, always.
+    ///
+    /// **The files are written once.** Only the commit is retried, and that is safe because
+    /// nothing about a file depends on the version: its name comes from the caller and its
+    /// directory from its rows' dates. Rewriting them per attempt would multiply the work by
+    /// the contention.
+    ///
+    /// # Errors
+    /// As [`Publication::append`], and [`PublishError::Commit`] when `attempts` versions were
+    /// all taken --- which means something is committing faster than this caller can follow,
+    /// and is worth surfacing rather than retrying for ever.
+    pub fn append_rebasing(
+        &self,
+        start: u64,
+        attempts: usize,
+        file_name: &str,
+        batch: &RecordBatch,
+        covers_through: Lsn,
+    ) -> Result<Rebased, PublishError> {
+        let (written, actions) = self.write_files(start, file_name, batch, covers_through)?;
+        let mut version = start;
+        for retries in 0..attempts.max(1) {
+            match commit(&self.root, version, &actions) {
+                Ok(_) => return Ok(Rebased { written, version, retries }),
+                Err(sankhya_table_delta::CommitError::VersionTaken(_)) => {
+                    version = sankhya_table_delta::live_files(&self.root)
+                        .ok()
+                        .and_then(|set| set.version)
+                        .map_or(version.saturating_add(1), |v| v.saturating_add(1));
+                }
+                Err(error) => {
+                    return Err(PublishError::Commit {
+                        version,
+                        detail: error.to_string(),
+                    })
+                }
+            }
+        }
+        Err(PublishError::Commit {
+            version,
+            detail: format!(
+                "could not commit after {attempts} rebases; something else is committing to \
+                 this table faster than this writer can follow"
+            ),
+        })
+    }
+
+    /// Write a batch's files and build the actions that would publish them.
+    ///
+    /// Separated from the commit so a caller can retry the commit without rewriting the
+    /// files. Nothing here touches the log, so a crash between this and the commit leaves
+    /// files nobody references --- which is invisible to queries and reclaimed by the orphan
+    /// cleaner. The log always lags the filesystem, never leads it.
+    fn write_files(
+        &self,
+        version: u64,
+        file_name: &str,
+        batch: &RecordBatch,
+        covers_through: Lsn,
+    ) -> Result<(Vec<Published>, Vec<Action>), PublishError> {
         if file_name.contains('/') || file_name.contains("..") {
             // The name becomes a path relative to the table root. A separator in it writes
             // outside the table, and `..` writes outside the warehouse.
@@ -319,12 +394,7 @@ impl Publication {
             });
         }
 
-        commit(&self.root, version, &actions).map_err(|error| PublishError::Commit {
-            version,
-            detail: error.to_string(),
-        })?;
-
-        Ok(written)
+        Ok((written, actions))
     }
 
     /// One batch per partition the batch touches, in partition order.
@@ -376,6 +446,50 @@ impl Publication {
             }
         })?;
         self.append(version, file_name, &combined, covers_through)
+    }
+
+    /// Publish several batches as one commit, at the next free version.
+    ///
+    /// The version comes from the log rather than from the caller. A caller that tracks
+    /// versions itself has to be right about every commit somebody else makes, and it is not
+    /// in a position to be.
+    ///
+    /// # Errors
+    /// As [`Publication::append_rebasing`].
+    pub fn append_all_rebasing(
+        &self,
+        file_name: &str,
+        batches: &[RecordBatch],
+        covers_through: Lsn,
+    ) -> Result<Vec<Published>, PublishError> {
+        if batches.is_empty() {
+            return Ok(Vec::new());
+        }
+        let schema = batches.first().map_or_else(
+            || Arc::new(arrow_schema::Schema::empty()),
+            RecordBatch::schema,
+        );
+        let combined = arrow_select::concat::concat_batches(&schema, batches).map_err(|e| {
+            PublishError::Write {
+                file: file_name.to_string(),
+                detail: format!("combining {} batch(es): {e}", batches.len()),
+            }
+        })?;
+        let start = self.next_version();
+        self.append_rebasing(start, 16, file_name, &combined, covers_through)
+            .map(|rebased| rebased.written)
+    }
+
+    /// The version this table's next commit must take.
+    ///
+    /// Read from the log, because commit versions are contiguous by protocol and a counter
+    /// held anywhere else is a counter that can be wrong about somebody else's commit.
+    #[must_use]
+    pub fn next_version(&self) -> u64 {
+        sankhya_table_delta::live_files(&self.root)
+            .ok()
+            .and_then(|set| set.version)
+            .map_or(0, |version| version.saturating_add(1))
     }
 
     /// Which rows of a batch belong to which partition.
@@ -519,6 +633,20 @@ pub fn publish_table(
         )?);
     }
     Ok(written)
+}
+
+/// A publish that may have taken a later version than it asked for.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Rebased {
+    /// The files published.
+    pub written: Vec<Published>,
+    /// The version it landed at.
+    pub version: u64,
+    /// How many versions were taken before this one.
+    ///
+    /// Reported rather than discarded: sustained rebasing means capture and maintenance are
+    /// contending, which is a scheduling problem visible nowhere else.
+    pub retries: usize,
 }
 
 /// Why a publication could not proceed.

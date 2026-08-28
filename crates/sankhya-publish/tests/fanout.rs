@@ -95,7 +95,7 @@ fn a_partition_too_small_to_be_worth_a_file_waits() {
 
     let mut accumulator = Accumulator::new(&publication, FanOut::default());
     let published = accumulator
-        .absorb(1, "part-00001.parquet", &spread(0, 5_000, 90), Lsn::new(1))
+        .absorb("part-00001.parquet", &spread(0, 5_000, 90), Lsn::new(1))
         .expect("absorbed");
 
     assert!(published.is_empty(), "{published:#?}");
@@ -116,11 +116,11 @@ fn waiting_ends_in_a_flush_and_each_partition_becomes_one_file() {
     let mut accumulator = Accumulator::new(&publication, FanOut::default());
     for round in 0..5_i64 {
         accumulator
-            .absorb(1, "part-00001.parquet", &spread(round * 5_000, 5_000, 90), Lsn::new(1))
+            .absorb("part-00001.parquet", &spread(round * 5_000, 5_000, 90), Lsn::new(1))
             .expect("absorbed");
     }
     let published = accumulator
-        .flush(1, "part-00001.parquet", Lsn::new(1))
+        .flush("part-00001.parquet", Lsn::new(1))
         .expect("flushed");
 
     assert_eq!(published.len(), 90, "one file per partition");
@@ -149,7 +149,7 @@ fn a_partition_that_has_waited_long_enough_is_written_however_small() {
     let mut written = 0;
     for round in 0..3_i64 {
         written += accumulator
-            .absorb(1, "part-00001.parquet", &spread(round * 10, 10, 2), Lsn::new(1))
+            .absorb("part-00001.parquet", &spread(round * 10, 10, 2), Lsn::new(1))
             .expect("absorbed")
             .len();
     }
@@ -173,7 +173,7 @@ fn one_commit_writes_no_more_partitions_than_the_cap_allows() {
     };
     let mut accumulator = Accumulator::new(&publication, capped);
     let published = accumulator
-        .absorb(1, "part-00001.parquet", &spread(0, 5_000, 90), Lsn::new(1))
+        .absorb("part-00001.parquet", &spread(0, 5_000, 90), Lsn::new(1))
         .expect("absorbed");
 
     assert_eq!(published.len(), 8, "the cap held: {}", published.len());
@@ -197,7 +197,7 @@ fn sustained_fan_out_is_reported_rather_than_absorbed() {
     let mut accumulator = Accumulator::new(&publication, fan_out);
     for round in 0..10_i64 {
         accumulator
-            .absorb(1, "part-00001.parquet", &spread(round * 100, 100, 90), Lsn::new(1))
+            .absorb("part-00001.parquet", &spread(round * 100, 100, 90), Lsn::new(1))
             .expect("absorbed");
     }
 
@@ -220,7 +220,7 @@ fn a_narrow_workload_raises_no_alarm() {
     let mut accumulator = Accumulator::new(&publication, fan_out);
     for round in 0..10_i64 {
         accumulator
-            .absorb(1, "part-00001.parquet", &spread(round * 100, 100, 2), Lsn::new(1))
+            .absorb("part-00001.parquet", &spread(round * 100, 100, 2), Lsn::new(1))
             .expect("absorbed");
     }
     assert!(!accumulator.strain().wants_attention(&fan_out));
@@ -236,4 +236,74 @@ fn no_batches_means_no_fan_out_figure_rather_than_a_fan_out_of_zero() {
     publication.create(&schema()).expect("created");
     let accumulator = Accumulator::new(&publication, FanOut::default());
     assert_eq!(accumulator.strain().average_fan_out(), None);
+}
+
+// --- the log stays contiguous, whatever the deferral pattern ------------
+
+/// The versions present in a table's log, in order.
+fn log_versions(root: &Path) -> Vec<u64> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root.join("_delta_log")) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        if let Some(stem) = entry.path().file_stem().and_then(|s| s.to_str()) {
+            if let Ok(version) = stem.parse::<u64>() {
+                out.push(version);
+            }
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+#[test]
+fn deferral_does_not_open_a_gap_in_the_commit_log() {
+    // The defect this test exists for, and it reached a running soak before any test saw it.
+    //
+    // The accumulator used to take a version from the caller. The first caller advanced it
+    // once per batch absorbed — reasonable, and wrong, because most batches are deferred.
+    // Sixty-three versions passed with no commit and the flush asked for version 64 against
+    // a log holding none. The log refused it: "committing version 64 would leave a gap; the
+    // next version is 1."
+    //
+    // Every existing test passed, because each used a single version.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path().join("events");
+    let publication = Publication::external(&root, "events").dated_by("event_date");
+    publication.create(&schema()).expect("created");
+
+    let mut accumulator = Accumulator::new(&publication, FanOut::default());
+    for round in 0..40_i64 {
+        accumulator
+            .absorb("part.parquet", &spread(round * 100, 100, 90), Lsn::new(1))
+            .expect("absorbed");
+    }
+    accumulator.flush("part.parquet", Lsn::new(1)).expect("flushed");
+
+    let versions = log_versions(&root);
+    assert!(versions.len() >= 2, "nothing was committed: {versions:?}");
+    for (expected, found) in versions.iter().enumerate() {
+        assert_eq!(
+            *found, expected as u64,
+            "the log has a gap: {versions:?}"
+        );
+    }
+}
+
+#[test]
+fn many_flushes_each_take_the_next_version() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path().join("events");
+    let publication = Publication::external(&root, "events").dated_by("event_date");
+    publication.create(&schema()).expect("created");
+
+    let mut accumulator = Accumulator::new(&publication, FanOut::default());
+    for round in 0..4_i64 {
+        accumulator
+            .absorb("part.parquet", &spread(round * 100, 100, 2), Lsn::new(1))
+            .expect("absorbed");
+        accumulator.flush("part.parquet", Lsn::new(1)).expect("flushed");
+    }
+    assert_eq!(log_versions(&root), vec![0, 1, 2, 3, 4], "one commit per flush, in order");
 }

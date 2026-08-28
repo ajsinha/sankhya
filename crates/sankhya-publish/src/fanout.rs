@@ -187,7 +187,6 @@ impl<'a> Accumulator<'a> {
     /// As [`Publication::append`].
     pub fn absorb(
         &mut self,
-        version: u64,
         file_name: &str,
         batch: &RecordBatch,
         covers_through: Lsn,
@@ -216,7 +215,7 @@ impl<'a> Accumulator<'a> {
             entry.waited = entry.waited.saturating_add(1);
         }
 
-        self.write_ready(version, file_name, covers_through, false)
+        self.write_ready(file_name, covers_through, false)
     }
 
     /// Write everything still deferred, however small.
@@ -225,17 +224,15 @@ impl<'a> Accumulator<'a> {
     /// As [`Publication::append`].
     pub fn flush(
         &mut self,
-        version: u64,
         file_name: &str,
         covers_through: Lsn,
     ) -> Result<Vec<Published>, PublishError> {
-        self.write_ready(version, file_name, covers_through, true)
+        self.write_ready(file_name, covers_through, true)
     }
 
     /// Write the partitions that qualify.
     fn write_ready(
         &mut self,
-        version: u64,
         file_name: &str,
         covers_through: Lsn,
         everything: bool,
@@ -272,7 +269,16 @@ impl<'a> Accumulator<'a> {
         if batches.is_empty() {
             return Ok(Vec::new());
         }
+        // The version is decided *here*, when a commit actually happens --- never by the
+        // caller per input batch.
+        //
+        // An earlier version took a version parameter, and the first caller advanced it once
+        // per batch absorbed. Since most batches are deferred, sixty-three versions passed
+        // with no commit and the flush asked for version 64 against a log holding none. The
+        // log refused it, correctly: *"committing version 64 would leave a gap; the next
+        // version is 1"*. Deferral and caller-assigned versions cannot both be right, and the
+        // caller has no business knowing log versions at all.
         self.publication
-            .append_all(version, file_name, &batches, covers_through)
+            .append_all_rebasing(file_name, &batches, covers_through)
     }
 }

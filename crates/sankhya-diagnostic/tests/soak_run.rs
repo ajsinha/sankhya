@@ -648,7 +648,6 @@ fn fill(root: &Path, target_bytes: f64, since: &Instant) -> u64 {
         // four minutes**, averaging 37 KB, and the judge breached `live_files` --- correctly,
         // and about a defect this harness had just been given the ability to see.
         let published = match accumulator.absorb(
-            version,
             &name,
             &batch(row, ROWS_PER_FILE),
             Lsn::new(version),
@@ -671,7 +670,7 @@ fn fill(root: &Path, target_bytes: f64, since: &Instant) -> u64 {
     // Whatever is still deferred must be written before the run starts measuring, or the
     // warehouse is short by however much was waiting and every later figure is about a
     // smaller dataset than the one asked for.
-    if let Ok(flushed) = accumulator.flush(version, &format!("part-{version:06}.parquet"), Lsn::new(version)) {
+    if let Ok(flushed) = accumulator.flush(&format!("part-{version:06}.parquet"), Lsn::new(version)) {
         written += flushed.iter().map(|p| p.bytes).sum::<u64>();
     }
     written
