@@ -31,6 +31,38 @@ neither tells you what runs today. Where the two disagree, this one is right.
 
 ---
 
+## Partition fan-out, found by the soak on its first honest run
+
+The fix for the partitioning defect introduced a different one, and `FR-CDC-14` names it:
+
+> A single commit batch SHALL NOT produce unbounded file fan-out. A batch touching many
+> partitions MUST NOT write one tiny file per partition **without a guard**.
+
+`Publication::append` wrote one file per partition per batch, with no guard. A 200,000-row
+batch spread over ninety days becomes ninety files; a 5,000-row append becomes ninety files of
+fifty-five rows.
+
+**Measured, not reasoned about: 32,279 live files across ten tables in four minutes,
+averaging 37 KB, against a compaction policy that targets 256 MB.** The soak's judge breached
+`live_files` on its own — *"compaction is not keeping up with the write rate… if the peaks
+climb, each cycle starts further behind than the last"* — which is the harness doing exactly
+what it exists for.
+
+**This is the argument for routing the soak through `sankhya-publish`, demonstrated.** The
+previous harness wrote through its own code and reported `PASS` on flat, non-conforming tables
+for hours. One run through the shipping write path surfaced a MUST violation in four minutes.
+
+`ARCHITECTURE` §6.4.2 had specified the guards and nothing had built them. `sankhya-publish`
+now has `fanout`: a minimum file size below which a partition waits, a deferral age after
+which it is written however small (waiting for ever is not deferral, it is loss), a cap on
+partitions per commit, and the bulk path — feed an `Accumulator` everything, flush once, and
+each partition is written once in full rather than once per input batch.
+
+**The alarm is the part that matters**, and §6.4.2 says so: *"the guards buy time; the alarm
+gets the design fixed. Silently absorbing it would be the failure."* `Strain::explain` reports
+sustained fan-out and names the cause — a partition granularity finer than the arrival
+pattern — because no amount of deferral fixes that.
+
 ## Date partitioning, corrected 2026-08-27
 
 Found by being asked whether Delta was following the partition-by-date decision. It was not,
@@ -890,7 +922,7 @@ row, and Q6 returns a hundred thousand; `NFR-PERF-03` requires a partition predi
 partitioning is not built, so Q5 could not satisfy it however fast it ran.
 
 **These are met on hardware below the reference node.** The requirements name 32 physical
-cores and 325 GB; this is twelve cores and 62 GB. That makes the results conservative
+cores and 331 GB; this is twelve cores and 62 GB. That makes the results conservative
 rather than qualified — but the reference node has never been measured on, so the numbers
 that would be published with it do not exist.
 
@@ -1180,7 +1212,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 325 specific defects applied one at a time; all 325 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 331 specific defects applied one at a time; all 331 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -1674,9 +1706,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,552 tests, none of which needs a database
+cargo test --workspace           # 1,560 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 325 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 331 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

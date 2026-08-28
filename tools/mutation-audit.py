@@ -2114,6 +2114,44 @@ CATALOGUE = [
      "        Granularity::Month => (read(0, 1970), read(1, 1), 2),",
      "sankhya-publish"),
 
+    # --- fan-out: FR-CDC-14's guard ---------------------------------------
+
+    ("publish: write a partition however small, restoring the tiny-file fan-out",
+     "crates/sankhya-publish/src/fanout.rs",
+     "            if entry.bytes >= self.fan_out.min_file_bytes {",
+     "            if true {",
+     "sankhya-publish"),
+
+    ("publish: defer a partition for ever, so a slow one is never readable",
+     "crates/sankhya-publish/src/fanout.rs",
+     "            } else if entry.waited >= self.fan_out.max_deferred_batches {",
+     "            } else if false {",
+     "sankhya-publish"),
+
+    ("publish: ignore the per-commit partition cap",
+     "crates/sankhya-publish/src/fanout.rs",
+     "        if !everything && ready.len() > self.fan_out.max_partitions_per_commit {",
+     "        if false {",
+     "sankhya-publish"),
+
+    ("publish: absorb sustained fan-out silently instead of reporting it",
+     "crates/sankhya-publish/src/fanout.rs",
+     "        self.batches >= 8",
+     "        false && self.batches >= 8",
+     "sankhya-publish"),
+
+    ("publish: report a fan-out of zero before any batch has arrived",
+     "crates/sankhya-publish/src/fanout.rs",
+     "        (self.batches > 0).then(|| self.partitions_touched as f64 / self.batches as f64)",
+     "        Some(self.partitions_touched as f64 / self.batches.max(1) as f64)",
+     "sankhya-publish"),
+
+    ("publish: write each deferred batch as its own file, defeating accumulation",
+     "crates/sankhya-publish/src/publish.rs",
+     "        let combined = arrow_select::concat::concat_batches(&schema, batches)",
+     "        let combined = Ok::<_, arrow_schema::ArrowError>(batches[0].clone())",
+     "sankhya-publish"),
+
     # --- the soak writes nothing outside the project root ------------------
 
     ("soak: accept a warehouse outside the project root",

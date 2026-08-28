@@ -327,6 +327,57 @@ impl Publication {
         Ok(written)
     }
 
+    /// One batch per partition the batch touches, in partition order.
+    ///
+    /// Exposed because the fan-out guards in [`crate::fanout`] need to know how wide a batch
+    /// is *before* writing it --- that is the whole point of a guard --- and because
+    /// discovering it by writing the files is what they exist to prevent.
+    ///
+    /// # Errors
+    /// As [`Publication::append`]: a missing or unreadable date column, or a null in it.
+    pub fn split_by_partition(
+        &self,
+        batch: &RecordBatch,
+    ) -> Result<Vec<(String, RecordBatch)>, PublishError> {
+        let mut out = Vec::new();
+        for (partition, rows) in self.partitions_of(batch)? {
+            out.push((partition, take_rows(batch, &rows)?));
+        }
+        Ok(out)
+    }
+
+    /// Publish several batches as one commit.
+    ///
+    /// Rows for the same partition land in **one file** however many batches they arrived
+    /// in, which is the property that turns per-batch fan-out into per-partition batching.
+    ///
+    /// # Errors
+    /// As [`Publication::append`].
+    pub fn append_all(
+        &self,
+        version: u64,
+        file_name: &str,
+        batches: &[RecordBatch],
+        covers_through: Lsn,
+    ) -> Result<Vec<Published>, PublishError> {
+        if batches.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Concatenated first, so a partition present in five batches becomes one file rather
+        // than five. Writing them separately would defeat the accumulation entirely.
+        let schema = batches.first().map_or_else(
+            || Arc::new(arrow_schema::Schema::empty()),
+            RecordBatch::schema,
+        );
+        let combined = arrow_select::concat::concat_batches(&schema, batches).map_err(|e| {
+            PublishError::Write {
+                file: file_name.to_string(),
+                detail: format!("combining {} batch(es): {e}", batches.len()),
+            }
+        })?;
+        self.append(version, file_name, &combined, covers_through)
+    }
+
     /// Which rows of a batch belong to which partition.
     ///
     /// Ordered by partition value, so a batch published twice produces the same files in the

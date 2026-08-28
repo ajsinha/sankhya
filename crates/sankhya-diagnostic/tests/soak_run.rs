@@ -41,7 +41,7 @@ use sankhya_diagnostic::soak::Report;
 use sankhya_maintenance::{
     plan_compaction, run_compaction, CompactionPolicy, FileStat, PartitionState,
 };
-use sankhya_publish::Publication;
+use sankhya_publish::{Accumulator, FanOut, Publication};
 use sankhya_table::{scan_parquet, Scanned, WriterConfig};
 use sankhya_table_delta::{commit, live_files, Action, AddFile, RemoveFile};
 use sankhya_types::Lsn;
@@ -618,6 +618,7 @@ fn scan_some(root: &Path, round: u64) -> Scanned {
 fn fill(root: &Path, target_bytes: f64, since: &Instant) -> u64 {
     const ROWS_PER_FILE: usize = 200_000;
     let publication = publication(root);
+    let mut accumulator = Accumulator::new(&publication, FanOut::default());
     let existing = live_files(root).ok();
     let mut written: u64 = existing
         .as_ref()
@@ -639,7 +640,14 @@ fn fill(root: &Path, target_bytes: f64, since: &Instant) -> u64 {
         // Through `sankhya-publish`, which splits the batch across the partitions its dates
         // fall in and commits every file in one version. A batch of two hundred thousand
         // rows spread over ninety days becomes ninety files, which is what a real fill does.
-        let published = match publication.append(
+        // Through the fan-out accumulator, not straight at `append`.
+        //
+        // A batch of two hundred thousand rows spread over ninety days touches ninety
+        // partitions, and an unguarded append writes ninety files for it. The first run of
+        // this harness against the partitioned write path reached **32,279 live files in
+        // four minutes**, averaging 37 KB, and the judge breached `live_files` --- correctly,
+        // and about a defect this harness had just been given the ability to see.
+        let published = match accumulator.absorb(
             version,
             &name,
             &batch(row, ROWS_PER_FILE),
@@ -659,6 +667,12 @@ fn fill(root: &Path, target_bytes: f64, since: &Instant) -> u64 {
                 since.elapsed().as_secs_f64()
             );
         }
+    }
+    // Whatever is still deferred must be written before the run starts measuring, or the
+    // warehouse is short by however much was waiting and every later figure is about a
+    // smaller dataset than the one asked for.
+    if let Ok(flushed) = accumulator.flush(version, &format!("part-{version:06}.parquet"), Lsn::new(version)) {
+        written += flushed.iter().map(|p| p.bytes).sum::<u64>();
     }
     written
 }

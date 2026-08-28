@@ -135,6 +135,9 @@ fn main() -> ExitCode {
 
     let run_all = task.is_empty() || task == "check-all";
 
+    if run_all || task == "check-writers" {
+        failed |= !check_writers(&root);
+    }
     if run_all || task == "check-layers" {
         failed |= !check_layers(&root);
     }
@@ -201,6 +204,7 @@ fn main() -> ExitCode {
                 | "check-lints"
                 | "check-mutations"
                 | "check-doc-numbers"
+                | "check-writers"
                 | "check-logging"
                 | "check-package"
                 | "check-catalogues"
@@ -210,7 +214,7 @@ fn main() -> ExitCode {
     {
         eprintln!(
             "usage: cargo xtask \
-             [check-all|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
+             [check-all|check-writers|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
              |check-features|check-lints|check-mutations|check-doc-numbers\
              |check-catalogues|write-catalogues|check-logging|check-package|check-performance]"
         );
@@ -1541,4 +1545,119 @@ mod tests {
         assert!(!found.is_empty(), "no milestone is in progress, which cannot be right");
         assert!(found.iter().all(|m| m.starts_with('M')), "{found:?}");
     }
+}
+
+/// Who may write to a warehouse.
+///
+/// # The invariant
+///
+/// **There is one official writer to the warehouse, and it is `sankhya-publish`.** Every
+/// other crate that writes data files or commits table-log actions is a second writer, and a
+/// second writer is not a stylistic complaint --- it is a path that does not get the
+/// guarantees the first one enforces.
+///
+/// That is not hypothetical here. `sankhya-publish` declares `partitionColumns` and lays
+/// files out under `sank_data_date=…/`, as `FR-STORE-20` requires. The soak had its own
+/// writer, so its warehouses were flat and non-conforming, and --- worse --- a soak that
+/// bypasses the write path cannot find a defect in it. The publish path declared a partition
+/// column it never wrote for months while a ten-gigabyte soak reported `PASS` beside it.
+///
+/// # Why an allowlist rather than a ban
+///
+/// One caller is genuinely not a second writer: `sankhya-maintenance` rewrites files that are
+/// already published, which is a different operation from admitting new data. It is named
+/// here with that reason rather than exempted silently.
+///
+/// The rest are violations that exist today. Listing them makes them visible and makes the
+/// list shrink; the check's value is that **nothing new can be added without appearing
+/// here**, which is the property a rule kept in somebody's head does not have.
+const MAY_WRITE: &[(&str, &str)] = &[
+    (
+        "sankhya-publish",
+        "the one official writer: it is what FR-STORE-20's partitioning and the date axis \
+         are implemented in",
+    ),
+    (
+        "sankhya-maintenance",
+        "rewrites already-published files rather than admitting new data — compaction and \
+         retention, not ingestion. It must preserve the layout publish established",
+    ),
+    (
+        "sankhya-ingest",
+        "VIOLATION, not an exemption. The CDC arrival path writes its own files and commits \
+         its own log, which is why its tables have no partition columns and violate \
+         FR-STORE-20 — the requirement holds on the batch path and not on the streaming one, \
+         which is where most data lands. Tracked; this entry must be deleted, not kept",
+    ),
+];
+
+/// Calls that write to a warehouse.
+const WRITES: &[&str] = &["write_parquet(", "compact_files(", "compact_files_sorted("];
+
+/// Calls that commit to a table log.
+const COMMITS: &[&str] = &["commit(&", "delta_commit(", "commit(root", "commit(table_root"];
+
+fn check_writers(root: &Path) -> bool {
+    println!("== check-writers ==");
+    let mut files = Vec::new();
+    rust_files(&root.join("crates"), &mut files);
+
+    let mut ok = true;
+    let mut writers: BTreeMap<String, usize> = BTreeMap::new();
+    for file in &files {
+        let rel = file.strip_prefix(root).unwrap_or(file).display().to_string();
+        // Tests drive the writers; they are not writers. The storage crates *are* the
+        // implementation being called, so they are not callers of it.
+        if rel.contains("/tests/")
+            || rel.contains("sankhya-table/")
+            || rel.contains("sankhya-table-delta/")
+        {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        let Some(crate_name) = rel
+            .strip_prefix("crates/")
+            .and_then(|rest| rest.split('/').next())
+        else {
+            continue;
+        };
+        for (number, line) in text.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or(line);
+            if WRITES.iter().chain(COMMITS).any(|call| code.contains(call)) {
+                *writers.entry(crate_name.to_string()).or_default() += 1;
+                if !MAY_WRITE.iter().any(|(name, _)| *name == crate_name) {
+                    eprintln!(
+                        "  SECOND WRITER  {rel}:{}: `{}` writes to a warehouse, and only \
+                         sankhya-publish may. Route it through `Publication`, or add it to \
+                         MAY_WRITE with a reason somebody can evaluate",
+                        number + 1,
+                        crate_name
+                    );
+                    ok = false;
+                }
+            }
+        }
+    }
+
+    for (name, reason) in MAY_WRITE {
+        if !writers.contains_key(*name) {
+            eprintln!(
+                "  STALE ENTRY    `{name}` is allowed to write and no longer does — delete \
+                 the entry. An allowlist that only grows stops being read"
+            );
+            ok = false;
+        }
+        assert!(reason.len() > 40, "an allowlist entry needs a usable reason");
+    }
+
+    if ok {
+        let named: Vec<String> = writers
+            .iter()
+            .map(|(name, count)| format!("{name} ({count})"))
+            .collect();
+        println!("   only declared writers touch a warehouse: {}", named.join(", "));
+    }
+    ok
 }
