@@ -82,19 +82,9 @@ fn settings() -> Result<Settings, String> {
     // A fixed tenant until federated identity is wired in. Deterministic so that a restart
     // does not orphan the audit chain and the storage prefix from the previous run.
     let tenant = TenantId::from_uuid(uuid::Uuid::from_u128(1));
-    // Nothing ran maintenance before this. `sankhya-maintenance` shipped as a library that
-    // only its own tests and the soak ever called, so a running server compacted nothing and
-    // retired nothing --- files accumulated for as long as the server was up.
-    //
-    // `0` disables it, said in the configuration rather than by deleting the setting, so a
-    // deployment that turns it off leaves a record of having decided to.
-    let maintenance_interval = config
-        .duration("maintenance.interval")
-        .map_err(|error| error.to_string())?
-        .or(Some(std::time::Duration::from_secs(30)))
-        .filter(|every| !every.is_zero());
+    let maintenance = maintenance_policy(&config)?;
     Ok(Settings {
-        maintenance_interval,
+        maintenance,
         listen,
         warehouse,
         read_as_of,
@@ -102,6 +92,52 @@ fn settings() -> Result<Settings, String> {
         require_password,
         metrics_listen,
     })
+}
+
+
+/// The maintenance policy a configuration asks for, or `None` if it asks for none.
+///
+/// Separate from [`settings`] because it is read twice: once at startup, and again whenever
+/// an operator sends `SIGHUP`. Two copies of this derivation would be two chances for a
+/// reloaded value to mean something different from the same value at boot --- and the
+/// difference would show up only on a running system, which is the worst place to find it.
+///
+/// # Errors
+///
+/// Returns the reason a setting could not be read, rather than silently keeping the default:
+/// an operator who typed `30x` for an interval needs to be told, not ignored.
+fn maintenance_policy(
+    config: &sankhya_config::Configuration,
+) -> Result<Option<sankhya_maintenance::MaintenancePolicy>, String> {
+    // Nothing ran maintenance before this. `sankhya-maintenance` shipped as a library that
+    // only its own tests and the soak ever called, so a running server compacted nothing and
+    // retired nothing --- files accumulated for as long as the server was up.
+    //
+    // Every cadence is a setting with a stated default rather than a constant, because how
+    // much disk and page cache a deployment can spare for maintenance is a property of the
+    // deployment. `interval: 0` disables it, said in the configuration rather than by
+    // deleting the setting, so a deployment that turns it off leaves a record of deciding to.
+    let defaults = sankhya_maintenance::MaintenancePolicy::default();
+    let interval = config
+        .duration("maintenance.interval")
+        .map_err(|error| error.to_string())?
+        .unwrap_or(defaults.interval);
+    let ticks = |key: &str, fallback: u64| -> Result<u64, String> {
+        Ok(config
+            .integer(key)
+            .map_err(|error| error.to_string())?
+            .and_then(|value| u64::try_from(value).ok())
+            .unwrap_or(fallback))
+    };
+    if interval.is_zero() {
+        return Ok(None);
+    }
+    Ok(Some(sankhya_maintenance::MaintenancePolicy {
+        interval,
+        compact_every: ticks("maintenance.compact_every", defaults.compact_every)?,
+        orphan_sweep_every: ticks("maintenance.orphan_sweep_every", defaults.orphan_sweep_every)?,
+        ..defaults
+    }))
 }
 
 /// The configuration files, lowest precedence first.
@@ -209,7 +245,7 @@ async fn main() -> std::io::Result<()> {
         _ => {}
     }
 
-    let maintenance_every = settings.maintenance_interval;
+    let configured_maintenance = settings.maintenance.clone();
     let warehouse_root = settings.warehouse.clone();
     let (server, listener, complaints) = start(settings).await?;
 
@@ -217,17 +253,81 @@ async fn main() -> std::io::Result<()> {
     // runs. Held in a binding rather than dropped: dropping the handle stops the thread, and
     // `let _ = ...` would stop it immediately --- maintenance that runs for the length of one
     // statement is worse than none, because the log would say it started.
-    let _maintenance = maintenance_every.map(|interval| {
+    let maintenance = configured_maintenance.map(|policy| {
         let tables = sankhya_maintenance::tables_under(&warehouse_root);
-        println!("  maintaining {} table(s) every {interval:?}", tables.len());
-        sankhya_maintenance::spawn_maintenance(
-            tables,
-            sankhya_maintenance::MaintenancePolicy {
-                interval,
-                ..sankhya_maintenance::MaintenancePolicy::default()
-            },
-        )
+        println!(
+            "  maintaining {} table(s) every {:?}, compacting every {} tick(s), sweeping every {}",
+            tables.len(),
+            policy.interval,
+            policy.compact_every,
+            policy.orphan_sweep_every
+        );
+        std::sync::Arc::new(sankhya_maintenance::spawn_maintenance(tables, policy))
     });
+
+    // Reconfiguration without a restart.
+    //
+    // An operator who has to restart the server to slow compaction down will not slow
+    // compaction down. They will wait for a maintenance window --- and the window is when
+    // the system is already busy, which is exactly when the setting needed changing.
+    //
+    // SIGHUP is the conventional signal for it and this process already handles SIGTERM, so
+    // an operator has one habit rather than two. The configuration is read again from the
+    // same files in the same precedence order, so a reloaded value cannot mean something a
+    // booted one would not.
+    if let Some(handle) = maintenance.as_ref().map(std::sync::Arc::clone) {
+        tokio::spawn(async move {
+            let Ok(mut hangup) =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+            else {
+                eprintln!("  cannot listen for SIGHUP; maintenance settings need a restart");
+                return;
+            };
+            while hangup.recv().await.is_some() {
+                let reloaded = sankhya_config::Configuration::load_with(
+                    &configuration_files(),
+                    &legacy_environment(),
+                    &BTreeMap::new(),
+                )
+                .map_err(|error| error.to_string())
+                .and_then(|config| maintenance_policy(&config));
+
+                match reloaded {
+                    // Refused rather than half-applied. A reload that took the readable
+                    // settings and left the rest is a configuration nobody wrote.
+                    Err(why) => eprintln!("  reload refused, keeping the running settings: {why}"),
+                    // Disabling maintenance on a reload is not honoured by stopping the
+                    // thread: stopping is not reversible without a restart, which is the
+                    // thing this exists to avoid. Said plainly rather than ignored.
+                    Ok(None) => eprintln!(
+                        "  reload asks to disable maintenance, which needs a restart; the \
+                         thread keeps running under the settings it has"
+                    ),
+                    Ok(Some(policy)) => {
+                        let was = handle.policy();
+                        handle.reconfigure(policy.clone());
+                        if was.interval == policy.interval
+                            && was.compact_every == policy.compact_every
+                            && was.orphan_sweep_every == policy.orphan_sweep_every
+                        {
+                            println!("  reloaded; maintenance settings are unchanged");
+                        } else {
+                            println!(
+                                "  maintenance reloaded: every {:?} (was {:?}), compacting \
+                                 every {} tick(s) (was {}), sweeping every {} (was {})",
+                                policy.interval,
+                                was.interval,
+                                policy.compact_every,
+                                was.compact_every,
+                                policy.orphan_sweep_every,
+                                was.orphan_sweep_every
+                            );
+                        }
+                    }
+                }
+            }
+        });
+    }
 
     // Printed rather than only logged: an operator starting this by hand needs to see the
     // configuration, and an insecure one is written so it looks wrong.

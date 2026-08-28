@@ -151,7 +151,7 @@ async fn a_short_run_under_concurrent_load_is_judged() {
             warehouse: warehouse_root.clone(),
             read_as_of: Lsn::new(u64::MAX),
             tenant,
-            maintenance_interval: None,
+            maintenance: None,
             require_password: false,
             metrics_listen: None,
         },

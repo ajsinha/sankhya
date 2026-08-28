@@ -36,6 +36,7 @@ use crate::driver::{
     commit_tick, execute_tick, plan_tick, retire_completed, DriverPolicy, TickReport,
 };
 use crate::execute::RetentionPolicy;
+use crate::orphans::{plan_orphan_cleanup, sweep as sweep_orphans, FileOnDisk, OrphanPolicy};
 use crate::schedule::SystemState;
 use sankhya_error::{Error, Result};
 use sankhya_table::{CompactionOutcome, WriterConfig};
@@ -45,7 +46,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// How the maintenance thread behaves.
@@ -62,6 +63,27 @@ pub struct MaintenancePolicy {
     pub retention: RetentionPolicy,
     /// How merged files are written.
     pub writer: WriterConfig,
+    /// How many ticks between compaction passes.
+    ///
+    /// One by default: every tick considers every partition, because a pass is already
+    /// bounded by `max_files_per_pass` and a partition below the policy's thresholds costs
+    /// only the decision not to merge it. Raising this trades promptness for quiet --- a
+    /// deployment whose queries are latency-sensitive can compact every fourth tick and
+    /// still keep up, provided writes arrive slower than four ticks of merging.
+    pub compact_every: u64,
+    /// When a file nothing refers to may be removed.
+    pub orphans: OrphanPolicy,
+    /// How many ticks between orphan sweeps.
+    ///
+    /// Rarer than compaction --- a hundred and twenty ticks, an hour at the default interval
+    /// --- for two reasons. A sweep walks the whole table directory, which costs more the
+    /// larger the table and returns nothing most of the time. And what it collects arrives
+    /// slowly: an orphan appears only when a merge writes its output and then loses the race
+    /// to commit it, which is rare and does not become more urgent by being found sooner.
+    ///
+    /// The file it collects is a week old by the time the age policy allows removal anyway,
+    /// so sweeping more often finds the same files and deletes none of them earlier.
+    pub orphan_sweep_every: u64,
     /// How much work one tick may do.
     ///
     /// Bounds the pass so maintenance never monopolises the machine: a tick that ran until
@@ -77,6 +99,9 @@ impl Default for MaintenancePolicy {
             driver: DriverPolicy::default(),
             retention: RetentionPolicy::default(),
             writer: WriterConfig::default(),
+            compact_every: 1,
+            orphans: OrphanPolicy::default(),
+            orphan_sweep_every: 120,
             duty_cycle_ticks: 10_000,
         }
     }
@@ -106,6 +131,16 @@ impl Maintainer {
         }
     }
 
+    /// Take a new policy without losing what is already in flight.
+    ///
+    /// The pending queue and the tick counter survive deliberately. Those are *state*, not
+    /// configuration: a merge waiting out its grace period has already happened, and
+    /// forgetting it would leave its inputs on disk with nothing left that knows to retire
+    /// them. A reload must not leak files as the price of taking effect.
+    pub fn reconfigure(&mut self, policy: MaintenancePolicy) {
+        self.policy = policy;
+    }
+
     /// How many merges are waiting out their grace period.
     ///
     /// Exposed because it is the difference between "retirement is not working" and
@@ -127,7 +162,12 @@ impl Maintainer {
         self.tick += 1;
         let tick = self.tick;
 
-        let partitions = partitions_of(table_root)?;
+        let compacting = self.policy.compact_every <= 1 || tick % self.policy.compact_every == 0;
+        let partitions = if compacting {
+            partitions_of(table_root)?
+        } else {
+            Vec::new()
+        };
         let mut report = if partitions.is_empty() {
             TickReport::default()
         } else {
@@ -159,6 +199,13 @@ impl Maintainer {
         report.bytes_reclaimed = report.bytes_reclaimed.saturating_add(retired.bytes_reclaimed);
         report.files_removed.extend(retired.files_removed);
 
+        // Files nothing refers to, on a slower cycle than compaction.
+        if self.policy.orphan_sweep_every > 0 && tick % self.policy.orphan_sweep_every == 0 {
+            let swept = self.collect_orphans(table_root);
+            report.bytes_reclaimed = report.bytes_reclaimed.saturating_add(swept.bytes_reclaimed);
+            report.files_removed.extend(swept.removed);
+        }
+
         // Checkpointing is deliberately *not* done here yet.
         //
         // `checkpoint_if_due` needs the table's `Metadata` --- schema, partition columns ---
@@ -168,6 +215,52 @@ impl Maintainer {
         // reader something false. Wiring it needs a metadata reader first.
 
         Ok(report)
+    }
+
+    /// Remove files on disk that the log does not refer to.
+    ///
+    /// # Where an orphan comes from
+    ///
+    /// Not from compaction succeeding --- the inputs a merge replaces are *retired*, which is
+    /// a different mechanism with a different guarantee. An orphan is what a merge leaves
+    /// when it writes its output and then **loses the race to commit it**: the writer got the
+    /// version first, and maintenance must re-plan against a table state that has changed
+    /// rather than take a later version, because the set of files it chose to merge is no
+    /// longer the set that is there. The merged file stays on disk with nothing naming it.
+    ///
+    /// It is invisible to every reader, so it costs only space --- but it costs it once per
+    /// lost race, forever, and nothing was collecting it.
+    ///
+    /// # Why the age threshold does the real work
+    ///
+    /// A file that is not in the live set is either garbage or a file being written *right
+    /// now* by a committer that has not committed yet, and from a directory listing those
+    /// two are indistinguishable. The policy's age threshold --- a week by default --- is
+    /// what separates them, and it is why this is safe to run beside an active writer.
+    ///
+    /// Only files old enough to have no plausible commit still in flight are removed.
+    fn collect_orphans(&self, table_root: &Path) -> crate::orphans::OrphanReport {
+        let Ok(live) = live_files(table_root) else {
+            return crate::orphans::OrphanReport::default();
+        };
+        let named: BTreeSet<String> = live.files.iter().map(|f| f.path.clone()).collect();
+
+        let mut on_disk = Vec::new();
+        list_data_files(table_root, table_root, &mut on_disk);
+        if on_disk.is_empty() {
+            return crate::orphans::OrphanReport::default();
+        }
+
+        // Empty for the same reason retirement's referenced set is empty: nothing here holds
+        // an older snapshot open. When session leases reach maintenance this becomes the set
+        // of paths those snapshots still resolve, and until then the age threshold is what
+        // protects a file --- not this.
+        let reachable = BTreeSet::new();
+        let plan = plan_orphan_cleanup(&on_disk, &named, &reachable, &self.policy.orphans);
+        if plan.remove.is_empty() {
+            return crate::orphans::OrphanReport::default();
+        }
+        sweep_orphans(&plan, table_root)
     }
 
     /// Retire the inputs of merges that have served their grace period.
@@ -241,6 +334,42 @@ pub fn partitions_of(table_root: &Path) -> Result<Vec<PartitionState>> {
         .collect())
 }
 
+/// Every data file under a table, named relative to its root, with its age in seconds.
+///
+/// The log is skipped rather than aged out. It is not data, and a sweep that reached it
+/// would delete the table rather than tidy it.
+fn list_data_files(base: &Path, at: &Path, into: &mut Vec<FileOnDisk>) {
+    let Ok(entries) = std::fs::read_dir(at) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_dir() {
+            if path.file_name().is_some_and(|name| name == "_delta_log") {
+                continue;
+            }
+            list_data_files(base, &path, into);
+            continue;
+        }
+        let Ok(name) = path.strip_prefix(base) else {
+            continue;
+        };
+        // Seconds, which is the unit the default policy is written in: its threshold of
+        // 604,800 is a week, chosen to be far beyond any commit still in flight.
+        let age = meta
+            .modified()
+            .ok()
+            .and_then(|when| when.elapsed().ok())
+            .map_or(0, |since| since.as_secs());
+        into.push(FileOnDisk {
+            name: name.to_string_lossy().into_owned(),
+            bytes: meta.len(),
+            age_ticks: age,
+        });
+    }
+}
+
 /// Every table under a warehouse, found by the log that makes a directory a table.
 ///
 /// Discovered rather than configured. A list of tables in a configuration file is a list
@@ -277,6 +406,13 @@ pub fn tables_under(warehouse: &Path) -> Vec<PathBuf> {
 /// temporary directory it would race the deletion of the directory itself.
 #[derive(Debug)]
 pub struct MaintenanceHandle {
+    /// The policy the thread reads at the top of every cycle.
+    ///
+    /// Shared rather than copied into the thread, so a setting changed while the server runs
+    /// takes effect on the next tick instead of at the next restart. An operator who has to
+    /// restart to slow compaction down will not slow compaction down; they will wait for a
+    /// window, and the window is when the system is already busy.
+    policy: Arc<Mutex<MaintenancePolicy>>,
     stop: Arc<AtomicBool>,
     ticks: Arc<AtomicU64>,
     reclaimed: Arc<AtomicU64>,
@@ -294,6 +430,25 @@ impl MaintenanceHandle {
     #[must_use]
     pub fn bytes_reclaimed(&self) -> u64 {
         self.reclaimed.load(Ordering::Relaxed)
+    }
+
+    /// Hand the running thread a new policy.
+    ///
+    /// Takes effect on the next cycle. The tick in progress finishes under the policy it
+    /// started with, which is what makes the change safe rather than merely quick: a pass
+    /// that began under one duty-cycle budget is not judged against another halfway through.
+    pub fn reconfigure(&self, policy: MaintenancePolicy) {
+        if let Ok(mut held) = self.policy.lock() {
+            *held = policy;
+        }
+    }
+
+    /// What the thread is running under right now.
+    #[must_use]
+    pub fn policy(&self) -> MaintenancePolicy {
+        self.policy
+            .lock()
+            .map_or_else(|_| MaintenancePolicy::default(), |held| held.clone())
     }
 
     /// Stop the thread and wait for the tick in progress to finish.
@@ -326,12 +481,13 @@ pub fn spawn(tables: Vec<PathBuf>, policy: MaintenancePolicy) -> MaintenanceHand
     let stop = Arc::new(AtomicBool::new(false));
     let ticks = Arc::new(AtomicU64::new(0));
     let reclaimed = Arc::new(AtomicU64::new(0));
+    let shared = Arc::new(Mutex::new(policy.clone()));
 
     let thread = {
         let stop = Arc::clone(&stop);
         let ticks = Arc::clone(&ticks);
         let reclaimed = Arc::clone(&reclaimed);
-        let interval = policy.interval;
+        let shared = Arc::clone(&shared);
         std::thread::Builder::new()
             .name("warehouse-maintenance".to_string())
             .spawn(move || {
@@ -340,10 +496,17 @@ pub fn spawn(tables: Vec<PathBuf>, policy: MaintenancePolicy) -> MaintenanceHand
                     .map(|table| (table.clone(), Maintainer::new(policy.clone())))
                     .collect();
                 while !stop.load(Ordering::Relaxed) {
+                    // Read once per cycle, not once at startup. This is the whole of live
+                    // reconfiguration: a setting changed while the server runs is picked up
+                    // here, and the tick in progress is never re-judged halfway through.
+                    let current = shared
+                        .lock()
+                        .map_or_else(|_| policy.clone(), |held| held.clone());
                     for (table, maintainer) in &mut maintainers {
                         if stop.load(Ordering::Relaxed) {
                             break;
                         }
+                        maintainer.reconfigure(current.clone());
                         match maintainer.tick(table) {
                             Ok(report) => {
                                 reclaimed.fetch_add(report.bytes_reclaimed, Ordering::Relaxed);
@@ -357,8 +520,16 @@ pub fn spawn(tables: Vec<PathBuf>, policy: MaintenancePolicy) -> MaintenanceHand
                     ticks.fetch_add(1, Ordering::Relaxed);
                     // Woken often so `stop` is honoured promptly rather than after a full
                     // interval: a handle being dropped must not block for thirty seconds.
+                    // Re-reading the interval here too, so shortening it takes effect on the
+                    // *current* wait rather than after one more of the old one.
                     let mut waited = Duration::ZERO;
-                    while waited < interval && !stop.load(Ordering::Relaxed) {
+                    while !stop.load(Ordering::Relaxed) {
+                        let interval = shared
+                            .lock()
+                            .map_or(current.interval, |held| held.interval);
+                        if waited >= interval {
+                            break;
+                        }
                         std::thread::sleep(Duration::from_millis(50));
                         waited += Duration::from_millis(50);
                     }
@@ -368,6 +539,7 @@ pub fn spawn(tables: Vec<PathBuf>, policy: MaintenancePolicy) -> MaintenanceHand
     };
 
     MaintenanceHandle {
+        policy: shared,
         stop,
         ticks,
         reclaimed,

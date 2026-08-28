@@ -586,6 +586,83 @@ Purge demonstrated end to end with verification, quarantine and rollback; the an
 
 ---
 
+## 13a. M10 — Zero-copy cloning
+
+**After M9. Design-gated: no code before an accepted ADR.**
+
+### What it is
+
+`CREATE TABLE ... CLONE source AT VERSION n` produces a table that reads exactly what the
+source read at that version, in constant time and constant space, by **referencing the same
+Parquet files rather than copying them**. Writes to either side then diverge: each commits to
+its own log, and neither observes the other.
+
+The same mechanism at schema scope gives a branch of a whole warehouse, which is the shape
+most of the demand actually takes — a pre-release environment seeded from this morning's
+production, an analyst's scratch copy of real data, a what-if cube that must not perturb the
+published one, a point to return to before a bulk correction.
+
+### The gate
+
+**An accepted ADR before any implementation**, covering at minimum:
+
+1. **Shared-file lifetime.** Who may delete a file that more than one table names, and how
+   that is decided without a global scan.
+2. **The maintenance interaction**, in detail, because this is where cloning breaks a system
+   that already works.
+3. **What a clone means** for backup and restore, for tiering and purge, for the audit chain,
+   and for time travel on both sides of the split.
+4. **What is refused.** A clone whose origin is being purged; a clone across tenants; a clone
+   of a table mid-schema-evolution.
+
+The gate exists because the failure mode is not a failed query. It is **silent data loss in a
+table nobody was touching**, discovered when somebody reads a clone months later.
+
+### Why maintenance is the hard part, and not an afterthought
+
+Everything this warehouse does to keep itself in shape decides that a file may be removed by
+consulting **one table's log**:
+
+- **Retirement** removes an input a merge replaced, once its grace period has run and no
+  retained snapshot of *that table* references it.
+- **Orphan collection** removes a file *that table's* log has never named.
+- **Purge**, at M9, removes source data after verification against *that table's* archive.
+
+Every one of those is correct today because a file belongs to exactly one table. Under
+cloning that premise is false, and each becomes a way to delete data a clone is still the
+only reader of. Orphan collection is the most dangerous of the three: from the origin's point
+of view, a file only the clone still names is indistinguishable from debris.
+
+So the ADR has to answer the lifetime question first, and the plausible answers each cost
+something:
+
+- **Reference counting in the log** — exact, and now every clone and drop is a write that
+  must be crash-safe and must not become a contention point.
+- **Reachability across all logs at sweep time** — no bookkeeping to corrupt, and the sweep's
+  cost grows with the number of tables rather than the size of one.
+- **Copy-on-maintenance** — clones never share a file that maintenance wants to touch, which
+  is simple and quietly gives up the "constant space" property that motivated the feature.
+
+Choosing among those is architecture, not implementation, and choosing wrong is expensive to
+undo once tables exist that depend on it.
+
+### Work
+
+The ADR. The clone action in the log and its lineage record. Whatever the ADR chooses for
+shared-file lifetime, with maintenance taught to honour it. Clone and drop surfaces with the
+refusals enumerated above. Backup, restore and tiering made clone-aware. A soak that clones
+under load, writes to both sides, runs full maintenance, and verifies both still read
+correctly afterwards.
+
+### Exit
+
+A clone demonstrated at constant cost against a large table; divergent writes on both sides
+verified independent; **maintenance run to completion on the origin with the clone proven to
+read every row it could read before**; the same for orphan collection specifically; and every
+refused clone path shown to fail closed.
+
+---
+
 ## 14. Parallelisation and critical path
 
 ```

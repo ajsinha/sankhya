@@ -148,7 +148,20 @@ The recommended configuration even after release is *archive and verify continuo
 
 ---
 
-### 1.2 — *Domain packs*
+### 1.2 — *Zero-copy clones*
+**Theme: a copy of a table that costs nothing until somebody writes to it.**
+
+**Available:** cloning a table or a whole schema at a version, in constant time and constant space · writes to either side diverging without touching the other · clones as first-class tables for reading, maintenance and time travel · a lineage record saying what a clone came from and at which version.
+
+**What it is for:** the things people currently do by copying a warehouse. An analyst branch to try a transformation against real data; a pre-release environment seeded from production this morning; a what-if scenario in a cube that must not perturb the published one; a point to roll back to before a bulk correction. Every one of those is affordable only if the copy is free.
+
+**Why it is scheduled here and not earlier.** A clone shares physical files with its origin, and that single fact reaches into every part of the system that assumes a file belongs to one table. **Retirement and orphan collection are the sharpest case: both decide a file is unreferenced by consulting one table's log, and under sharing that decision becomes wrong — the file may be the only copy of data a clone still reads.** Reference counting, or an equivalent, is not an implementation detail here; it is the feature. Shipping cloning on top of maintenance that cannot see across tables would delete a clone's data and call it tidying.
+
+**Gated on design, explicitly:** an accepted ADR covering shared-file lifetime, the maintenance interaction, and what a clone means for backup, tiering and the audit chain, before any code. This is the one capability on this roadmap whose failure mode is silent data loss in a table nobody was touching.
+
+---
+
+### 1.3 — *Domain packs*
 **Theme: the mechanism, used in anger.**
 
 **Available:** risk analytics and financial-crime packs, built on the same published extension API available to third parties, using no privileged access.
@@ -159,27 +172,28 @@ The recommended configuration even after release is *archive and verify continuo
 
 ## 4. Capability timeline
 
-| Capability | 0.1 | 0.2 | 0.3 | 0.4 | 0.5 | 0.6 | 0.7 | 1.0 | 1.1 | 1.2 |
-|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| Transactional store, managed or attached | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● |
-| Automatic capture and onboarding | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● |
-| Read-your-own-writes | | ● | ● | ● | ● | ● | ● | ● | ● | ● |
-| Exactly-once, reconciliation-proven | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● |
-| Schema evolution with quarantine | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● |
-| Source-safety escalation | | | ● | ● | ● | ● | ● | ● | ● | ● |
-| Analytical SQL at published performance | ▪ | ▪ | ▪ | ● | ● | ● | ● | ● | ● | ● |
-| Time travel and as-of queries | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● |
-| External-engine readability | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● |
-| Automatic maintenance | | | ▪ | ● | ● | ● | ● | ● | ● | ● |
-| Graph engine | | | | | ● | ● | ● | ● | ● | ● |
-| Extension API and declarative packs | | | | | ● | ● | ● | ● | ● | ● |
-| Multi-tenancy and row/column security | | | | | ▪ | ● | ● | ● | ● | ● |
-| Columnar and wire-protocol surfaces | | ▪ | ▪ | ▪ | ▪ | ● | ● | ● | ● | ● |
-| Audit and encryption | | | | | | ● | ● | ● | ● | ● |
-| Operability and packaging | | | | | | ▪ | ● | ● | ● | ● |
-| Multi-node and high availability | | | | | | | ▪ | ● | ● | ● |
-| Data tiering with purge | | | | | | | | | ● | ● |
-| Domain packs | | | | | | | | | ▪ | ● |
+| Capability | 0.1 | 0.2 | 0.3 | 0.4 | 0.5 | 0.6 | 0.7 | 1.0 | 1.1 | 1.2 | 1.3 |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| Transactional store, managed or attached | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| Automatic capture and onboarding | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| Read-your-own-writes | | ● | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| Exactly-once, reconciliation-proven | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| Schema evolution with quarantine | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| Source-safety escalation | | | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| Analytical SQL at published performance | ▪ | ▪ | ▪ | ● | ● | ● | ● | ● | ● | ● | ● |
+| Time travel and as-of queries | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| External-engine readability | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| Automatic maintenance | | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● |
+| Graph engine | | | | | ● | ● | ● | ● | ● | ● | ● |
+| Extension API and declarative packs | | | | | ● | ● | ● | ● | ● | ● | ● |
+| Multi-tenancy and row/column security | | | | | ▪ | ● | ● | ● | ● | ● | ● |
+| Columnar and wire-protocol surfaces | | ▪ | ▪ | ▪ | ▪ | ● | ● | ● | ● | ● | ● |
+| Audit and encryption | | | | | | ● | ● | ● | ● | ● | ● |
+| Operability and packaging | | | | | | ▪ | ● | ● | ● | ● | ● |
+| Multi-node and high availability | | | | | | | ▪ | ● | ● | ● | ● |
+| Zero-copy clones | | | | | | | | | | ▪ | ● |
+| Data tiering with purge | | | | | | | | | ● | ● | ● |
+| Domain packs | | | | | | | | | ▪ | ● | ● |
 
 ● available · ▪ partial or in development
 

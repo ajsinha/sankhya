@@ -62,6 +62,25 @@ maintenance:
   # How often a maintenance pass runs. A pass is bounded work, so this is the rate the
   # warehouse catches up at, not how long it spends. Suffixes: s, m, h.
   #
-  # 0 disables it, for the one honest case: another process is doing the maintenance. Two
-  # maintainers on one warehouse are two committers racing for the same version.
+  # 0 disables maintenance entirely, for the one honest case: another process is doing it.
+  # Two maintainers on one warehouse are two committers racing for the same version.
   interval: 30s
+
+  # Ticks between compaction passes. 1 --- every tick --- because a pass is already bounded
+  # by max_files_per_pass, and a partition below the merge thresholds costs only the decision
+  # not to merge it.
+  #
+  # Raise it to trade promptness for quiet: a deployment whose queries are latency-sensitive
+  # can compact every fourth tick and still keep up, so long as writes arrive slower than
+  # four ticks of merging. Set it too high and small files accumulate faster than they are
+  # merged, which shows up as live-file count climbing rather than sawtoothing.
+  compact_every: 1
+
+  # Ticks between sweeps for files the log does not name. 120 --- an hour at the default
+  # interval --- because a sweep walks the whole table directory, returns nothing most of the
+  # time, and what it collects is not urgent.
+  #
+  # An orphan appears only when a merge writes its output and then loses the race to commit
+  # it. The age policy will not let one be removed until it is a week old in any case, so
+  # sweeping more often finds the same files and deletes none of them sooner.
+  orphan_sweep_every: 120
