@@ -3401,6 +3401,7 @@ dependencies = [
  "arrow-schema",
  "async-trait",
  "datafusion",
+ "futures",
  "parking_lot",
  "proptest",
  "sankhya-cube",

@@ -21,6 +21,7 @@ arrow-array       = { workspace = true }
 arrow-schema      = { workspace = true }
 async-trait       = "0.1"
 parking_lot       = { workspace = true }
+futures           = { workspace = true }
 
 [dev-dependencies]
 tokio    = { version = "1", features = ["rt-multi-thread", "macros"] }

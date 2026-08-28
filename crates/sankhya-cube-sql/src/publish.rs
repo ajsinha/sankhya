@@ -22,6 +22,7 @@
 use crate::catalog::{CubeCatalog, Published};
 use datafusion::common::{plan_datafusion_err, Result};
 use datafusion::execution::context::SessionContext;
+use futures::StreamExt;
 use sankhya_cube::complete::Completeness;
 use sankhya_cube::hydrate::{absorb, empty_for, Absorbed};
 use sankhya_cube::model::Cube;
@@ -43,12 +44,30 @@ pub async fn publish_from_fact_table(
     snapshot: u64,
 ) -> Result<Absorbed> {
     let frame = context.table(cube.fact_table()).await?;
-    let batches = frame.collect().await?;
+
+    // Streamed, not collected.
+    //
+    // This read `frame.collect()`, which materialises **the whole fact table** as
+    // `RecordBatch`es before absorbing any of it. Decompressed Arrow runs two to four times
+    // the Parquet on disk, so a one-gigabyte table was two to four gigabytes resident --- and
+    // the soak that first exercised this path showed resident memory at 5.6 GB against 779 MB
+    // for the same scale without it.
+    //
+    // Nothing needed it. `absorb` takes one batch and folds it into `cells`, so the peak is a
+    // batch rather than a table. Collecting was the convenient call, and convenience was the
+    // whole cost.
+    //
+    // **No mutation entry claims this.** Streaming and collecting produce identical cells ---
+    // the difference is memory, which no unit test measures --- so a catalogue entry would be
+    // a claim nothing checks. The soak is what validates it, and the numbers it produced are
+    // the reason this changed.
+    let mut stream = frame.execute_stream().await?;
 
     let mut cells = empty_for(&cube);
     let mut absorbed = Absorbed::default();
-    for batch in &batches {
-        let one = absorb(&cube, measure, batch, &mut cells)
+    while let Some(batch) = stream.next().await {
+        let batch = batch?;
+        let one = absorb(&cube, measure, &batch, &mut cells)
             .map_err(|e| plan_datafusion_err!("hydrating cube '{name}': {e}"))?;
         absorbed = absorbed.and(one);
     }
