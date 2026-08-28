@@ -169,7 +169,46 @@ lattice selection is implemented and is not driven by a recorded query log, so a
 materialisation is available and nothing is currently choosing what to materialise.
 
 
-## M6, in progress
+## M6, closed 2026-08-28
+
+Criterion 4 accepted on a forty-five-minute judged run by owner decision, with the gap from
+the multi-day pipeline it asks for written into `IMPLEMENTATION_PLAN.md` rather than argued
+away. Criterion 7 --- the gRPC transport and the write paths --- is carried into M8, not
+waived.
+
+### The soak, and what it took to make it say anything
+
+Three runs. The first exhausted the disk at t+2833s and wrote a **zero-byte report**
+explaining why: compaction replaced files and nothing retired them, because
+`sankhya-maintenance` was a library the server did not depend on and nothing in production
+ever called. The second died one sample short of `live_files`' first verdict. The third
+returned `PASS` with all seven measures steady --- 168 rounds, 2.58 billion rows scanned,
+resident memory ending at 779 MB, maintenance reclaiming 29.91 GB across 911 ticks.
+
+Both causes were fixed where they were, not worked around: maintenance runs on a thread the
+warehouse owns and the server starts at boot, and the warehouse's own size is a watched
+measure with a stated budget enforced *in the loop*, so a breach is reported while there is
+still room to write the report.
+
+### Two defects the passing run reported about itself
+
+**The fan-out alarm never de-duplicated.** It keyed a "report once" set on its own rendered
+message, and the message counts batches --- so every rendering was unique and a standing
+condition printed 168 times, which is exactly what the code's own comment forbids. It now
+keys on the shape of the strain: which table, the average rounded to a whole partition, and
+the widest batch. A *worsening* condition is a different condition and is still reported.
+
+**And what it was reporting was a workload nothing produces.** Every row was dated `id % 90`,
+in the fill and in the steady-state rounds alike, so every batch touched all ninety
+partitions for the whole run. That is a backfill --- which the fill genuinely is --- and it
+is not what arrival looks like afterwards. A source feeding a warehouse continuously produces
+rows dated *now*, touching one partition or two across a midnight.
+
+So the alarm was right about what it was shown, and what it was shown was a backfill labelled
+as arrival. The harness now models both, with the newest day advancing as the run goes on so
+the hot partition moves and compaction has to keep up with a partition being appended to
+rather than one that is finished. **The daily axis `FR-STORE-20` mandates is not the
+problem**; the harness's idea of arrival was.
 
 ### §10.8 — A gateway that refuses to become the bulk plane
 
@@ -1706,7 +1745,7 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,637 tests, none of which needs a database
+cargo test --workspace           # 1,643 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
 python3 tools/mutation-audit.py  # 357 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
