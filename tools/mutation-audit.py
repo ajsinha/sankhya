@@ -1702,6 +1702,18 @@ CATALOGUE = [
      "            if false {",
      "sankhya-cube"),
 
+    ("cube: store a materialised cell rounded, so the fast path drifts from the slow one",
+     "crates/sankhya-cube/src/store.rs",
+     "        for component in sum.components() {\n            exact.values().append_value(*component);\n        }",
+     "        exact.values().append_value(sum.to_f64());",
+     "sankhya-cube"),
+
+    ("cube: store every scope's cuboid in one table, so one principal reads another's",
+     "crates/sankhya-cube/src/materialise.rs",
+     "            self.snapshot,\n            self.scope\n        );",
+     "            self.snapshot,\n            0\n        );",
+     "sankhya-cube"),
+
     # --- a server reading a warehouse it is also maintaining -------------------
 
     ("server: never re-resolve a table, so a retired file breaks every later query",

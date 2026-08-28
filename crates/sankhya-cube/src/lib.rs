@@ -47,6 +47,7 @@ pub mod materialise;
 pub mod model;
 pub mod navigate;
 pub mod overlay;
+pub mod store;
 pub mod validate;
 pub mod version;
 

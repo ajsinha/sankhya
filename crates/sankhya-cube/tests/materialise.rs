@@ -43,8 +43,8 @@ fn a_new_snapshot_is_a_different_key_and_therefore_a_miss() {
     // FR-QUERY-20's whole invalidation story: files are immutable and every key embeds the
     // snapshot, so a new commit misses rather than hitting something stale.
     let cuboid = Cuboid::of(&["entity"]);
-    let before = Key::new(0xabc, 100, cuboid.clone());
-    let after = Key::new(0xabc, 101, cuboid);
+    let before = Key::unrestricted(0xabc, 100, cuboid.clone());
+    let after = Key::unrestricted(0xabc, 101, cuboid);
     assert_ne!(before.table("figures"), after.table("figures"));
 }
 
@@ -53,8 +53,8 @@ fn a_new_definition_is_a_different_key_too() {
     // The half that has no log to derive it from — see `crate::version`.
     let cuboid = Cuboid::of(&["entity"]);
     assert_ne!(
-        Key::new(1, 100, cuboid.clone()).table("figures"),
-        Key::new(2, 100, cuboid).table("figures")
+        Key::unrestricted(1, 100, cuboid.clone()).table("figures"),
+        Key::unrestricted(2, 100, cuboid).table("figures")
     );
 }
 
@@ -63,20 +63,20 @@ fn two_cuboids_cannot_share_a_table_by_splitting_a_name_differently() {
     // `a_b` + `c` against `a` + `b_c`: joined on a separator alone these render
     // identically, and the two cuboids then share storage — one cube's totals served for
     // another's query. A count of dimensions does not help; both have two.
-    let one = Key::new(1, 1, Cuboid::of(&["a_b", "c"]));
-    let two = Key::new(1, 1, Cuboid::of(&["a", "b_c"]));
+    let one = Key::unrestricted(1, 1, Cuboid::of(&["a_b", "c"]));
+    let two = Key::unrestricted(1, 1, Cuboid::of(&["a", "b_c"]));
     assert_ne!(one.table("figures"), two.table("figures"));
 
     // And the same trap on the cube name, which is prefixed for the same reason.
     assert_ne!(
-        Key::new(1, 1, Cuboid::of(&["x"])).table("a_b"),
-        Key::new(1, 1, Cuboid::of(&["b", "x"])).table("a")
+        Key::unrestricted(1, 1, Cuboid::of(&["x"])).table("a_b"),
+        Key::unrestricted(1, 1, Cuboid::of(&["b", "x"])).table("a")
     );
 }
 
 #[test]
 fn the_same_key_always_renders_the_same_table() {
-    let key = Key::new(7, 9, Cuboid::of(&["entity", "period"]));
+    let key = Key::unrestricted(7, 9, Cuboid::of(&["entity", "period"]));
     assert_eq!(key.table("figures"), key.table("figures"));
     assert_ne!(key.table("figures"), key.table("totals"), "and cubes do not share");
 }
@@ -256,4 +256,47 @@ proptest! {
             prop_assert_eq!(a.to_bits(), b.to_bits(), "at {:?}", address);
         }
     }
+}
+
+// --- the scope is part of where a cuboid lives ---------------------------
+
+#[test]
+fn two_scopes_are_two_tables() {
+    // The strongest form the separation can take. A materialised cuboid is a published
+    // table, so two scopes are two files with two names — and a bug in the lookup logic
+    // cannot serve one scope's rows to another, because the rows are not in the file being
+    // read.
+    let cuboid = Cuboid::of(&["region"]);
+    let restricted = Key::new(1, 100, 0xdead_beef, cuboid.clone());
+    let unrestricted = Key::unrestricted(1, 100, cuboid);
+
+    assert_ne!(
+        restricted.table("figures"),
+        unrestricted.table("figures"),
+        "a cuboid computed over one principal's rows must not be stored where another's \
+         query will find it"
+    );
+}
+
+#[test]
+fn the_unrestricted_scope_is_named_rather_than_written_as_zero() {
+    // A caller reaching for this is asserting the cells behind it were computed over every
+    // row. That assertion should be legible at the call site rather than being a bare 0.
+    let cuboid = Cuboid::of(&["region"]);
+    assert_eq!(
+        Key::unrestricted(1, 100, cuboid.clone()),
+        Key::new(1, 100, 0, cuboid)
+    );
+}
+
+#[test]
+fn a_scope_cannot_be_confused_with_a_snapshot() {
+    // Both are fixed-width hex in the rendered name, so a cuboid at snapshot 5 under scope 9
+    // must not render like one at snapshot 9 under scope 5. Fixed width is what prevents it,
+    // and the same reasoning as the length prefixes on dimensions.
+    let cuboid = Cuboid::of(&["region"]);
+    assert_ne!(
+        Key::new(1, 5, 9, cuboid.clone()).table("figures"),
+        Key::new(1, 9, 5, cuboid).table("figures")
+    );
 }

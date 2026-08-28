@@ -53,6 +53,19 @@ pub struct Key {
     pub definition: u64,
     /// The snapshot the cuboid was computed at.
     pub snapshot: u64,
+    /// **What the principal who caused it was permitted to see.**
+    ///
+    /// From `Guard::scope_digest`, and part of the key for the same reason it is part of the
+    /// hydration cache's: an aggregate computed over the rows one principal may read is not
+    /// an answer for another, so anything that stores an aggregate must key it by the scope
+    /// it was computed under.
+    ///
+    /// Here the consequence is stronger than a cache miss. A materialised cuboid is a
+    /// **published table**, so two scopes are two tables --- separate files, separate names,
+    /// nothing shared. That is the strongest form the separation can take: a bug in the
+    /// lookup logic cannot serve one scope's rows to another, because the rows are not in
+    /// the file being read.
+    pub scope: u64,
     /// Which cuboid.
     pub cuboid: Cuboid,
 }
@@ -60,8 +73,18 @@ pub struct Key {
 impl Key {
     /// A key.
     #[must_use]
-    pub const fn new(definition: u64, snapshot: u64, cuboid: Cuboid) -> Self {
-        Self { definition, snapshot, cuboid }
+    pub const fn new(definition: u64, snapshot: u64, scope: u64, cuboid: Cuboid) -> Self {
+        Self { definition, snapshot, scope, cuboid }
+    }
+
+    /// A key for a cuboid computed with nothing withheld.
+    ///
+    /// The unrestricted scope, named rather than written as a bare zero: a caller reaching
+    /// for this is asserting that the cells behind it were computed over every row, and that
+    /// assertion should be legible at the call site.
+    #[must_use]
+    pub const fn unrestricted(definition: u64, snapshot: u64, cuboid: Cuboid) -> Self {
+        Self::new(definition, snapshot, 0, cuboid)
     }
 
     /// The table this cuboid is published as.
@@ -76,10 +99,11 @@ impl Key {
     #[must_use]
     pub fn table(&self, cube: &str) -> String {
         let mut out = format!(
-            "__cube_{}_{cube}_{:016x}_{:016x}",
+            "__cube_{}_{cube}_{:016x}_{:016x}_{:016x}",
             cube.len(),
             self.definition,
-            self.snapshot
+            self.snapshot,
+            self.scope
         );
         for dimension in self.cuboid.dimensions() {
             out.push_str(&format!("_{}_{dimension}", dimension.len()));
