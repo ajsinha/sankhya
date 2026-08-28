@@ -9,7 +9,7 @@ mod catalogues;
 mod logging;
 mod package;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -135,6 +135,9 @@ fn main() -> ExitCode {
 
     let run_all = task.is_empty() || task == "check-all";
 
+    if run_all || task == "check-invariants" {
+        failed |= !check_invariants(&root);
+    }
     if run_all || task == "check-writers" {
         failed |= !check_writers(&root);
     }
@@ -205,6 +208,7 @@ fn main() -> ExitCode {
                 | "check-mutations"
                 | "check-doc-numbers"
                 | "check-writers"
+                | "check-invariants"
                 | "check-logging"
                 | "check-package"
                 | "check-catalogues"
@@ -214,7 +218,7 @@ fn main() -> ExitCode {
     {
         eprintln!(
             "usage: cargo xtask \
-             [check-all|check-writers|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
+             [check-all|check-invariants|check-writers|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
              |check-features|check-lints|check-mutations|check-doc-numbers\
              |check-catalogues|write-catalogues|check-logging|check-package|check-performance]"
         );
@@ -1534,6 +1538,47 @@ mod tests {
     }
 
     #[test]
+    /// A document naming a check that does not exist must be rejected.
+    #[test]
+    fn an_invariant_naming_a_check_that_does_not_run_is_rejected() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        std::fs::create_dir_all(dir.path().join("docs")).expect("creating docs");
+        // Every real check, plus one that does not exist.
+        let mut text = String::from("| a rule | a reason | `check-imaginary` |\n");
+        for check in super::KNOWN_CHECKS {
+            text.push_str(&format!("| r | w | `{check}` |\n"));
+        }
+        std::fs::write(dir.path().join("docs/INVARIANTS.md"), text).expect("writing");
+        assert!(
+            !super::check_invariants(dir.path()),
+            "a document naming a check that does not run was accepted"
+        );
+    }
+
+    /// A check that runs and is documented nowhere must be rejected.
+    ///
+    /// The direction that found six of them on the day it was written.
+    #[test]
+    fn a_check_nobody_documented_is_rejected() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        std::fs::create_dir_all(dir.path().join("docs")).expect("creating docs");
+        std::fs::write(
+            dir.path().join("docs/INVARIANTS.md"),
+            "| a rule | a reason | `check-layers` |\n",
+        )
+        .expect("writing");
+        assert!(!super::check_invariants(dir.path()));
+    }
+
+    #[test]
+    fn the_real_invariants_document_names_every_check_and_no_others() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the workspace root")
+            .to_path_buf();
+        assert!(super::check_invariants(&root));
+    }
+
     fn milestones_in_progress_are_read_from_the_status_table() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -1660,3 +1705,80 @@ fn check_writers(root: &Path) -> bool {
     }
     ok
 }
+
+/// Every check `docs/INVARIANTS.md` names must exist.
+///
+/// # Why a document about enforcement needs enforcing
+///
+/// `INVARIANTS.md` lists the rules this system holds and, for each, where it is enforced.
+/// That third column is the whole value of the document: a rule with a check behind it is a
+/// guarantee, and a rule without one is a hope. If the column can name a check that has been
+/// renamed or deleted, the document quietly turns every hope into an apparent guarantee ---
+/// which is the precise failure the document was written about.
+///
+/// So the names are extracted and looked up. A rule honestly marked *nothing yet* is left
+/// alone; it is already saying it is not enforced.
+fn check_invariants(root: &Path) -> bool {
+    println!("== check-invariants ==");
+    let path = root.join("docs/INVARIANTS.md");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        eprintln!("  MISSING        docs/INVARIANTS.md does not exist");
+        return false;
+    };
+
+    let mut named: BTreeSet<String> = BTreeSet::new();
+    for token in text.split(|c: char| !(c.is_alphanumeric() || c == '-')) {
+        if token.starts_with("check-") && token.len() > 6 {
+            named.insert(token.to_string());
+        }
+    }
+
+    let mut ok = true;
+    for check in &named {
+        if !KNOWN_CHECKS.contains(&check.as_str()) {
+            eprintln!(
+                "  UNKNOWN CHECK  docs/INVARIANTS.md names `{check}`, which xtask does not \
+                 run. A document that can name a check nobody runs turns every rule in it \
+                 into an apparent guarantee"
+            );
+            ok = false;
+        }
+    }
+
+    // The reverse: a check that enforces something nobody wrote down.
+    for check in KNOWN_CHECKS {
+        if !named.contains(*check) {
+            eprintln!(
+                "  UNDOCUMENTED   `{check}` runs on every build and docs/INVARIANTS.md does \
+                 not say what it protects. A rule nobody can find is a rule nobody keeps"
+            );
+            ok = false;
+        }
+    }
+
+    if ok {
+        println!("   {} named check(s), all of which run", named.len());
+    }
+    ok
+}
+
+/// Every check this tool runs.
+///
+/// Listed once, so the documentation check and the dispatch cannot disagree about what
+/// exists.
+const KNOWN_CHECKS: &[&str] = &[
+    "check-invariants",
+    "check-writers",
+    "check-layers",
+    "check-loc",
+    "check-vocabulary",
+    "check-dupes",
+    "check-docs",
+    "check-features",
+    "check-lints",
+    "check-mutations",
+    "check-catalogues",
+    "check-logging",
+    "check-package",
+    "check-doc-numbers",
+];

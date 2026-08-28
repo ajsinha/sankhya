@@ -2164,6 +2164,20 @@ CATALOGUE = [
      "        commit(&self.root, 0, &[Action::Metadata(metadata)]).map_err(|error| {",
      "sankhya-publish"),
 
+    # --- the invariants document names every check, and no others ----------
+
+    ("docs: name a check in INVARIANTS.md that does not run",
+     "xtask/src/main.rs",
+     "        if !KNOWN_CHECKS.contains(&check.as_str()) {",
+     "        if false {",
+     "xtask"),
+
+    ("docs: run a check that INVARIANTS.md documents nowhere",
+     "xtask/src/main.rs",
+     "        if !named.contains(*check) {",
+     "        if false {",
+     "xtask"),
+
     # --- the soak writes nothing outside the project root ------------------
 
     ("soak: accept a warehouse outside the project root",
@@ -2184,6 +2198,18 @@ CATALOGUE = [
      "xtask/src/main.rs",
      "            if !root.join(&named).exists() {",
      "            if false {",
+    ("docs: name a check in INVARIANTS.md that does not run",
+     "xtask/src/main.rs",
+     "        if !KNOWN_CHECKS.contains(&check.as_str()) {",
+     "        if false {",
+     "xtask"),
+
+    ("docs: run a check that INVARIANTS.md documents nowhere",
+     "xtask/src/main.rs",
+     "        if !named.contains(*check) {",
+     "        if false {",
+     "xtask"),
+
      "xtask"),
 
 ]
