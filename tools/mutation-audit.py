@@ -1702,6 +1702,12 @@ CATALOGUE = [
      "            if false {",
      "sankhya-cube"),
 
+    ("server: key a cube's cells on read_as_of, so the snapshot never moves",
+     "crates/sankhya-server/src/wiring.rs",
+     "            let snapshot = self.snapshot_of(cube.fact_table());",
+     "            let snapshot = self.settings.read_as_of.get();",
+     "sankhya-server"),
+
     # --- describing a cube, so a client need not hardcode it ------------------
 
     ("cube-sql: describe levels without their order, so a hierarchy draws alphabetically",

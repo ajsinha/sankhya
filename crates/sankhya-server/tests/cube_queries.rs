@@ -391,3 +391,42 @@ async fn describing_a_cube_does_not_read_its_fact_table() {
         .expect("listing needs no cells");
     assert_eq!(result.rows.len(), 1);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_snapshot_a_cube_reports_is_the_table_s_version() {
+    // The test that catches a stale cache key, and whose absence let a real defect ship.
+    //
+    // Hydration is cached across statements — it has to be, or every query pays the fact
+    // table read the cube exists to avoid. The cache treats a new snapshot as a miss and has
+    // a unit test saying so. But the *caller* passed `settings.read_as_of`, which defaults to
+    // `u64::MAX` and is read once at startup: the snapshot in the key never moved, so the
+    // first hydration would have been served for the life of the process.
+    //
+    // A guard that is correct and never reached is the shape of defect this warehouse keeps
+    // finding, and every unit involved was behaving perfectly. What catches it is asserting
+    // the *value*: the snapshot a cube reports must be the version its table actually stands
+    // at, not a sentinel meaning "everything".
+    let (server, _dir) = server_with(policy("reader", None));
+    connect(&server, "ana");
+
+    let result = server
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .expect("the cube answers");
+
+    let snapshots = first_column(&result, "snapshot");
+    assert!(!snapshots.is_empty(), "the answer has rows");
+    for snapshot in &snapshots {
+        assert_ne!(
+            snapshot,
+            &u64::MAX.to_string(),
+            "`u64::MAX` is `read_as_of`'s default meaning \"everything published\". Reported \
+             as the snapshot it makes the cache key a constant, so the first hydration is \
+             served forever and a cube silently stops tracking its table"
+        );
+        let version: u64 = snapshot.parse().expect("a numeric snapshot");
+        assert!(
+            version <= 8,
+            "the fixture commits twice, so the version is small and real: {version}"
+        );
+    }
+}

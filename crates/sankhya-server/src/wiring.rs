@@ -492,12 +492,24 @@ impl Server {
             let Some(scope) = self.scope_for(principal, cube.fact_table()) else {
                 continue;
             };
+            // The table's *current* version, not the configured `read_as_of`.
+            //
+            // `read_as_of` defaults to `u64::MAX` --- "everything published" --- and is read
+            // once at startup, so keying the cache on it makes the snapshot a constant for
+            // the life of the process. The cache would then hold the first hydration forever
+            // and serve it after every subsequent commit.
+            //
+            // `Hydrated` treats a new snapshot as a miss and has a test saying so. That
+            // property is worth nothing if the caller passes something that never changes,
+            // which is the shape of defect this warehouse keeps finding: a guard that is
+            // correct and never reached.
+            let snapshot = self.snapshot_of(cube.fact_table());
             for measure in cube.measures() {
                 let key = sankhya_cube_sql::hydrated::Key {
                     cube: cube.name().to_string(),
                     measure: measure.name.clone(),
                     definition_version: cube.version(),
-                    snapshot: self.settings.read_as_of.get(),
+                    snapshot,
                     scope,
                 };
                 if let Some(held) = self.hydrated.get(&key) {
@@ -511,7 +523,7 @@ impl Server {
                         cube.name(),
                         Arc::new(cube.clone()),
                         measure,
-                        self.settings.read_as_of.get(),
+                        snapshot,
                     ))
                 });
                 // A cube that will not hydrate is left unpublished rather than reported here.
@@ -530,6 +542,21 @@ impl Server {
         // already knowing the model is a surface only its author can use, and a picker that
         // hardcodes a cube's dimensions is a picker that drifts from the cube.
         sankhya_cube_sql::describe::register(context, Arc::new(self.cubes.clone()), catalog);
+    }
+
+    /// The version a table's log currently stands at.
+    ///
+    /// Zero when the table cannot be found or its log cannot be read. Zero rather than
+    /// `u64::MAX`: an unreadable log must not look like a snapshot that will never move, or
+    /// a cube over it would be cached once and never refreshed. A wrong-but-low snapshot
+    /// causes a rehydration; a wrong-but-constant one causes a stale answer.
+    fn snapshot_of(&self, table: &str) -> u64 {
+        self.servable
+            .iter()
+            .find(|servable| servable.reference.table == table)
+            .and_then(|servable| sankhya_table_delta::live_files(&servable.root).ok())
+            .and_then(|live| live.version)
+            .unwrap_or(0)
     }
 
     /// What this principal may see of a table, as a value.
