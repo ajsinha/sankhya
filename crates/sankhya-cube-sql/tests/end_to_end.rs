@@ -208,3 +208,141 @@ async fn a_definition_naming_a_table_that_does_not_exist_is_refused() {
             .is_err()
     );
 }
+
+// --- the cross-check: two engines, one answer ---------------------------
+
+/// A fact table of `n` rows over three dimensions.
+///
+/// Values are small integers held as `f64`, so every partial sum is exactly representable
+/// and the comparison below can be by equality rather than by tolerance. That is deliberate:
+/// a tolerance would hide precisely the one-ULP class of defect that exact summation exists
+/// to prevent, and this test would then agree with a broken cube.
+fn many_facts(n: usize) -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("region_key", DataType::Utf8, true),
+        Field::new("period_key", DataType::Utf8, true),
+        Field::new("amount", DataType::Float64, true),
+    ]));
+    const REGIONS: [&str; 4] = ["north", "south", "east", "west"];
+    const PERIODS: [&str; 3] = ["jan", "feb", "mar"];
+
+    let regions: Vec<&str> = (0..n).map(|i| REGIONS[i % REGIONS.len()]).collect();
+    let periods: Vec<&str> = (0..n).map(|i| PERIODS[i % PERIODS.len()]).collect();
+    #[allow(clippy::cast_precision_loss)]
+    let amounts: Vec<f64> = (0..n).map(|i| ((i % 977) + 1) as f64).collect();
+
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(StringArray::from(regions)),
+            Arc::new(StringArray::from(periods)),
+            Arc::new(Float64Array::from(amounts)),
+        ],
+    )
+    .expect("well-formed")
+}
+
+#[tokio::test]
+async fn the_cubes_totals_agree_with_plain_sql_over_the_same_table() {
+    // The strongest check available here: the same question answered twice, by two
+    // different paths through the engine. The cube hydrates, aggregates through its own
+    // exact reduction and its own address map; the relational query aggregates the table
+    // directly. Nothing is shared between them but the rows.
+    //
+    // A cube that agrees with itself proves nothing. A cube that agrees with a completely
+    // separate implementation over fifty thousand rows is evidence.
+    const ROWS: usize = 50_000;
+    let context = SessionContext::new();
+    context
+        .register_batch("fact_figures", many_facts(ROWS))
+        .expect("registered");
+    let catalog = Arc::new(CubeCatalog::new());
+    register(&context, Arc::clone(&catalog));
+
+    let absorbed = publish_from_fact_table(&context, &catalog, "figures", cube(), &AMOUNT, 1)
+        .await
+        .expect("hydrated");
+    assert_eq!(absorbed.placed as usize, ROWS, "every row reached the cube");
+
+    // The grand total, both ways.
+    let relational = scalar(&context, "SELECT sum(amount) FROM fact_figures").await;
+    let through_cube = scalar(
+        &context,
+        "SELECT sum(amount) FROM cube_rollup('figures', 'amount', 'by=region')",
+    )
+    .await;
+    assert_eq!(relational, through_cube, "the grand total disagrees between engines");
+
+    // And per region, which is where an address-mapping fault would show and a grand total
+    // would not: misfiling every row into the wrong region leaves the sum unchanged.
+    for region in ["north", "south", "east", "west"] {
+        let relational = scalar(
+            &context,
+            &format!(
+                "SELECT sum(amount) FROM fact_figures WHERE region_key = '{region}'"
+            ),
+        )
+        .await;
+        let through_cube = scalar(
+            &context,
+            &format!(
+                "SELECT amount FROM cube_rollup('figures', 'amount', \
+                 'by=region, where=region:{region}')"
+            ),
+        )
+        .await;
+        assert_eq!(relational, through_cube, "region {region} disagrees");
+    }
+}
+
+#[tokio::test]
+async fn a_two_dimensional_breakdown_agrees_with_the_equivalent_group_by() {
+    // The same check one grain finer, against SQL's own GROUP BY.
+    const ROWS: usize = 20_000;
+    let context = SessionContext::new();
+    context
+        .register_batch("fact_figures", many_facts(ROWS))
+        .expect("registered");
+    let catalog = Arc::new(CubeCatalog::new());
+    register(&context, Arc::clone(&catalog));
+    publish_from_fact_table(&context, &catalog, "figures", cube(), &AMOUNT, 1)
+        .await
+        .expect("hydrated");
+
+    let relational = rows_of(
+        &context,
+        "SELECT region_key, period_key, sum(amount) FROM fact_figures \
+         GROUP BY region_key, period_key ORDER BY region_key, period_key",
+    )
+    .await;
+    let through_cube = rows_of(
+        &context,
+        "SELECT region, period, amount FROM cube_rollup('figures', 'amount', \
+         'by=region|period') ORDER BY region, period",
+    )
+    .await;
+
+    // Non-vacuous: four regions by three periods, and every group populated. A comparison
+    // of two empty lists is the way this kind of test passes while proving nothing.
+    assert_eq!(relational.len(), 12, "{relational:#?}");
+    assert_eq!(relational, through_cube, "the breakdown disagrees between engines");
+}
+
+async fn rows_of(context: &SessionContext, sql: &str) -> Vec<String> {
+    let batches = context.sql(sql).await.expect("planned").collect().await.expect("ran");
+    let mut out = Vec::new();
+    for batch in &batches {
+        for row in 0..batch.num_rows() {
+            let mut cells = Vec::new();
+            for column in batch.columns() {
+                cells.push(format!(
+                    "{:?}",
+                    datafusion::common::ScalarValue::try_from_array(column, row)
+                        .expect("scalar")
+                ));
+            }
+            out.push(cells.join(" | "));
+        }
+    }
+    out
+}
