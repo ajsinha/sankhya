@@ -13,6 +13,8 @@
     clippy::float_cmp
 )]
 
+use arrow_array::{Float64Array, RecordBatch, StringArray};
+use arrow_schema::{DataType, Field, Schema};
 use datafusion::prelude::SessionContext;
 use proptest::prelude::*;
 use sankhya_cube::cells::Cells;
@@ -24,7 +26,7 @@ use sankhya_cube::{Definition, Dimension, Level};
 use sankhya_cube_algo::lattice::Cuboid;
 use sankhya_cube_algo::measure::{Along, Measure, Rule};
 use sankhya_cube_sql::catalog::{CubeCatalog, Published};
-use sankhya_cube_sql::register;
+use sankhya_cube_sql::{publish_from_fact_table, register};
 use sankhya_graph_algo::budget::Budget;
 use sankhya_graph_algo::csr::{AdjacencyBuilder, Edge, Validity};
 use sankhya_graph_algo::ids::{EdgeMask, EdgeType, VertexId};
@@ -308,8 +310,20 @@ const WIDE: Measure = Measure {
     ],
 };
 
-/// A six-dimension cube, published and queryable with nothing built beforehand.
-fn six_dimensional() -> SessionContext {
+/// A six-dimension cube over a table registered in the session, hydrated on publication.
+///
+/// # What "no cube-build step" does and does not mean
+///
+/// The criterion contrasts with the processing pass every product in this category requires:
+/// a job that reads the facts and **precomputes aggregates**, after which the cube is
+/// queryable and until which it is not. Nothing here precomputes a cuboid. The facts are
+/// read and the aggregation happens when the query runs.
+///
+/// It does not mean the server guesses which table holds the facts. Reading the fact table
+/// is a data-load, and it is the same load a relational query pays. Saying so precisely
+/// matters more than claiming the criterion's own words: a test that published pre-shaped
+/// cells would satisfy the sentence and demonstrate nothing.
+async fn six_dimensional() -> SessionContext {
     let dimensions: Vec<Dimension> = SIX
         .iter()
         .map(|name| {
@@ -327,35 +341,40 @@ fn six_dimensional() -> SessionContext {
             .expect("well-formed"),
     );
 
-    let mut cells = Cells::over(SIX.iter().map(|s| (*s).to_string()).collect());
-    // Two members per dimension, a handful of populated cells: a real cube is sparse, and
-    // materialising 2^6 of anything is not what makes this test meaningful.
-    for (index, members) in [
+    // An ordinary table, of the shape a fact table has: one key column per dimension and a
+    // measure. Nothing about it knows it is a cube.
+    let rows = [
         ["north", "jan", "x", "web", "retail", "gbp"],
         ["north", "feb", "x", "web", "retail", "gbp"],
         ["south", "jan", "y", "shop", "wholesale", "usd"],
         ["south", "feb", "y", "web", "retail", "usd"],
-    ]
-    .iter()
-    .enumerate()
-    {
-        cells
-            .add(address(members), (index as f64 + 1.0) * 10.0)
-            .expect("well-formed");
+    ];
+    let mut fields: Vec<Field> = SIX
+        .iter()
+        .map(|name| Field::new(format!("{name}_key"), DataType::Utf8, true))
+        .collect();
+    fields.push(Field::new("amount", DataType::Float64, true));
+    let schema = Arc::new(Schema::new(fields));
+
+    let mut columns: Vec<arrow_array::ArrayRef> = Vec::new();
+    for axis in 0..SIX.len() {
+        let members: Vec<&str> = rows.iter().map(|row| row[axis]).collect();
+        columns.push(Arc::new(StringArray::from(members)));
     }
+    #[allow(clippy::cast_precision_loss)]
+    let amounts: Vec<f64> = (0..rows.len()).map(|i| (i as f64 + 1.0) * 10.0).collect();
+    columns.push(Arc::new(Float64Array::from(amounts)));
+
+    let batch = RecordBatch::try_new(schema, columns).expect("well-formed");
+    let context = SessionContext::new();
+    context.register_batch("fact_wide", batch).expect("registered");
 
     let catalog = Arc::new(CubeCatalog::new());
-    catalog.publish(
-        "wide",
-        Published {
-            cube,
-            cells: Arc::new(cells),
-            snapshot: 7,
-            completeness: Completeness::complete(4),
-        },
-    );
-    let context = SessionContext::new();
-    register(&context, catalog);
+    register(&context, Arc::clone(&catalog));
+    let absorbed = publish_from_fact_table(&context, &catalog, "wide", cube, &WIDE, 7)
+        .await
+        .expect("hydrated from the table its definition names");
+    assert_eq!(absorbed.placed, 4, "every fact reached the cube");
     context
 }
 
@@ -374,7 +393,7 @@ async fn count(context: &SessionContext, sql: &str) -> usize {
 
 #[tokio::test]
 async fn criterion_5_slice_dice_rollup_and_drilldown_from_sql_over_six_dimensions() {
-    let context = six_dimensional();
+    let context = six_dimensional().await;
 
     // Roll-up: six dimensions down to one. No build step — the cube was published and this
     // is the first statement against it.
