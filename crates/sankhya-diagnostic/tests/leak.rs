@@ -66,6 +66,12 @@ fn steady_run(minutes: i64) -> Samples {
     });
     series(&mut samples, "queries", minutes, |m| (m as f64) * 500.0);
     series(&mut samples, "audit_records", minutes, |m| (m as f64) * 500.0);
+    series(&mut samples, "warehouse_bytes", minutes, |m| {
+        // Grows as data arrives and is reclaimed by retention, holding well under the stated
+        // budget. A warehouse that only ever grows is the finding this measure exists for —
+        // the run before it was added exhausted its disk and died writing its own log.
+        8.0 * 1024.0 * 1024.0 * 1024.0 + ((m % 20) as f64) * 64.0 * 1024.0 * 1024.0
+    });
     series(&mut samples, "live_files", minutes, |m| {
         // Writes add, compaction reclaims, and the peaks stay level.
         60.0 + ((m % 20) as f64) * 8.0
@@ -475,5 +481,29 @@ fn a_sawtooth_is_judged_from_its_peaks_even_when_it_ends_in_a_trough() {
     assert!(
         *seconds < horizon(minutes),
         "and from the peaks it is inside the horizon"
+    );
+}
+
+#[test]
+fn the_baseline_supplies_every_watched_measure() {
+    // Or the baseline is not a healthy *run*, it is a healthy subset — and every injection
+    // test below inherits the gap. Adding `warehouse_bytes` to the watched set broke two
+    // tests precisely this way: they failed because a measure had no samples, not because
+    // of anything they injected.
+    //
+    // Asserted against the declaration rather than a list here, so the next measure someone
+    // adds fails this test rather than the ones that matter.
+    let samples = steady_run(30);
+    let measured: std::collections::BTreeSet<&str> = samples.measured().collect();
+    let mut missing = Vec::new();
+    for declared in sankhya_diagnostic::soak::measure::WATCHED {
+        if !measured.contains(declared.name) {
+            missing.push(declared.name);
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "the baseline does not supply {missing:?}, so every test that uses it is judging a \
+         run with a measure that was never taken"
     );
 }

@@ -95,3 +95,32 @@ impl Samples {
         }
     }
 }
+
+/// How many bytes a directory tree occupies.
+///
+/// Walked rather than read from `statvfs`, because the question is what *this run* is
+/// consuming, not what else is on the volume. A soak that reported free space would fail
+/// when somebody else filled the disk and pass when it filled the disk itself.
+#[must_use]
+pub fn tree_bytes(path: &std::path::Path) -> Option<f64> {
+    fn walk(dir: &std::path::Path, total: &mut u64) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.metadata() {
+                Ok(metadata) if metadata.is_dir() => walk(&path, total),
+                Ok(metadata) => *total = total.saturating_add(metadata.len()),
+                Err(_) => {}
+            }
+        }
+    }
+    if !path.exists() {
+        return None;
+    }
+    let mut total = 0u64;
+    walk(path, &mut total);
+    #[allow(clippy::cast_precision_loss)]
+    Some(total as f64)
+}

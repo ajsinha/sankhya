@@ -230,6 +230,14 @@ async fn a_short_run_under_concurrent_load_is_judged() {
         samples.record("audit_records", at, Some(server.audit_len() as f64));
         let live = sankhya_table_delta::live_files(&table_root).expect("replays");
         samples.record("live_files", at, Some(live.files.len() as f64));
+        // Every watched measure, or the report is judging a run with one that was never
+        // taken --- which reads as a failure rather than as a gap, and points at the wrong
+        // thing entirely.
+        samples.record(
+            "warehouse_bytes",
+            at,
+            sankhya_diagnostic::soak::sample::tree_bytes(&warehouse_root),
+        );
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]

@@ -39,6 +39,7 @@ use sankhya_diagnostic::soak::report::supported_horizon;
 use sankhya_diagnostic::soak::sample::{file_bytes, open_files, resident_bytes, Samples};
 use sankhya_diagnostic::soak::Report;
 use sankhya_maintenance::{
+    plan_orphan_cleanup, sweep, FileOnDisk, OrphanPolicy,
     plan_compaction, run_compaction, CompactionPolicy, FileStat, PartitionState,
 };
 use sankhya_publish::{Accumulator, FanOut, Publication};
@@ -341,6 +342,20 @@ fn soak() {
             }
         }
 
+        // Reclamation on the same duty cycle as compaction.
+        //
+        // Compaction *replaces* files; it does not remove what it replaced --- retention does,
+        // after a grace period, and nothing was driving it. Over forty-five minutes that
+        // difference was the whole footprint: a run targeting ten gigabytes consumed sixty.
+        //
+        // A soak that compacts but never reclaims is measuring half the maintenance loop and
+        // reporting on the system as though it were the whole one.
+        if round % 8 == 0 {
+            for root in &roots {
+                reclaim(root);
+            }
+        }
+
         // Maintenance on a duty cycle, so live files are a sawtooth rather than a ramp.
         if round % 8 == 0 {
             for root in &roots {
@@ -368,6 +383,13 @@ fn soak() {
             "history_bytes",
             at_micros,
             Some(file_bytes(&artefacts(&at).join("diagnostic-history.tsv")).unwrap_or(0.0)),
+        );
+        // What this run is consuming. The previous run filled the disk and died writing its
+        // own log; nothing was watching the one resource it actually ran out of.
+        samples.record(
+            "warehouse_bytes",
+            at_micros,
+            sankhya_diagnostic::soak::sample::tree_bytes(&at),
         );
         #[allow(clippy::cast_precision_loss)]
         samples.record("queries", at_micros, Some(planned as f64));
@@ -749,6 +771,71 @@ fn append_one(accumulator: &mut Accumulator<'_>, sequence: u64) -> bool {
             Lsn::new(sequence.saturating_add(1)),
         )
         .is_ok()
+}
+
+/// Remove files no live version refers to, through the product's own sweep.
+///
+/// Compaction leaves its inputs on disk deliberately: a reader holding an older snapshot can
+/// still resolve them, and removing one out from under such a reader is the failure the
+/// grace period exists to prevent. Something has to come along afterwards and take them, and
+/// in this harness nothing did.
+fn reclaim(root: &Path) -> bool {
+    let Ok(live) = live_files(root) else {
+        return false;
+    };
+    let live_names: std::collections::BTreeSet<String> =
+        live.files.iter().map(|f| f.path.clone()).collect();
+
+    // Everything on disk, relative to the table root, including inside partitions.
+    let mut on_disk: Vec<FileOnDisk> = Vec::new();
+    collect_files(root, root, &mut on_disk);
+    if on_disk.is_empty() {
+        return false;
+    }
+
+    // `reachable` is what an older snapshot could still resolve. This harness reads only at
+    // the newest version, so nothing beyond the live set is reachable --- which is the
+    // aggressive end of the policy and exactly what a soak should exercise.
+    let plan = plan_orphan_cleanup(
+        &on_disk,
+        &live_names,
+        &std::collections::BTreeSet::new(),
+        &OrphanPolicy::default(),
+    );
+    let report = sweep(&plan, root);
+    !report.removed.is_empty()
+}
+
+/// Every file under `dir`, named relative to `base`.
+fn collect_files(base: &Path, dir: &Path, out: &mut Vec<FileOnDisk>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        // The log is not data and is never an orphan.
+        if name == "_delta_log" {
+            continue;
+        }
+        match entry.metadata() {
+            Ok(metadata) if metadata.is_dir() => collect_files(base, &path, out),
+            Ok(metadata) => {
+                if let Ok(relative) = path.strip_prefix(base) {
+                    out.push(FileOnDisk {
+                        name: relative.to_string_lossy().into_owned(),
+                        bytes: metadata.len(),
+                        // Old enough to be swept. The harness reads only at the newest
+                        // version, so nothing older is reachable and the grace period —
+                        // which exists to protect a reader holding an earlier snapshot — has
+                        // nothing to protect here.
+                        age_ticks: u64::MAX,
+                    });
+                }
+            }
+            Err(_) => {}
+        }
+    }
 }
 
 /// Compact one partition, through the product's own maintenance path.

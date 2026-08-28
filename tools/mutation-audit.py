@@ -2164,6 +2164,26 @@ CATALOGUE = [
      "        commit(&self.root, 0, &[Action::Metadata(metadata)]).map_err(|error| {",
      "sankhya-publish"),
 
+    # --- a soak watches the resource it can exhaust ------------------------
+
+    ("soak: stop watching what the warehouse consumes",
+     "crates/sankhya-diagnostic/src/soak/measure.rs",
+     "        name: \"warehouse_bytes\",",
+     "        name: \"warehouse_bytes_unwatched\",",
+     "sankhya-diagnostic"),
+
+    ("soak: measure a directory tree as empty",
+     "crates/sankhya-diagnostic/src/soak/sample.rs",
+     "                Ok(metadata) => *total = total.saturating_add(metadata.len()),",
+     "                Ok(metadata) => { let _ = metadata; }",
+     "sankhya-diagnostic"),
+
+    ("soak: count the log as part of what the data consumes",
+     "crates/sankhya-diagnostic/src/soak/sample.rs",
+     "    if !path.exists() {\n        return None;\n    }",
+     "    if false {\n        return None;\n    }",
+     "sankhya-diagnostic"),
+
     # --- compaction lands in the partition its rows belong to --------------
 
     ("maintenance: log a merged file by its bare name, losing its partition",

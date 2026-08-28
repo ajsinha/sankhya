@@ -111,6 +111,24 @@ pub static WATCHED: &[Watched] = &[
                 being recorded at all, and that is the worse direction.",
     },
     Watched {
+        name: "warehouse_bytes",
+        unit: "bytes",
+        // A **budget**, not the size of the disk. A soak is entitled to a stated amount of
+        // space and no more; a run that would need the whole volume has stopped being a
+        // measurement of the system and become a measurement of the machine.
+        //
+        // Thirty-two gigabytes against a ten-gigabyte target leaves room for compaction
+        // churn and the retention grace period. A projection crossing it inside the horizon
+        // is the finding, reported *before* the space is gone rather than discovered after.
+        bound: Bound::Steady {
+            limit: 32.0 * 1024.0 * 1024.0 * 1024.0,
+        },
+        means: "the warehouse is consuming space faster than reclamation returns it. A run \
+                that exhausts its disk stops being a measurement and becomes an incident, \
+                and it takes its own evidence with it: the last one died writing its own \
+                log, and its report is zero bytes.",
+    },
+    Watched {
         name: "live_files",
         unit: "count",
         bound: Bound::Sawtooth { limit: 1_000.0 },
