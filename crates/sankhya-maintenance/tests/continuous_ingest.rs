@@ -187,7 +187,7 @@ fn file_counts_stay_within_policy_while_capture_keeps_writing() {
         // ingest wrote flat files; it stopped being true when ingest began publishing
         // through `sankhya-publish`, which partitions on `sank_data_date`. Merging across
         // partitions would move rows out of the directory their own date names, and the
-        // count of files in one notional partition then exceeds any threshold because it is
+        // count of files in one nominal partition then exceeds any threshold because it is
         // really the count across all of them.
         //
         // The same correction the soak needed, for the same reason: partitioning multiplies

@@ -268,13 +268,34 @@ fn soak() {
     let mut refused = 0_u64;
     let mut scanned = Scanned::default();
     let mut unread = 0_u64;
+    // One accumulator per table, living for the whole run: deferral only works if what was
+    // deferred is still there next round.
+    let publications: Vec<Publication> = roots.iter().map(|root| publication(root)).collect();
+    // Reported once each, not once a round: a standing condition printed every fifteen
+    // seconds is a condition nobody reads.
+    let mut fan_out_reported: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    let mut accumulators: Vec<Accumulator<'_>> = publications
+        .iter()
+        .map(|publication| Accumulator::new(publication, FanOut::default()))
+        .collect();
 
     while started.elapsed() < deadline {
         round += 1;
 
-        // Writes: one file per table per round.
-        for root in &roots {
-            if append_one(root, round) {
+        // Writes: one batch per table per round, through the fan-out accumulator.
+        //
+        // Through the *same* guard the fill uses. An earlier version had the fill guarded
+        // and the measured loop unguarded, so the run that mattered wrote one file per
+        // partition per round --- ninety files a round --- and measured a path production
+        // does not use. A harness that guards the setup and not the measurement is measuring
+        // the wrong thing.
+        for (index, root) in roots.iter().enumerate() {
+            let _ = root;
+            let Some(accumulator) = accumulators.get_mut(index) else {
+                continue;
+            };
+            if append_one(accumulator, round) {
                 published += 1;
             } else {
                 refused += 1;
@@ -307,6 +328,18 @@ fn soak() {
             unread += 1;
         }
         scanned = scanned.and(read);
+
+        // The fan-out alarm, which ARCHITECTURE §6.4.2 calls the important one: "the guards
+        // buy time; the alarm gets the design fixed. Silently absorbing it would be the
+        // failure." A soak that runs the guards and never reports the strain is doing the
+        // absorbing.
+        for accumulator in &accumulators {
+            if let Some(why) = accumulator.strain().explain(&FanOut::default()) {
+                if fan_out_reported.insert(why.clone()) {
+                    println!("{}  FAN-OUT  {why}", stamp());
+                }
+            }
+        }
 
         // Maintenance on a duty cycle, so live files are a sawtooth rather than a ramp.
         if round % 8 == 0 {
@@ -707,15 +740,13 @@ fn next_version(root: &Path) -> u64 {
 /// Returns whether it landed. **Nothing here is swallowed**: a harness that discards write
 /// errors measures an idle system and reports that it is healthy, which is the exact class
 /// of failure a soak exists to find, committed in the soak.
-fn append_one(root: &Path, sequence: u64) -> bool {
-    let version = next_version(root);
+fn append_one(accumulator: &mut Accumulator<'_>, sequence: u64) -> bool {
     let name = format!("live-{sequence:06}.parquet");
-    publication(root)
-        .append(
-            version,
+    accumulator
+        .absorb(
             &name,
             &batch(i64::try_from(sequence).unwrap_or(0) * 10_000, 5_000),
-            Lsn::new(version),
+            Lsn::new(sequence.saturating_add(1)),
         )
         .is_ok()
 }
