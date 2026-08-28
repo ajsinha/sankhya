@@ -3426,16 +3426,21 @@ version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
+ "datafusion",
+ "sankhya-cube",
+ "sankhya-cube-sql",
  "sankhya-error",
  "sankhya-maintenance",
  "sankhya-math",
  "sankhya-publish",
+ "sankhya-readpath",
  "sankhya-table",
  "sankhya-table-delta",
  "sankhya-types",
  "sankhya-version",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

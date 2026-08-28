@@ -276,6 +276,21 @@ fn soak() {
         filling.elapsed().as_secs_f64()
     );
 
+    // --- the cube path ---------------------------------------------------
+    //
+    // Declared over the first table, so the run exercises what M7 built rather than
+    // reporting on M6's surface and calling it M7. A soak that never hydrates a cube says
+    // nothing about whether cells leak, whether cuboids accumulate, or whether hydrating
+    // under sustained write load competes with compaction --- and those are exactly the
+    // questions a soak exists to answer.
+    //
+    // Declared through the catalogue, hydrated through `publish_from_fact_table`, queried
+    // through the registered table functions. Every one is the product's own API: a soak is
+    // a client, and a client that reimplements the thing it is testing tests its own copy.
+    if let Some(first) = roots.first() {
+        declare_soak_cube(&at, first);
+    }
+
     // --- maintenance -----------------------------------------------------
     //
     // Started here and then left alone. The warehouse compacts and retires on its own
@@ -305,6 +320,8 @@ fn soak() {
     let mut refused = 0_u64;
     let mut scanned = Scanned::default();
     let mut unread = 0_u64;
+    // How many cube navigations answered.
+    let mut cube_rounds = 0_u64;
     // One accumulator per table, living for the whole run: deferral only works if what was
     // deferred is still there next round.
     let publications: Vec<Publication> = roots.iter().map(|root| publication(root)).collect();
@@ -366,6 +383,19 @@ fn soak() {
             unread += 1;
         }
         scanned = scanned.and(read);
+
+        // Hydrate and navigate the cube, on the same rotation as the scan.
+        //
+        // Its cost lands in measures that already exist: cells are held in this process, so
+        // a cube-side leak shows in `resident_bytes`; cuboids are written under the
+        // warehouse, so their population shows in `warehouse_bytes`. No new measure is
+        // needed, and adding one nothing distinguishes would be a measure to keep supplied
+        // for nothing.
+        if round % 4 == 0 {
+            if let Some(first) = roots.first() {
+                cube_rounds += u64::from(navigate_the_cube(first));
+            }
+        }
 
         // The fan-out alarm, which ARCHITECTURE §6.4.2 calls the important one: "the guards
         // buy time; the alarm gets the design fixed. Silently absorbing it would be the
@@ -464,7 +494,21 @@ fn soak() {
     }
 
     let live = worst_table(&roots);
-println!(
+    // Reported, and asserted. A soak that declared a cube and never navigated it says
+    // nothing about the cube path --- which is the failure of reporting on one milestone's
+    // surface while calling it another's, and it would look exactly like a clean run.
+    println!("{}  the cube answered {cube_rounds} time(s)", stamp());
+    // Asserted rather than merely printed, because a zero here is invisible in a report
+    // full of healthy measures.
+    //
+    // No mutation entry claims coverage of it: this test is `#[ignore]`d, so the suite the
+    // audit runs never reaches the assertion, and an entry saying otherwise would be a claim
+    // nothing checks. The guard fires when somebody runs the soak, which is when it matters.
+    assert!(
+        cube_rounds > 0,
+        "the cube was declared and never navigated; this run judges nothing about it"
+    );
+    println!(
         "{}  maintenance ran {} tick(s) and reclaimed {:.2} GB",
         stamp(),
         maintenance.ticks(),
@@ -689,6 +733,110 @@ impl Dating {
             }
         }
     }
+}
+
+/// Declare a cube over the soak's own table.
+///
+/// The soak's schema is `id`, `region`, `event_date`, `payload`, and a cube needs a numeric
+/// measure --- so `id` is the measure, summed. It is a meaningless total and an entirely
+/// real exercise of hydration, consolidation and the roll-up path, which is what a soak is
+/// for.
+fn declare_soak_cube(warehouse: &Path, table_root: &Path) {
+    use sankhya_cube::algo::{Along, Measure, Rule};
+    use sankhya_cube::model::{Definition, Dimension, Level};
+
+    let table = table_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("soak")
+        .to_string();
+    let definition = Definition::new(
+        "soak_cube",
+        table.clone(),
+        vec![Dimension {
+            name: "region".to_string(),
+            table,
+            joins_on: "region".to_string(),
+            levels: vec![Level::new("area", "region")],
+            rollups: None,
+            parent_child: None,
+        }],
+        vec![Measure::new("id", vec![Along::new("region", Rule::Sum)])],
+    );
+    if let Err(error) = sankhya_cube::catalogue::save(warehouse, &definition) {
+        eprintln!("{}  the cube could not be declared: {error}", stamp());
+    }
+}
+
+/// Hydrate the cube from the table and roll it up, returning whether it answered.
+///
+/// # Why this is worth doing every few rounds
+///
+/// Hydration reads the whole fact table, so doing it every round would make the soak a
+/// measurement of hydration rather than of the system. Every fourth round exercises the path
+/// --- cells built, held, dropped --- often enough that a leak in it accumulates visibly over
+/// forty-five minutes, and rarely enough that the write and compaction paths still dominate.
+fn navigate_the_cube(table_root: &Path) -> bool {
+    use datafusion::prelude::SessionContext;
+
+    let Ok(definition) = sankhya_cube::catalogue::load(
+        table_root.parent().and_then(Path::parent).unwrap_or(table_root),
+        "soak_cube",
+    ) else {
+        return false;
+    };
+    let Ok(cube) = definition.validate() else {
+        return false;
+    };
+    let Some(measure) = cube.measures().first().cloned() else {
+        return false;
+    };
+
+    let Ok(table) = sankhya_readpath::resolve(
+        schema(),
+        table_root,
+        sankhya_types::LsnRange::new(Lsn::new(0), Lsn::new(u64::MAX)),
+        None,
+        Lsn::new(u64::MAX),
+    ) else {
+        return false;
+    };
+
+    let context = SessionContext::new();
+    let name = table_root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("soak");
+    if context.register_table(name, Arc::new(table)).is_err() {
+        return false;
+    }
+    let catalog = Arc::new(sankhya_cube_sql::catalog::CubeCatalog::new());
+    sankhya_cube_sql::functions::register(&context, Arc::clone(&catalog));
+
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(_) => return false,
+    };
+    runtime.block_on(async {
+        if sankhya_cube_sql::publish::publish_from_fact_table(
+            &context,
+            &catalog,
+            "soak_cube",
+            Arc::new(cube),
+            &measure,
+            1,
+        )
+        .await
+        .is_err()
+        {
+            return false;
+        }
+        context
+            .sql("SELECT * FROM cube_rollup('soak_cube', 'id', 'by=region')")
+            .await
+            .ok()
+            .is_some()
+    })
 }
 
 /// One batch of rows, sized so a file is a few megabytes.

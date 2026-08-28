@@ -25,6 +25,11 @@ sankhya-table-delta = { path = "../sankhya-table-delta" }
 # the soak is a test: nothing here is compiled into anything that ships.
 sankhya-publish     = { path = "../sankhya-publish" }
 sankhya-maintenance = { path = "../sankhya-maintenance" }
+sankhya-cube        = { path = "../sankhya-cube" }
+sankhya-cube-sql    = { path = "../sankhya-cube-sql" }
+sankhya-readpath    = { path = "../sankhya-readpath" }
+datafusion          = { workspace = true }
+tokio               = { workspace = true }
 sankhya-table       = { path = "../sankhya-table" }
 sankhya-table-delta = { path = "../sankhya-table-delta" }
 sankhya-types       = { path = "../sankhya-types" }

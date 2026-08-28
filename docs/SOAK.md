@@ -12,6 +12,29 @@
 
 ---
 
+## What the run exercises
+
+Writes through `sankhya-publish`, reads through the read path, maintenance on the warehouse's
+own thread — and, since 2026-08-28, **the cube path**: a cube is declared over the first
+table, hydrated from it and rolled up every fourth round.
+
+That last one was absent, and its absence was the kind that reads as success. A soak covering
+M6's surface and reported as covering M7 is the same overstatement M6 closed on: a criterion
+met by something adjacent to what it asked for.
+
+The cube's cost lands in measures that already exist rather than a new one. Cells are held in
+this process, so a leak in them shows in `resident_bytes`; cuboids are written under the
+warehouse, so their population shows in `warehouse_bytes`. A measure nothing distinguishes
+would be one more thing every soak has to supply for no judgement.
+
+Hydration runs every fourth round rather than every round. It reads the whole fact table, so
+doing it each time would make the soak a measurement of hydration instead of of the system —
+often enough that a leak accumulates visibly over forty-five minutes, rare enough that the
+write and compaction paths still dominate.
+
+The run **asserts** it navigated the cube at least once. A zero would be invisible in a report
+full of healthy measures.
+
 ## 1. What a soak is for
 
 Not *"it did not crash"*. That is what a soak reports and it is the one thing nobody doubted.
