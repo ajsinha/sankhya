@@ -2128,6 +2128,14 @@ CATALOGUE = [
      "    let anchor = root;",
      "sankhya-diagnostic"),
 
+    # --- the guide's examples are executed, or accounted for ---------------
+
+    ("docs: name a source file in prose that does not exist",
+     "xtask/src/main.rs",
+     "            if !root.join(&named).exists() {",
+     "            if false {",
+     "xtask"),
+
 ]
 
 

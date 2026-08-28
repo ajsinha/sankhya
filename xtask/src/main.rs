@@ -701,6 +701,7 @@ fn check_docs(root: &Path) -> bool {
         docs.len()
     );
 
+    ok &= check_named_sources(root, &docs);
     ok &= check_status_agreement(root, &docs);
 
     ok
@@ -1392,4 +1393,152 @@ fn unfinished_milestones(root: &Path) -> Vec<String> {
     out.sort();
     out.dedup();
     out
+}
+
+/// Every source file a document names by path must exist.
+///
+/// # Why this is not covered by the link check
+///
+/// The link check follows markdown links. This catches a path written in prose or in
+/// backticks --- which is how documentation usually names a file, and which nothing verified.
+///
+/// It was added after `GUIDE.md` was found to say *"Every example here is executed by a test.
+/// `crates/sankhya-server/tests/guide.rs` runs the SQL on this page and checks the answers,
+/// so an example that stops working breaks the build rather than misleading a reader"* --- of
+/// a file that did not exist. The promise was not merely stale: it asserted a verification
+/// that was never happening, which is worse than saying nothing, because a reader who
+/// believes it stops checking the examples themselves.
+fn check_named_sources(root: &Path, docs: &[PathBuf]) -> bool {
+    let mut ok = true;
+    let mut checked = 0usize;
+    for doc in docs {
+        let Ok(text) = std::fs::read_to_string(doc) else {
+            continue;
+        };
+        let rel = doc.strip_prefix(root).unwrap_or(doc).display().to_string();
+        for named in named_source_paths(&text) {
+            checked += 1;
+            if !root.join(&named).exists() {
+                eprintln!("  MISSING SOURCE  {rel}: names `{named}`, which does not exist");
+                ok = false;
+            }
+        }
+    }
+    if ok {
+        println!("   {checked} source path(s) named in prose all exist");
+    }
+    ok
+}
+
+/// Paths under `crates/` ending in `.rs` that a document mentions.
+///
+/// Deliberately narrow: a broad pattern over prose produces false positives, and a lint that
+/// fires on ordinary writing gets switched off.
+fn named_source_paths(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for token in text.split(|c: char| c.is_whitespace() || c == '`' || c == '(' || c == ')') {
+        let token = token.trim_matches(|c: char| matches!(c, ',' | '.' | ';' | ':' | '*' | '"'));
+        if token.starts_with("crates/") && token.ends_with(".rs") && !token.contains("..") {
+            out.push(token.to_string());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::{check_named_sources, named_source_paths, unfinished_milestones};
+    use std::path::Path;
+
+    /// The extractor finds paths written in prose and in backticks.
+    ///
+    /// Tested because the check that uses it had none, and a check nobody tests is a check
+    /// that can be quietly disabled by a one-character edit --- which is exactly what a
+    /// mutation of it demonstrated.
+    #[test]
+    fn a_source_path_is_found_however_it_is_written() {
+        let text = "See `crates/sankhya-cube/src/cells.rs` and                     crates/sankhya-publish/src/publish.rs, plus (crates/x/tests/y.rs).";
+        let found = named_source_paths(text);
+        assert!(found.contains(&"crates/sankhya-cube/src/cells.rs".to_string()), "{found:?}");
+        assert!(found.contains(&"crates/sankhya-publish/src/publish.rs".to_string()), "{found:?}");
+        assert!(found.contains(&"crates/x/tests/y.rs".to_string()), "{found:?}");
+    }
+
+    #[test]
+    fn ordinary_prose_is_not_mistaken_for_a_path() {
+        // A lint that fires on ordinary writing gets switched off, which is worse than a
+        // narrower one that is always obeyed.
+        let text = "The crates are described below. See rust files and .rs extensions.";
+        assert!(named_source_paths(text).is_empty(), "{:?}", named_source_paths(text));
+    }
+
+    #[test]
+    fn a_path_is_reported_once_however_often_it_appears() {
+        let text = "`crates/a/src/b.rs` and again crates/a/src/b.rs";
+        assert_eq!(named_source_paths(text).len(), 1);
+    }
+
+    /// Every named path in this repository's own documentation exists.
+    ///
+    /// The check running against the real tree, so the test fails for the same reason the
+    /// build does rather than for a reason invented here.
+    #[test]
+    fn the_documentation_names_only_files_that_exist() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the workspace root is the xtask crate's parent")
+            .to_path_buf();
+        let mut docs = Vec::new();
+        super::collect_markdown(&root, &mut docs);
+        assert!(!docs.is_empty(), "no documents were found to check");
+        assert!(
+            super::check_named_sources(&root, &docs),
+            "documentation names a source file that does not exist"
+        );
+    }
+
+    /// A document naming a file that does not exist must **fail** the check.
+    ///
+    /// The positive test above --- "this repository's own docs are clean" --- passes just as
+    /// happily when the check never reports anything, which a mutation demonstrated. A check
+    /// is only tested by a case it has to reject.
+    #[test]
+    fn a_document_naming_a_missing_file_is_rejected() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let doc = dir.path().join("rotten.md");
+        std::fs::write(&doc, "See `crates/nothing/src/absent.rs` for details.")
+            .expect("writing the document");
+        assert!(
+            !check_named_sources(dir.path(), &[doc]),
+            "a document naming a file that does not exist was accepted"
+        );
+    }
+
+    #[test]
+    fn a_document_naming_a_file_that_exists_is_accepted() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        std::fs::create_dir_all(dir.path().join("crates/real/src")).expect("creating");
+        std::fs::write(dir.path().join("crates/real/src/there.rs"), "// present")
+            .expect("writing the source");
+        let doc = dir.path().join("fine.md");
+        std::fs::write(&doc, "See `crates/real/src/there.rs`.").expect("writing the document");
+        assert!(check_named_sources(dir.path(), &[doc]));
+    }
+
+    #[test]
+    fn milestones_in_progress_are_read_from_the_status_table() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the workspace root")
+            .to_path_buf();
+        let found = unfinished_milestones(&root);
+        // Read from STATUS.md rather than declared here, so this asserts the mechanism and
+        // not a copy of the answer.
+        assert!(!found.is_empty(), "no milestone is in progress, which cannot be right");
+        assert!(found.iter().all(|m| m.starts_with('M')), "{found:?}");
+    }
 }

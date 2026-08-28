@@ -9,10 +9,15 @@
 
 **Status:** Implementation — M0–M5 complete, M6 closing, M7 in progress
 
-Every example here is **executed by a test**. `crates/sankhya-server/tests/guide.rs` runs the
-SQL on this page and checks the answers, so an example that stops working breaks the build
-rather than misleading a reader. Where an example needs something that does not exist yet,
-it says so instead of pretending.
+Every example here is **executed or accounted for by a test**.
+`crates/sankhya-server/tests/guide.rs` extracts the SQL from this page — this page, not a
+copy of it — starts the real server and runs what can run: ten statements at the last count.
+The rest query tables you would bring yourself, and each is listed in that test with the
+reason it cannot run here. A block that is neither executed nor listed fails the build, so an
+example cannot quietly become neither.
+
+That sentence used to claim all of them ran, and the file it named did not exist. It does
+now, and it counts.
 
 The [quickstart](QUICKSTART.md) gets a server running. This shows what to do with it.
 
