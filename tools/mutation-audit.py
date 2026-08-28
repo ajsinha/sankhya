@@ -2096,6 +2096,24 @@ CATALOGUE = [
      "        for one in actions.chunks(1) { commit(&self.root, version, one).ok(); }\n        commit(&self.root, version, &[]).map_err(|error| PublishError::Commit {",
      "sankhya-publish"),
 
+    ("publish: declare a partition column the schema does not contain",
+     "crates/sankhya-publish/src/publish.rs",
+     "        let stored = with_date_column(schema);",
+     "        let stored = schema.clone();",
+     "sankhya-publish"),
+
+    ("publish: leave the date column out of the file it partitions by",
+     "crates/sankhya-publish/src/publish.rs",
+     "            let part = stamped(&part, &partition, self.date_axis.granularity)?;",
+     "",
+     "sankhya-publish"),
+
+    ("publish: stamp a row with its own date rather than its partition's",
+     "crates/sankhya-publish/src/publish.rs",
+     "        Granularity::Month => (read(0, 1970), read(1, 1), 1),",
+     "        Granularity::Month => (read(0, 1970), read(1, 1), 2),",
+     "sankhya-publish"),
+
 ]
 
 

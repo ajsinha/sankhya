@@ -255,3 +255,122 @@ fn an_ingest_dated_table_still_partitions() {
     );
     assert!(log_of(&root, 1).contains(r#""sank_data_date":"#), "{}", log_of(&root, 1));
 }
+
+// --- the column the protocol and FR-STORE-20 both require ---------------
+
+#[test]
+fn the_partition_column_is_part_of_the_table_schema() {
+    // Delta requires every name in `partitionColumns` to be a field of the schema, and
+    // FR-STORE-20 requires the column to be carried natively. A table declaring a partition
+    // column absent from its own schema is malformed twice over, and the reader that
+    // notices is somebody else's engine.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path().join("orders");
+    let publication = Publication::external(&root, "orders").dated_by("order_date");
+    publish_table(&publication, &schema(), &[batch(vec![FIRST_OF_MARCH])]).expect("published");
+
+    let created = log_of(&root, 0);
+    assert!(
+        created.contains(&format!(r#"{{\"name\":\"{DATA_DATE_COLUMN}\",\"type\":\"date\""#)),
+        "the schema does not carry the partition column: {created}"
+    );
+    assert!(
+        created.contains(&format!(r#""partitionColumns":["{DATA_DATE_COLUMN}"]"#)),
+        "{created}"
+    );
+    // The source columns keep their positions, so a reader written against the source
+    // schema still finds them where they were.
+    // The log holds the schema as an escaped JSON string, so the field names appear as
+    // `\"name\":\"id\"` rather than as bare JSON.
+    let id_at = created.find(r#"\"name\":\"id\""#).expect("id");
+    let date_at = created.find(DATA_DATE_COLUMN).expect("the date column");
+    assert!(id_at < date_at, "the column was prepended, moving every other one");
+}
+
+#[test]
+fn the_written_file_carries_the_date_of_the_partition_it_sits_in() {
+    // A row whose stamp disagreed with the directory it sits in would be a table that
+    // reconciles differently depending on which of the two a reader trusts.
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path().join("orders");
+    let publication = Publication::external(&root, "orders").dated_by("order_date");
+    publish_table(
+        &publication,
+        &schema(),
+        &[batch(vec![FIRST_OF_MARCH, SECOND_OF_MARCH])],
+    )
+    .expect("published");
+
+    for (partition, expected) in [
+        ("2024-03-01", FIRST_OF_MARCH),
+        ("2024-03-02", SECOND_OF_MARCH),
+    ] {
+        let path = root
+            .join(format!("{DATA_DATE_COLUMN}={partition}"))
+            .join("part-00000.parquet");
+        let file = std::fs::File::open(&path).expect("the partition file");
+        let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)
+            .expect("readable")
+            .build()
+            .expect("built");
+        let batch = reader.next().expect("a batch").expect("decoded");
+
+        let column = batch
+            .column_by_name(DATA_DATE_COLUMN)
+            .expect("the file carries the date column");
+        let dates = column
+            .as_any()
+            .downcast_ref::<Date32Array>()
+            .expect("a date column");
+        for row in 0..batch.num_rows() {
+            assert_eq!(
+                dates.value(row),
+                expected,
+                "a row in {partition} carries a different date"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_coarser_granularity_stamps_the_first_day_of_the_period() {
+    // The stamp comes from the partition, not the row, so it agrees with the directory.
+    // At month granularity every row of March is stamped 2024-03-01, which is what the
+    // path says.
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path().join("orders");
+    let publication = Publication::external(&root, "orders")
+        .dated_by("order_date")
+        .partitioned_by(Granularity::Month);
+    publish_table(
+        &publication,
+        &schema(),
+        &[batch(vec![FIRST_OF_MARCH, SECOND_OF_MARCH])],
+    )
+    .expect("published");
+
+    let path = root
+        .join(format!("{DATA_DATE_COLUMN}=2024-03"))
+        .join("part-00000.parquet");
+    let file = std::fs::File::open(&path).expect("the partition file");
+    let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .expect("readable")
+        .build()
+        .expect("built");
+    let batch = reader.next().expect("a batch").expect("decoded");
+    let dates = batch
+        .column_by_name(DATA_DATE_COLUMN)
+        .expect("the date column")
+        .as_any()
+        .downcast_ref::<Date32Array>()
+        .expect("a date column");
+
+    assert_eq!(batch.num_rows(), 2, "both days of March are in one partition");
+    for row in 0..batch.num_rows() {
+        assert_eq!(dates.value(row), FIRST_OF_MARCH, "the first of the month");
+    }
+}

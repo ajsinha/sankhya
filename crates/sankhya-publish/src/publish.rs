@@ -31,7 +31,11 @@ use arrow_schema::{Schema, SchemaRef};
 use sankhya_schema::{is_reserved, DateAxis, DateSource, DATA_DATE_COLUMN};
 use sankhya_table::{write_parquet, WriterConfig};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use arrow_array::cast::AsArray;
+use arrow_array::{ArrayRef, Date32Array};
+use arrow_schema::{DataType, Field};
+use sankhya_schema::Granularity;
 use arrow_array::types::Date32Type;
 use arrow_array::{Array, UInt32Array};
 use sankhya_table_delta::{commit, schema_string, Action, AddFile, Metadata};
@@ -112,9 +116,20 @@ impl Publication {
     /// Refuses a schema this system cannot round-trip exactly, naming the column, and
     /// refuses a declared key column that is not in the schema.
     pub fn create(&self, schema: &Schema) -> Result<(), PublishError> {
-        let json = schema_string(schema).map_err(|error| PublishError::UnrepresentableSchema {
-            detail: error.to_string(),
-        })?;
+        // The partition column is part of the table's schema, not merely of its layout.
+        //
+        // `FR-STORE-20` requires every analytical table to carry `sank_data_date` as a
+        // `DATE`, and the Delta protocol requires every name in `partitionColumns` to be a
+        // field of the schema. A table declaring a partition column absent from its schema
+        // is malformed twice over, and the reader that notices is somebody else's engine.
+        //
+        // Appended rather than prepended, so a source column's position is unchanged and a
+        // reader written against the source schema still finds its columns where they were.
+        let stored = with_date_column(schema);
+        let json =
+            schema_string(&stored).map_err(|error| PublishError::UnrepresentableSchema {
+                detail: error.to_string(),
+            })?;
 
         // A key column that is not in the schema would make every merge silently return
         // nothing for that key. Caught here, where the person who typed it is still present.
@@ -248,6 +263,12 @@ impl Publication {
         let mut actions = Vec::new();
         for (partition, rows) in self.partitions_of(batch)? {
             let part = take_rows(batch, &rows)?;
+            // The file carries the column as well as the path. Delta permits a partition
+            // column to be absent from the data and reconstructed from `partitionValues`,
+            // and `FR-STORE-20` asks for it to be carried natively --- so a reader that
+            // ignores partition values, and any tool that opens the Parquet directly, still
+            // sees the date rather than a column that exists only in metadata.
+            let part = stamped(&part, &partition, self.date_axis.granularity)?;
             let directory = format!("{DATA_DATE_COLUMN}={partition}");
             let into = self.root.join(&directory);
             std::fs::create_dir_all(&into).map_err(|error| PublishError::Write {
@@ -552,4 +573,78 @@ impl std::error::Error for PublishError {}
 #[must_use]
 pub fn is_table(root: &Path) -> bool {
     root.join("_delta_log").is_dir()
+}
+
+/// The table's schema, with the partition column appended.
+///
+/// Appended rather than prepended so a source column's position is unchanged: a reader
+/// written against the source schema still finds its columns where they were.
+fn with_date_column(schema: &Schema) -> Schema {
+    if schema.field_with_name(DATA_DATE_COLUMN).is_ok() {
+        return schema.clone();
+    }
+    let mut fields: Vec<Arc<Field>> = schema.fields().iter().map(Arc::clone).collect();
+    // Not nullable. A null partition value has no path to live at, so a nullable column
+    // here would promise something the layout cannot represent.
+    fields.push(Arc::new(Field::new(
+        DATA_DATE_COLUMN,
+        DataType::Date32,
+        false,
+    )));
+    Schema::new(fields)
+}
+
+/// The batch with its partition's date attached to every row.
+///
+/// The value comes from the partition, not from the source column, so a coarser granularity
+/// stamps the first day of the period --- which is what the partition path says, and a row
+/// whose stamp disagreed with the directory it sits in would be a table that reconciles
+/// differently depending on which of the two a reader trusts.
+fn stamped(
+    batch: &RecordBatch,
+    partition: &str,
+    granularity: Granularity,
+) -> Result<RecordBatch, PublishError> {
+    let days = days_of_partition(partition, granularity)?;
+    let mut columns: Vec<ArrayRef> = batch.columns().to_vec();
+    columns.push(Arc::new(Date32Array::from(vec![days; batch.num_rows()])));
+    let schema = Arc::new(with_date_column(batch.schema().as_ref()));
+    RecordBatch::try_new(schema, columns).map_err(|error| PublishError::Write {
+        file: "stamping the date column".to_string(),
+        detail: error.to_string(),
+    })
+}
+
+/// The first day of a partition, as days since the Unix epoch.
+fn days_of_partition(partition: &str, granularity: Granularity) -> Result<i32, PublishError> {
+    let parts: Vec<&str> = partition.split('-').collect();
+    let read = |at: usize, default: i32| -> i32 {
+        parts.get(at).and_then(|p| p.parse().ok()).unwrap_or(default)
+    };
+    let (year, month, day) = match granularity {
+        Granularity::Day => (read(0, 1970), read(1, 1), read(2, 1)),
+        Granularity::Month => (read(0, 1970), read(1, 1), 1),
+        Granularity::Year => (read(0, 1970), 1, 1),
+    };
+    days_from_civil(year, month, day).ok_or_else(|| PublishError::DateColumn {
+        detail: format!("'{partition}' is not a date this granularity can represent"),
+    })
+}
+
+/// Howard Hinnant's civil-to-days, the inverse of the one in `sankhya-schema`.
+///
+/// Written out rather than pulled from a dependency for the same reason as its inverse: a
+/// partition key computed slightly differently by two components is a table whose rows do
+/// not agree with the directories they sit in.
+fn days_from_civil(year: i32, month: i32, day: i32) -> Option<i32> {
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146_097 + doe - 719_468)
 }
