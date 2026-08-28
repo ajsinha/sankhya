@@ -19,7 +19,11 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    // The totals here are small sums of exact decimal literals --- 10 + 20, and 10 + 20 + 30
+    // + 40 --- so they are representable and comparison is exact. The lint is right in
+    // general and this is the case it is not about.
+    clippy::float_cmp
 )]
 
 use arrow_array::{Float64Array, Int64Array, RecordBatch, StringArray};
