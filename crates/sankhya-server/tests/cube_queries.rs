@@ -472,3 +472,142 @@ async fn a_commit_after_a_cube_was_hydrated_changes_the_answer() {
         after.rows
     );
 }
+
+// --- materialised cuboids: cells that outlive the process ---------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_materialised_cuboid_answers_without_reading_the_fact_table() {
+    // The reason to materialise at all. The in-memory cache dies with the process, so a
+    // server that restarts makes every dashboard pay for a fact-table read again. A cuboid on
+    // disk is the same cells, surviving.
+    //
+    // Proved by taking the fact table away. If the answer still comes back, it did not come
+    // from there.
+    let (server, dir) = server_with(policy("reader", None));
+    connect(&server, "ana");
+
+    let live = server
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .expect("the cube answers from its table");
+    assert_eq!(total_from(&live), 100.0);
+
+    // Materialise, through the crate whose remit is writing derived data.
+    let cube = &server.cubes()[0];
+    let snapshot: u64 = first_column(&live, "snapshot")[0].parse().expect("a version");
+    let scope: u64 = 0; // an unrestricted reader
+    let key = sankhya_cube::materialise::Key::new(
+        cube.version(),
+        snapshot,
+        scope,
+        sankhya_cube_algo::lattice::Cuboid::of(&["region"]),
+    );
+
+    let mut cells = sankhya_cube::cells::Cells::over(vec!["region".to_string()]);
+    cells
+        .add(vec!["north".to_string()], 30.0)
+        .expect("well-formed");
+    cells
+        .add(vec!["south".to_string()], 70.0)
+        .expect("well-formed");
+    let written = sankhya_maintenance::cuboid::materialise(
+        dir.path(),
+        &key,
+        cube.name(),
+        &cells,
+        CubeRule::Sum,
+    )
+    .expect("materialising");
+    assert!(written, "the cuboid was written");
+
+    // It is on disk, under a schema table discovery skips.
+    let root = sankhya_maintenance::cuboid::root_of(dir.path(), &key, cube.name());
+    assert!(root.join("_delta_log").is_dir(), "a published table at {root:?}");
+    assert!(
+        sankhya_maintenance::cuboid::exists(dir.path(), &key, cube.name()),
+        "and the key that named it finds it again"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_materialised_cuboid_is_not_served_as_a_user_table() {
+    // It is a published table on purpose --- open storage gets no exception for the fast path
+    // --- and it must still not appear in a catalogue somebody browses, where its name is a
+    // hash and it looks like something to query.
+    let (server, dir) = server_with(policy("reader", None));
+    connect(&server, "ana");
+
+    let cube = &server.cubes()[0];
+    let key = sankhya_cube::materialise::Key::new(
+        cube.version(),
+        1,
+        0,
+        sankhya_cube_algo::lattice::Cuboid::of(&["region"]),
+    );
+    let mut cells = sankhya_cube::cells::Cells::over(vec!["region".to_string()]);
+    cells.add(vec!["north".to_string()], 1.0).expect("well-formed");
+    sankhya_maintenance::cuboid::materialise(dir.path(), &key, cube.name(), &cells, CubeRule::Sum)
+        .expect("materialising");
+
+    let (found, _) = warehouse::discover(dir.path());
+    let names: Vec<String> = found
+        .iter()
+        .map(|table| format!("{}.{}", table.reference.schema, table.reference.table))
+        .collect();
+    assert_eq!(
+        names,
+        vec!["sales.orders".to_string()],
+        "discovery finds the user's table and not the cache beside it: {names:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn materialising_the_same_cuboid_twice_writes_it_once() {
+    // The key embeds the definition version, the snapshot and the scope, so a cuboid that
+    // exists is a cuboid that is still correct. There is no staleness to check, which is what
+    // FR-QUERY-20's key buys — and rewriting it would be work for no change.
+    let (server, dir) = server_with(policy("reader", None));
+    let cube = &server.cubes()[0];
+    let key = sankhya_cube::materialise::Key::new(
+        cube.version(),
+        1,
+        0,
+        sankhya_cube_algo::lattice::Cuboid::of(&["region"]),
+    );
+    let mut cells = sankhya_cube::cells::Cells::over(vec!["region".to_string()]);
+    cells.add(vec!["north".to_string()], 1.0).expect("well-formed");
+
+    let first = sankhya_maintenance::cuboid::materialise(
+        dir.path(), &key, cube.name(), &cells, CubeRule::Sum,
+    )
+    .expect("materialising");
+    let second = sankhya_maintenance::cuboid::materialise(
+        dir.path(), &key, cube.name(), &cells, CubeRule::Sum,
+    )
+    .expect("materialising again");
+
+    assert!(first, "written the first time");
+    assert!(!second, "and left alone the second");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_empty_cuboid_is_not_written() {
+    // A table of no rows is indistinguishable, on the way back, from a cube that saw nothing
+    // — and writing one would make the next run skip the hydration that would have found the
+    // rows.
+    let (server, dir) = server_with(policy("reader", None));
+    let cube = &server.cubes()[0];
+    let key = sankhya_cube::materialise::Key::new(
+        cube.version(),
+        1,
+        0,
+        sankhya_cube_algo::lattice::Cuboid::of(&["region"]),
+    );
+    let empty = sankhya_cube::cells::Cells::over(vec!["region".to_string()]);
+
+    let written = sankhya_maintenance::cuboid::materialise(
+        dir.path(), &key, cube.name(), &empty, CubeRule::Sum,
+    )
+    .expect("materialising");
+    assert!(!written);
+    assert!(!sankhya_maintenance::cuboid::exists(dir.path(), &key, cube.name()));
+}

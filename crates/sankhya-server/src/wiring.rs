@@ -550,6 +550,75 @@ impl Server {
         sankhya_cube_sql::describe::register(context, Arc::new(self.cubes.clone()), catalog);
     }
 
+    /// Where a materialised cuboid lives under this warehouse.
+    ///
+    /// Under `_cubes`, which discovery skips: a materialised cuboid is a published table on
+    /// purpose --- readable by anything that reads a table, because the open-storage
+    /// commitment gets no exception for the fast path --- and must still not appear in a
+    /// catalogue somebody browses, where its name is a hash.
+    fn cuboid_root(&self, key: &sankhya_cube::materialise::Key, cube: &str) -> std::path::PathBuf {
+        self.settings
+            .warehouse
+            .join("_cubes")
+            .join(key.table(cube))
+    }
+
+    /// Cells for this key, if a previous run left them on disk.
+    ///
+    /// The reason for materialising at all: the in-memory cache dies with the process, and a
+    /// server that restarts should not make every dashboard pay for a fact-table read again.
+    fn materialised(
+        &self,
+        key: &sankhya_cube::materialise::Key,
+        cube: &sankhya_cube::model::Cube,
+        measure: &sankhya_cube::algo::Measure,
+    ) -> Option<sankhya_cube::cells::Cells> {
+        let root = self.cuboid_root(key, cube.name());
+        if !root.join("_delta_log").is_dir() {
+            return None;
+        }
+        let dimensions: Vec<String> =
+            cube.dimensions().iter().map(|d| d.name.clone()).collect();
+        let schema = sankhya_cube::store::schema_for(&dimensions);
+        let table = sankhya_readpath::resolve(
+            schema,
+            &root,
+            sankhya_types::LsnRange::new(sankhya_types::Lsn::new(0), self.settings.read_as_of),
+            None,
+            self.settings.read_as_of,
+        )
+        .ok()?;
+
+        let context = SessionContext::new();
+        context.register_table("cuboid", Arc::new(table)).ok()?;
+        let batches = tokio::task::block_in_place(|| {
+            self.runtime.block_on(async {
+                context.sql("SELECT * FROM cuboid").await.ok()?.collect().await.ok()
+            })
+        })?;
+
+        // The rule along the *first* dimension. A cuboid stores one measure's cells and the
+        // reduction that produced them, and every dimension of a stored cuboid shares the
+        // grain --- so any declared rule reads it back identically. Named rather than
+        // defaulted because a wrong rule here would round a stored expansion under the wrong
+        // operation.
+        let rule = cube
+            .dimensions()
+            .first()
+            .and_then(|d| measure.rule(&d.name))?;
+        let mut cells = sankhya_cube::cells::Cells::over(dimensions.clone());
+        for batch in &batches {
+            let read = sankhya_cube::store::from_batch(batch, &dimensions, rule).ok()?;
+            for address in read.addresses() {
+                let contributions = read.contributions(address)?;
+                cells
+                    .add_reduced(address.clone(), rule, contributions.exact_sum())
+                    .ok()?;
+            }
+        }
+        Some(cells)
+    }
+
     /// The version a table's log currently stands at.
     ///
     /// Zero when the table cannot be found or its log cannot be read. Zero rather than

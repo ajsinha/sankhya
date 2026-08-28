@@ -1708,6 +1708,24 @@ CATALOGUE = [
      "        exact.values().append_value(sum.to_f64());",
      "sankhya-cube"),
 
+    ("maintenance: rewrite a materialised cuboid that already exists",
+     "crates/sankhya-maintenance/src/cuboid.rs",
+     "    if exists(warehouse, key, cube) {\n        return Ok(false);\n    }",
+     "    if false {\n        return Ok(false);\n    }",
+     "sankhya-server"),
+
+    ("maintenance: write an empty cuboid, so the next run skips the hydration that would find rows",
+     "crates/sankhya-maintenance/src/cuboid.rs",
+     "    if batch.num_rows() == 0 {\n        return Ok(false);\n    }",
+     "    if false {\n        return Ok(false);\n    }",
+     "sankhya-server"),
+
+    ("server: discover the cube cache as a user table, so a hash appears in the catalogue",
+     "crates/sankhya-server/src/warehouse.rs",
+     "        if schema_name.starts_with('_') {\n            continue;\n        }",
+     "        if false {\n            continue;\n        }",
+     "sankhya-server"),
+
     ("cube: store every scope's cuboid in one table, so one principal reads another's",
      "crates/sankhya-cube/src/materialise.rs",
      "            self.snapshot,\n            self.scope\n        );",

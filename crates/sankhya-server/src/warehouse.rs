@@ -117,6 +117,17 @@ pub fn discover(warehouse: &Path) -> (Vec<FoundTable>, Vec<(PathBuf, String)>) {
         let Some(schema_name) = schema_dir.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
+        // A schema beginning with `_` holds the warehouse's own bookkeeping --- cube
+        // definitions, materialised cuboids --- not user tables.
+        //
+        // Skipped from *discovery*, not hidden from storage. A materialised cuboid is a
+        // published table on purpose, readable by anything that can read a table, because the
+        // open-storage commitment gets no exception for the fast path. What it must not do is
+        // appear in a catalogue somebody browses, where it looks like a table they should
+        // query and its name is a hash.
+        if schema_name.starts_with('_') {
+            continue;
+        }
         let Ok(tables) = std::fs::read_dir(&schema_dir) else {
             continue;
         };

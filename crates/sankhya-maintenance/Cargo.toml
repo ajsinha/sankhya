@@ -19,6 +19,8 @@ sankhya-types = { path = "../sankhya-types" }
 sankhya-error = { path = "../sankhya-error" }
 sankhya-table = { path = "../sankhya-table" }
 sankhya-table-delta = { path = "../sankhya-table-delta" }
+sankhya-cube      = { path = "../sankhya-cube" }
+sankhya-publish   = { path = "../sankhya-publish" }
 
 [dev-dependencies]
 parquet = { workspace = true }

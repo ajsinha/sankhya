@@ -38,6 +38,15 @@
 
 #![doc(html_root_url = "https://docs.rs/sankhya-cube")]
 
+/// The pure algebra this crate is built on, re-exported.
+///
+/// So a caller holding a `Cube` can name its `Measure` and `Rule` without taking a
+/// dependency on the algebra crate directly --- which exists to have **no** dependencies, and
+/// whose consumers should not have to know that to use it.
+pub mod algo {
+    pub use sankhya_cube_algo::measure::{Along, Measure, Rule};
+}
+
 pub mod catalogue;
 pub mod cells;
 pub mod complete;
