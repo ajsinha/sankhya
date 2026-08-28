@@ -2038,6 +2038,38 @@ CATALOGUE = [
      "    let Some(required) = None::<f64> else {",
      "sankhya-cube-sql"),
 
+    # --- hydration: rows that could not be placed --------------------------
+
+    ("cube: drop a row with a null dimension key instead of counting it",
+     "crates/sankhya-cube/src/hydrate.rs",
+     "        let Some(address) = address_of(&keys, row) else {\n            absorbed.unplaced = absorbed.unplaced.saturating_add(1);\n            continue;\n        };",
+     "        let Some(address) = address_of(&keys, row) else {\n            continue;\n        };",
+     "sankhya-cube"),
+
+    ("cube: place a null member under the empty string, inventing a member",
+     "crates/sankhya-cube/src/hydrate.rs",
+     "        if column.is_null(row) {\n            return None;\n        }",
+     "",
+     "sankhya-cube"),
+
+    ("cube: read a null measure as zero",
+     "crates/sankhya-cube/src/hydrate.rs",
+     "        let Some(value) = values.at(row) else {\n            absorbed.unplaced = absorbed.unplaced.saturating_add(1);\n            continue;\n        };",
+     "        let value = values.at(row).unwrap_or(0.0);",
+     "sankhya-cube"),
+
+    ("cube: skip a dimension whose join column the fact table lacks",
+     "crates/sankhya-cube/src/hydrate.rs",
+     "        let column = batch.column_by_name(&dimension.joins_on).ok_or_else(|| {",
+     "        let Some(column) = batch.column_by_name(&dimension.joins_on) else { continue }; let column = Ok::<_, NotHydratable>(column).map_err(|_: NotHydratable| {",
+     "sankhya-cube"),
+
+    ("cube-sql: compute completeness from the rows that survived",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "        let completeness = published.completeness;\n        check_completeness(&completeness, &args)?;\n\n        let rolled",
+     "        let completeness = Completeness::complete(narrowed.len() as u64);\n        check_completeness(&completeness, &args)?;\n\n        let rolled",
+     "sankhya-cube-sql"),
+
 ]
 
 

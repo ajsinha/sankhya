@@ -287,9 +287,10 @@ impl TableFunctionImpl for RollUp {
         let overlay = applied.overlay().map(str::to_string);
         let narrowed = narrowed(applied.regardless(), &args)?;
 
-        // Completeness is what the *filter* withheld, which nothing downstream can recover.
-        // Dicing is a query narrowing rather than a policy filter, so it withholds nothing.
-        let completeness = Completeness::complete(narrowed.len() as u64);
+        // From hydration, not from the rows that survived. Dicing is a query narrowing
+        // rather than a loss, so it does not change what fraction of the fact table this
+        // cube saw.
+        let completeness = published.completeness;
         check_completeness(&completeness, &args)?;
 
         let rolled = rolled(&narrowed, &measure, &args)?;
@@ -340,7 +341,7 @@ impl TableFunctionImpl for Slice {
         let overlay = applied.overlay().map(str::to_string);
         let sliced = slice(applied.regardless(), dimension.trim(), member.trim());
 
-        let completeness = Completeness::complete(sliced.len() as u64);
+        let completeness = published.completeness;
         check_completeness(&completeness, &args)?;
 
         batch(

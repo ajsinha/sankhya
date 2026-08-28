@@ -10,6 +10,7 @@
 
 use datafusion::prelude::SessionContext;
 use sankhya_cube::cells::Cells;
+use sankhya_cube::complete::Completeness;
 use sankhya_cube::overlay::{Adjustment, Overlay};
 use sankhya_cube::{Definition, Dimension, Level};
 use sankhya_cube_algo::measure::{Along, Measure, Rule};
@@ -72,6 +73,9 @@ fn session() -> (SessionContext, Arc<CubeCatalog>) {
             cube: Arc::clone(&cube),
             cells: Arc::new(cells),
             snapshot: 4_242,
+            // Stated, not defaulted: `Published` has no default completeness, so a fixture
+            // cannot quietly claim a cube saw all of its input.
+            completeness: Completeness::complete(3),
         },
     );
 

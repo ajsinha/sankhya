@@ -10,6 +10,7 @@
 //! are answers somebody acts on differently.
 
 use sankhya_cube::cells::Cells;
+use sankhya_cube::complete::Completeness;
 use sankhya_cube::model::Cube;
 use sankhya_cube::overlay::Overlay;
 use std::collections::BTreeMap;
@@ -28,6 +29,14 @@ pub struct Published {
     /// Half of the materialisation key, and the half a query result must carry so a cube
     /// figure can be reconciled with a relational one taken at a different moment.
     pub snapshot: u64,
+    /// How much of the fact table reached these cells.
+    ///
+    /// Supplied by whatever hydrated them, and **not derivable from `cells`**. A row that
+    /// hydration could not place, or that policy withheld, leaves no trace: counting what
+    /// arrived and dividing by what arrived gives one, always. The first version of the
+    /// query surface did exactly that and reported every result complete --- the trap
+    /// `sankhya_cube::complete` documents, walked into one crate away from the warning.
+    pub completeness: Completeness,
 }
 
 /// Every cube a session can navigate, by name, and every overlay it may apply.

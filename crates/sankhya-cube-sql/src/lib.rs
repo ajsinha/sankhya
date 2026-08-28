@@ -44,7 +44,9 @@
 mod args;
 pub mod catalog;
 pub mod functions;
+pub mod publish;
 mod result;
 
 pub use catalog::{CubeCatalog, Published, Unresolved};
 pub use functions::register;
+pub use publish::{publish_cells, publish_from_fact_table};

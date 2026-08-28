@@ -351,6 +351,7 @@ fn six_dimensional() -> SessionContext {
             cube,
             cells: Arc::new(cells),
             snapshot: 7,
+            completeness: Completeness::complete(4),
         },
     );
     let context = SessionContext::new();

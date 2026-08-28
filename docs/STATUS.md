@@ -62,21 +62,32 @@ semi-additive measure across time be *rejected at planning time*. It is not reje
 an aggregate counting what arrived and dividing by what arrived reports itself complete
 however much policy removed. The withheld count comes from the filter or it does not exist.
 
-### What is not there, and why M7 is not closed
+### The gap that was found by being asked, and then closed
 
-**The hydration path.** This is the one that matters, and it was found by being asked
-whether "complete" was really true rather than by any test failing. A `Definition` names a
-fact table and its dimension tables and validates that those names are well formed. Nothing
-reads them. `sankhya-cube` has no dependency on `sankhya-table`, no `RecordBatch` appears in
-it, and every `Cells` in existence is built either by a navigation operation or by a test
-fixture.
+**The hydration path did not exist.** A `Definition` named a fact table and validated that
+the name was well formed; nothing read it. Every `Cells` in existence was built by a
+navigation operation or a test fixture, so the cube was an algebra with a SQL façade over
+data the caller supplied. All eight exit criteria passed, and every one of them supplied its
+own cells — which is precisely why passing them did not surface it. **A criterion that never
+has to read a published table cannot tell you whether the cube can.**
 
-So the cube is an algebra with a SQL façade over data the caller supplies. All eight exit
-criteria pass, and every one of them supplies its own cells — which is precisely why passing
-them did not surface this. A criterion that never had to read a published table cannot tell
-you whether the cube can.
+`hydrate.rs` and `publish_from_fact_table` now close it: the cube reads the table its
+definition names, through the same session that will query it. `tests/end_to_end.rs` supplies
+a *table* and makes the cube find it, which is the test whose absence allowed the claim.
 
-Also absent: MDX, deliberately — see ADR-0007. Cube definitions are not persisted or loaded
+A row that cannot be placed — a null key, a null measure — is **counted, never dropped**, and
+returned as a `Completeness`. Skipping such rows leaves totals quietly short, which is the
+same failure as a policy-filtered total presented as complete, so it gets the same machinery.
+
+**A related defect in the same area.** The SQL surface computed `Completeness::complete(rows
+that survived)`, which reports complete however much was lost — the exact trap
+`sankhya_cube::complete` documents, implemented one crate away from the warning. Completeness
+now comes from hydration and is a required field on `Published`, so a fixture cannot quietly
+claim a cube saw all of its input.
+
+### What is still not there
+
+ MDX, deliberately — see ADR-0007. Cube definitions are not persisted or loaded
 from a catalogue; a cube is registered against a session by the embedding application. The
 lattice selection is implemented and is not driven by a recorded query log, so automatic
 materialisation is available and nothing is currently choosing what to materialise.
@@ -835,7 +846,7 @@ row, and Q6 returns a hundred thousand; `NFR-PERF-03` requires a partition predi
 partitioning is not built, so Q5 could not satisfy it however fast it ran.
 
 **These are met on hardware below the reference node.** The requirements name 32 physical
-cores and 310 GB; this is twelve cores and 62 GB. That makes the results conservative
+cores and 315 GB; this is twelve cores and 62 GB. That makes the results conservative
 rather than qualified — but the reference node has never been measured on, so the numbers
 that would be published with it do not exist.
 
@@ -1125,7 +1136,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 310 specific defects applied one at a time; all 310 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 315 specific defects applied one at a time; all 315 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -1619,9 +1630,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,523 tests, none of which needs a database
+cargo test --workspace           # 1,528 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 310 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 315 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 
