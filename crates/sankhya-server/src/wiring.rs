@@ -91,7 +91,12 @@ pub struct Server {
     /// Separate from `tables` because the two answer different questions: one is what a
     /// schema browser is told, the other is what a query reads. Keeping them together would
     /// invite a table that is described but not readable, or readable but not described.
-    servable: Vec<ServableTable>,
+    servable: parking_lot::RwLock<Vec<ServableTable>>,
+    /// The log cache the refresh above reads through.
+    ///
+    /// Shared with nothing else deliberately: it exists so that checking whether a table has
+    /// moved costs a stat rather than a log replay, on a path that now runs per statement.
+    log_cache: sankhya_table_delta::LogCache,
     /// The cubes this warehouse declares, validated at startup.
     ///
     /// Read once, here, rather than per query: a definition is a small JSON document, and
@@ -207,7 +212,8 @@ impl Server {
             quotas,
             audit: parking_lot::Mutex::new(Chain::new()),
             tables,
-            servable,
+            servable: parking_lot::RwLock::new(servable),
+            log_cache: sankhya_table_delta::LogCache::new(),
             cubes: Vec::new(),
             hydrated: Arc::new(sankhya_cube_sql::hydrated::Hydrated::default()),
             clock: parking_lot::Mutex::new(0),
@@ -230,7 +236,7 @@ impl Server {
     /// arriving between refreshes reads a number from the previous era. The log cache makes
     /// this cheap: nothing has changed unless a commit landed.
     pub fn refresh_table_gauges(&self) {
-        for table in &self.servable {
+        for table in self.servable.read().iter() {
             let Ok(files) = table.live_file_count() else {
                 // A table that will not replay is the diagnostic's business, not the metrics
                 // endpoint's. Recording a zero here would report an empty table.
@@ -552,6 +558,7 @@ impl Server {
     /// causes a rehydration; a wrong-but-constant one causes a stale answer.
     fn snapshot_of(&self, table: &str) -> u64 {
         self.servable
+            .read()
             .iter()
             .find(|servable| servable.reference.table == table)
             .and_then(|servable| sankhya_table_delta::live_files(&servable.root).ok())
@@ -565,6 +572,7 @@ impl Server {
     fn scope_for(&self, principal: &Principal, table: &str) -> Option<u64> {
         let reference = self
             .servable
+            .read()
             .iter()
             .find(|servable| servable.reference.table == table)
             .map(|servable| servable.reference.clone())
@@ -605,8 +613,21 @@ impl Server {
         // they may not fails to resolve — indistinguishable from naming one that does not
         // exist, which is the right answer rather than an accident. Saying "you may not
         // read that" would confirm it exists.
-        let (context, registered) = session_for(&principal, &self.policy, &self.servable)?;
-        if registered == 0 && !self.servable.is_empty() {
+        // Any table whose log has moved is resolved again before it is registered.
+        //
+        // The server maintains the warehouse in-process now, so the warehouse moves whether
+        // or not anybody writes to it: compaction replaces files and retirement deletes what
+        // it replaced. A provider fixed at boot then names files that are gone, and the query
+        // fails on a path nobody asked about.
+        //
+        // Checked per statement, through the log cache, so an unmoved table costs a stat.
+        {
+            let mut servable = self.servable.write();
+            crate::warehouse::refresh(&mut servable, self.settings.read_as_of, &self.log_cache);
+        }
+        let servable = self.servable.read().clone();
+        let (context, registered) = session_for(&principal, &self.policy, &servable)?;
+        if registered == 0 && !servable.is_empty() {
             return Err(refusal(
                 statuses_for_denied().sqlstate.as_str(),
                 "this principal may not read any table",

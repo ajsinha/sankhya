@@ -1702,6 +1702,14 @@ CATALOGUE = [
      "            if false {",
      "sankhya-cube"),
 
+    # --- a server reading a warehouse it is also maintaining -------------------
+
+    ("server: never re-resolve a table, so a retired file breaks every later query",
+     "crates/sankhya-server/src/warehouse.rs",
+     "        if now == table.resolved_at {\n            continue;\n        }",
+     "        if true {\n            continue;\n        }",
+     "sankhya-server"),
+
     ("server: key a cube's cells on read_as_of, so the snapshot never moves",
      "crates/sankhya-server/src/wiring.rs",
      "            let snapshot = self.snapshot_of(cube.fact_table());",

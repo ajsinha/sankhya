@@ -34,6 +34,7 @@ use sankhya_error::Classify;
 use std::sync::Arc;
 
 /// A table this server can serve, and the provider behind it.
+#[derive(Clone)]
 pub struct ServableTable {
     /// Where it lives.
     pub reference: TableRef,
@@ -46,6 +47,22 @@ pub struct ServableTable {
     pub root: std::path::PathBuf,
     /// What answers a scan of it.
     pub provider: Arc<dyn TableProvider>,
+    /// Its columns, kept so the provider can be resolved again.
+    pub schema: Arc<arrow_schema::Schema>,
+    /// The log version this provider's file list was read at.
+    ///
+    /// # Why a provider has to know this
+    ///
+    /// `resolve` reads the log **once** and the provider holds the resulting file list for
+    /// its lifetime. That was safe while a served warehouse did not move --- the server runs
+    /// no ingest --- and stopped being safe the day the server began maintaining the
+    /// warehouse in-process: compaction replaces files and retirement deletes what it
+    /// replaced, so a list captured at boot eventually names files that are gone.
+    ///
+    /// Retirement's grace period protects a reader that listed *recently*. It cannot protect
+    /// one that listed at startup and has been serving from it for hours. So the version is
+    /// remembered, and a provider whose table has moved past it is resolved again.
+    pub resolved_at: u64,
 }
 
 impl ServableTable {

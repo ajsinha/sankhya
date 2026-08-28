@@ -430,3 +430,45 @@ async fn the_snapshot_a_cube_reports_is_the_table_s_version() {
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_commit_after_a_cube_was_hydrated_changes_the_answer() {
+    // A server used to resolve its providers once at boot and never look again, so data
+    // committed afterwards was invisible to it. That was defensible while the warehouse did
+    // not move; it stopped being defensible when the server began maintaining the warehouse
+    // itself, and the fix for *that* --- re-resolving a table whose log has moved --- makes
+    // this true as a side effect worth having.
+    let (server, dir) = server_with(policy("reader", None));
+    connect(&server, "ana");
+
+    let before = server
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .expect("the cube answers");
+    assert_eq!(total_from(&before), 100.0);
+
+    let root = dir.path().join("sales").join("orders");
+    let more = RecordBatch::try_new(
+        schema(),
+        vec![
+            Arc::new(Int64Array::from(vec![5_i64])),
+            Arc::new(StringArray::from(vec!["north"])),
+            Arc::new(Float64Array::from(vec![50.0])),
+        ],
+    )
+    .expect("a valid batch");
+    Publication::external(&root, "orders")
+        .append_rebasing(2, 8, "part-0001.parquet", &more, Lsn::new(5))
+        .expect("publishing more");
+
+    let after = server
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .expect("the cube answers again");
+    assert_eq!(
+        total_from(&after),
+        150.0,
+        "a commit must change the answer; 100 means the cube served cells from before it, \
+         which is how a dashboard comes to disagree with the table it is drawn from with \
+         nobody able to say by how much: {:?}",
+        after.rows
+    );
+}

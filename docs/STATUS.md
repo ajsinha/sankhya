@@ -282,6 +282,35 @@ The other absent half — a definition as a row in a system table, so the store 
 rather than a JSON file beside it — waits on the catalogue proper.
 
 
+## The defect wiring maintenance into the server introduced, and fixed
+
+Two decisions, each correct alone, were not put together.
+
+A server resolves its table providers **once**, in `start()`: `resolve_with` reads the log,
+builds a file list, and the provider holds it. That was sound while a served warehouse did not
+move --- the server runs no ingest, and `Settings::read_as_of` says so.
+
+Then the server started **maintaining the warehouse in-process**. Compaction replaces files
+and retirement deletes the ones it replaced, so the warehouse moves whether or not anybody is
+writing to it. A provider fixed at boot names files that are gone, and the query fails with a
+missing-file error naming a path nobody asked about.
+
+**Retirement's grace period is not the protection here.** It protects a reader that listed
+shortly before a merge --- twenty-four ticks --- and cannot protect one that listed at startup
+and has been serving from that listing since. With shipping defaults a deployment would have
+begun failing queries roughly twelve minutes in: one grace period after the first merge.
+
+Reproduced before it was reasoned about, because reasoning about it is how a wrong answer gets
+written down confidently. `crates/sankhya-server/tests/maintenance_and_readers.rs` holds both
+halves: the provider from before retirement can no longer read, and a server re-resolving
+before it registers reads every row across its own maintenance.
+
+**And it fixed something else that had been true all along.** A running server never saw data
+committed after it started. That was defensible while the warehouse did not move; re-resolving
+a table whose log has moved makes new commits visible as a side effect worth having.
+
+---
+
 ## M6, closed 2026-08-28
 
 Criterion 4 accepted on a forty-five-minute judged run by owner decision, with the gap from
@@ -1364,7 +1393,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 372 specific defects applied one at a time; all 357 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 373 specific defects applied one at a time; all 357 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -1858,9 +1887,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,688 tests, none of which needs a database
+cargo test --workspace           # 1,691 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 372 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 373 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 
