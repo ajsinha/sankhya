@@ -22,7 +22,7 @@ use arrow_schema::{DataType, Field, Schema};
 use datafusion::prelude::SessionContext;
 use sankhya_readpath::{resolve, resolve_cached, ReadError};
 use sankhya_table::{write_parquet, WriterConfig};
-use sankhya_table_delta::{commit, create, Action, AddFile, Metadata};
+use sankhya_publish::Publication;
 use sankhya_table_memory::{ArrivalBuffer, MemoryBudget};
 use sankhya_types::{Lsn, LsnRange};
 use std::sync::Arc;
@@ -62,22 +62,22 @@ fn range(from: u64, to: u64) -> LsnRange {
 
 /// A table of `files` published fragments of `per` rows each.
 fn publish(root: &std::path::Path, files: u64, per: u64) {
-    commit(root, 0, &create(Metadata::new("t", DELTA_SCHEMA, 0))).expect("creating");
-    let mut adds = Vec::new();
+    // Through `Publication`, not by assembling the log. A read test that builds its own add
+    // actions asserts against a layout it wrote itself, so it keeps passing when the write
+    // path changes underneath it --- which is the one thing a read test is for.
+    let publication = Publication::external(root, "t");
+    publication.create(&schema()).expect("creating");
     for i in 0..files {
-        let name = format!("part-{i:04}.parquet");
         let from = i * per;
-        let report = write_parquet(
-            root,
-            &name,
-            &rows(from, from + per),
-            Lsn::new(from + per),
-            WriterConfig::default(),
-        )
-        .expect("publishing");
-        adds.push(Action::Add(AddFile::with_rows(name, report.bytes, 0, per)));
+        publication
+            .append(
+                i + 1,
+                &format!("part-{i:04}.parquet"),
+                &rows(from, from + per),
+                Lsn::new(from + per),
+            )
+            .expect("publishing");
     }
-    commit(root, 1, &adds).expect("publishing");
 }
 
 async fn measure(table: Arc<sankhya_readpath::SankhyaTable>, sql: &str) -> (i64, i64) {
@@ -244,7 +244,9 @@ async fn a_file_without_a_row_count_is_refused() {
     // which produces a wrong plan rather than a slow one.
     let dir = tempfile::tempdir().expect("a temp dir");
     let root = dir.path();
-    commit(root, 0, &create(Metadata::new("t", DELTA_SCHEMA, 0))).expect("creating");
+    // The invalid state comes from the crate that owns the log, not from this test: a test
+    // that assembles a broken log by hand is doing storage work.
+    sankhya_table_delta::malformed::create_table(root, "t", DELTA_SCHEMA).expect("creating");
     let report = write_parquet(
         root,
         "part-0000.parquet",
@@ -253,16 +255,8 @@ async fn a_file_without_a_row_count_is_refused() {
         WriterConfig::default(),
     )
     .expect("publishing");
-    commit(
-        root,
-        1,
-        &[Action::Add(AddFile::new(
-            "part-0000.parquet",
-            report.bytes,
-            0,
-        ))],
-    )
-    .expect("committing without statistics");
+    sankhya_table_delta::malformed::add_without_row_count(root, 1, "part-0000.parquet", report.bytes)
+        .expect("committing without statistics");
 
     let err = resolve(
         schema(),
@@ -518,25 +512,17 @@ async fn a_cached_resolve_sees_a_commit_made_after_it_warmed() {
     assert_eq!(before.declared_rows(), 400);
 
     // Another file, committed after the cache warmed.
-    let report = write_parquet(
-        dir.path(),
-        "part-0004.parquet",
-        &rows(400, 500),
-        Lsn::new(500),
-        WriterConfig::default(),
-    )
-    .expect("publishing");
-    sankhya_table_delta::commit(
-        dir.path(),
-        2,
-        &[Action::Add(AddFile::with_rows(
+    // Through the writer, at whatever version is free --- the fixture takes one version per
+    // file now, so a hard-coded 2 is a version somebody else already used.
+    let publication = Publication::external(dir.path(), "t");
+    publication
+        .append(
+            publication.next_version(),
             "part-0004.parquet",
-            report.bytes,
-            0,
-            100,
-        ))],
-    )
-    .expect("committing");
+            &rows(400, 500),
+            Lsn::new(500),
+        )
+        .expect("committing");
 
     let after = resolve_cached(
         schema(),

@@ -34,6 +34,7 @@ mod execute;
 pub mod layout;
 mod orphans;
 mod schedule;
+mod service;
 
 pub use compaction::{
     plan_compaction, CompactionPlan, CompactionPolicy, CompactionUrgency, FileStat, PartitionState,
@@ -46,3 +47,7 @@ pub use layout::{check as check_clustering, clustering, clustering_key, declared
 pub use execute::{retire_inputs, run_compaction, RetentionPolicy, RetirementOutcome};
 pub use orphans::{plan_orphan_cleanup, sweep, FileOnDisk, OrphanPlan, OrphanPolicy, OrphanReport};
 pub use schedule::{schedule, Class, Deferral, Job, Schedule, Scheduled, SystemState};
+pub use service::{
+    partitions_of, spawn as spawn_maintenance, tables_under, MaintenanceHandle,
+    MaintenancePolicy, Maintainer,
+};

@@ -27,8 +27,8 @@ use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use sankhya_diagnostic::soak::sample::{file_bytes, open_files, resident_bytes, Samples};
 use sankhya_diagnostic::soak::Report;
-use sankhya_table::{write_parquet, WriterConfig};
-use sankhya_table_delta::{commit, create, Action, AddFile, Metadata};
+use sankhya_maintenance::{Maintainer, MaintenancePolicy};
+use sankhya_publish::Publication;
 use sankhya_types::Lsn;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -75,9 +75,9 @@ fn schema() -> Arc<Schema> {
 }
 
 fn write_table(root: &std::path::Path) {
-    std::fs::create_dir_all(root).expect("the table directory");
-    let delta = sankhya_table_delta::schema_string(&schema()).expect("representable");
-    commit(root, 0, &create(Metadata::new("orders", delta, 0))).expect("created");
+    Publication::external(root, "orders")
+        .create(&schema())
+        .expect("created");
 }
 
 /// Publish one more file, as ingest would.
@@ -97,41 +97,33 @@ fn append_file(root: &std::path::Path, version: u64) {
         ],
     )
     .expect("a valid batch");
-    let name = format!("part-{version:05}.parquet");
-    let report = write_parquet(root, &name, &batch, Lsn::new(version + 1), WriterConfig::default())
-        .expect("written");
-    commit(
-        root,
-        version,
-        &[Action::Add(AddFile::with_rows(&name, report.bytes, 0, 50))],
-    )
-    .expect("published");
+    // Rebasing, because capture is not the only committer: maintenance writes to the same
+    // log and takes the version this was about to use. Failing there would mean a compaction
+    // can stop ingest, which inverts the ordering rule --- the source outranks maintenance.
+    // The hand-rolled version counter this replaced could not survive a real maintainer.
+    Publication::external(root, "orders")
+        .append_rebasing(
+            version,
+            8,
+            &format!("part-{version:05}.parquet"),
+            &batch,
+            Lsn::new(version + 1),
+        )
+        .expect("published");
 }
 
-/// Remove the files a compaction would, replacing them with one.
-fn compact(root: &std::path::Path, version: u64, replacing: &[String]) {
-    let mut actions: Vec<Action> = replacing
-        .iter()
-        .map(|path| {
-            Action::Remove(sankhya_table_delta::RemoveFile::rewritten(
-                path.clone(),
-                i64::try_from(version).unwrap_or(0),
-            ))
-        })
-        .collect();
-    let name = format!("compacted-{version:05}.parquet");
-    let batch = RecordBatch::try_new(
-        schema(),
-        vec![
-            Arc::new(Int64Array::from(vec![0_i64])),
-            Arc::new(StringArray::from(vec![Some("north")])),
-        ],
-    )
-    .expect("a valid batch");
-    let report = write_parquet(root, &name, &batch, Lsn::new(version + 1), WriterConfig::default())
-        .expect("written");
-    actions.push(Action::Add(AddFile::with_rows(&name, report.bytes, 0, 1)));
-    commit(root, version, &actions).expect("compacted");
+/// One tick of the warehouse's own maintenance.
+///
+/// This used to be a hand-rolled "compaction": it committed a `Remove` for every input and
+/// added a **one-row** replacement in their place, discarding the data it claimed to have
+/// merged. Nothing read the result, so nothing noticed. It also never retired the inputs it
+/// removed from the log, which is the defect that filled a disk in the longer soak.
+///
+/// A test has no business sequencing maintenance. `Maintainer::tick` is the product's own
+/// pass --- plan, merge, commit, and retire what has served its grace period --- so this
+/// harness asks for a tick and asserts on what happens, which is what a test is for.
+fn maintain(maintainer: &mut Maintainer, root: &std::path::Path) {
+    maintainer.tick(root).expect("a maintenance tick");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -159,6 +151,7 @@ async fn a_short_run_under_concurrent_load_is_judged() {
             warehouse: warehouse_root.clone(),
             read_as_of: Lsn::new(u64::MAX),
             tenant,
+            maintenance_interval: None,
             require_password: false,
             metrics_listen: None,
         },
@@ -171,6 +164,9 @@ async fn a_short_run_under_concurrent_load_is_judged() {
     let started = Instant::now();
     let mut samples = Samples::new();
     let mut next_version = 5_u64;
+    // The warehouse's own maintenance, driven a tick at a time so the test controls *when*
+    // it runs without knowing anything about *what* it does.
+    let mut maintainer = Maintainer::new(MaintenancePolicy::default());
 
     for round in 0..ROUNDS {
         // Queries, concurrently with everything else. Blocking work goes through
@@ -200,11 +196,7 @@ async fn a_short_run_under_concurrent_load_is_judged() {
         // This is what makes `live_files` a sawtooth rather than a ramp, which is the shape
         // the judgement is built for.
         if round % 5 == 4 {
-            let live = sankhya_table_delta::live_files(&table_root).expect("replays");
-            let replacing: Vec<String> =
-                live.files.iter().map(|file| file.path.clone()).collect();
-            compact(&table_root, next_version, &replacing);
-            next_version += 1;
+            maintain(&mut maintainer, &table_root);
         }
 
         running.await.expect("the query task joins");

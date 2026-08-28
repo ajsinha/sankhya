@@ -27,6 +27,7 @@ arrow-array          = { workspace = true }
 arrow-schema         = { workspace = true }
 
 [dev-dependencies]
+sankhya-publish   = { path = "../sankhya-publish" }
 sankhya-schema    = { path = "../sankhya-schema" }
 sankhya-cdc-model = { path = "../sankhya-cdc-model" }
 arrow         = { workspace = true }

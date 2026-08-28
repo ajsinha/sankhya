@@ -39,6 +39,7 @@
 mod cache;
 mod checkpoint;
 mod log;
+pub mod malformed;
 mod schema;
 mod stats;
 

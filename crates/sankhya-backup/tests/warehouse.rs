@@ -14,7 +14,7 @@ use sankhya_backup::drill::{drill, ReadsBack, TableOutcome};
 use sankhya_backup::manifest::{KeyGeneration, Manifest, SourceBackup, TableSnapshot};
 use sankhya_backup::warehouse::Warehouse;
 use sankhya_table::{write_parquet, WriterConfig};
-use sankhya_table_delta::{commit, create, Action, AddFile, Metadata};
+use sankhya_publish::Publication;
 use sankhya_types::Lsn;
 use std::path::Path;
 use std::sync::Arc;
@@ -37,28 +37,44 @@ fn batch(ids: &[i64], labels: &[Option<&str>]) -> RecordBatch {
     .expect("a valid batch")
 }
 
+/// The Parquet file the table actually holds.
+///
+/// Not `root/part-0000.parquet`. The writer puts a file in the partition directory its rows
+/// belong to, so the flat path these tests used to tamper with existed only because the
+/// fixture built the table by hand --- and once the fixture went through `Publication`, the
+/// tampering wrote a *new* file beside the real one and the drill correctly reported the
+/// table intact. A corruption test that corrupts nothing passes for the wrong reason.
+fn the_published_file(root: &Path) -> std::path::PathBuf {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(directory) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n != "_delta_log") {
+                    stack.push(path);
+                }
+            } else if path.extension().is_some_and(|e| e == "parquet") {
+                return path;
+            }
+        }
+    }
+    panic!("the table holds no parquet file");
+}
+
 /// A table with one commit of data, returning its root.
 fn write_table(warehouse: &Path, schema_name: &str, table: &str, rows: &RecordBatch) -> std::path::PathBuf {
     let root = warehouse.join(schema_name).join(table);
-    std::fs::create_dir_all(&root).expect("the table directory");
-    let delta_schema = sankhya_table_delta::schema_string(&schema()).expect("representable");
-    commit(&root, 0, &create(Metadata::new(table, delta_schema, 0))).expect("created");
-
-    let report = write_parquet(&root, "part-0000.parquet", rows, Lsn::new(3), WriterConfig::default())
-        .expect("written");
-    #[allow(clippy::cast_possible_truncation)]
-    let count = rows.num_rows() as u64;
-    commit(
-        &root,
-        1,
-        &[Action::Add(AddFile::with_rows(
-            "part-0000.parquet",
-            report.bytes,
-            0,
-            count,
-        ))],
-    )
-    .expect("published");
+    // Through the writer that owns publishing. The tampering this file tests for happens
+    // *below*, on purpose; the table it tampers with must be one the product really wrote,
+    // or the test proves only that a hand-built table can be corrupted.
+    let publication = Publication::external(&root, table);
+    publication.create(&schema()).expect("created");
+    publication
+        .append(1, "part-0000.parquet", rows, Lsn::new(3))
+        .expect("published");
     root
 }
 
@@ -126,7 +142,14 @@ fn a_file_altered_after_the_backup_is_caught() {
     // Republish the same file name with different data — the shape a bad restore or a
     // confused writer produces.
     let replacement = batch(&[1, 2, 9], &[Some("north"), None, Some("elsewhere")]);
-    write_parquet(&root, "part-0000.parquet", &replacement, Lsn::new(3), WriterConfig::default())
+    let published = the_published_file(&root);
+    let name = published
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("a utf-8 file name")
+        .to_string();
+    let partition = published.parent().expect("a parent directory");
+    write_parquet(partition, &name, &replacement, Lsn::new(3), WriterConfig::default())
         .expect("written");
 
     let evidence = drill(&manifest, &warehouse, 2_000);
@@ -146,14 +169,19 @@ fn a_truncated_file_is_caught_rather_than_read_as_empty() {
     let warehouse = Warehouse::at(dir.path());
     let manifest = take_backup(&warehouse, &["sales.orders"], 1_000);
 
-    std::fs::write(root.join("part-0000.parquet"), b"not parquet at all").expect("truncated");
+    let published = the_published_file(&root);
+    std::fs::write(&published, b"not parquet at all").expect("truncated");
 
     let evidence = drill(&manifest, &warehouse, 2_000);
     let (_, outcome) = evidence.failures()[0];
     let TableOutcome::Unreadable { why } = outcome else {
         panic!("a truncated file must be unreadable, not empty: {outcome:?}");
     };
-    assert!(why.contains("part-0000.parquet"), "it names the file: {why}");
+    let name = published
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("a utf-8 file name");
+    assert!(why.contains(name), "it names the file: {why}");
 }
 
 #[test]
@@ -166,14 +194,9 @@ fn a_backup_still_verifies_after_the_table_moves_on() {
     let manifest = take_backup(&warehouse, &["sales.orders"], 1_000);
 
     let more = batch(&[4, 5], &[Some("east"), Some("west")]);
-    let report = write_parquet(&root, "part-0001.parquet", &more, Lsn::new(5), WriterConfig::default())
-        .expect("written");
-    commit(
-        &root,
-        2,
-        &[Action::Add(AddFile::with_rows("part-0001.parquet", report.bytes, 0, 2))],
-    )
-    .expect("published");
+    Publication::external(&root, "orders")
+        .append(2, "part-0001.parquet", &more, Lsn::new(5))
+        .expect("published");
 
     let evidence = drill(&manifest, &warehouse, 3_000);
     assert!(evidence.passed(), "{:?}", evidence.failures());
@@ -206,14 +229,9 @@ fn the_digest_does_not_depend_on_which_order_the_log_lists_files_in() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let root = write_table(dir.path(), "s", "t", &batch(&[1, 2], &[Some("a"), Some("b")]));
     let second = batch(&[3, 4], &[Some("c"), Some("d")]);
-    let report = write_parquet(&root, "part-0001.parquet", &second, Lsn::new(4), WriterConfig::default())
-        .expect("written");
-    commit(
-        &root,
-        2,
-        &[Action::Add(AddFile::with_rows("part-0001.parquet", report.bytes, 0, 2))],
-    )
-    .expect("published");
+    Publication::external(&root, "orders")
+        .append(2, "part-0001.parquet", &second, Lsn::new(4))
+        .expect("published");
 
     let warehouse = Warehouse::at(dir.path());
     let (version, once) = warehouse.digest_now("s.t").expect("digests");

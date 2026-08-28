@@ -82,13 +82,13 @@ where
     use arrow_array::UInt64Array;
     use arrow_schema::{DataType, Field, Schema};
     use sankhya_table::column_stats;
-    use sankhya_table_delta::{commit, create, schema_string, Action, AddFile, Metadata};
+    use sankhya_publish::Publication;
     use std::sync::Arc;
 
     let table_dir = dir.join(name);
     let mut rows = 0u64;
-    let mut adds = Vec::new();
-    let mut delta_schema: Option<String> = None;
+    // Created from the first batch's schema, because that is when the schema is known.
+    let mut publication: Option<Publication> = None;
 
     for (index, batch) in batches.enumerate() {
         // The position column, one value per row and increasing across the table.
@@ -107,39 +107,26 @@ where
                 .expect("adding the position column");
 
         rows += with_position.num_rows() as u64;
-        if delta_schema.is_none() {
-            delta_schema =
-                Some(schema_string(&with_position.schema()).expect("a representable schema"));
-        }
+        let publication = publication.get_or_insert_with(|| {
+            let created = Publication::external(&table_dir, name);
+            created
+                .create(&with_position.schema())
+                .expect("creating the table");
+            created
+        });
 
-        let file = format!("part-{index:04}.parquet");
-        let report = write_parquet(
-            &table_dir,
-            &file,
-            &with_position,
-            Lsn::new(rows),
-            WriterConfig::default(),
-        )
-        .expect("writing");
-
-        // The statistics compaction would have produced, computed from the batch that was
-        // just written -- which is what makes the provider able to prune and the
-        // optimizer able to plan.
-        let statistics = sankhya_table_delta::from_column_stats(
-            with_position.num_rows() as u64,
-            &column_stats(&with_position),
-        );
-        adds.push(Action::Add(AddFile::with_statistics(
-            file,
-            report.bytes,
-            0,
-            &statistics,
-        )));
+        // Statistics come with the write. This used to compute them here and attach them to
+        // a hand-built add action --- a test reimplementing what the writer does for every
+        // column, always, and reimplementing it only for the columns it thought of.
+        publication
+            .append(
+                index as u64 + 1,
+                &format!("part-{index:04}.parquet"),
+                &with_position,
+                Lsn::new(rows),
+            )
+            .expect("publishing");
     }
-
-    let schema = delta_schema.expect("at least one batch");
-    commit(&table_dir, 0, &create(Metadata::new(name, schema, 0))).expect("creating");
-    commit(&table_dir, 1, &adds).expect("publishing");
 
     usize::try_from(rows).expect("a sane row count")
 }

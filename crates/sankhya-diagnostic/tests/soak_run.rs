@@ -35,18 +35,15 @@
 
 use arrow_array::{Date32Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
+use sankhya_diagnostic::soak::measure::{Bound, Watched};
 use sankhya_diagnostic::soak::report::supported_horizon;
 use sankhya_diagnostic::soak::sample::{file_bytes, open_files, resident_bytes, Samples};
 use sankhya_diagnostic::soak::Report;
-use sankhya_maintenance::{
-    plan_orphan_cleanup, sweep, FileOnDisk, OrphanPolicy,
-    plan_compaction, run_compaction, CompactionPolicy, FileStat, PartitionState,
-};
+use sankhya_maintenance::{spawn_maintenance, MaintenancePolicy};
 use sankhya_publish::{Accumulator, FanOut, Publication};
-use sankhya_table::{scan_parquet, Scanned, WriterConfig};
-use sankhya_table_delta::{commit, live_files, Action, AddFile, RemoveFile};
+use sankhya_table::{scan_parquet, Scanned};
+use sankhya_table_delta::live_files;
 use sankhya_types::Lsn;
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -258,12 +255,30 @@ fn soak() {
         filling.elapsed().as_secs_f64()
     );
 
+    // --- maintenance -----------------------------------------------------
+    //
+    // Started here and then left alone. The warehouse compacts and retires on its own
+    // thread; this harness writes and reads and has no idea when either happens, which is
+    // exactly the relationship a client has with a real deployment.
+    //
+    // The interval is the harness's --- a soak that waited thirty seconds between ticks
+    // would spend most of forty-five minutes not maintaining anything --- and every
+    // *decision* inside the tick is the product's.
+    let maintenance = spawn_maintenance(
+        roots.clone(),
+        MaintenancePolicy {
+            interval: Duration::from_secs(2),
+            ..MaintenancePolicy::default()
+        },
+    );
+
     // --- run -------------------------------------------------------------
     let started = Instant::now();
     let deadline = Duration::from_secs(minutes * 60);
     let mut samples = Samples::new();
     let mut last_report = Instant::now();
     let mut round = 0_u64;
+
     let mut planned = 0_u64;
     let mut published = 0_u64;
     let mut refused = 0_u64;
@@ -342,26 +357,17 @@ fn soak() {
             }
         }
 
-        // Reclamation on the same duty cycle as compaction.
+        // No maintenance here. The warehouse maintains itself.
         //
-        // Compaction *replaces* files; it does not remove what it replaced --- retention does,
-        // after a grace period, and nothing was driving it. Over forty-five minutes that
-        // difference was the whole footprint: a run targeting ten gigabytes consumed sixty.
+        // This harness used to group files by partition, choose a compaction policy, merge,
+        // and commit the `Remove` actions by hand --- and it forgot to retire the inputs
+        // afterwards, which is how a run targeting ten gigabytes consumed sixty. That was
+        // the predictable end of a test performing surgery on a warehouse: a soak is a
+        // client, and a client that knows the order the maintenance steps go in is a client
+        // that can get it wrong.
         //
-        // A soak that compacts but never reclaims is measuring half the maintenance loop and
-        // reporting on the system as though it were the whole one.
-        if round % 8 == 0 {
-            for root in &roots {
-                reclaim(root);
-            }
-        }
-
-        // Maintenance on a duty cycle, so live files are a sawtooth rather than a ramp.
-        if round % 8 == 0 {
-            for root in &roots {
-                compact_appended(root, round);
-            }
-        }
+        // `sankhya_maintenance::spawn_maintenance` runs above, on the warehouse's own thread.
+        // What the soak does now is what a soak should do: write, read, and watch.
 
         // A run that is not writing is not soaking anything. Reported at once rather than
         // discovered four hours later in a report full of steady measures.
@@ -391,6 +397,34 @@ fn soak() {
             at_micros,
             sankhya_diagnostic::soak::sample::tree_bytes(&at),
         );
+        // Stop before the budget is spent, not after.
+        //
+        // A judged report is written every fifteen minutes, so a breach is *reported* --- but
+        // the run that discovered this was writing its report onto a full disk, and a report
+        // written onto a full disk is zero bytes. Being right about the finding is worth
+        // nothing if recording it is the operation that fails.
+        //
+        // So the budget is enforced here, in the loop, against the same declaration the
+        // report judges against. The run ends, the report is written while there is still
+        // room to write it, and the evidence survives the finding.
+        if let Some(consumed) = sankhya_diagnostic::soak::sample::tree_bytes(&at) {
+            if consumed > warehouse_budget() {
+                emit(
+                    &samples, &at, started.elapsed(), round, planned, worst_table(&roots),
+                    published, &scanned, unread,
+                );
+                eprintln!(
+                    "{}  ABORTING: the warehouse holds {:.1} GB against a budget of {:.1} GB. \
+                     Reclamation is not keeping up with what this run writes --- which is the \
+                     finding, and it is recorded above rather than lost to a full disk.",
+                    stamp(),
+                    consumed / 1024.0 / 1024.0 / 1024.0,
+                    warehouse_budget() / 1024.0 / 1024.0 / 1024.0,
+                );
+                std::process::exit(3);
+            }
+        }
+
         #[allow(clippy::cast_precision_loss)]
         samples.record("queries", at_micros, Some(planned as f64));
         samples.record("scanned_rows", at_micros, Some(scanned.rows as f64));
@@ -408,7 +442,14 @@ fn soak() {
     }
 
     let live = worst_table(&roots);
-    emit(&samples, &at, started.elapsed(), round, planned, live, published, &scanned, unread);
+println!(
+        "{}  maintenance ran {} tick(s) and reclaimed {:.2} GB",
+        stamp(),
+        maintenance.ticks(),
+        maintenance.bytes_reclaimed() as f64 / (1024.0 * 1024.0 * 1024.0)
+    );
+    maintenance.stop();
+        emit(&samples, &at, started.elapsed(), round, planned, live, published, &scanned, unread);
     println!("{}  soak finished after {minutes} minute(s)", stamp());
 }
 
@@ -426,6 +467,21 @@ fn soak() {
 /// table's files. It also still catches the failure the measure exists for, because a table
 /// falling behind raises the maximum whether or not the others do — where a sum can hide one
 /// table's ramp inside nine tables' noise.
+/// The space this run is entitled to, read from the declaration rather than restated.
+///
+/// Stated in one place so the loop that enforces the budget and the report that judges it
+/// can never disagree. A harness carrying its own copy of a threshold is a harness that
+/// will one day abort at a figure the report calls healthy.
+fn warehouse_budget() -> f64 {
+    sankhya_diagnostic::soak::measure::WATCHED
+        .iter()
+        .find_map(|w| match w {
+            Watched { name: "warehouse_bytes", bound: Bound::Steady { limit }, .. } => Some(*limit),
+            _ => None,
+        })
+        .expect("warehouse_bytes is declared as a steady measure with a budget")
+}
+
 fn worst_table(roots: &[PathBuf]) -> usize {
     roots
         .iter()
@@ -771,187 +827,6 @@ fn append_one(accumulator: &mut Accumulator<'_>, sequence: u64) -> bool {
             Lsn::new(sequence.saturating_add(1)),
         )
         .is_ok()
-}
-
-/// Remove files no live version refers to, through the product's own sweep.
-///
-/// Compaction leaves its inputs on disk deliberately: a reader holding an older snapshot can
-/// still resolve them, and removing one out from under such a reader is the failure the
-/// grace period exists to prevent. Something has to come along afterwards and take them, and
-/// in this harness nothing did.
-fn reclaim(root: &Path) -> bool {
-    let Ok(live) = live_files(root) else {
-        return false;
-    };
-    let live_names: std::collections::BTreeSet<String> =
-        live.files.iter().map(|f| f.path.clone()).collect();
-
-    // Everything on disk, relative to the table root, including inside partitions.
-    let mut on_disk: Vec<FileOnDisk> = Vec::new();
-    collect_files(root, root, &mut on_disk);
-    if on_disk.is_empty() {
-        return false;
-    }
-
-    // `reachable` is what an older snapshot could still resolve. This harness reads only at
-    // the newest version, so nothing beyond the live set is reachable --- which is the
-    // aggressive end of the policy and exactly what a soak should exercise.
-    let plan = plan_orphan_cleanup(
-        &on_disk,
-        &live_names,
-        &std::collections::BTreeSet::new(),
-        &OrphanPolicy::default(),
-    );
-    let report = sweep(&plan, root);
-    !report.removed.is_empty()
-}
-
-/// Every file under `dir`, named relative to `base`.
-fn collect_files(base: &Path, dir: &Path, out: &mut Vec<FileOnDisk>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        // The log is not data and is never an orphan.
-        if name == "_delta_log" {
-            continue;
-        }
-        match entry.metadata() {
-            Ok(metadata) if metadata.is_dir() => collect_files(base, &path, out),
-            Ok(metadata) => {
-                if let Ok(relative) = path.strip_prefix(base) {
-                    out.push(FileOnDisk {
-                        name: relative.to_string_lossy().into_owned(),
-                        bytes: metadata.len(),
-                        // Old enough to be swept. The harness reads only at the newest
-                        // version, so nothing older is reachable and the grace period —
-                        // which exists to protect a reader holding an earlier snapshot — has
-                        // nothing to protect here.
-                        age_ticks: u64::MAX,
-                    });
-                }
-            }
-            Err(_) => {}
-        }
-    }
-}
-
-/// Compact one partition, through the product's own maintenance path.
-///
-/// # Why this is not the harness's own merge
-///
-/// It used to be. The previous version removed *n* files from the log and added one holding
-/// **regenerated synthetic rows** --- it never read its inputs. It preserved the row count in
-/// metadata and produced a file whose contents had nothing to do with the data it replaced.
-/// A function called `compact_appended` that does not compact is the same defect as a
-/// partition column that is never written: the name asserts something the body does not do.
-///
-/// So compaction is `sankhya-maintenance`: `plan_compaction` decides whether a partition is
-/// worth merging, `run_compaction` merges the actual files, and `retire_inputs` removes the
-/// inputs only after verifying the replacement holds the rows they held. A soak driving the
-/// product's maintenance is a soak that can find a defect in it.
-///
-/// Returns whether anything was merged. One partition per call, rotating, so the duty cycle
-/// still produces the sawtooth `live_files` is judged on.
-fn compact_appended(root: &Path, sequence: u64) -> bool {
-    let Ok(live) = live_files(root) else {
-        return false;
-    };
-    if live.files.is_empty() {
-        return false;
-    }
-
-    // Group by the partition each file sits in. Compaction is per-partition by definition:
-    // merging across partitions would move rows out of the directory their date names.
-    let mut by_partition: BTreeMap<String, Vec<FileStat>> = BTreeMap::new();
-    for file in &live.files {
-        let partition = file
-            .path
-            .rsplit_once('/')
-            .map_or_else(String::new, |(directory, _)| directory.to_string());
-        by_partition.entry(partition).or_default().push(FileStat {
-            name: file.path.clone(),
-            bytes: file.size,
-            rows: file.rows().unwrap_or(0),
-            covers_through: Lsn::new(live.version.unwrap_or(0)),
-        });
-    }
-
-    // **Every** partition the policy selects, not one.
-    //
-    // An earlier version compacted one partition per duty cycle, rotating. With ninety
-    // partitions per table that revisits a given one every seven hundred rounds, files
-    // accumulate to twenty-eight per partition, and the judge breaches `live_files` --- saying,
-    // correctly, that compaction is not keeping up with the write rate. It was not: the
-    // harness was doing a ninetieth of the work real maintenance does.
-    //
-    // The lesson is the same one the fan-out guards taught. Partitioning multiplies the
-    // number of things maintenance has to visit, and anything that assumed one table meant
-    // one unit of work is now wrong by the partition count.
-    let mut merged = false;
-    for (partition, files) in &by_partition {
-        if compact_partition(root, partition, files, sequence) {
-            merged = true;
-        }
-    }
-    merged
-}
-
-/// Compact one partition, if the policy says it is worth it.
-fn compact_partition(
-    root: &Path,
-    partition: &str,
-    files: &[FileStat],
-    sequence: u64,
-) -> bool {
-    let chosen = partition;
-    let state = PartitionState {
-        table: "soak".to_string(),
-        partition: chosen.to_string(),
-        files: files.to_vec(),
-        ticks_since_write: 0,
-    };
-    // A policy scaled to the soak's file sizes. The shipping defaults target 256 MB, and a
-    // harness writing five-thousand-row files would never reach that in forty-five minutes
-    // --- so the *thresholds* are the harness's and the *decision* is the product's.
-    let policy = CompactionPolicy {
-        target_bytes: 64 * 1024 * 1024,
-        small_file_bytes: 8 * 1024 * 1024,
-        ..CompactionPolicy::default()
-    };
-    let Some(plan) = plan_compaction(&policy, &state) else {
-        return false;
-    };
-
-    let name = if chosen.is_empty() {
-        format!("compacted-{sequence:06}.parquet")
-    } else {
-        format!("{chosen}/compacted-{sequence:06}.parquet")
-    };
-    let Ok(outcome) = run_compaction(&plan, root, &name, WriterConfig::default(), &[]) else {
-        return false;
-    };
-
-    let version = next_version(root);
-    let mut actions: Vec<Action> = plan
-        .inputs
-        .iter()
-        .map(|file| {
-            Action::Remove(RemoveFile::rewritten(
-                file.name.clone(),
-                i64::try_from(version).unwrap_or(0),
-            ))
-        })
-        .collect();
-    actions.push(Action::Add(AddFile::with_rows(
-        &name,
-        outcome.bytes,
-        0,
-        outcome.rows,
-    )));
-    commit(root, version, &actions).is_ok()
 }
 
 #[cfg(test)]

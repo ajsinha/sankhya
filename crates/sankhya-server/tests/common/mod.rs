@@ -7,14 +7,13 @@
 
 use arrow_array::{Float64Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use sankhya_table::{write_parquet, WriterConfig};
-use sankhya_table_delta::{commit, create, Action, AddFile, Metadata};
+use sankhya_publish::Publication;
 use sankhya_types::Lsn;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Write the sample warehouse a first-time user is told to generate.
 pub(crate) fn write_warehouse(root: &std::path::Path) {
@@ -24,11 +23,14 @@ pub(crate) fn write_warehouse(root: &std::path::Path) {
         Field::new("amount", DataType::Float64, false),
     ]));
     let table_root = root.join("sales").join("orders");
-    std::fs::create_dir_all(&table_root).expect("creating the table directory");
-    let delta = sankhya_table_delta::schema_string(&schema).expect("representable");
-    commit(&table_root, 0, &create(Metadata::new("orders", delta, 0))).expect("creating");
+    // Through the product's own writer. This used to build the log by hand --- create the
+    // metadata, write the parquet, assemble the add actions --- which meant the fixture
+    // encoded the storage layout, and went on encoding the *old* layout after tables became
+    // partitioned. A read test whose fixture cannot have the write path's bug is testing
+    // less than it looks like it is.
+    let publication = Publication::external(&table_root, "orders");
+    publication.create(&schema).expect("creating");
 
-    let mut adds = Vec::new();
     for file in 0..4u64 {
         let ids: Vec<i64> = (0..250)
             .map(|i| i64::try_from(file * 250 + i).unwrap_or(0))
@@ -52,18 +54,15 @@ pub(crate) fn write_warehouse(root: &std::path::Path) {
             ],
         )
         .expect("a valid batch");
-        let name = format!("part-{file:04}.parquet");
-        let report = write_parquet(
-            &table_root,
-            &name,
-            &batch,
-            Lsn::new(file + 1),
-            WriterConfig::default(),
-        )
-        .expect("writing");
-        adds.push(Action::Add(AddFile::with_rows(&name, report.bytes, 0, 250)));
+        publication
+            .append(
+                file + 1,
+                &format!("part-{file:04}.parquet"),
+                &batch,
+                Lsn::new(file + 1),
+            )
+            .expect("publishing");
     }
-    commit(&table_root, 1, &adds).expect("publishing");
 }
 
 /// The server, and the port it actually bound.

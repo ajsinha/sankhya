@@ -28,5 +28,6 @@ serde_json = { workspace = true }
 uuid       = { workspace = true }
 
 [dev-dependencies]
+sankhya-publish = { path = "../sankhya-publish" }
 tempfile = { workspace = true }
 sankhya-table = { path = "../sankhya-table" }

@@ -82,7 +82,19 @@ fn settings() -> Result<Settings, String> {
     // A fixed tenant until federated identity is wired in. Deterministic so that a restart
     // does not orphan the audit chain and the storage prefix from the previous run.
     let tenant = TenantId::from_uuid(uuid::Uuid::from_u128(1));
+    // Nothing ran maintenance before this. `sankhya-maintenance` shipped as a library that
+    // only its own tests and the soak ever called, so a running server compacted nothing and
+    // retired nothing --- files accumulated for as long as the server was up.
+    //
+    // `0` disables it, said in the configuration rather than by deleting the setting, so a
+    // deployment that turns it off leaves a record of having decided to.
+    let maintenance_interval = config
+        .duration("maintenance.interval")
+        .map_err(|error| error.to_string())?
+        .or(Some(std::time::Duration::from_secs(30)))
+        .filter(|every| !every.is_zero());
     Ok(Settings {
+        maintenance_interval,
         listen,
         warehouse,
         read_as_of,
@@ -197,7 +209,25 @@ async fn main() -> std::io::Result<()> {
         _ => {}
     }
 
+    let maintenance_every = settings.maintenance_interval;
+    let warehouse_root = settings.warehouse.clone();
     let (server, listener, complaints) = start(settings).await?;
+
+    // The warehouse maintains itself from here, on its own thread, for as long as the server
+    // runs. Held in a binding rather than dropped: dropping the handle stops the thread, and
+    // `let _ = ...` would stop it immediately --- maintenance that runs for the length of one
+    // statement is worse than none, because the log would say it started.
+    let _maintenance = maintenance_every.map(|interval| {
+        let tables = sankhya_maintenance::tables_under(&warehouse_root);
+        println!("  maintaining {} table(s) every {interval:?}", tables.len());
+        sankhya_maintenance::spawn_maintenance(
+            tables,
+            sankhya_maintenance::MaintenancePolicy {
+                interval,
+                ..sankhya_maintenance::MaintenancePolicy::default()
+            },
+        )
+    });
 
     // Printed rather than only logged: an operator starting this by hand needs to see the
     // configuration, and an insecure one is written so it looks wrong.

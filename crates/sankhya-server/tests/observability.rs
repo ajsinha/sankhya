@@ -26,7 +26,7 @@ use sankhya_metrics::catalogue::{
     ALL, AUDIT_RECORDS_TOTAL, CONNECTIONS_ACTIVE, QUERIES_TOTAL, QUERY_DURATION_SECONDS,
     ROWS_RETURNED_TOTAL, TABLE_LIVE_FILES,
 };
-use sankhya_table_delta::{commit, create, Action as DeltaAction, AddFile, Metadata};
+use sankhya_publish::Publication;
 use sankhya_types::Lsn;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -42,13 +42,13 @@ fn table_schema() -> Arc<Schema> {
 /// A real Delta table: a log, a metadata action, and one Parquet file.
 fn write_table(warehouse: &std::path::Path, schema_name: &str, table_name: &str) {
     use arrow_array::{Int64Array, RecordBatch, StringArray};
-    use sankhya_table::{write_parquet, WriterConfig};
 
     let root = warehouse.join(schema_name).join(table_name);
     std::fs::create_dir_all(&root).expect("creating the table directory");
-    let delta_schema = sankhya_table_delta::schema_string(&table_schema()).expect("representable");
-    commit(&root, 0, &create(Metadata::new(table_name, delta_schema, 0)))
-        .expect("creating the table");
+    // Through the writer that owns publishing, so this fixture cannot drift from the
+    // layout the product actually produces.
+    let publication = Publication::external(&root, table_name);
+    publication.create(&table_schema()).expect("creating the table");
 
     let batch = RecordBatch::try_new(
         table_schema(),
@@ -58,19 +58,9 @@ fn write_table(warehouse: &std::path::Path, schema_name: &str, table_name: &str)
         ],
     )
     .expect("a valid batch");
-    let report = write_parquet(&root, "part-0000.parquet", &batch, Lsn::new(3), WriterConfig::default())
-        .expect("writing the file");
-    commit(
-        &root,
-        1,
-        &[DeltaAction::Add(AddFile::with_rows(
-            "part-0000.parquet",
-            report.bytes,
-            0,
-            3,
-        ))],
-    )
-    .expect("publishing the file");
+    publication
+        .append(1, "part-0000.parquet", &batch, Lsn::new(3))
+        .expect("publishing");
 }
 
 fn tenant() -> TenantId {
@@ -95,6 +85,7 @@ fn server() -> (Arc<Server>, tempfile::TempDir) {
         warehouse: dir.path().to_path_buf(),
         read_as_of: Lsn::new(u64::MAX),
         tenant: tenant(),
+        maintenance_interval: None,
         require_password: false,
         metrics_listen: None,
     };
@@ -159,6 +150,7 @@ async fn a_refusal_is_not_counted_as_an_error() {
         warehouse: dir.path().to_path_buf(),
         read_as_of: Lsn::new(u64::MAX),
         tenant: tenant(),
+        maintenance_interval: None,
         require_password: false,
         metrics_listen: None,
     };
@@ -361,18 +353,13 @@ async fn the_table_gauge_is_refreshed_at_the_moment_of_the_scrape() {
     );
 
     // A second file lands between scrapes.
+    //
+    // Named in the log and never written --- the metric counts what the log says is live,
+    // which is the thing under test. Constructed by the crate that owns the log rather than
+    // assembled here, so this test says what it means: a log entry pointing at nothing.
     let root = warehouse.path().join("public").join("example");
-    commit(
-        &root,
-        2,
-        &[DeltaAction::Add(AddFile::with_rows(
-            "part-0001.parquet",
-            128,
-            0,
-            1,
-        ))],
-    )
-    .expect("a second commit");
+    sankhya_table_delta::malformed::add_naming_a_missing_file(&root, 2, "part-0001.parquet", 1)
+        .expect("a second commit");
 
     let response = get(address, "/metrics").await;
     assert!(
@@ -549,6 +536,7 @@ async fn a_query_naming_a_forbidden_table_looks_exactly_like_one_naming_a_missin
         warehouse: dir.path().to_path_buf(),
         read_as_of: Lsn::new(u64::MAX),
         tenant: tenant(),
+        maintenance_interval: None,
         require_password: false,
         metrics_listen: None,
     };
@@ -574,11 +562,15 @@ async fn a_write_is_refused_rather_than_confirmed_and_discarded() {
     let (server, _warehouse) = server();
     for sql in [
         "CREATE TABLE public.other (id BIGINT)",
-        "INSERT INTO public.example VALUES (4, 'east')",
+        // Columns named rather than positional. A published table carries the mandated
+        // `sank_data_date` partition column, so a bare VALUES list has the wrong arity and
+        // fails in the *planner* --- which would pass this test for the wrong reason, on a
+        // planning error rather than the write refusal it exists to check.
+        "INSERT INTO public.example (id, label) VALUES (4, 'east')",
         "CREATE VIEW public.v AS SELECT 1",
         // A leading CTE, which is why the check is against the planned logical plan rather
         // than against the statement's first word.
-        "WITH src AS (SELECT 9 AS id) INSERT INTO public.example SELECT id, 'x' FROM src",
+        "WITH src AS (SELECT 9 AS id) INSERT INTO public.example (id, label) SELECT id, 'x' FROM src",
     ] {
         let failure = failure_for(&server, sql);
         assert!(

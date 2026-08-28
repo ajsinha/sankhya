@@ -11,27 +11,23 @@
 use sankhya_diagnostic::collect::{run, TableUnderReview, COMPACTION_DEBT};
 use sankhya_diagnostic::history::{History, Measure, HISTORY_FILE};
 use sankhya_diagnostic::projection::Projection;
-use sankhya_table_delta::{commit, create, Action, AddFile, Metadata, RemoveFile};
 use std::path::Path;
 
 const DAY: i64 = 24 * 3_600 * 1_000_000;
 
-/// A table with `files` live files, built through the real log.
+/// A table whose log names `files` files, none of which exist.
+///
+/// Built by the crate that owns the log rather than here. Compaction debt is decided by what
+/// the log says is live, so the files need not exist --- but constructing that state is
+/// storage work, and a test has no business doing storage work.
 fn table_with(root: &Path, files: usize) {
-    let metadata = Metadata::new(
+    sankhya_table_delta::malformed::table_naming_missing_files(
+        root,
         "11111111-1111-1111-1111-111111111111",
         r#"{"type":"struct","fields":[]}"#,
-        0,
-    );
-    let mut actions = create(metadata);
-    for i in 0..files {
-        actions.push(Action::Add(AddFile::new(
-            format!("part-{i:05}.parquet"),
-            1_024,
-            0,
-        )));
-    }
-    commit(root, 0, &actions).expect("the table is created");
+        files,
+    )
+    .expect("the table is created");
 }
 
 fn measure(name: &str) -> Measure {
@@ -75,15 +71,8 @@ fn a_second_run_projects_from_what_the_first_recorded() {
     assert!(monday.is_clean(), "400 files is nothing to report");
 
     // Five days pass and five hundred files arrive.
-    let mut actions = Vec::new();
-    for i in 400..900 {
-        actions.push(Action::Add(AddFile::new(
-            format!("part-{i:05}.parquet"),
-            1_024,
-            0,
-        )));
-    }
-    commit(&table, 1, &actions).expect("committed");
+    sankhya_table_delta::malformed::adds_naming_missing_files(&table, 1, 400..900)
+        .expect("committed");
 
     let saturday = run(&data, &under_review, 5 * DAY);
     assert_eq!(saturday.findings().len(), 1);
@@ -108,12 +97,16 @@ fn compaction_between_runs_shows_up_as_receding_and_is_not_reported() {
     let first = run(&data, &under_review, 0);
     assert_eq!(first.findings().len(), 1, "900 is near the line, undated");
 
-    // Compaction: 900 files become one.
-    let mut actions: Vec<Action> = (0..900)
-        .map(|i| Action::Remove(RemoveFile::rewritten(format!("part-{i:05}.parquet"), 1)))
-        .collect();
-    actions.push(Action::Add(AddFile::new("part-compacted.parquet", 921_600, 1)));
-    commit(&table, 1, &actions).expect("committed");
+    // Compaction: 900 files become one. In the log only --- none of them exist, so there is
+    // nothing for real maintenance to merge, and the debt reading is decided by the log.
+    sankhya_table_delta::malformed::replace_missing_files_with_one(
+        &table,
+        1,
+        0..900,
+        "part-compacted.parquet",
+        921_600,
+    )
+    .expect("committed");
 
     let second = run(&data, &under_review, DAY);
     assert!(

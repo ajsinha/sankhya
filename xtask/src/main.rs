@@ -7,6 +7,7 @@
 
 mod catalogues;
 mod logging;
+mod buildtree;
 mod package;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -184,6 +185,9 @@ fn main() -> ExitCode {
     if run_all || task == "check-logging" {
         failed |= !logging::check(&root);
     }
+    if run_all || task == "check-build-tree" {
+        failed |= !buildtree::check(&root);
+    }
     if run_all || task == "check-package" {
         failed |= !package::check(&root);
     }
@@ -191,6 +195,15 @@ fn main() -> ExitCode {
         let mut docs = Vec::new();
         collect_markdown(&root, &mut docs);
         failed |= !check_doc_numbers(&root, &docs);
+    }
+    // Last, and part of `check-all` on purpose: `check-tests` has just rebuilt the
+    // workspace, so this is the moment the superseded generation exists and is identifiable.
+    // A sweep that runs before the build sweeps the wrong thing.
+    if run_all || task == "sweep" {
+        failed |= !buildtree::sweep(&root, false);
+    }
+    if task == "sweep-dry-run" {
+        failed |= !buildtree::sweep(&root, true);
     }
     // Deliberately not in `check-all`: it generates a scale-factor-1 dataset and runs
     // for minutes, and it needs a machine that is not otherwise busy. It belongs to the
@@ -215,6 +228,9 @@ fn main() -> ExitCode {
                 | "check-tests"
                 | "check-logging"
                 | "check-package"
+                | "check-build-tree"
+                | "sweep"
+                | "sweep-dry-run"
                 | "check-catalogues"
                 | "write-catalogues"
                 | "check-performance"
@@ -224,7 +240,7 @@ fn main() -> ExitCode {
             "usage: cargo xtask \
              [check-all|check-tests|check-invariants|check-writers|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
              |check-features|check-lints|check-mutations|check-doc-numbers\
-             |check-catalogues|write-catalogues|check-logging|check-package|check-performance]"
+             |check-catalogues|write-catalogues|check-logging|check-package|check-build-tree|sweep|sweep-dry-run|check-performance]"
         );
         return ExitCode::from(2);
     }
@@ -505,9 +521,6 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The ceiling bounds cognitive load. It is not satisfied structurally: a split that
-/// widens visibility or separates an invariant from its enforcement is a violation of
-/// this rule, not compliance with it, and must be rejected in review.
 fn check_loc(root: &Path) -> bool {
     println!("== check-loc ==");
     let mut files = Vec::new();
@@ -1466,7 +1479,19 @@ mod tests {
     use super::{check_named_sources, named_source_paths, unfinished_milestones};
     use std::path::Path;
 
-    /// The extractor finds paths written in prose and in backticks.
+    /// The hash is the generation; everything either side of it is the identity.
+    #[test]
+        /// A file whose name it cannot parse is a file it has no business deleting.
+    #[test]
+        /// The newest generations survive and the superseded ones go.
+    ///
+    /// Written because the sweep deletes files, and the only thing worse than a build tree
+    /// that grows without bound is a cleanup that removes the build you are standing on.
+    #[test]
+        /// A dry run reports exactly what a real run would remove, and removes none of it.
+    #[test]
+        /// Set a file's modification time, so generation order is stated rather than raced for.
+        /// The extractor finds paths written in prose and in backticks.
     ///
     /// Tested because the check that uses it had none, and a check nobody tests is a check
     /// that can be quietly disabled by a one-character edit --- which is exactly what a
@@ -1640,6 +1665,27 @@ const MAY_WRITE: &[(&str, &str)] = &[
 ];
 
 /// Calls that write to a warehouse.
+/// Tests that write to a warehouse directly, and are waiting to be routed through the
+/// product's own entry points.
+///
+/// # Why this list exists rather than a looser rule
+///
+/// `check-writers` used to skip every file under `tests/`, on the reasoning that tests drive
+/// the writers rather than being writers. That stopped being true. The soak grouped files by
+/// partition, merged them, committed the removals by hand --- and never retired the inputs,
+/// because sequencing maintenance correctly is the product's job and the soak had quietly
+/// taken it on. A run targeting ten gigabytes consumed sixty and died with a full disk.
+///
+/// The rule is now enforced for tests too. These files predate it. The list may **shrink and
+/// never grow**: a file that stops writing is removed from it, and a file that starts writing
+/// fails the check. That converts a backlog into something that gets paid down instead of
+/// something that gets rediscovered.
+const SECOND_WRITER_BACKLOG: &[&str] = &[
+    // Empty, and it stays empty. Every entry was converted: fixtures now publish through
+    // `Publication`, maintenance simulations call `Maintainer::tick`, and the states the
+    // product refuses to write come from `sankhya_table_delta::malformed`.
+];
+
 const WRITES: &[&str] = &["write_parquet(", "compact_files(", "compact_files_sorted("];
 
 /// Calls that commit to a table log.
@@ -1652,13 +1698,25 @@ fn check_writers(root: &Path) -> bool {
 
     let mut ok = true;
     let mut writers: BTreeMap<String, usize> = BTreeMap::new();
+    // Which backlog entries still write. One that no longer does must leave the list, or the
+    // ratchet only ever holds and never tightens.
+    let mut backlog_seen: BTreeSet<String> = BTreeSet::new();
     for file in &files {
         let rel = file.strip_prefix(root).unwrap_or(file).display().to_string();
-        // Tests drive the writers; they are not writers. The storage crates *are* the
-        // implementation being called, so they are not callers of it.
+        // The storage crates *are* the implementation being called, so they are not callers
+        // of it --- and their own tests must call them, or the implementation is untested.
+        if rel.contains("sankhya-table/") || rel.contains("sankhya-table-delta/") {
+            continue;
+        }
+        // A test inside the crate that owns writing is testing it. A test anywhere else that
+        // writes is *performing server work*, and that exemption used to be blanket.
+        //
+        // It is how the soak came to group files by partition, merge them, and commit the
+        // removals by hand --- then forget to retire the inputs, and fill a disk. The rule
+        // said only two crates may write to a warehouse; the check simply was not looking at
+        // tests, so a test became the third writer and nothing said so.
         if rel.contains("/tests/")
-            || rel.contains("sankhya-table/")
-            || rel.contains("sankhya-table-delta/")
+            && MAY_WRITE.iter().any(|(name, _)| rel.contains(&format!("crates/{name}/")))
         {
             continue;
         }
@@ -1673,8 +1731,29 @@ fn check_writers(root: &Path) -> bool {
         };
         for (number, line) in text.lines().enumerate() {
             let code = line.split("//").next().unwrap_or(line);
-            if WRITES.iter().chain(COMMITS).any(|call| code.contains(call)) {
+            // For a test, the rule is about the *log*, not about bytes on disk.
+            //
+            // `write_parquet` writes a file. A file with no action referring to it is
+            // invisible to every reader --- it is an orphan, and retention sweeps it. What
+            // makes a second writer dangerous is mutating table state, and table state is
+            // the log. So a test that writes a parquet and never commits is not a second
+            // writer, and a test that commits is one however it produced the bytes.
+            let calls: &[&str] = if rel.contains("/tests/") {
+                COMMITS
+            } else {
+                &[]
+            };
+            let flagged = if rel.contains("/tests/") {
+                calls.iter().any(|call| code.contains(call))
+            } else {
+                WRITES.iter().chain(COMMITS).any(|call| code.contains(call))
+            };
+            if flagged {
                 *writers.entry(crate_name.to_string()).or_default() += 1;
+                if SECOND_WRITER_BACKLOG.contains(&rel.as_str()) {
+                    backlog_seen.insert(rel.clone());
+                    continue;
+                }
                 if !MAY_WRITE.iter().any(|(name, _)| *name == crate_name) {
                     eprintln!(
                         "  SECOND WRITER  {rel}:{}: `{}` writes to a warehouse, and only \
@@ -1700,11 +1779,28 @@ fn check_writers(root: &Path) -> bool {
         assert!(reason.len() > 40, "an allowlist entry needs a usable reason");
     }
 
+    // The ratchet. A file that has been cleaned up must leave the list on the same commit,
+    // or the backlog stops describing the work left and starts hiding it.
+    for stale in SECOND_WRITER_BACKLOG {
+        if !backlog_seen.contains(*stale) {
+            eprintln!(
+                "  CLEANED UP     {stale} no longer writes to a warehouse. Remove it from \
+                 SECOND_WRITER_BACKLOG: a backlog that outlives the work it describes is a \
+                 list nobody believes"
+            );
+            ok = false;
+        }
+    }
+
     if ok {
         let named: Vec<String> = writers
             .iter()
             .map(|(name, count)| format!("{name} ({count})"))
             .collect();
+        println!(
+            "   {} test file(s) still write directly, and the list may only shrink",
+            SECOND_WRITER_BACKLOG.len()
+        );
         println!("   only declared writers touch a warehouse: {}", named.join(", "));
     }
     ok
@@ -1785,6 +1881,7 @@ const KNOWN_CHECKS: &[&str] = &[
     "check-logging",
     "check-package",
     "check-doc-numbers",
+    "check-build-tree",
     "check-tests",
 ];
 

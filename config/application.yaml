@@ -49,3 +49,19 @@ data:
 #   sales:
 #     orders:
 #       clustering: order_date,region
+
+# How the warehouse keeps itself in shape.
+#
+# Compaction merges small files and retirement removes what a merge replaced, once its grace
+# period has run. Both happen on a thread the server owns; nothing outside the server drives
+# them, and no client needs to know they exist.
+#
+# Nothing ran either of these before: maintenance shipped as a library that only tests
+# called, so a running server accumulated files for as long as it was up.
+maintenance:
+  # How often a maintenance pass runs. A pass is bounded work, so this is the rate the
+  # warehouse catches up at, not how long it spends. Suffixes: s, m, h.
+  #
+  # 0 disables it, for the one honest case: another process is doing the maintenance. Two
+  # maintainers on one warehouse are two committers racing for the same version.
+  interval: 30s

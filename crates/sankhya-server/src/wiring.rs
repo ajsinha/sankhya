@@ -48,6 +48,19 @@ pub struct Settings {
     pub read_as_of: sankhya_types::Lsn,
     /// The tenant every connection belongs to, until federated identity is wired in.
     pub tenant: TenantId,
+    /// How often the warehouse maintains itself, or `None` to leave it alone.
+    ///
+    /// # Why this is a setting and not a constant
+    ///
+    /// Compaction and retirement compete with queries for disk and page cache, and how much
+    /// of that a deployment can spare is a property of the deployment. A development sandbox
+    /// wants it brisk so a table is tidy while somebody watches; a loaded cluster wants it
+    /// rare. Neither is the right constant.
+    ///
+    /// `None` disables it, which exists for the one honest case: another process is doing
+    /// the maintenance. Two maintainers on one warehouse is two committers racing for the
+    /// same version.
+    pub maintenance_interval: Option<std::time::Duration>,
     /// Whether a password is required.
     ///
     /// A setting rather than a constant because a development sandbox needs to run without

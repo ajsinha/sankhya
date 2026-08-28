@@ -103,8 +103,7 @@ fn start_server(warehouse: &Path, port: u16) -> Option<Server> {
 fn warehouse() -> tempfile::TempDir {
     use arrow_array::{Int64Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
-    use sankhya_table::{write_parquet, WriterConfig};
-    use sankhya_table_delta::{commit, create, Action, AddFile, Metadata};
+    use sankhya_publish::Publication;
     use sankhya_types::Lsn;
     use std::sync::Arc;
 
@@ -116,8 +115,8 @@ fn warehouse() -> tempfile::TempDir {
         Field::new("id", DataType::Int64, false),
         Field::new("region", DataType::Utf8, true),
     ]));
-    let delta = sankhya_table_delta::schema_string(&schema).expect("representable");
-    commit(&root, 0, &create(Metadata::new("orders", delta, 0))).expect("creating");
+    let publication = Publication::external(&root, "orders");
+    publication.create(&schema).expect("creating");
 
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
@@ -127,25 +126,9 @@ fn warehouse() -> tempfile::TempDir {
         ],
     )
     .expect("a valid batch");
-    let report = write_parquet(
-        &root,
-        "part-0000.parquet",
-        &batch,
-        Lsn::new(3),
-        WriterConfig::default(),
-    )
-    .expect("writing");
-    commit(
-        &root,
-        1,
-        &[Action::Add(AddFile::with_rows(
-            "part-0000.parquet",
-            report.bytes,
-            0,
-            3,
-        ))],
-    )
-    .expect("publishing");
+    publication
+        .append(1, "part-0000.parquet", &batch, Lsn::new(3))
+        .expect("publishing");
     dir
 }
 
