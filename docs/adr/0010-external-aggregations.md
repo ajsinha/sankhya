@@ -31,6 +31,38 @@ two choices and both are bad: assume it composes, and produce plausible wrong nu
 materialised ancestors; or assume it does not, and give up roll-up, the lattice and
 materialisation entirely for that measure.
 
+## The lineage, which decides what we are actually adopting
+
+The contract below is Snowflake's in its method names and is **not Snowflake's idea**. It is
+an implementation of a classification from the paper that introduced the data cube operator —
+Gray, Chaudhuri, Bosworth *et al.*, *Data Cube: A Relational Aggregation Operator Generalizing
+Group-By, Cross-Tab, and Sub-Totals* (ICDE 1996) — which sorts aggregates into three kinds:
+
+| Gray's term | Definition | Our `Rule` |
+|---|---|---|
+| **Distributive** | Computable from partitions by applying the function to each and combining | `Sum`, `Min`, `Max`, `First`, `Last` |
+| **Algebraic** | Computable from a **bounded** intermediate of *M* distributive aggregates | `Mean` — sum and count |
+| **Holistic** | No constant bound on the intermediate exists | `None` — ratios, distinct counts, percentiles |
+
+That matters for the question "can we adopt Snowflake's design", because it says what is being
+adopted: a method-name convention over a thirty-year-old classification that this system
+already implements. Spark's `Aggregator` is the same three methods under different names.
+There is nothing to license and nothing novel to attribute — the vocabulary is the literature's
+and the shape is what an algebraic aggregate *is*.
+
+### And it exposes a limitation in what we have
+
+`Rule::composes()` is true for exactly `Sum | Last | First | Max | Min` — Gray's distributive
+set — and false for `Mean`. So the model currently treats **algebraic and holistic the same**:
+both are refused a roll-up, both must go to base data.
+
+But `Mean` is algebraic. It composes perfectly well *given a bounded intermediate*, and the
+intermediate is (sum, count) — which is precisely what a `state` plus a `merge` is.
+
+So adopting the contract is not only about Python. **It closes a gap in the built-in rules**:
+a measure carrying state can roll up a mean correctly, and the refusal narrows from "not
+distributive" to "genuinely holistic", which is where it belongs.
+
 ## What other systems do
 
 **Snowflake's Python UDAFs** require a class with `__init__`, `accumulate`, `merge`,
@@ -113,6 +145,29 @@ their time in the interpreter boundary and the GIL, and the data is already Arro
 sides — so it crosses as Arrow, zero-copy, and a competent implementation does its work in
 NumPy or Polars rather than in a Python loop.
 
+### What we do not adopt
+
+The shape, not the packaging. Snowpark's decorators, its Python runtime, its
+`@udaf` registration and its type mapping are theirs and are entangled with their platform.
+Naming our methods the same way is worth doing because somebody who has written one of theirs
+can write one of ours; claiming compatibility we do not have is not.
+
+### Where our model is richer, and the contract has to stretch
+
+A Snowflake UDAF is a **flat SQL aggregate**: one function, one composability answer.
+
+A measure here declares a rule **per dimension**. A closing balance is `Last` along time and
+`Sum` along entity, and that asymmetry is the whole reason semi-additive measures are
+expressible at all. There is no single "does this compose" answer for such a measure — there
+is one per dimension.
+
+So an external aggregation occupies a **rule slot**, not a measure: declared along a named
+dimension, with its own `merge` deciding composability *there*. A function may legitimately
+merge along one dimension and not along another, and the model already has somewhere to put
+that. This is the one place the borrowed contract does not fit unchanged, and it is worth
+getting right at declaration time rather than discovering when a roll-up returns a plausible
+number.
+
 ## Consequences
 
 **The powerful case works.** A weighted average, an exponential moving average, a percentile
@@ -142,6 +197,7 @@ way.
 
 ## Sources
 
+- Gray, Chaudhuri, Bosworth *et al.* — [Data Cube: A Relational Aggregation Operator Generalizing Group-By, Cross-Tab, and Sub-Totals](https://web.stanford.edu/class/cs345d-01/rl/olap.pdf) (ICDE 1996)
 - Snowflake — [Python user-defined aggregate functions](https://docs.snowflake.com/en/developer-guide/udf/python/udf-python-aggregate-functions)
 - Snowflake — [Creating UDAFs for DataFrames in Python](https://docs.snowflake.com/en/developer-guide/snowpark/python/creating-udafs)
 - Felipe Hoffa — [Uncovering the new Snowflake UDAFs with Apache DataSketches](https://hoffa.medium.com/uncovering-the-new-snowflake-udafs-with-apache-datasketches-ceeca5d22985)
