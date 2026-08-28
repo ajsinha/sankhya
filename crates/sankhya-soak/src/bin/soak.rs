@@ -49,8 +49,42 @@ fn flag(args: &[String], name: &str) -> Option<String> {
         .cloned()
 }
 
+/// What the soak does, printed on `--help` and on no arguments at all.
+///
+/// **A bare invocation prints this and exits.** It used to take every default and start a
+/// four-hour job writing ten gigabytes --- so running the binary to find out what it does
+/// filled a directory instead of answering the question. A tool whose no-argument behaviour
+/// is "begin the expensive irreversible thing" is a tool that will eventually be run by
+/// somebody who only wanted to look at it.
+const USAGE: &str = "\
+sankhya-soak — run a long-duration soak and judge it
+
+USAGE:
+    sankhya-soak --at <DIR> [--gb <N>] [--tables <N>] [--minutes <N>]
+
+OPTIONS:
+    --at <DIR>       Warehouse directory. REQUIRED — there is no default, because a
+                     default writes gigabytes somewhere the caller did not name.
+                     Emptied before filling, so a run does not inherit the tail of
+                     the last one.
+    --schema <NAME>  Schema the tables live under (default: soak). Tables are laid
+                     out as <at>/warehouse/<schema>/<table>.
+    --gb <N>         Total data to generate across all tables (default 10)
+    --tables <N>     How many tables to spread it across (default 10)
+    --minutes <N>    How long to run after filling (default 45)
+
+The warehouse is filled once, then writes, log replays, bounded reads and a compaction
+duty cycle run together until the deadline. Memory, open files, metric series and file
+counts are sampled every 15s and judged every 120s, so a run killed at hour nine leaves
+hour eight's verdict behind.
+";
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{USAGE}");
+        return;
+    }
     let gb: f64 = flag(&args, "--gb")
         .and_then(|v| v.parse().ok())
         .unwrap_or(10.0);
@@ -59,13 +93,33 @@ fn main() {
         .unwrap_or(10);
     let minutes: u64 = flag(&args, "--minutes")
         .and_then(|v| v.parse().ok())
-        .unwrap_or(240);
-    let at = PathBuf::from(flag(&args, "--at").unwrap_or_else(|| "/var/tmp/sankhya-soak".into()));
+        .unwrap_or(45);
+    // No default. A default warehouse is a path the caller did not choose, and this binary
+    // writes gigabytes into it --- which is exactly what happened when somebody ran the
+    // binary with no arguments to see what it did.
+    let schema = flag(&args, "--schema").unwrap_or_else(|| "soak".to_string());
+    let Some(at) = flag(&args, "--at").map(PathBuf::from) else {
+        eprintln!("{}  --at <DIR> is required; there is no default warehouse", stamp());
+        eprintln!("{USAGE}");
+        std::process::exit(2);
+    };
 
     println!("{}  soak starting", stamp());
     println!("{}    target {gb} GB across {tables} table(s), {minutes} minute(s)", stamp());
-    println!("{}    warehouse {}", stamp(), at.display());
+    println!("{}    warehouse {} (schema {schema})", stamp(), at.display());
 
+    // Emptied first. A run that inherits the previous run's files starts with a file count
+    // and a page cache it did not create, and the memory reading in the first minutes then
+    // describes the last run as much as this one. Only the warehouse goes --- the log and the
+    // report beside it are the evidence.
+    let warehouse = at.join("warehouse");
+    if warehouse.exists() {
+        if let Err(error) = std::fs::remove_dir_all(&warehouse) {
+            eprintln!("{}  cannot clear {}: {error}", stamp(), warehouse.display());
+            std::process::exit(2);
+        }
+        println!("{}    cleared the previous warehouse", stamp());
+    }
     if let Err(error) = std::fs::create_dir_all(&at) {
         eprintln!("{}  cannot use {}: {error}", stamp(), at.display());
         std::process::exit(2);
@@ -76,11 +130,12 @@ fn main() {
     let per_table_bytes = (gb * 1024.0 * 1024.0 * 1024.0) / tables as f64;
     let mut roots = Vec::new();
     for table in 0..tables {
-        let root = at.join("warehouse").join("soak").join(format!("t{table:02}"));
+        let name = table_name(table);
+        let root = at.join("warehouse").join(&schema).join(&name);
         create_table(&root);
         let written = fill(&root, per_table_bytes, &filling);
         println!(
-            "{}    t{table:02} filled, {:.2} GB",
+            "{}    {name} filled, {:.2} GB",
             stamp(),
             written as f64 / (1024.0 * 1024.0 * 1024.0)
         );
@@ -343,6 +398,39 @@ fn batch(from: i64, rows: usize) -> RecordBatch {
         // arise from the data. It would mean the schema and the builders disagree, which is
         // a defect rather than a condition, and the run cannot continue past it.
         Err(error) => die(&format!("the generated batch does not match its schema: {error}")),
+    }
+}
+
+/// A name for the nth soak table.
+///
+/// Named rather than numbered, because `t07` in a failure report tells you nothing and a
+/// warehouse of `t00..t09` is indistinguishable from a scratch directory somebody forgot to
+/// delete. The names are deliberately ordinary English --- this is a core crate, and
+/// `check-vocabulary` refuses domain vocabulary here so that any one industry stays a use
+/// case rather than leaking into the engine. (The first version of this comment named two
+/// such industries and was refused by that check, which is the check being exactly right.)
+///
+/// Beyond the list the suffix carries the number, so a run of five hundred tables still has
+/// names a person can read and a machine can order.
+fn table_name(index: usize) -> String {
+    const NAMES: [&str; 10] = [
+        "events",
+        "sessions",
+        "requests",
+        "documents",
+        "readings",
+        "samples",
+        "entries",
+        "items",
+        "records",
+        "batches",
+    ];
+    match NAMES.get(index) {
+        Some(name) => (*name).to_string(),
+        None => {
+            let stem = NAMES.get(index % NAMES.len()).copied().unwrap_or("table");
+            format!("{stem}_{:03}", index / NAMES.len())
+        }
     }
 }
 
