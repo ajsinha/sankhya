@@ -3691,6 +3691,8 @@ dependencies = [
  "sankhya-backup",
  "sankhya-catalog",
  "sankhya-config",
+ "sankhya-cube",
+ "sankhya-cube-algo",
  "sankhya-diagnostic",
  "sankhya-error",
  "sankhya-governor",

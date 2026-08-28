@@ -90,6 +90,15 @@ pub struct Server {
     /// schema browser is told, the other is what a query reads. Keeping them together would
     /// invite a table that is described but not readable, or readable but not described.
     servable: Vec<ServableTable>,
+    /// The cubes this warehouse declares, validated at startup.
+    ///
+    /// Read once, here, rather than per query: a definition is a small JSON document, and
+    /// re-reading it per statement would make a cube's cost depend on how often it is asked
+    /// about. **Validated** here too, because a definition that cannot become a `Cube` is a
+    /// deployment problem and belongs in the startup log beside the tables that would not
+    /// open --- not in the first query that happens to name it, hours later, reported to
+    /// whoever ran that query as though they had done something wrong.
+    cubes: Vec<sankhya_cube::model::Cube>,
     clock: parking_lot::Mutex<i64>,
     /// How many connections are open, so the gauge can be set from either hook.
     ///
@@ -121,6 +130,51 @@ impl Server {
 
     /// Assemble a server that can actually answer queries.
     #[must_use]
+    /// Load, validate and adopt the cubes a warehouse declares.
+    ///
+    /// # Why loudly, and why at startup
+    ///
+    /// A cube definition that will not parse, or that parses and does not describe a usable
+    /// cube, is a deployment problem. Discovered at startup it is one line beside the tables
+    /// that would not open, and whoever deployed it is still there. Discovered by the first
+    /// query to name the cube, it is an error handed to a user who did nothing wrong, at
+    /// whatever hour they happened to ask.
+    ///
+    /// A broken cube does **not** stop the server. The other cubes and every table are still
+    /// servable, and refusing to start would turn one malformed JSON file into an outage.
+    ///
+    /// Returns a complaint per definition that could not be adopted, in the same shape as the
+    /// table complaints the caller already prints.
+    #[must_use]
+    pub fn adopting_cubes(mut self, warehouse: &std::path::Path) -> (Self, Vec<String>) {
+        let mut complaints = Vec::new();
+        let definitions = match sankhya_cube::catalogue::load_all(warehouse) {
+            Ok(definitions) => definitions,
+            Err(error) => {
+                complaints.push(error.to_string());
+                Vec::new()
+            }
+        };
+        for definition in definitions {
+            let name = definition.name.clone();
+            match definition.validate() {
+                Ok(cube) => self.cubes.push(cube),
+                Err(rejections) => {
+                    let why: Vec<String> =
+                        rejections.iter().map(ToString::to_string).collect();
+                    complaints.push(format!("the cube `{name}`: {}", why.join("; ")));
+                }
+            }
+        }
+        (self, complaints)
+    }
+
+    /// The cubes this server adopted.
+    #[must_use]
+    pub fn cubes(&self) -> &[sankhya_cube::model::Cube] {
+        &self.cubes
+    }
+
     pub fn with_tables(
         settings: Settings,
         policy: PolicySet,
@@ -136,6 +190,7 @@ impl Server {
             audit: parking_lot::Mutex::new(Chain::new()),
             tables,
             servable,
+            cubes: Vec::new(),
             clock: parking_lot::Mutex::new(0),
             connections: AtomicUsize::new(0),
             metrics: Arc::new(Registry::new()),
@@ -544,6 +599,12 @@ pub async fn start(
     let tables = crate::warehouse::describe(&found);
     let policy = permissive_policy(&settings.tenant, &tables);
     let listener = sankhya_api_pg::listener::PgListener::bind(&settings.listen).await?;
-    let server = Arc::new(Server::with_tables(settings, policy, tables, servable));
-    Ok((server, listener, complaints))
+    let warehouse = settings.warehouse.clone();
+    let (server, cube_complaints) =
+        Server::with_tables(settings, policy, tables, servable).adopting_cubes(&warehouse);
+    // Cube complaints join the table ones rather than getting a channel of their own. They
+    // are the same kind of news --- something in this warehouse could not be served --- and
+    // an operator scanning startup output should not have to know there are two lists.
+    let complaints: Vec<String> = complaints.into_iter().chain(cube_complaints).collect();
+    Ok((Arc::new(server), listener, complaints))
 }

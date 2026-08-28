@@ -352,6 +352,10 @@ async fn main() -> std::io::Result<()> {
         // a table that was never created, and they will go looking in the wrong place.
         eprintln!("  COULD NOT OPEN {complaint}");
     }
+    if !server.cubes().is_empty() {
+        let named: Vec<&str> = server.cubes().iter().map(sankhya_cube::model::Cube::name).collect();
+        println!("  {} cube(s): {}", named.len(), named.join(", "));
+    }
     if server.table_count() == 0 {
         println!("  no tables found — set SANKHYA_WAREHOUSE to a directory of <schema>/<table>/");
     }

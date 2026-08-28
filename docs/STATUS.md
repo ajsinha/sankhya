@@ -195,10 +195,36 @@ entirely wrong — and defaulting is precisely the failure the additivity model 
 prevent. A catalogue file that will not parse is reported with its path rather than skipped,
 because a server that comes up healthy with a cube missing sends somebody to the wrong place.
 
-**What is still not there:** the definition is not yet loaded by the server at startup, so
-the catalogue exists and nothing reads it in production yet; and the better long-run answer —
-a definition as a row in a system table, so the store is the warehouse — waits on the
-catalogue proper.
+### The server knows its cubes, and cannot yet answer with them
+
+The catalogue existed and nothing read it — the same shape `sankhya-maintenance` was in that
+morning, and a capability nothing in production reaches is indistinguishable from one that
+was never built. The server now loads every definition at startup, **validates** it, and
+reports the count and any failure beside the tables that would not open. A malformed
+definition is a complaint, not an outage: one bad JSON file must not stop a server whose other
+cubes and every table are fine.
+
+Validating at startup rather than at first use is the point. A measure with no rule along a
+declared dimension is exactly what the additivity model exists to catch, and catching it when
+somebody runs a query means reporting a deployment error to a user who did nothing wrong, at
+whatever hour they happened to ask.
+
+**What is still not there, and why it is a design decision rather than an omission.** A cube
+is loaded but not yet *queryable*, because hydration has nowhere correct to go yet:
+
+- `session_for` builds a context **per statement**, so hydrating there reads the whole fact
+  table on every query.
+- Hydrating once at startup and sharing the cells across principals would hand every caller
+  the same totals whatever policy says — the disclosure through arithmetic that `FR-QUERY-13`
+  and §11.5 exist to prevent, and the kind that leaves no trace in a result.
+
+The correct answer is a cache keyed by snapshot **and** the principal's visible scope, which
+is what §11.6's materialisation already describes: a materialised cuboid keyed by *(definition
+version, snapshot, cuboid)*, extended with the scope. That is the next piece, and guessing at
+it would produce either a per-query table scan or a security defect.
+
+The other absent half — a definition as a row in a system table, so the store is the warehouse
+rather than a JSON file beside it — waits on the catalogue proper.
 
 
 ## M6, closed 2026-08-28
@@ -1777,7 +1803,7 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,652 tests, none of which needs a database
+cargo test --workspace           # 1,657 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
 python3 tools/mutation-audit.py  # 359 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
