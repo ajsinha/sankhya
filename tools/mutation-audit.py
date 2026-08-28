@@ -1698,8 +1698,22 @@ CATALOGUE = [
 
     ("cube: skip the stray-rule check, so a misspelling reads as one problem",
      "crates/sankhya-cube/src/validate.rs",
-     "            if !names.contains(rule.dimension) {",
+     "            if !names.contains(rule.dimension.as_str()) {",
      "            if false {",
+     "sankhya-cube"),
+
+    # --- a cube that outlives its process, or quietly changes on the way back ---
+
+    ("cube: default an unknown stored rule to Sum rather than refusing it",
+     "crates/sankhya-cube/src/catalogue.rs",
+     "                let Some(rule) = rule_named(&rule) else {",
+     "                let Some(rule) = rule_named(&rule).or(Some(Rule::Sum)) else {",
+     "sankhya-cube"),
+
+    ("cube: load a catalogue and return none of what it holds",
+     "crates/sankhya-cube/src/catalogue.rs",
+     "        found.push(stored.into_definition()?);",
+     "        if false { found.push(stored.into_definition()?); }",
      "sankhya-cube"),
 
     # --- consolidation: the three ways a total goes silently wrong ---------
@@ -2028,8 +2042,8 @@ CATALOGUE = [
 
     ("cube-sql: default an unknown measure rather than naming the ones that exist",
      "crates/sankhya-cube-sql/src/functions.rs",
-     "    published.cube.measure(&name).copied().ok_or_else(|| {",
-     "    published.cube.measures().first().copied().ok_or_else(|| {",
+     "    published.cube.measure(&name).cloned().ok_or_else(|| {",
+     "    published.cube.measures().first().cloned().ok_or_else(|| {",
      "sankhya-cube-sql"),
 
     ("cube-sql: skip the completeness threshold a query asked for",

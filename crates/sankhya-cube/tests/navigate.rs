@@ -15,28 +15,25 @@ use sankhya_cube::navigate::{
 use sankhya_cube_algo::measure::{Along, Measure, Rule};
 
 /// Composes along both: an ordinary additive amount.
-const AMOUNT: Measure = Measure {
-    name: "amount",
-    rules: &[
-        Along { dimension: "period", rule: Rule::Sum },
-        Along { dimension: "entity", rule: Rule::Sum },
-    ],
-};
+fn amount() -> Measure {
+    Measure::new("amount", vec![
+        Along::new("period", Rule::Sum),
+        Along::new("entity", Rule::Sum),
+    ])
+}
 
 /// A closing balance: summing it across time is the classic wrong answer.
-const BALANCE: Measure = Measure {
-    name: "balance",
-    rules: &[
-        Along { dimension: "period", rule: Rule::Last },
-        Along { dimension: "entity", rule: Rule::Sum },
-    ],
-};
+fn balance() -> Measure {
+    Measure::new("balance", vec![
+        Along::new("period", Rule::Last),
+        Along::new("entity", Rule::Sum),
+    ])
+}
 
-/// Declares nothing about `period` at all. A different failure from `BALANCE`.
-const SILENT: Measure = Measure {
-    name: "ratio",
-    rules: &[Along { dimension: "entity", rule: Rule::Sum }],
-};
+/// Declares nothing about `period` at all. A different failure from `balance()`.
+fn silent() -> Measure {
+    Measure::new("ratio", vec![Along::new("entity", Rule::Sum)])
+}
 
 fn address(members: &[&str]) -> Vec<String> {
     members.iter().map(|m| (*m).to_string()).collect()
@@ -67,7 +64,7 @@ fn a_closing_balance_is_reduced_by_the_measures_rule_not_the_callers() {
     //
     // What must not be possible is the caller choosing to sum it. The result holds one
     // value per cell, already reduced under `Last`, so there is nothing left to re-reduce.
-    let rolled = roll_up(&cube(), "period", &BALANCE, Ordered::By(&["jan", "feb"]))
+    let rolled = roll_up(&cube(), "period", &balance(), Ordered::By(&["jan", "feb"]))
         .expect("a balance composes along time");
 
     assert_eq!(rolled.get(&address(&["a"]), Rule::Sum), Some(4.0), "february's, not 5.0");
@@ -88,7 +85,7 @@ fn a_positional_rule_without_a_member_order_is_refused_not_guessed() {
     // It survives testing because ISO-8601 dates sort correctly. A system tested with
     // `2026-01`, `2026-02` never exhibits it, and the first wrong number appears against
     // member names somebody chose for a report.
-    let refused = roll_up(&cube(), "period", &BALANCE, Ordered::Unstated)
+    let refused = roll_up(&cube(), "period", &balance(), Ordered::Unstated)
         .expect_err("a closing balance was computed from an unordered bag");
     assert_eq!(
         refused,
@@ -100,7 +97,7 @@ fn a_positional_rule_without_a_member_order_is_refused_not_guessed() {
     );
 
     // And the wrong order is a different answer, which is the whole point.
-    let backwards = roll_up(&cube(), "period", &BALANCE, Ordered::By(&["feb", "jan"]))
+    let backwards = roll_up(&cube(), "period", &balance(), Ordered::By(&["feb", "jan"]))
         .expect("stated, if wrong");
     assert_eq!(backwards.get(&address(&["a"]), Rule::Sum), Some(1.0));
 }
@@ -110,7 +107,7 @@ fn a_member_missing_from_the_stated_order_is_refused() {
     // Placing it first or last guesses at the one thing the order settles; dropping it
     // loses facts from a total.
     assert_eq!(
-        roll_up(&cube(), "period", &BALANCE, Ordered::By(&["jan"])),
+        roll_up(&cube(), "period", &balance(), Ordered::By(&["jan"])),
         Err(Refused::MemberNotOrdered {
             dimension: "period".to_string(),
             member: "feb".to_string(),
@@ -122,7 +119,7 @@ fn a_member_missing_from_the_stated_order_is_refused() {
 fn an_order_independent_rule_needs_no_stated_order() {
     // A sum, a maximum and a minimum give the same answer however the contributions are
     // ordered. Demanding an order there would be ceremony, and ceremony gets worked around.
-    assert!(roll_up(&cube(), "period", &AMOUNT, Ordered::Unstated).is_ok());
+    assert!(roll_up(&cube(), "period", &amount(), Ordered::Unstated).is_ok());
 }
 
 #[test]
@@ -132,7 +129,7 @@ fn an_undeclared_dimension_is_a_different_refusal_from_a_declared_one() {
     // somebody must close, and telling them "cannot be rolled up" sends them to argue with
     // a rule that was never written.
     let refused =
-        roll_up(&cube(), "period", &SILENT, Ordered::Unstated).expect_err("computed anyway");
+        roll_up(&cube(), "period", &silent(), Ordered::Unstated).expect_err("computed anyway");
     assert_eq!(
         refused,
         Refused::Undeclared {
@@ -149,7 +146,7 @@ fn an_undeclared_dimension_is_a_different_refusal_from_a_declared_one() {
 #[test]
 fn rolling_an_additive_measure_aggregates_the_axis_away() {
     let rolled =
-        roll_up(&cube(), "period", &AMOUNT, Ordered::Unstated).expect("additive along time");
+        roll_up(&cube(), "period", &amount(), Ordered::Unstated).expect("additive along time");
     assert_eq!(rolled.dimensions(), ["entity"]);
     assert_eq!(rolled.get(&address(&["a"]), Rule::Sum), Some(5.0));
     assert_eq!(rolled.get(&address(&["b"]), Rule::Sum), Some(10.0));
@@ -160,7 +157,7 @@ fn a_balance_may_still_be_rolled_up_along_a_dimension_it_composes_on() {
     // Summed across entities, held as a closing figure across time: the rule is per
     // dimension, so one measure can do both.
     let rolled =
-        roll_up(&cube(), "entity", &BALANCE, Ordered::Unstated).expect("composes along entity");
+        roll_up(&cube(), "entity", &balance(), Ordered::Unstated).expect("composes along entity");
     assert_eq!(rolled.dimensions(), ["period"]);
     assert_eq!(rolled.get(&address(&["jan"]), Rule::Sum), Some(3.0));
 }
@@ -177,7 +174,7 @@ fn merging_cells_reduces_once_over_the_union_not_over_partial_answers() {
     for (entity, value) in [("a", 1.0), ("a", 2.0), ("a", 3.0), ("b", 10.0)] {
         cells.add(address(&["jan", entity]), value).expect("well-formed");
     }
-    let rolled = roll_up(&cells, "entity", &AMOUNT, Ordered::Unstated).expect("additive");
+    let rolled = roll_up(&cells, "entity", &amount(), Ordered::Unstated).expect("additive");
     assert_eq!(rolled.get(&address(&["jan"]), Rule::Sum), Some(16.0));
     assert_eq!(
         rolled.contributions(&address(&["jan"])).map(|c| c.len()),
@@ -191,7 +188,7 @@ fn a_reduced_cell_answers_with_the_rule_that_produced_it() {
     // The value was produced by the measure's declared rule and there is no second reading
     // of it. Asking a rolled-up sum for its maximum is a category error, and answering with
     // the maximum of an expansion's components would be a number with no meaning at all.
-    let rolled = roll_up(&cube(), "entity", &AMOUNT, Ordered::Unstated).expect("additive");
+    let rolled = roll_up(&cube(), "entity", &amount(), Ordered::Unstated).expect("additive");
     let expected = rolled.get(&address(&["jan"]), Rule::Sum);
     assert_eq!(expected, Some(3.0));
 
@@ -286,7 +283,7 @@ fn consolidating_members_keeps_the_rank_and_merges_the_cells() {
         "a" | "b" => Some("north".to_string()),
         _ => None,
     };
-    let rolled = consolidate_along(&cube(), "entity", &parents, &AMOUNT, Ordered::Unstated)
+    let rolled = consolidate_along(&cube(), "entity", &parents, &amount(), Ordered::Unstated)
         .expect("additive along entity");
 
     assert_eq!(rolled.dimensions(), ["period", "entity"], "rank unchanged");
@@ -299,7 +296,7 @@ fn a_member_with_no_parent_stays_where_it_is() {
     // another one is at its top, and inventing a parent puts a member in the result that
     // does not exist.
     let parents = |member: &str| (member == "a").then(|| "north".to_string());
-    let rolled = consolidate_along(&cube(), "entity", &parents, &AMOUNT, Ordered::Unstated)
+    let rolled = consolidate_along(&cube(), "entity", &parents, &amount(), Ordered::Unstated)
         .expect("additive");
 
     assert_eq!(rolled.get(&address(&["jan", "north"]), Rule::Sum), Some(1.0));
@@ -316,11 +313,11 @@ fn consolidating_by_position_without_an_order_is_refused() {
     // refusals as a roll-up.
     let parents = |_: &str| Some("all".to_string());
     assert!(matches!(
-        consolidate_along(&cube(), "period", &parents, &BALANCE, Ordered::Unstated),
+        consolidate_along(&cube(), "period", &parents, &balance(), Ordered::Unstated),
         Err(Refused::OrderRequired { .. })
     ));
     assert!(matches!(
-        consolidate_along(&cube(), "period", &parents, &SILENT, Ordered::Unstated),
+        consolidate_along(&cube(), "period", &parents, &silent(), Ordered::Unstated),
         Err(Refused::Undeclared { .. })
     ));
 }
@@ -331,7 +328,7 @@ fn consolidating_by_position_without_an_order_is_refused() {
 fn the_operations_compose_because_each_returns_a_cube() {
     // Dice, then roll up, then read — one structure navigated, not three unrelated queries.
     let diced = dice(&cube(), &[("period", &["jan", "feb"][..])]);
-    let rolled = roll_up(&diced.cells, "period", &AMOUNT, Ordered::Unstated).expect("additive");
+    let rolled = roll_up(&diced.cells, "period", &amount(), Ordered::Unstated).expect("additive");
     let sliced = slice(&rolled, "entity", "b");
     assert_eq!(sliced.dimensions(), [] as [String; 0]);
     assert_eq!(sliced.get(&[], Rule::Sum), Some(10.0), "the grand total for b");

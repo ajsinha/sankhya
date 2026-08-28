@@ -114,7 +114,7 @@ pub fn absorb(
     }
 
     let values = batch
-        .column_by_name(measure.name)
+        .column_by_name(&measure.name)
         .ok_or_else(|| NotHydratable::MissingMeasure {
             measure: measure.name.to_string(),
             found: batch.schema().fields().iter().map(|f| f.name().clone()).collect(),

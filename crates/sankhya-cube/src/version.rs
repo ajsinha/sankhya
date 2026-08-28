@@ -67,7 +67,7 @@ pub fn fingerprint(definition: &Definition) -> u64 {
 
     for measure in &definition.measures {
         feed(&mut h, measure.name.as_bytes());
-        for rule in measure.rules {
+        for rule in &measure.rules {
             feed(&mut h, rule.dimension.as_bytes());
             feed(&mut h, rule.rule.as_str().as_bytes());
         }

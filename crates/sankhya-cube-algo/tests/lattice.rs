@@ -13,24 +13,22 @@ use sankhya_cube_algo::measure::{Along, Measure, Rule};
 const DIMS: &[&str] = &["time", "account", "region"];
 
 /// Additive along everything: every roll-up is permitted.
-const AMOUNT: Measure = Measure {
-    name: "amount",
-    rules: &[
-        Along { dimension: "time", rule: Rule::Sum },
-        Along { dimension: "account", rule: Rule::Sum },
-        Along { dimension: "region", rule: Rule::Sum },
-    ],
-};
+fn amount() -> Measure {
+    Measure::new("amount", vec![
+        Along::new("time", Rule::Sum),
+        Along::new("account", Rule::Sum),
+        Along::new("region", Rule::Sum),
+    ])
+}
 
 /// Composes along nothing: no cuboid can serve any coarser query.
-const DISTINCT: Measure = Measure {
-    name: "distinct_customers",
-    rules: &[
-        Along { dimension: "time", rule: Rule::None },
-        Along { dimension: "account", rule: Rule::None },
-        Along { dimension: "region", rule: Rule::None },
-    ],
-};
+fn distinct() -> Measure {
+    Measure::new("distinct_customers", vec![
+        Along::new("time", Rule::None),
+        Along::new("account", Rule::None),
+        Along::new("region", Rule::None),
+    ])
+}
 
 /// Rows fall by a factor of ten for each dimension dropped.
 struct ByWidth;
@@ -68,8 +66,8 @@ fn two_cuboids_naming_the_same_dimensions_are_one_cuboid() {
 #[test]
 fn a_cuboid_answers_a_coarser_query_for_an_additive_measure() {
     let fine = Cuboid::of(&["time", "account"]);
-    assert!(fine.answers(&Cuboid::of(&["account"]), &AMOUNT));
-    assert!(fine.answers(&fine, &AMOUNT), "and itself");
+    assert!(fine.answers(&Cuboid::of(&["account"]), &amount()));
+    assert!(fine.answers(&fine, &amount()), "and itself");
 }
 
 #[test]
@@ -77,14 +75,14 @@ fn a_cuboid_answers_nothing_coarser_for_a_measure_that_composes_along_nothing() 
     // A distinct count is derivable from no partial aggregates, so a materialised cuboid
     // serves exactly one query — the one it is.
     let fine = Cuboid::of(&["time", "account"]);
-    assert!(!fine.answers(&Cuboid::of(&["account"]), &DISTINCT));
-    assert!(fine.answers(&fine, &DISTINCT), "rolling away nothing is always fine");
+    assert!(!fine.answers(&Cuboid::of(&["account"]), &distinct()));
+    assert!(fine.answers(&fine, &distinct()), "rolling away nothing is always fine");
 }
 
 #[test]
 fn a_cuboid_never_answers_a_query_needing_a_dimension_it_lacks() {
     let coarse = Cuboid::of(&["account"]);
-    assert!(!coarse.answers(&Cuboid::of(&["time", "account"]), &AMOUNT));
+    assert!(!coarse.answers(&Cuboid::of(&["time", "account"]), &amount()));
 }
 
 // --- the constraint the textbook version omits --------------------------
@@ -105,10 +103,10 @@ fn benefit_counts_only_the_queries_a_measure_permits() {
         Cuboid::of(&["time", "account"]),
     ];
 
-    let additive = benefit(&candidate, &queries, &AMOUNT, &ByWidth, &[], &base());
+    let additive = benefit(&candidate, &queries, &amount(), &ByWidth, &[], &base());
     assert!(additive > 0, "an additive measure benefits from all three");
 
-    let non_additive = benefit(&candidate, &queries, &DISTINCT, &ByWidth, &[], &base());
+    let non_additive = benefit(&candidate, &queries, &distinct(), &ByWidth, &[], &base());
     assert!(
         non_additive < additive,
         "a distinct count benefits only from the query the cuboid *is*: {non_additive} \
@@ -123,7 +121,7 @@ fn a_cuboid_that_serves_nothing_new_has_no_benefit() {
     let candidate = Cuboid::of(&["region"]);
     let queries = vec![Cuboid::of(&["time"])];
     assert_eq!(
-        benefit(&candidate, &queries, &AMOUNT, &ByWidth, &[], &base()),
+        benefit(&candidate, &queries, &amount(), &ByWidth, &[], &base()),
         0
     );
 }
@@ -134,7 +132,7 @@ fn a_cuboid_that_serves_nothing_new_has_no_benefit() {
 fn selection_takes_the_cuboids_that_pay_for_themselves() {
     let lattice = Lattice::all(DIMS);
     let queries = vec![Cuboid::of(&["account"]), Cuboid::of(&["time"])];
-    let chosen = select(&lattice, &queries, &AMOUNT, &ByWidth, 10_000, &base());
+    let chosen = select(&lattice, &queries, &amount(), &ByWidth, 10_000, &base());
 
     assert!(!chosen.is_empty(), "something was worth keeping");
     for pick in &chosen {
@@ -148,7 +146,7 @@ fn selection_stays_inside_its_budget() {
     let lattice = Lattice::all(DIMS);
     let queries: Vec<Cuboid> = lattice.cuboids().to_vec();
     let budget = 150_u64;
-    let chosen = select(&lattice, &queries, &AMOUNT, &ByWidth, budget, &base());
+    let chosen = select(&lattice, &queries, &amount(), &ByWidth, budget, &base());
 
     let spent: u64 = chosen.iter().map(|c| c.cost).sum();
     assert!(spent <= budget, "spent {spent} of {budget}");
@@ -159,7 +157,7 @@ fn selection_stays_inside_its_budget() {
 fn a_budget_of_nothing_selects_nothing() {
     let lattice = Lattice::all(DIMS);
     let queries = vec![Cuboid::of(&["account"])];
-    assert!(select(&lattice, &queries, &AMOUNT, &ByWidth, 0, &base()).is_empty());
+    assert!(select(&lattice, &queries, &amount(), &ByWidth, 0, &base()).is_empty());
 }
 
 #[test]
@@ -170,7 +168,7 @@ fn nothing_is_selected_for_a_measure_that_composes_along_nothing() {
     // instead buy a pile of storage that answers nothing.
     let lattice = Lattice::all(DIMS);
     let queries = vec![Cuboid::of(&["account"]), Cuboid::of(&["time"])];
-    let chosen = select(&lattice, &queries, &DISTINCT, &ByWidth, 10_000, &base());
+    let chosen = select(&lattice, &queries, &distinct(), &ByWidth, 10_000, &base());
 
     for pick in &chosen {
         assert!(
@@ -185,7 +183,7 @@ fn nothing_is_selected_for_a_measure_that_composes_along_nothing() {
 fn the_same_cuboid_is_never_chosen_twice() {
     let lattice = Lattice::all(DIMS);
     let queries: Vec<Cuboid> = lattice.cuboids().to_vec();
-    let chosen = select(&lattice, &queries, &AMOUNT, &ByWidth, 100_000, &base());
+    let chosen = select(&lattice, &queries, &amount(), &ByWidth, 100_000, &base());
 
     let mut seen: Vec<&Cuboid> = chosen.iter().map(|c| &c.cuboid).collect();
     let before = seen.len();
@@ -201,7 +199,7 @@ fn later_choices_account_for_earlier_ones() {
     // and the second is bought for a benefit the first already delivered.
     let lattice = Lattice::all(DIMS);
     let queries = vec![Cuboid::of(&["account"])];
-    let chosen = select(&lattice, &queries, &AMOUNT, &ByWidth, 100_000, &base());
+    let chosen = select(&lattice, &queries, &amount(), &ByWidth, 100_000, &base());
 
     assert_eq!(
         chosen.len(),
@@ -217,8 +215,8 @@ fn a_larger_budget_never_selects_less() {
     // budget is not behaving as a bound.
     let lattice = Lattice::all(DIMS);
     let queries: Vec<Cuboid> = lattice.cuboids().to_vec();
-    let small = select(&lattice, &queries, &AMOUNT, &ByWidth, 200, &base());
-    let large = select(&lattice, &queries, &AMOUNT, &ByWidth, 100_000, &base());
+    let small = select(&lattice, &queries, &amount(), &ByWidth, 200, &base());
+    let large = select(&lattice, &queries, &amount(), &ByWidth, 100_000, &base());
     assert!(large.len() >= small.len(), "{} then {}", small.len(), large.len());
 }
 

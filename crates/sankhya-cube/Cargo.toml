@@ -20,6 +20,9 @@ sankhya-graph-algo = { path = "../sankhya-graph-algo" }
 sankhya-math      = { path = "../sankhya-math" }
 arrow-array       = { workspace = true }
 arrow-schema      = { workspace = true }
+serde             = { workspace = true }
+serde_json        = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 proptest = { workspace = true }

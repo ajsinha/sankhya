@@ -12,19 +12,17 @@ use sankhya_cube::{Definition, Dimension, Level};
 use sankhya_cube_algo::hierarchy::Hierarchy;
 use sankhya_cube_algo::measure::{Along, Measure, Rule};
 
-const AMOUNT: Measure = Measure {
-    name: "amount",
-    rules: &[
-        Along { dimension: "period", rule: Rule::Sum },
-        Along { dimension: "entity", rule: Rule::Sum },
-    ],
-};
+fn amount() -> Measure {
+    Measure::new("amount", vec![
+        Along::new("period", Rule::Sum),
+        Along::new("entity", Rule::Sum),
+    ])
+}
 
 /// Declares a rule along `entity` only. Summing a balance across time is wrong.
-const BALANCE: Measure = Measure {
-    name: "balance",
-    rules: &[Along { dimension: "entity", rule: Rule::Sum }],
-};
+fn balance() -> Measure {
+    Measure::new("balance", vec![Along::new("entity", Rule::Sum)])
+}
 
 fn dimensions() -> Vec<Dimension> {
     vec![
@@ -39,7 +37,7 @@ fn dimensions() -> Vec<Dimension> {
 }
 
 fn definition() -> Definition {
-    Definition::new("figures", "fact_figures", dimensions(), vec![AMOUNT])
+    Definition::new("figures", "fact_figures", dimensions(), vec![amount()])
 }
 
 // --- the default that produces wrong numbers ----------------------------
@@ -48,7 +46,7 @@ fn definition() -> Definition {
 fn a_measure_with_no_rule_for_a_dimension_is_refused_not_summed() {
     // The one that matters. Every comparable product defaults this to summation, and a
     // balance summed across time is plausible, wrong, and indistinguishable from correct.
-    let bad = Definition::new("figures", "fact_figures", dimensions(), vec![BALANCE]);
+    let bad = Definition::new("figures", "fact_figures", dimensions(), vec![balance()]);
     let refused = bad.validate().expect_err("a cube was built from an undeclared measure");
 
     assert_eq!(
@@ -69,8 +67,10 @@ fn a_measure_with_no_rule_for_a_dimension_is_refused_not_summed() {
 fn every_undeclared_dimension_is_named_at_once() {
     // Reporting them one build at a time is how somebody stops reading and declares `Sum`
     // for everything, which is the outcome the refusal exists to prevent.
-    const NOTHING: Measure = Measure { name: "ratio", rules: &[] };
-    let bad = Definition::new("figures", "fact_figures", dimensions(), vec![NOTHING]);
+    fn nothing() -> Measure {
+        Measure::new("ratio", vec![])
+    }
+    let bad = Definition::new("figures", "fact_figures", dimensions(), vec![nothing()]);
     let refused = bad.validate().expect_err("built anyway");
 
     let Rejection::MeasureUndeclared { dimensions, .. } = &refused[0] else {
@@ -85,14 +85,13 @@ fn every_undeclared_dimension_is_named_at_once() {
 fn a_rule_for_a_dimension_that_does_not_exist_is_its_own_rejection() {
     // A misspelled rule leaves the real dimension undeclared *and* adds a stray. Reporting
     // only the first would send somebody to re-add a rule they had already written.
-    const TYPO: Measure = Measure {
-        name: "amount",
-        rules: &[
-            Along { dimension: "period", rule: Rule::Sum },
-            Along { dimension: "entty", rule: Rule::Sum },
-        ],
-    };
-    let refused = Definition::new("figures", "fact_figures", dimensions(), vec![TYPO])
+    fn typo() -> Measure {
+        Measure::new("amount", vec![
+            Along::new("period", Rule::Sum),
+            Along::new("entty", Rule::Sum),
+        ])
+    }
+    let refused = Definition::new("figures", "fact_figures", dimensions(), vec![typo()])
         .validate()
         .expect_err("built anyway");
 
@@ -122,7 +121,7 @@ fn a_cycle_is_refused_with_the_path_named() {
         Dimension::new("entity", "dim_entity", "entity_key", vec![Level::new("id", "id")])
             .rolling_up(rollups),
     ];
-    let refused = Definition::new("figures", "fact_figures", dims, vec![AMOUNT])
+    let refused = Definition::new("figures", "fact_figures", dims, vec![amount()])
         .validate()
         .expect_err("a cyclic hierarchy was accepted");
 
@@ -148,7 +147,7 @@ fn an_acyclic_declared_hierarchy_is_accepted() {
         Dimension::new("entity", "dim_entity", "entity_key", vec![Level::new("id", "id")])
             .rolling_up(rollups),
     ];
-    assert!(Definition::new("figures", "fact_figures", dims, vec![AMOUNT])
+    assert!(Definition::new("figures", "fact_figures", dims, vec![amount()])
         .validate()
         .is_ok());
 }
@@ -161,7 +160,7 @@ fn validation_reports_every_problem_not_the_first() {
         Dimension::new("period", "dim_period", "period_key", vec![Level::new("day", "day")]),
         Dimension::new("period", "dim_other", "other_key", vec![Level::new("id", "id")]),
     ];
-    let refused = Definition::new("", "fact_figures", dims, vec![BALANCE])
+    let refused = Definition::new("", "fact_figures", dims, vec![balance()])
         .validate()
         .expect_err("built anyway");
 
@@ -178,7 +177,7 @@ fn validation_reports_every_problem_not_the_first() {
 
 #[test]
 fn a_cube_with_no_dimensions_or_no_measures_is_a_table() {
-    let no_dims = Definition::new("figures", "fact_figures", vec![], vec![AMOUNT]);
+    let no_dims = Definition::new("figures", "fact_figures", vec![], vec![amount()]);
     assert!(no_dims
         .validate()
         .expect_err("built anyway")
@@ -194,7 +193,7 @@ fn a_cube_with_no_dimensions_or_no_measures_is_a_table() {
 #[test]
 fn rejections_are_ordered_and_deduplicated() {
     // A refusal read by a person and diffed by a build should not depend on iteration order.
-    let bad = Definition::new("figures", "fact_figures", dimensions(), vec![BALANCE]);
+    let bad = Definition::new("figures", "fact_figures", dimensions(), vec![balance()]);
     let once = bad.clone().validate().expect_err("built anyway");
     let twice = bad.validate().expect_err("built anyway");
     assert_eq!(once, twice);

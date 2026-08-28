@@ -163,10 +163,42 @@ claim a cube saw all of its input.
 
 ### What is still not there
 
- MDX, deliberately — see ADR-0007. Cube definitions are not persisted or loaded
-from a catalogue; a cube is registered against a session by the embedding application. The
-lattice selection is implemented and is not driven by a recorded query log, so automatic
-materialisation is available and nothing is currently choosing what to materialise.
+ MDX, deliberately — see ADR-0007. The lattice selection is implemented and is not
+driven by a recorded query log, so automatic materialisation is available and nothing is
+currently choosing what to materialise.
+
+### A cube that could only exist at compile time
+
+Cube definitions were *"registered against a session by the embedding application"*, so a
+cube lasted exactly as long as a process and a server could not serve one. That read like a
+missing storage layer. It was not.
+
+`Measure` held `name: &'static str` and `rules: &'static [Along]`. **A measure was a
+compile-time construct**, so a definition could name only measures a Rust source file had
+already spelled out, and no amount of persistence code could have loaded one — a definition
+read from disk has nowhere to put its own measure's name. The persistence gap was a symptom
+and the type was the cause.
+
+Both are owned now, which cost an allocation per declared measure, once, when a definition is
+built. `catalogue.rs` writes a definition to `<warehouse>/_cubes/<name>.json` and reads it
+back, under an underscore so table discovery and the orphan sweep already skip it — a cube
+definition is not data and must never be mistaken for a table.
+
+The stored form is its own type rather than `Serialize` on the model. `sankhya-cube-algo` has
+zero dependencies and serde would end that; and a stored definition is a *format*, so
+deriving it from an internal struct silently promises never to rename a field. Here a
+refactor breaks a compile instead of orphaning every cube on disk.
+
+**An unknown rule name is refused, never defaulted.** A `Last` that came back as `Sum` turns a
+closing balance into the sum of twelve month-end balances — right magnitude, right sign,
+entirely wrong — and defaulting is precisely the failure the additivity model exists to
+prevent. A catalogue file that will not parse is reported with its path rather than skipped,
+because a server that comes up healthy with a cube missing sends somebody to the wrong place.
+
+**What is still not there:** the definition is not yet loaded by the server at startup, so
+the catalogue exists and nothing reads it in production yet; and the better long-run answer —
+a definition as a row in a system table, so the store is the warehouse — waits on the
+catalogue proper.
 
 
 ## M6, closed 2026-08-28
@@ -1251,7 +1283,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 357 specific defects applied one at a time; all 357 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 359 specific defects applied one at a time; all 357 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -1745,9 +1777,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,643 tests, none of which needs a database
+cargo test --workspace           # 1,652 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 357 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 359 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

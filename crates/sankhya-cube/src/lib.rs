@@ -38,6 +38,7 @@
 
 #![doc(html_root_url = "https://docs.rs/sankhya-cube")]
 
+pub mod catalogue;
 pub mod cells;
 pub mod complete;
 pub mod consolidate;

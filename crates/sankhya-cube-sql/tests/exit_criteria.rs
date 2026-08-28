@@ -100,18 +100,17 @@ fn criterion_2_summing_a_measure_across_time_is_not_expressible() {
     // Here it cannot be asked for: the reduction operator is the measure's, not the
     // caller's, so `roll_up` never sums a closing balance. That is stronger than rejecting
     // it, and worth stating precisely rather than claiming the criterion's own wording.
-    const BALANCE: Measure = Measure {
-        name: "balance",
-        rules: &[
-            Along { dimension: "period", rule: Rule::Last },
-            Along { dimension: "entity", rule: Rule::Sum },
-        ],
-    };
+    fn balance() -> Measure {
+        Measure::new("balance", vec![
+            Along::new("period", Rule::Last),
+            Along::new("entity", Rule::Sum),
+        ])
+    }
     let mut cells = Cells::over(vec!["period".to_string(), "entity".to_string()]);
     cells.add(address(&["jan", "a"]), 100.0).expect("well-formed");
     cells.add(address(&["feb", "a"]), 30.0).expect("well-formed");
 
-    let rolled = roll_up(&cells, "period", &BALANCE, Ordered::By(&["jan", "feb"]))
+    let rolled = roll_up(&cells, "period", &balance(), Ordered::By(&["jan", "feb"]))
         .expect("a balance composes along time");
     assert_eq!(
         rolled.get(&address(&["a"]), Rule::Sum),
@@ -120,27 +119,25 @@ fn criterion_2_summing_a_measure_across_time_is_not_expressible() {
     );
 
     // What *is* rejected: a measure declaring it composes along nothing.
-    const RATIO: Measure = Measure {
-        name: "ratio",
-        rules: &[
-            Along { dimension: "period", rule: Rule::None },
-            Along { dimension: "entity", rule: Rule::Sum },
-        ],
-    };
-    assert!(roll_up(&cells, "period", &RATIO, Ordered::Unstated).is_err());
+    fn ratio() -> Measure {
+        Measure::new("ratio", vec![
+            Along::new("period", Rule::None),
+            Along::new("entity", Rule::Sum),
+        ])
+    }
+    assert!(roll_up(&cells, "period", &ratio(), Ordered::Unstated).is_err());
 }
 
 // --- 3. two runs are bit-identical --------------------------------------
 
 #[test]
 fn criterion_3_two_runs_of_the_same_consolidation_are_bit_identical() {
-    const AMOUNT: Measure = Measure {
-        name: "amount",
-        rules: &[
-            Along { dimension: "period", rule: Rule::Sum },
-            Along { dimension: "entity", rule: Rule::Sum },
-        ],
-    };
+    fn amount() -> Measure {
+        Measure::new("amount", vec![
+            Along::new("period", Rule::Sum),
+            Along::new("entity", Rule::Sum),
+        ])
+    }
     let mut cells = Cells::over(vec!["period".to_string(), "entity".to_string()]);
     for (period, entity, value) in [
         ("jan", "a", 1e16),
@@ -151,8 +148,8 @@ fn criterion_3_two_runs_of_the_same_consolidation_are_bit_identical() {
         cells.add(address(&[period, entity]), value).expect("well-formed");
     }
 
-    let once = roll_up(&cells, "period", &AMOUNT, Ordered::Unstated).expect("additive");
-    let twice = roll_up(&cells, "period", &AMOUNT, Ordered::Unstated).expect("additive");
+    let once = roll_up(&cells, "period", &amount(), Ordered::Unstated).expect("additive");
+    let twice = roll_up(&cells, "period", &amount(), Ordered::Unstated).expect("additive");
     for at in once.addresses() {
         assert_eq!(
             once.get(at, Rule::Sum).map(f64::to_bits),
@@ -163,14 +160,13 @@ fn criterion_3_two_runs_of_the_same_consolidation_are_bit_identical() {
 
 // --- 3a. materialisation on and off agree, by bits ----------------------
 
-const ADDITIVE: Measure = Measure {
-    name: "amount",
-    rules: &[
-        Along { dimension: "period", rule: Rule::Sum },
-        Along { dimension: "entity", rule: Rule::Sum },
-        Along { dimension: "product", rule: Rule::Sum },
-    ],
-};
+fn additive() -> Measure {
+    Measure::new("amount", vec![
+        Along::new("period", Rule::Sum),
+        Along::new("entity", Rule::Sum),
+        Along::new("product", Rule::Sum),
+    ])
+}
 
 fn three_dimensional(rows: &[(&str, &str, &str, f64)]) -> Cells {
     let mut cells = Cells::over(vec![
@@ -189,15 +185,15 @@ fn three_dimensional(rows: &[(&str, &str, &str, f64)]) -> Cells {
 /// Answer `by entity` from whatever `plan` chooses.
 fn answer(cells: &Cells, available: &[&Cuboid], base: &Cuboid) -> Cells {
     let query = Cuboid::of(&["entity"]);
-    let chosen = plan(&query, &ADDITIVE, available, base);
+    let chosen = plan(&query, &additive(), available, base);
     let mut out = if chosen.materialised {
         // The materialised cuboid, which is the base already rolled to (entity, product).
-        roll_up(cells, "period", &ADDITIVE, Ordered::Unstated).expect("additive")
+        roll_up(cells, "period", &additive(), Ordered::Unstated).expect("additive")
     } else {
         cells.clone()
     };
     for dimension in chosen.rolling_away {
-        out = roll_up(&out, &dimension, &ADDITIVE, Ordered::Unstated).expect("additive");
+        out = roll_up(&out, &dimension, &additive(), Ordered::Unstated).expect("additive");
     }
     out
 }
@@ -241,21 +237,20 @@ proptest! {
         wanted in prop::collection::vec(0usize..3, 0..3),
     ) {
         const NAMES: [&str; 3] = ["period", "entity", "product"];
-        const DISTINCT: Measure = Measure {
-            name: "distinct",
-            rules: &[
-                Along { dimension: "period", rule: Rule::None },
-                Along { dimension: "entity", rule: Rule::None },
-                Along { dimension: "product", rule: Rule::None },
-            ],
-        };
+        fn distinct() -> Measure {
+            Measure::new("distinct", vec![
+                Along::new("period", Rule::None),
+                Along::new("entity", Rule::None),
+                Along::new("product", Rule::None),
+            ])
+        }
         let held: Vec<&str> = held.iter().map(|i| NAMES[*i]).collect();
         let wanted: Vec<&str> = wanted.iter().map(|i| NAMES[*i]).collect();
         let cuboid = Cuboid::of(&held);
         let query = Cuboid::of(&wanted);
         let base = Cuboid::of(&NAMES);
 
-        let chosen = plan(&query, &DISTINCT, &[&cuboid], &base);
+        let chosen = plan(&query, &distinct(), &[&cuboid], &base);
         if chosen.materialised {
             // The only legitimate hit: the cuboid *is* the query, so nothing is rolled away.
             prop_assert_eq!(&chosen.from, &query);
@@ -298,17 +293,16 @@ fn criterion_4_two_row_policies_give_two_totals_that_both_carry_completeness() {
 
 const SIX: [&str; 6] = ["region", "period", "product", "channel", "segment", "currency"];
 
-const WIDE: Measure = Measure {
-    name: "amount",
-    rules: &[
-        Along { dimension: "region", rule: Rule::Sum },
-        Along { dimension: "period", rule: Rule::Sum },
-        Along { dimension: "product", rule: Rule::Sum },
-        Along { dimension: "channel", rule: Rule::Sum },
-        Along { dimension: "segment", rule: Rule::Sum },
-        Along { dimension: "currency", rule: Rule::Sum },
-    ],
-};
+fn wide() -> Measure {
+    Measure::new("amount", vec![
+        Along::new("region", Rule::Sum),
+        Along::new("period", Rule::Sum),
+        Along::new("product", Rule::Sum),
+        Along::new("channel", Rule::Sum),
+        Along::new("segment", Rule::Sum),
+        Along::new("currency", Rule::Sum),
+    ])
+}
 
 /// A six-dimension cube over a table registered in the session, hydrated on publication.
 ///
@@ -336,7 +330,7 @@ async fn six_dimensional() -> SessionContext {
         })
         .collect();
     let cube = Arc::new(
-        Definition::new("wide", "fact_wide", dimensions, vec![WIDE])
+        Definition::new("wide", "fact_wide", dimensions, vec![wide()])
             .validate()
             .expect("well-formed"),
     );
@@ -371,7 +365,7 @@ async fn six_dimensional() -> SessionContext {
 
     let catalog = Arc::new(CubeCatalog::new());
     register(&context, Arc::clone(&catalog));
-    let absorbed = publish_from_fact_table(&context, &catalog, "wide", cube, &WIDE, 7)
+    let absorbed = publish_from_fact_table(&context, &catalog, "wide", cube, &wide(), 7)
         .await
         .expect("hydrated from the table its definition names");
     assert_eq!(absorbed.placed, 4, "every fact reached the cube");
@@ -457,7 +451,9 @@ async fn criterion_5_slice_dice_rollup_and_drilldown_from_sql_over_six_dimension
 
 #[test]
 fn criterion_6_a_measure_defined_without_an_aggregation_rule_is_refused_by_name() {
-    const NO_RULE: Measure = Measure { name: "unnamed_thing", rules: &[] };
+    fn no_rule() -> Measure {
+        Measure::new("unnamed_thing", vec![])
+    }
     let refused = Definition::new(
         "figures",
         "fact_figures",
@@ -467,7 +463,7 @@ fn criterion_6_a_measure_defined_without_an_aggregation_rule_is_refused_by_name(
             "region_key",
             vec![Level::new("id", "id")],
         )],
-        vec![NO_RULE],
+        vec![no_rule()],
     )
     .validate()
     .expect_err("a cube was built from an undeclared measure");

@@ -89,8 +89,8 @@ fn cube_of(catalog: &CubeCatalog, args: &Arguments) -> Result<Published> {
 /// under rules nobody chose.
 fn measure_of(published: &Published, args: &Arguments) -> Result<Measure> {
     let name = args.string_at(1, "measure name")?;
-    published.cube.measure(&name).copied().ok_or_else(|| {
-        let known: Vec<&str> = published.cube.measures().iter().map(|m| m.name).collect();
+    published.cube.measure(&name).cloned().ok_or_else(|| {
+        let known: Vec<&str> = published.cube.measures().iter().map(|m| m.name.as_str()).collect();
         plan_datafusion_err!(
             "cube '{}' has no measure named '{}' — it has {:?}",
             published.cube.name(),
@@ -218,7 +218,7 @@ fn batch(
     materialised: bool,
 ) -> Result<Arc<dyn TableProvider>> {
     let dimensions: Vec<String> = cells.dimensions().to_vec();
-    let schema = schema_for(&dimensions, measure.name);
+    let schema = schema_for(&dimensions, &measure.name);
 
     let rows: Vec<(&Vec<String>, Option<f64>)> = cells
         .addresses()

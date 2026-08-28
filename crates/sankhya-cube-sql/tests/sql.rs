@@ -18,13 +18,12 @@ use sankhya_cube_sql::catalog::{CubeCatalog, Published};
 use sankhya_cube_sql::register;
 use std::sync::Arc;
 
-const AMOUNT: Measure = Measure {
-    name: "amount",
-    rules: &[
-        Along { dimension: "region", rule: Rule::Sum },
-        Along { dimension: "period", rule: Rule::Sum },
-    ],
-};
+fn amount() -> Measure {
+    Measure::new("amount", vec![
+        Along::new("region", Rule::Sum),
+        Along::new("period", Rule::Sum),
+    ])
+}
 
 /// Declares that it composes along nothing over time --- a ratio, which is not derivable
 /// from its own values at a finer grain.
@@ -32,13 +31,12 @@ const AMOUNT: Measure = Measure {
 /// It has to *declare* that. A measure saying nothing about `period` cannot reach SQL at
 /// all: §11.1 refuses the definition, so the cube never exists. That is the refusal working
 /// one layer earlier than this test first assumed.
-const RATIO: Measure = Measure {
-    name: "ratio",
-    rules: &[
-        Along { dimension: "region", rule: Rule::Sum },
-        Along { dimension: "period", rule: Rule::None },
-    ],
-};
+fn ratio() -> Measure {
+    Measure::new("ratio", vec![
+        Along::new("region", Rule::Sum),
+        Along::new("period", Rule::None),
+    ])
+}
 
 fn address(members: &[&str]) -> Vec<String> {
     members.iter().map(|m| (*m).to_string()).collect()
@@ -53,7 +51,7 @@ fn session() -> (SessionContext, Arc<CubeCatalog>) {
             Dimension::new("region", "dim_region", "region_key", vec![Level::new("id", "id")]),
             Dimension::new("period", "dim_period", "period_key", vec![Level::new("id", "id")]),
         ],
-        vec![AMOUNT, RATIO],
+        vec![amount(), ratio()],
     );
     let cube = Arc::new(definition.validate().expect("well-formed"));
 

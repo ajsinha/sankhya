@@ -21,13 +21,12 @@ use sankhya_cube_sql::catalog::CubeCatalog;
 use sankhya_cube_sql::{publish_from_fact_table, register};
 use std::sync::Arc;
 
-const AMOUNT: Measure = Measure {
-    name: "amount",
-    rules: &[
-        Along { dimension: "region", rule: Rule::Sum },
-        Along { dimension: "period", rule: Rule::Sum },
-    ],
-};
+fn amount() -> Measure {
+    Measure::new("amount", vec![
+        Along::new("region", Rule::Sum),
+        Along::new("period", Rule::Sum),
+    ])
+}
 
 fn cube() -> Arc<sankhya_cube::model::Cube> {
     Arc::new(
@@ -38,7 +37,7 @@ fn cube() -> Arc<sankhya_cube::model::Cube> {
                 Dimension::new("region", "dim_region", "region_key", vec![Level::new("id", "id")]),
                 Dimension::new("period", "dim_period", "period_key", vec![Level::new("id", "id")]),
             ],
-            vec![AMOUNT],
+            vec![amount()],
         )
         .validate()
         .expect("well-formed"),
@@ -90,7 +89,7 @@ async fn a_cube_is_built_from_the_table_its_definition_names_and_then_queried() 
     let catalog = Arc::new(CubeCatalog::new());
     register(&context, Arc::clone(&catalog));
 
-    let absorbed = publish_from_fact_table(&context, &catalog, "figures", cube(), &AMOUNT, 11)
+    let absorbed = publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 11)
         .await
         .expect("hydrated");
     assert_eq!(absorbed.placed, 3);
@@ -126,7 +125,7 @@ async fn rows_that_could_not_be_placed_reach_the_completeness_column() {
     let catalog = Arc::new(CubeCatalog::new());
     register(&context, Arc::clone(&catalog));
 
-    let absorbed = publish_from_fact_table(&context, &catalog, "figures", cube(), &AMOUNT, 11)
+    let absorbed = publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 11)
         .await
         .expect("hydrated");
     assert_eq!(absorbed.rows, 4);
@@ -158,7 +157,7 @@ async fn a_completeness_threshold_refuses_a_cube_that_lost_rows() {
     );
     let catalog = Arc::new(CubeCatalog::new());
     register(&context, Arc::clone(&catalog));
-    publish_from_fact_table(&context, &catalog, "figures", cube(), &AMOUNT, 11)
+    publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 11)
         .await
         .expect("hydrated");
 
@@ -190,7 +189,7 @@ async fn a_fact_table_missing_a_dimension_column_is_refused_at_hydration() {
     context.register_batch("fact_figures", batch).expect("registered");
     let catalog = Arc::new(CubeCatalog::new());
 
-    let refused = publish_from_fact_table(&context, &catalog, "figures", cube(), &AMOUNT, 1)
+    let refused = publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 1)
         .await
         .expect_err("hydrated a table missing a dimension");
     assert!(refused.to_string().contains("period_key"), "{refused}");
@@ -203,7 +202,7 @@ async fn a_definition_naming_a_table_that_does_not_exist_is_refused() {
     let context = SessionContext::new();
     let catalog = Arc::new(CubeCatalog::new());
     assert!(
-        publish_from_fact_table(&context, &catalog, "figures", cube(), &AMOUNT, 1)
+        publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 1)
             .await
             .is_err()
     );
@@ -259,7 +258,7 @@ async fn the_cubes_totals_agree_with_plain_sql_over_the_same_table() {
     let catalog = Arc::new(CubeCatalog::new());
     register(&context, Arc::clone(&catalog));
 
-    let absorbed = publish_from_fact_table(&context, &catalog, "figures", cube(), &AMOUNT, 1)
+    let absorbed = publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 1)
         .await
         .expect("hydrated");
     assert_eq!(absorbed.placed as usize, ROWS, "every row reached the cube");
@@ -305,7 +304,7 @@ async fn a_two_dimensional_breakdown_agrees_with_the_equivalent_group_by() {
         .expect("registered");
     let catalog = Arc::new(CubeCatalog::new());
     register(&context, Arc::clone(&catalog));
-    publish_from_fact_table(&context, &catalog, "figures", cube(), &AMOUNT, 1)
+    publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 1)
         .await
         .expect("hydrated");
 

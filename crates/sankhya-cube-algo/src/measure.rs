@@ -85,24 +85,51 @@ impl Rule {
 }
 
 /// A measure's rule along one named dimension.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// # Why these are owned rather than `&'static str`
+///
+/// They were `&'static str` and `&'static [Along]`, which made a measure a **compile-time**
+/// construct: a definition could name only measures a Rust source file had already spelled
+/// out. That is the reason a cube had to be registered against a session by the embedding
+/// application and could not be persisted, loaded, or authored by anybody who was not
+/// recompiling the server.
+///
+/// The cost of owning them is an allocation per declared measure, once, when a definition is
+/// built. The cost of not owning them was that cubes could not be data.
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Along {
     /// The dimension.
-    pub dimension: &'static str,
+    pub dimension: String,
     /// How it combines there.
     pub rule: Rule,
 }
 
 /// A declared measure.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Measure {
     /// What it is called.
-    pub name: &'static str,
+    pub name: String,
     /// Its rule along each dimension of the cube.
     ///
     /// Every dimension, with no default. A missing entry is a definition error rather than
     /// an implicit `Sum`, which is the whole point.
-    pub rules: &'static [Along],
+    pub rules: Vec<Along>,
+}
+
+impl Along {
+    /// How a measure combines along one dimension.
+    pub fn new(dimension: impl Into<String>, rule: Rule) -> Self {
+        Self { dimension: dimension.into(), rule }
+    }
+}
+
+impl Measure {
+    /// A measure and its rule along each dimension.
+    ///
+    /// Every dimension, with no default: a missing entry is a definition error rather than
+    /// an implicit `Sum`. See [`Measure::rules`].
+    pub fn new(name: impl Into<String>, rules: Vec<Along>) -> Self {
+        Self { name: name.into(), rules }
+    }
 }
 
 impl Measure {
@@ -147,11 +174,11 @@ impl Measure {
     ///
     /// What a planner needs to know before rolling anything up.
     #[must_use]
-    pub fn not_additive_along(&self) -> Vec<&'static str> {
+    pub fn not_additive_along(&self) -> Vec<&str> {
         self.rules
             .iter()
             .filter(|along| along.rule != Rule::Sum)
-            .map(|along| along.dimension)
+            .map(|along| along.dimension.as_str())
             .collect()
     }
 }

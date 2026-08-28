@@ -15,24 +15,22 @@ use sankhya_cube::navigate::{roll_up, Ordered};
 use sankhya_cube_algo::lattice::Cuboid;
 use sankhya_cube_algo::measure::{Along, Measure, Rule};
 
-const AMOUNT: Measure = Measure {
-    name: "amount",
-    rules: &[
-        Along { dimension: "period", rule: Rule::Sum },
-        Along { dimension: "entity", rule: Rule::Sum },
-        Along { dimension: "product", rule: Rule::Sum },
-    ],
-};
+fn amount() -> Measure {
+    Measure::new("amount", vec![
+        Along::new("period", Rule::Sum),
+        Along::new("entity", Rule::Sum),
+        Along::new("product", Rule::Sum),
+    ])
+}
 
 /// Composes along nothing: no ancestor can serve any coarser query.
-const DISTINCT: Measure = Measure {
-    name: "distinct",
-    rules: &[
-        Along { dimension: "period", rule: Rule::None },
-        Along { dimension: "entity", rule: Rule::None },
-        Along { dimension: "product", rule: Rule::None },
-    ],
-};
+fn distinct() -> Measure {
+    Measure::new("distinct", vec![
+        Along::new("period", Rule::None),
+        Along::new("entity", Rule::None),
+        Along::new("product", Rule::None),
+    ])
+}
 
 fn base() -> Cuboid {
     Cuboid::of(&["period", "entity", "product"])
@@ -117,7 +115,7 @@ fn a_pinned_cuboid_that_is_not_yet_built_is_not_usable() {
 fn the_narrowest_usable_ancestor_is_chosen() {
     let wide = Cuboid::of(&["period", "entity"]);
     let narrow = Cuboid::of(&["entity"]);
-    let chosen = plan(&Cuboid::of(&["entity"]), &AMOUNT, &[&wide, &narrow], &base());
+    let chosen = plan(&Cuboid::of(&["entity"]), &amount(), &[&wide, &narrow], &base());
 
     assert!(chosen.materialised);
     assert_eq!(chosen.from, narrow);
@@ -127,7 +125,7 @@ fn the_narrowest_usable_ancestor_is_chosen() {
 #[test]
 fn a_query_needing_a_dimension_no_cuboid_holds_falls_back_to_the_base() {
     let cuboid = Cuboid::of(&["entity"]);
-    let chosen = plan(&Cuboid::of(&["product"]), &AMOUNT, &[&cuboid], &base());
+    let chosen = plan(&Cuboid::of(&["product"]), &amount(), &[&cuboid], &base());
     assert!(!chosen.materialised);
     assert_eq!(chosen.from, base());
 }
@@ -138,7 +136,7 @@ fn no_ancestor_is_used_for_a_measure_that_composes_along_nothing() {
     // change is invisible: the number is real, just computed from partials that do not
     // compose.
     let cuboid = Cuboid::of(&["period", "entity"]);
-    let chosen = plan(&Cuboid::of(&["entity"]), &DISTINCT, &[&cuboid], &base());
+    let chosen = plan(&Cuboid::of(&["entity"]), &distinct(), &[&cuboid], &base());
     assert!(!chosen.materialised, "a distinct count was rolled up from an ancestor");
 }
 
@@ -147,7 +145,7 @@ fn a_cuboid_that_is_exactly_the_query_serves_a_non_composing_measure() {
     // Rolling away nothing is always permitted, so a materialised cuboid serves the one
     // query it is — which is the only thing worth materialising for a distinct count.
     let cuboid = Cuboid::of(&["entity"]);
-    let chosen = plan(&Cuboid::of(&["entity"]), &DISTINCT, &[&cuboid], &base());
+    let chosen = plan(&Cuboid::of(&["entity"]), &distinct(), &[&cuboid], &base());
     assert!(chosen.materialised);
 }
 
@@ -156,7 +154,7 @@ fn the_plan_says_what_it_rolls_away() {
     // "Why was this fast?" and "why was this slow?" are the same question, and neither is
     // answerable from a plan that only names a table.
     let cuboid = Cuboid::of(&["period", "entity"]);
-    let chosen = plan(&Cuboid::of(&["entity"]), &AMOUNT, &[&cuboid], &base());
+    let chosen = plan(&Cuboid::of(&["entity"]), &amount(), &[&cuboid], &base());
     assert_eq!(chosen.rolling_away, ["period"]);
     assert!(chosen.to_string().contains("rolling away period"), "{chosen}");
 }
@@ -168,8 +166,8 @@ fn the_plan_is_stable_across_runs() {
     let a = Cuboid::of(&["entity"]);
     let b = Cuboid::of(&["period"]);
     let query = Cuboid::of::<&str>(&[]);
-    let forwards = plan(&query, &AMOUNT, &[&a, &b], &base());
-    let backwards = plan(&query, &AMOUNT, &[&b, &a], &base());
+    let forwards = plan(&query, &amount(), &[&a, &b], &base());
+    let backwards = plan(&query, &amount(), &[&b, &a], &base());
     assert_eq!(forwards, backwards);
 }
 
@@ -210,13 +208,13 @@ fn an_answer_from_an_ancestor_equals_the_answer_from_the_base() {
     ]);
 
     // From the base: roll away product, then period.
-    let direct = roll_up(&cells, "product", &AMOUNT, Ordered::Unstated).expect("additive");
-    let direct = roll_up(&direct, "period", &AMOUNT, Ordered::Unstated).expect("additive");
+    let direct = roll_up(&cells, "product", &amount(), Ordered::Unstated).expect("additive");
+    let direct = roll_up(&direct, "period", &amount(), Ordered::Unstated).expect("additive");
 
     // From a materialised ancestor that already rolled product away.
-    let ancestor = roll_up(&cells, "product", &AMOUNT, Ordered::Unstated).expect("additive");
+    let ancestor = roll_up(&cells, "product", &amount(), Ordered::Unstated).expect("additive");
     let from_ancestor =
-        roll_up(&ancestor, "period", &AMOUNT, Ordered::Unstated).expect("additive");
+        roll_up(&ancestor, "period", &amount(), Ordered::Unstated).expect("additive");
 
     assert_eq!(direct.dimensions(), from_ancestor.dimensions());
     for address in direct.addresses() {
@@ -245,11 +243,11 @@ proptest! {
             .collect();
         let cells = facts(&rows);
 
-        let product_first = roll_up(&cells, "product", &AMOUNT, Ordered::Unstated).unwrap();
-        let product_first = roll_up(&product_first, "period", &AMOUNT, Ordered::Unstated).unwrap();
+        let product_first = roll_up(&cells, "product", &amount(), Ordered::Unstated).unwrap();
+        let product_first = roll_up(&product_first, "period", &amount(), Ordered::Unstated).unwrap();
 
-        let period_first = roll_up(&cells, "period", &AMOUNT, Ordered::Unstated).unwrap();
-        let period_first = roll_up(&period_first, "product", &AMOUNT, Ordered::Unstated).unwrap();
+        let period_first = roll_up(&cells, "period", &amount(), Ordered::Unstated).unwrap();
+        let period_first = roll_up(&period_first, "product", &amount(), Ordered::Unstated).unwrap();
 
         prop_assert_eq!(product_first.len(), period_first.len());
         for address in product_first.addresses() {
