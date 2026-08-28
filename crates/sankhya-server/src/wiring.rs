@@ -464,13 +464,17 @@ impl Server {
     /// that fails to resolve a cube rather than one that answers wrongly. It is replaced by
     /// planning against a registered catalogue when the surface grows a resolver of its own.
     fn register_cubes(&self, context: &SessionContext, principal: &Principal, sql: &str) {
-        if self.cubes.is_empty() || !mentions_a_cube_function(sql) {
+        if self.cubes.is_empty() {
             return;
         }
+        // Describing a cube reads no data, so it is registered whatever the statement says.
+        // Hydration is the expensive half and only that is gated on the statement naming a
+        // navigation function --- a client listing cubes must not pay for reading one.
+        let navigating = mentions_a_cube_function(sql);
         let catalog = Arc::new(sankhya_cube_sql::catalog::CubeCatalog::new());
         for cube in &self.cubes {
             catalog.declare(cube.name());
-            if !sql.contains(cube.name()) {
+            if !navigating || !sql.contains(cube.name()) {
                 continue;
             }
             // The scope this principal reads the fact table under.
@@ -521,7 +525,11 @@ impl Server {
                 }
             }
         }
-        sankhya_cube_sql::functions::register(context, catalog);
+        sankhya_cube_sql::functions::register(context, Arc::clone(&catalog));
+        // Description alongside navigation, always. A surface a client can use only by
+        // already knowing the model is a surface only its author can use, and a picker that
+        // hardcodes a cube's dimensions is a picker that drifts from the cube.
+        sankhya_cube_sql::describe::register(context, Arc::new(self.cubes.clone()), catalog);
     }
 
     /// What this principal may see of a table, as a value.

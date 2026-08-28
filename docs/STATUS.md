@@ -232,6 +232,24 @@ Any difference in what is visible changes the digest; who is looking does not.
 forget: putting the subject *in* would be safe and useless, and a suite testing only
 separation would not notice.
 
+### A client can discover a cube instead of hardcoding it
+
+`cubes()`, `cube_dimensions(cube)` and `cube_measures(cube)` are ordinary table functions
+returning ordinary rows, so a UI, a notebook or an agent composing SQL discovers the model
+with the same `SELECT` it uses for everything else. No second protocol exists to keep in step
+with the first.
+
+Two columns are there because a client that lacked them would draw something wrong rather
+than fail. **`depth`** carries the level order — coarse to fine is a fact about the model, not
+about how rows arrived, and a client sorting the result without it draws a list where there is
+a hierarchy. **`composes`** says whether a measure can be rolled up at all — a UI offering
+"roll up by time" on a ratio offers a button that cannot work, and finding that out at query
+time is worse than not offering it.
+
+Describing reads no data. A picker that cost a hydration per keystroke is a picker nobody
+leaves switched on, so hydration stays gated on a statement naming a navigation function while
+description is registered always.
+
 **What is still not there.** The materialised-cuboid tier of
 [ADR-0008](adr/0008-serving-cubes-under-policy.md), and the `target_lag` lifecycle of
 [ADR-0009](adr/0009-the-cube-lifecycle.md). Cube selection still waits on the recorded query
@@ -1346,7 +1364,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 368 specific defects applied one at a time; all 357 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 371 specific defects applied one at a time; all 357 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -1840,9 +1858,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,682 tests, none of which needs a database
+cargo test --workspace           # 1,687 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 368 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 371 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

@@ -96,14 +96,20 @@ fn sales() -> Definition {
             name: "region".to_string(),
             table: "orders".to_string(),
             joins_on: "region".to_string(),
-            levels: vec![Level::new("area", "region")],
+            // Two levels, so their *order* is observable. With one level every ordering is
+            // the same ordering, and a test over it cannot tell a hierarchy from a list.
+            levels: vec![Level::new("country", "region"), Level::new("area", "region")],
             rollups: None,
             parent_child: None,
         }],
-        vec![Measure::new(
-            "amount",
-            vec![Along::new("region", CubeRule::Sum)],
-        )],
+        vec![
+            Measure::new("amount", vec![Along::new("region", CubeRule::Sum)]),
+            // A measure that does *not* compose, so composability is observable. A ratio
+            // cannot be derived from its parts: there is no operation over the pieces that
+            // yields the whole, which is exactly what a client must be told before it offers
+            // to roll one up.
+            Measure::new("ratio", vec![Along::new("region", CubeRule::None)]),
+        ],
     )
 }
 
@@ -266,5 +272,122 @@ async fn a_statement_that_names_no_cube_does_not_hydrate_one() {
     let result = server
         .query("SELECT COUNT(*) FROM orders")
         .expect("a plain query still works");
+    assert_eq!(result.rows.len(), 1);
+}
+
+// --- description: what a client needs before it can ask anything -------------
+
+/// The first column of every row, as text.
+fn first_column(result: &sankhya_api_pg::session::QueryResult, name: &str) -> Vec<String> {
+    let at = result
+        .fields
+        .iter()
+        .position(|field| field.name == name)
+        .unwrap_or_else(|| panic!("no column named {name}: {:?}", result.fields));
+    result
+        .rows
+        .iter()
+        .filter_map(|row| row[at].clone())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_can_discover_what_cubes_exist() {
+    // Without this the only way to offer a picker is to hardcode the model, and a hardcoded
+    // model drifts from the cube it describes with nothing to notice.
+    let (server, _dir) = server_with(policy("reader", None));
+    connect(&server, "ana");
+
+    let result = server.query("SELECT * FROM cubes()").expect("cubes are listable");
+    assert_eq!(first_column(&result, "cube"), vec!["sales".to_string()]);
+    assert_eq!(first_column(&result, "fact_table"), vec!["orders".to_string()]);
+    assert_eq!(first_column(&result, "measures"), vec!["2".to_string()]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_can_discover_a_cube_s_dimensions_and_their_order() {
+    // Levels are ordered coarse to fine and that order is a fact about the model rather than
+    // about how rows arrived, so it is a column. A client that sorted the result and drew the
+    // hierarchy alphabetically would draw the wrong hierarchy.
+    let (server, _dir) = server_with(policy("reader", None));
+    connect(&server, "ana");
+
+    let result = server
+        .query("SELECT * FROM cube_dimensions('sales')")
+        .expect("dimensions are listable");
+    assert_eq!(
+        first_column(&result, "dimension"),
+        vec!["region".to_string(), "region".to_string()]
+    );
+    assert_eq!(
+        first_column(&result, "level"),
+        vec!["country".to_string(), "area".to_string()],
+        "coarse to fine, as declared"
+    );
+    assert_eq!(
+        first_column(&result, "depth"),
+        vec!["0".to_string(), "1".to_string()],
+        "the depth is what tells a client which level is coarser, and it must not be \
+         constant --- a client drawing a hierarchy from a constant draws a list"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_can_discover_which_roll_ups_are_even_legal() {
+    // A UI offering "roll up by time" on a non-composing measure offers a button that cannot
+    // work. Finding that out at query time is worse than not offering it, so composability is
+    // part of the description rather than something to discover by failing.
+    let (server, _dir) = server_with(policy("reader", None));
+    connect(&server, "ana");
+
+    let result = server
+        .query("SELECT * FROM cube_measures('sales')")
+        .expect("measures are listable");
+    assert_eq!(
+        first_column(&result, "measure"),
+        vec!["amount".to_string(), "ratio".to_string()]
+    );
+    assert_eq!(
+        first_column(&result, "rule"),
+        vec!["sum".to_string(), "none".to_string()]
+    );
+    // `t`, because the wire renders booleans the way PostgreSQL does and a client parsing
+    // this is a PostgreSQL client.
+    assert_eq!(
+        first_column(&result, "composes"),
+        vec!["t".to_string(), "f".to_string()],
+        "a sum composes and a ratio does not, and a client offering to roll up the second \
+         offers a button that cannot work"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn describing_a_cube_that_does_not_exist_names_the_ones_that_do() {
+    // A typo and an unserved cube are the same experience otherwise, and the first is one
+    // glance from being fixed.
+    let (server, _dir) = server_with(policy("reader", None));
+    connect(&server, "ana");
+
+    let refused = server
+        .query("SELECT * FROM cube_dimensions('sails')")
+        .expect_err("a misspelt cube is refused");
+    assert!(
+        refused.message.contains("sales"),
+        "the refusal names what does exist: {}",
+        refused.message
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn describing_a_cube_does_not_read_its_fact_table() {
+    // A picker that costs a hydration per keystroke is a picker nobody leaves switched on.
+    // Asserted through the description functions being available without the statement
+    // naming a navigation function at all --- hydration is gated on that, description is not.
+    let (server, _dir) = server_with(policy("reader", None));
+    connect(&server, "ana");
+
+    let result = server
+        .query("SELECT cube FROM cubes()")
+        .expect("listing needs no cells");
     assert_eq!(result.rows.len(), 1);
 }

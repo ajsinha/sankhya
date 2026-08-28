@@ -1702,6 +1702,26 @@ CATALOGUE = [
      "            if false {",
      "sankhya-cube"),
 
+    # --- describing a cube, so a client need not hardcode it ------------------
+
+    ("cube-sql: describe levels without their order, so a hierarchy draws alphabetically",
+     "crates/sankhya-cube-sql/src/describe.rs",
+     "                depth.push(u32::try_from(index).unwrap_or(u32::MAX));",
+     "                depth.push(0);",
+     "sankhya-server"),
+
+    ("cube-sql: refuse an unknown cube without naming the cubes that are served",
+     "crates/sankhya-cube-sql/src/describe.rs",
+     "        let known: Vec<&str> = cubes.iter().map(Cube::name).collect();",
+     "        let known: Vec<&str> = Vec::new();",
+     "sankhya-server"),
+
+    ("cube-sql: report every measure as composable, offering roll-ups that cannot work",
+     "crates/sankhya-cube-sql/src/describe.rs",
+     "                composes.push(along.rule.composes());",
+     "                composes.push(true);",
+     "sankhya-server"),
+
     # --- serving a cube at all ------------------------------------------------
 
     ("server: never register the cube functions, so a cube is loaded and unanswerable",
