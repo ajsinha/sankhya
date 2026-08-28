@@ -209,10 +209,44 @@ edge — so the peak series always spans less than the run it came from. Derivin
 entitlement from the peaks shrank it by an amount depending on where the peaks happened to
 fall. The span is a property of the run, so it is taken from the run.
 
-## 7. What has not been done
+## 7. What the word "query" meant here, and no longer does
 
-**The multi-day run at the ten-gigabyte scale.** That is `M6` exit criterion 4 and it is a
-scheduled pipeline, not a `cargo test`. Nothing here claims otherwise.
+Found on 2026-08-27, by looking at the warehouse directory rather than by any test failing.
+
+The loop counted a **log replay** as a query:
+
+```rust
+// Queries: replay every table's log, which is what planning actually costs.
+for root in &roots {
+    if live_files(root).is_ok() { queries += 1; }
+}
+```
+
+That is a real cost and a real leak surface, and it is not a read. The ten gigabytes sat in
+`part-*.parquet` files that were written once at seed time and **read by nothing, anywhere in
+the binary**. So a run reporting "10 GB, 5,130 queries, PASS" measured the append and log
+paths, and named its workload after work it did not do.
+
+The figures it produced were true of what it measured. The label was not, which is worse than
+measuring less: a soak nobody can trust the scope of is a soak nobody can act on.
+
+**What changed.** `scan_parquet` decodes rows and returns a row count, byte count and a
+checksum. The checksum is not for integrity — Parquet has its own — it is there so that *the
+scan read nothing* is distinguishable from *the scan read zeros*, and so a decode cannot be
+elided into an empty loop that reports throughput. The loop now scans a **bounded, rotating**
+window per round: bounded because scanning ten gigabytes per round makes a round take minutes
+and the sampling useless, rotating because scanning the same slice exercises the page cache
+rather than the read path. A round that reads nothing prints `UNREAD` rather than being
+averaged away.
+
+The counter that used to be called `queries` is now `planned`, because that is what it counts.
+
+## 8. What has not been done
+
+**The multi-day run at the ten-gigabyte scale, with the reading workload.** That is `M6` exit
+criterion 4. The four-hour run of 2026-08-26 exercised the append, log-replay and compaction
+paths at that scale and passed; it did not read the data, so it discharges the criterion only
+for the paths it touched. Nothing here claims otherwise.
 
 What exists is the harness, driven against the real server on every build, proven to detect
 each shape of failure it claims to detect. **The scheduled run is a change of duration and
