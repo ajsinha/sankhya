@@ -226,3 +226,49 @@ fn the_catalogue_is_not_mistaken_for_a_table() {
         relative.display()
     );
 }
+
+// --- the three lifetimes, persisted ------------------------------------------
+
+#[test]
+fn a_definition_is_declared_unless_it_says_otherwise() {
+    // Persisting a definition is cheap; materialising is storage and work. A cube must not
+    // acquire either by being written down — see ADR-0009.
+    let definition = sales();
+    assert_eq!(definition.target_lag, None);
+    assert_eq!(
+        definition.lifetime(),
+        sankhya_cube::model::Lifetime::Declared
+    );
+}
+
+#[test]
+fn a_staleness_target_survives_the_round_trip() {
+    // The one field that distinguishes the two persisted lifetimes. Losing it demotes a
+    // Maintained cube to Declared on the next restart — which is not an error anywhere, just
+    // a dashboard that quietly stops being fast.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let maintained = sales().maintained_within(5);
+    assert_eq!(
+        maintained.lifetime(),
+        sankhya_cube::model::Lifetime::Maintained
+    );
+    catalogue::save(dir.path(), &maintained).expect("storing");
+
+    let loaded = catalogue::load(dir.path(), "sales").expect("loading");
+    assert_eq!(loaded.target_lag, Some(5));
+    assert_eq!(loaded, maintained, "and nothing else moved");
+}
+
+#[test]
+fn a_target_of_zero_is_not_the_absence_of_one() {
+    // Zero admits a cuboid at the current version. `None` admits none at all. Serialising
+    // one as the other turns the strictest maintained cube into a cube that materialises
+    // nothing, or the reverse.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    catalogue::save(dir.path(), &sales().maintained_within(0)).expect("storing");
+    let loaded = catalogue::load(dir.path(), "sales").expect("loading");
+
+    assert_eq!(loaded.target_lag, Some(0));
+    assert_ne!(loaded.target_lag, None);
+    assert_eq!(loaded.lifetime(), sankhya_cube::model::Lifetime::Maintained);
+}

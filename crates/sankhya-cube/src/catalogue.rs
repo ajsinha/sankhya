@@ -91,6 +91,12 @@ pub struct Stored {
     pub fact_table: String,
     pub dimensions: Vec<StoredDimension>,
     pub measures: Vec<StoredMeasure>,
+    /// How stale materialised cells may be, in table versions.
+    ///
+    /// Absent for a cube nothing materialises, which is the default and the whole of the
+    /// difference between the two persisted lifetimes.
+    #[serde(default)]
+    pub target_lag: Option<u64>,
 }
 
 /// A dimension, on disk.
@@ -135,6 +141,7 @@ impl Stored {
             format: FORMAT,
             name: definition.name.clone(),
             fact_table: definition.fact_table.clone(),
+            target_lag: definition.target_lag,
             dimensions: definition
                 .dimensions
                 .iter()
@@ -230,12 +237,9 @@ impl Stored {
             measures.push(Measure::new(stored.name, rules));
         }
 
-        Ok(Definition::new(
-            self.name,
-            self.fact_table,
-            dimensions,
-            measures,
-        ))
+        let mut definition = Definition::new(self.name, self.fact_table, dimensions, measures);
+        definition.target_lag = self.target_lag;
+        Ok(definition)
     }
 }
 

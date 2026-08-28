@@ -1708,6 +1708,38 @@ CATALOGUE = [
      "        exact.values().append_value(sum.to_f64());",
      "sankhya-cube"),
 
+    # --- target_lag: a staleness target, not a schedule ------------------------
+
+    ("maintenance: treat a cube that materialises nothing as always fresh",
+     "crates/sankhya-maintenance/src/cuboid.rs",
+     "        Some(target) => lag <= target,\n        None => false,",
+     "        Some(target) => lag <= target,\n        None => true,",
+     "sankhya-maintenance"),
+
+    ("maintenance: refresh a cube nobody asked to materialise",
+     "crates/sankhya-maintenance/src/cuboid.rs",
+     "        Some(target) => lag > target,\n        None => false,",
+     "        Some(target) => lag > target,\n        None => true,",
+     "sankhya-maintenance"),
+
+    ("maintenance: let a cuboid ahead of its table report an enormous lag",
+     "crates/sankhya-maintenance/src/cuboid.rs",
+     "    table_version.saturating_sub(cuboid_snapshot)",
+     "    table_version.wrapping_sub(cuboid_snapshot)",
+     "sankhya-maintenance"),
+
+    ("maintenance: say nothing about a target no refresh can meet",
+     "crates/sankhya-maintenance/src/cuboid.rs",
+     "    if versions_during_refresh <= target {\n        return None;\n    }",
+     "    if true {\n        return None;\n    }",
+     "sankhya-maintenance"),
+
+    ("cube: lose the staleness target when a definition is stored",
+     "crates/sankhya-cube/src/catalogue.rs",
+     "            target_lag: definition.target_lag,",
+     "            target_lag: None,",
+     "sankhya-cube"),
+
     ("maintenance: rewrite a materialised cuboid that already exists",
      "crates/sankhya-maintenance/src/cuboid.rs",
      "    if exists(warehouse, key, cube) {\n        return Ok(false);\n    }",

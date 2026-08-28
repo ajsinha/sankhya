@@ -106,3 +106,76 @@ pub fn materialise_quietly(
         }
     }
 }
+
+// --- staleness, which is exact rather than estimated -------------------------
+
+/// How far behind the table a materialised cuboid has fallen, in versions.
+///
+/// # Why this is an integer and not a duration
+///
+/// A cuboid is keyed by the snapshot it was computed at, so its staleness is **exactly** the
+/// distance from the table's current version. Nothing is estimated and no clock is read.
+///
+/// A duration would have to be inferred from commit rates, and an inferred SLA is a
+/// decoration: it is right when the system is behaving and wrong exactly when somebody needs
+/// it — during a burst, which is when both the commit rate and the consequences change.
+///
+/// A cuboid *ahead* of the table is not negative and not an error. It means the table was
+/// rewound, or the cuboid was written against a version that has since been rolled back, and
+/// the honest answer is zero lag with the caller free to distrust it on other grounds.
+#[must_use]
+pub const fn lag(cuboid_snapshot: u64, table_version: u64) -> u64 {
+    table_version.saturating_sub(cuboid_snapshot)
+}
+
+/// Whether a cuboid is still within its cube's stated target.
+///
+/// `None` — a cube nothing materialises — is never fresh, because there is nothing to be
+/// fresh. Answering `true` would make a Declared cube look Maintained to every caller that
+/// asks this question.
+#[must_use]
+pub const fn within_target(target_lag: Option<u64>, lag: u64) -> bool {
+    match target_lag {
+        Some(target) => lag <= target,
+        None => false,
+    }
+}
+
+/// Whether a refresh is due.
+///
+/// The complement of [`within_target`] for a maintained cube, and never for one that
+/// materialises nothing — refreshing a cube with no target would build cuboids nobody
+/// declared and charge an operator storage they did not ask for.
+#[must_use]
+pub const fn refresh_due(target_lag: Option<u64>, lag: u64) -> bool {
+    match target_lag {
+        Some(target) => lag > target,
+        None => false,
+    }
+}
+
+/// Whether a target is achievable given how long a refresh takes.
+///
+/// # Why an unmeetable target has to be said out loud
+///
+/// If a table advances by more versions during a refresh than the target allows, the cuboid
+/// is stale the moment it is written and every query falls back to live aggregation. The
+/// system still answers correctly — that is the point of the fallback — and it does so while
+/// spending storage and maintenance time on a cache that can never be used.
+///
+/// Silence there turns an SLA into a decoration: the operator set a number, the system
+/// accepted it, and nothing ever meets it. Reported in the same shape as the fan-out alarm —
+/// state the measurement, state the target, name the thing to change.
+#[must_use]
+pub fn unmeetable(target_lag: Option<u64>, versions_during_refresh: u64) -> Option<String> {
+    let target = target_lag?;
+    if versions_during_refresh <= target {
+        return None;
+    }
+    Some(format!(
+        "the table advanced {versions_during_refresh} version(s) while the cuboid was being \
+         built and the target lag is {target}, so it is stale before it is written and every \
+         query will fall back to live aggregation. The cache costs storage and maintenance \
+         time and can never be used: raise the target, or reduce what is materialised"
+    ))
+}

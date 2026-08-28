@@ -573,6 +573,23 @@ impl Server {
         cube: &sankhya_cube::model::Cube,
         measure: &sankhya_cube::algo::Measure,
     ) -> Option<sankhya_cube::cells::Cells> {
+        // Within its stated lag, or not used at all.
+        //
+        // A cuboid past its target is not served as though it were fresh: the answer falls
+        // back to live aggregation, which is slower and correct. Serving a stale figure
+        // because it is quick is how a dashboard comes to disagree with the table it is drawn
+        // from, with nobody able to say by how much.
+        //
+        // A cube with no target materialises nothing, so `within_target` is false for it and
+        // this returns early --- which is the Declared lifetime behaving as declared rather
+        // than as a special case.
+        let behind = sankhya_maintenance::cuboid::lag(
+            key.snapshot,
+            self.snapshot_of(cube.fact_table()),
+        );
+        if !sankhya_maintenance::cuboid::within_target(cube.target_lag(), behind) {
+            return None;
+        }
         let root = self.cuboid_root(key, cube.name());
         if !root.join("_delta_log").is_dir() {
             return None;
