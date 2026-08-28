@@ -9,6 +9,7 @@ mod catalogues;
 mod logging;
 mod buildtree;
 mod docnumbers;
+mod surfaces;
 mod package;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -143,6 +144,9 @@ fn main() -> ExitCode {
     if run_all || task == "check-invariants" {
         failed |= !check_invariants(&root);
     }
+    if run_all || task == "check-surfaces" {
+        failed |= !surfaces::check(&root);
+    }
     if run_all || task == "check-writers" {
         failed |= !check_writers(&root);
     }
@@ -235,6 +239,7 @@ fn main() -> ExitCode {
                 | "check-logging"
                 | "check-package"
                 | "check-build-tree"
+                | "check-surfaces"
                 | "sweep"
                 | "sync-doc-numbers"
                 | "sweep-dry-run"
@@ -247,7 +252,7 @@ fn main() -> ExitCode {
             "usage: cargo xtask \
              [check-all|check-tests|check-invariants|check-writers|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
              |check-features|check-lints|check-mutations|check-doc-numbers\
-             |check-catalogues|write-catalogues|check-logging|check-package|check-build-tree|sweep|sweep-dry-run|sync-doc-numbers|check-performance]"
+             |check-catalogues|write-catalogues|check-logging|check-package|check-build-tree|check-surfaces|sweep|sweep-dry-run|sync-doc-numbers|check-performance]"
         );
         return ExitCode::from(2);
     }
@@ -507,7 +512,7 @@ fn code_lines(src: &str) -> usize {
     n
 }
 
-fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+pub(crate) fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -1386,6 +1391,24 @@ mod tests {
         /// A dry run reports exactly what a real run would remove, and removes none of it.
     #[test]
         /// Set a file's modification time, so generation order is stated rather than raced for.
+        /// A dev-dependency is not a way for a server to reach a SQL surface.
+    ///
+    /// This is the whole point of the check. `sankhya-cube-sql` was reachable from the
+    /// server's *tests* long before it was reachable from the server, and that is precisely
+    /// the state where a capability exists, is tested, and cannot be called.
+    #[test]
+        /// Reachability follows the graph, not just the first hop.
+    #[test]
+        /// A surface no server reaches fails the check.
+    ///
+    /// Against a synthetic tree, because the real one passes --- and a check that has only
+    /// ever been run against a passing tree is a check nobody has seen work.
+    #[test]
+        /// The real repository serves every SQL surface it builds.
+    ///
+    /// Run against the actual tree rather than a fixture, because the fixture is what would
+    /// have passed on every one of the four days this was wrong.
+    #[test]
         /// The extractor finds paths written in prose and in backticks.
     ///
     /// Tested because the check that uses it had none, and a check nobody tests is a check
@@ -1776,6 +1799,7 @@ const KNOWN_CHECKS: &[&str] = &[
     "check-logging",
     "check-package",
     "check-doc-numbers",
+    "check-surfaces",
     "check-build-tree",
     "check-tests",
 ];

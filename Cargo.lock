@@ -3700,6 +3700,7 @@ dependencies = [
  "sankhya-error",
  "sankhya-governor",
  "sankhya-graph",
+ "sankhya-graph-sql",
  "sankhya-maintenance",
  "sankhya-metrics",
  "sankhya-olap",

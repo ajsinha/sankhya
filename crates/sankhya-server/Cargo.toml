@@ -28,6 +28,7 @@ sankhya-maintenance = { path = "../sankhya-maintenance" }
 sankhya-cube        = { path = "../sankhya-cube" }
 sankhya-cube-sql    = { path = "../sankhya-cube-sql" }
 sankhya-olap        = { path = "../sankhya-olap" }
+sankhya-graph-sql   = { path = "../sankhya-graph-sql" }
 sankhya-plan     = { path = "../sankhya-plan" }
 datafusion       = { workspace = true }
 arrow-array      = { workspace = true }

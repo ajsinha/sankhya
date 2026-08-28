@@ -112,6 +112,21 @@ pub fn session_for(
     sankhya_olap::register_vector_functions(&context);
     sankhya_olap::register_matrix_functions(&context);
 
+    // The graph functions, against an empty catalogue.
+    //
+    // This process builds no graph epochs, so every call answers "no graph named that; this
+    // session knows none". That is the **truthful** error and it points at the real gap ---
+    // nothing hydrates a graph here --- whereas the previous answer, `Invalid function`,
+    // pointed at a function the guide documents and implied it did not exist.
+    //
+    // Registering a surface whose catalogue is empty is not pretending. A cube does the same
+    // thing: declared and unhydrated is a state worth being able to report, and collapsing it
+    // into "no such name" sends somebody to fix a typo that is not there.
+    sankhya_graph_sql::functions::register(
+        &context,
+        Arc::new(sankhya_graph_sql::catalog::GraphCatalog::new()),
+    );
+
     let mut registered = 0usize;
 
     for table in tables {

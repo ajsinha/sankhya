@@ -1708,6 +1708,18 @@ CATALOGUE = [
      "        exact.values().append_value(sum.to_f64());",
      "sankhya-cube"),
 
+    ("xtask: pass a SQL surface no server can reach",
+     "xtask/src/surfaces.rs",
+     "        if served.contains(crate_name) {\n            continue;\n        }",
+     "        if true {\n            continue;\n        }",
+     "xtask"),
+
+    ("xtask: count a dev-dependency as reaching a surface",
+     "xtask/src/surfaces.rs",
+     "            if line.trim_start().starts_with(\"[dev-dependencies]\") {\n                break;\n            }",
+     "            if false {\n                break;\n            }",
+     "xtask"),
+
     # --- the guide's examples, and whether they actually work ------------------
 
     ("server: let a refused guide example pass as a query that matched nothing",
