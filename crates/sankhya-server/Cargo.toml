@@ -26,6 +26,7 @@ sankhya-readpath = { path = "../sankhya-readpath" }
 sankhya-table-delta = { path = "../sankhya-table-delta" }
 sankhya-maintenance = { path = "../sankhya-maintenance" }
 sankhya-cube        = { path = "../sankhya-cube" }
+sankhya-cube-sql    = { path = "../sankhya-cube-sql" }
 sankhya-plan     = { path = "../sankhya-plan" }
 datafusion       = { workspace = true }
 arrow-array      = { workspace = true }

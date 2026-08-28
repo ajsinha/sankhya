@@ -209,8 +209,45 @@ declared dimension is exactly what the additivity model exists to catch, and cat
 somebody runs a query means reporting a deployment error to a user who did nothing wrong, at
 whatever hour they happened to ask.
 
-**What is still not there, and why it is a design decision rather than an omission.** A cube
-is loaded but not yet *queryable*, because hydration has nowhere correct to go yet:
+### Cubes answer, under the policy the caller is subject to
+
+A cube is queryable. `cube_rollup` and `cube_slice` are registered into the session a
+statement runs in, and hydration reads the fact table **through that session** --- so the
+cells a cube is built from are filtered by the same `SecuredTable` that filters a plain
+`SELECT`.
+
+That is the whole authorization story, and the absence is the point: there is no
+cube-specific authorization code, so there is no second implementation of the rule to
+disagree with the first. Two principals with different entitlements get different totals, and
+the test asserting it is the one that would fail loudest if that ever stopped being true ---
+100 unrestricted against 30 for a principal filtered to one region.
+
+Hydration is cached across statements, keyed by *(cube, measure, definition version,
+snapshot, scope digest)*. The scope digest hashes what a guard **permits** --- tenant, table,
+action, row filter, column masks --- and deliberately excludes the subject, so a thousand
+analysts across six roles produce six entries rather than a thousand copies of six answers.
+Any difference in what is visible changes the digest; who is looking does not.
+
+`Guard::scope_digest` carries four mutations against it, including the one that is easy to
+forget: putting the subject *in* would be safe and useless, and a suite testing only
+separation would not notice.
+
+**What is still not there.** The materialised-cuboid tier of
+[ADR-0008](adr/0008-serving-cubes-under-policy.md), and the `target_lag` lifecycle of
+[ADR-0009](adr/0009-the-cube-lifecycle.md). Cube selection still waits on the recorded query
+log §11.6 asks for.
+
+The statement text is scanned for cube function names to decide what to hydrate, which is
+deliberately crude: a `SessionContext` is built per statement, `TableFunctionImpl::call` is
+synchronous while reading a table is not, and a false positive costs a cache lookup while a
+false negative costs a query that fails to resolve a cube it named. It is replaced when the
+surface grows a resolver of its own.
+
+<details>
+<summary>Superseded: why this was blocked before 2026-08-28</summary>
+
+**A cube was loaded but not queryable, and that was a design decision rather than an
+omission.** Hydration had nowhere correct to go:
 
 - `session_for` builds a context **per statement**, so hydrating there reads the whole fact
   table on every query.
@@ -218,10 +255,10 @@ is loaded but not yet *queryable*, because hydration has nowhere correct to go y
   the same totals whatever policy says — the disclosure through arithmetic that `FR-QUERY-13`
   and §11.5 exist to prevent, and the kind that leaves no trace in a result.
 
-The correct answer is a cache keyed by snapshot **and** the principal's visible scope, which
-is what §11.6's materialisation already describes: a materialised cuboid keyed by *(definition
-version, snapshot, cuboid)*, extended with the scope. That is the next piece, and guessing at
-it would produce either a per-query table scan or a security defect.
+The correct answer was a cache keyed by snapshot **and** the principal's visible scope ---
+which is what was built.
+
+</details>
 
 The other absent half — a definition as a row in a system table, so the store is the warehouse
 rather than a JSON file beside it — waits on the catalogue proper.
@@ -1309,7 +1346,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 367 specific defects applied one at a time; all 357 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 368 specific defects applied one at a time; all 357 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -1803,9 +1840,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,677 tests, none of which needs a database
+cargo test --workspace           # 1,682 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 367 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 368 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

@@ -31,6 +31,8 @@ use sankhya_metrics::Registry;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use sankhya_catalog::guard::Guard;
+use datafusion::prelude::SessionContext;
 use crate::execute::{run, session_for, ServableTable};
 
 /// How the server was configured.
@@ -99,6 +101,13 @@ pub struct Server {
     /// open --- not in the first query that happens to name it, hours later, reported to
     /// whoever ran that query as though they had done something wrong.
     cubes: Vec<sankhya_cube::model::Cube>,
+    /// Cells already hydrated, keyed by everything that makes them an answer.
+    ///
+    /// Shared across statements, which is the point: `session_for` builds a context per
+    /// statement, so hydrating inside it would read the whole fact table on every query. The
+    /// cache outlives the session; the *key* --- which includes the scope digest --- is what
+    /// keeps that safe.
+    hydrated: Arc<sankhya_cube_sql::hydrated::Hydrated>,
     clock: parking_lot::Mutex<i64>,
     /// How many connections are open, so the gauge can be set from either hook.
     ///
@@ -116,6 +125,15 @@ pub struct Server {
     /// for one call. This is where the two worlds meet, and doing it in one place is what
     /// keeps the protocol code free of it.
     runtime: tokio::runtime::Handle,
+}
+
+/// Whether a statement asks for a cube at all.
+///
+/// Text, not a parse. The alternative is planning the statement twice --- once to discover
+/// whether it mentions a cube function and once to run it --- and a false positive here costs
+/// a cache lookup while a false negative costs a query that cannot resolve a cube it named.
+fn mentions_a_cube_function(sql: &str) -> bool {
+    sql.contains("cube_rollup") || sql.contains("cube_slice")
 }
 
 impl Server {
@@ -191,6 +209,7 @@ impl Server {
             tables,
             servable,
             cubes: Vec::new(),
+            hydrated: Arc::new(sankhya_cube_sql::hydrated::Hydrated::default()),
             clock: parking_lot::Mutex::new(0),
             connections: AtomicUsize::new(0),
             metrics: Arc::new(Registry::new()),
@@ -431,6 +450,94 @@ impl Handler for Server {
 }
 
 impl Server {
+    /// Hydrate and register the cubes a statement asks about.
+    ///
+    /// # Why the statement is scanned for names
+    ///
+    /// A `SessionContext` is built per statement, so hydrating every cube for every query
+    /// would read every fact table on every query --- the exact cost a cube exists to avoid.
+    /// A table function cannot hydrate on demand either: `TableFunctionImpl::call` is
+    /// synchronous and reading a table is not.
+    ///
+    /// So the statement's text is scanned, which is deliberately crude and deliberately
+    /// conservative: a false positive costs one cache lookup, and a false negative is a query
+    /// that fails to resolve a cube rather than one that answers wrongly. It is replaced by
+    /// planning against a registered catalogue when the surface grows a resolver of its own.
+    fn register_cubes(&self, context: &SessionContext, principal: &Principal, sql: &str) {
+        if self.cubes.is_empty() || !mentions_a_cube_function(sql) {
+            return;
+        }
+        let catalog = Arc::new(sankhya_cube_sql::catalog::CubeCatalog::new());
+        for cube in &self.cubes {
+            catalog.declare(cube.name());
+            if !sql.contains(cube.name()) {
+                continue;
+            }
+            // The scope this principal reads the fact table under.
+            //
+            // No guard means no access, and the cube is simply not registered --- the same
+            // answer a table gets, for the same reason: saying "you may not read that"
+            // confirms it exists.
+            //
+            // This is defence in depth rather than the load-bearing check, and saying so
+            // matters. A principal who may not read the fact table has no `SecuredTable` for
+            // it in this session either, so hydration would fail regardless; removing this
+            // guard leaves the system correct and merely wasteful. A mutation test confirmed
+            // exactly that by surviving its removal, which is why there is no catalogue entry
+            // claiming otherwise.
+            let Some(scope) = self.scope_for(principal, cube.fact_table()) else {
+                continue;
+            };
+            for measure in cube.measures() {
+                let key = sankhya_cube_sql::hydrated::Key {
+                    cube: cube.name().to_string(),
+                    measure: measure.name.clone(),
+                    definition_version: cube.version(),
+                    snapshot: self.settings.read_as_of.get(),
+                    scope,
+                };
+                if let Some(held) = self.hydrated.get(&key) {
+                    catalog.publish(cube.name(), held);
+                    continue;
+                }
+                let hydrated = tokio::task::block_in_place(|| {
+                    self.runtime.block_on(sankhya_cube_sql::publish::publish_from_fact_table(
+                        context,
+                        &catalog,
+                        cube.name(),
+                        Arc::new(cube.clone()),
+                        measure,
+                        self.settings.read_as_of.get(),
+                    ))
+                });
+                // A cube that will not hydrate is left unpublished rather than reported here.
+                // The query naming it gets `MeasureNotPublished`, which says what happened
+                // and what to do; failing the whole statement would take down a query that
+                // also names three tables that are perfectly fine.
+                if hydrated.is_ok() {
+                    if let Ok(published) = catalog.resolve(cube.name(), &measure.name) {
+                        self.hydrated.put(key, published);
+                    }
+                }
+            }
+        }
+        sankhya_cube_sql::functions::register(context, catalog);
+    }
+
+    /// What this principal may see of a table, as a value.
+    ///
+    /// `None` when they may not read it at all.
+    fn scope_for(&self, principal: &Principal, table: &str) -> Option<u64> {
+        let reference = self
+            .servable
+            .iter()
+            .find(|servable| servable.reference.table == table)
+            .map(|servable| servable.reference.clone())
+            .unwrap_or_else(|| TableRef::new("", table));
+        Guard::authorize(&self.policy, principal, &reference, Action::Read)
+            .map(|guard| guard.scope_digest())
+    }
+
     /// Everything `query` does, without the measuring.
     ///
     /// Split out so that the counter and the histogram are recorded on **every** path out of
@@ -470,6 +577,14 @@ impl Server {
                 "this principal may not read any table",
             ));
         }
+
+        // Cubes, if this statement asks for one.
+        //
+        // Hydration reads the fact table *through this session*, so the cells it builds are
+        // filtered by the same `SecuredTable` that filters a plain SELECT. That is the whole
+        // authorization story for cubes: there is no second implementation of the rule, and
+        // therefore no second implementation to disagree with the first.
+        self.register_cubes(&context, &principal, sql);
 
         // `block_in_place` rather than a bare `block_on`. This method is called from inside
         // a Tokio task — the connection's — and blocking that thread directly panics,

@@ -1702,6 +1702,14 @@ CATALOGUE = [
      "            if false {",
      "sankhya-cube"),
 
+    # --- serving a cube at all ------------------------------------------------
+
+    ("server: never register the cube functions, so a cube is loaded and unanswerable",
+     "crates/sankhya-server/src/wiring.rs",
+     "    sql.contains(\"cube_rollup\") || sql.contains(\"cube_slice\")",
+     "    let _ = sql;\n    false",
+     "sankhya-server"),
+
     # --- the hydration cache: every field of the key prevents something -------
 
     ("cube-sql: let the hydration cache grow without bound",
