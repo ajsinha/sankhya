@@ -611,3 +611,102 @@ async fn an_empty_cuboid_is_not_written() {
     assert!(!written);
     assert!(!sankhya_maintenance::cuboid::exists(dir.path(), &key, cube.name()));
 }
+
+// --- maintained cubes refresh without a caller -------------------------------
+
+/// The fixture cube, marked maintained.
+fn maintained_warehouse() -> tempfile::TempDir {
+    let dir = warehouse_with_a_fact_table();
+    catalogue::save(dir.path(), &sales().maintained_within(5)).expect("declaring maintained");
+    dir
+}
+
+fn server_over(dir: &tempfile::TempDir, policy: PolicySet) -> Server {
+    let (found, refused) = warehouse::discover(dir.path());
+    assert!(refused.is_empty(), "the fixture must open: {refused:?}");
+    let cache = sankhya_table_delta::LogCache::new();
+    let (servable, unreadable) = warehouse::servable(&found, Lsn::new(u64::MAX), &cache);
+    assert!(unreadable.is_empty(), "the fixture must read: {unreadable:?}");
+    let tables = warehouse::describe(&found);
+    let (server, complaints) =
+        Server::with_tables(settings(dir.path()), policy, tables, servable)
+            .adopting_cubes(dir.path());
+    assert!(complaints.is_empty(), "{complaints:?}");
+    server
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_maintained_cube_is_built_with_nobody_logged_in() {
+    // The whole point of the lifetime. A dashboard is fast at nine because something built
+    // its cells at four, and nothing about that involves the person who declared the cube
+    // being connected.
+    let dir = maintained_warehouse();
+    let server = server_over(&dir, policy("reader", None));
+    assert_eq!(server.cubes().len(), 1);
+
+    // No `authenticate`, no query, no principal anywhere.
+    let refreshed = server.refresh_maintained_cubes();
+    assert!(
+        refreshed.iter().any(|name| name.starts_with("sales.")),
+        "a maintained cube builds without a caller: {refreshed:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_declared_cube_is_not_built_by_the_refresher() {
+    // Persisting a definition is cheap; materialising is storage and work. A cube that did
+    // not ask to be maintained must not acquire cuboids by being written down.
+    let dir = warehouse_with_a_fact_table(); // saves `sales()` with no target_lag
+    let server = server_over(&dir, policy("reader", None));
+
+    let refreshed = server.refresh_maintained_cubes();
+    assert!(
+        refreshed.is_empty(),
+        "a Declared cube materialises nothing: {refreshed:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn refreshing_twice_builds_once() {
+    // The key embeds the definition version, the snapshot and the scope, so a cuboid that
+    // exists is still correct. A refresher that rebuilt it every pass would spend the
+    // maintenance budget rewriting identical files.
+    let dir = maintained_warehouse();
+    let server = server_over(&dir, policy("reader", None));
+
+    let first = server.refresh_maintained_cubes();
+    let second = server.refresh_maintained_cubes();
+    assert!(!first.is_empty(), "built the first time: {first:?}");
+    assert!(second.is_empty(), "and left alone the second: {second:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn what_the_refresher_builds_is_the_unrestricted_scope() {
+    // A refresh running on a timer has no principal, so it builds the unrestricted cuboid —
+    // and per ADR-0008 an unrestricted cuboid may serve only an unrestricted caller. The
+    // consequence is that background refresh helps dashboards and service accounts and does
+    // nothing for a restricted analyst, whose cuboids can only be built by their own queries.
+    //
+    // Asserted on where the file lands, because that is where the separation is enforced:
+    // two scopes are two tables.
+    let dir = maintained_warehouse();
+    let server = server_over(&dir, policy("reader", None));
+    server.refresh_maintained_cubes();
+
+    let cube = &server.cubes()[0];
+    let snapshot = server.snapshot_for_test(cube.fact_table());
+    let base = sankhya_cube::algo::Cuboid::of(&["region"]);
+    let unrestricted =
+        sankhya_cube::materialise::Key::unrestricted(cube.version(), snapshot, base.clone());
+    let restricted =
+        sankhya_cube::materialise::Key::new(cube.version(), snapshot, 0xdead_beef, base);
+
+    assert!(
+        sankhya_maintenance::cuboid::exists(dir.path(), &unrestricted, cube.name()),
+        "the unrestricted cuboid was built"
+    );
+    assert!(
+        !sankhya_maintenance::cuboid::exists(dir.path(), &restricted, cube.name()),
+        "and no restricted scope was, because the refresher has no principal to build one for"
+    );
+}

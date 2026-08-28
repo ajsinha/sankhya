@@ -550,6 +550,110 @@ impl Server {
         sankhya_cube_sql::describe::register(context, Arc::new(self.cubes.clone()), catalog);
     }
 
+    /// Build the cuboids maintained cubes are missing, and report what was built.
+    ///
+    /// # Why this runs without a caller, and what that costs
+    ///
+    /// A cube marked maintained is maintained whether or not the person who declared it is
+    /// logged in. That is the whole point of the lifetime --- a dashboard is fast at nine in
+    /// the morning because something built its cells at four.
+    ///
+    /// But an aggregate is computed over the rows *some principal* may read, and a refresh
+    /// running on a timer has no principal. So it builds the **unrestricted** cuboid, and per
+    /// [ADR-0008](../../../docs/adr/0008-serving-cubes-under-policy.md) an unrestricted cuboid
+    /// may serve only an unrestricted caller.
+    ///
+    /// The consequence is worth stating rather than discovering: **background refresh helps
+    /// service accounts and dashboards, and does nothing for a restricted analyst**, whose
+    /// cuboids can only be built by their own queries. Pre-building a restricted scope needs
+    /// somebody to name the scopes, which is a decision nobody has made yet and not one to
+    /// take by implication.
+    ///
+    /// Returns the cubes refreshed, so a caller can log it rather than have work happen
+    /// invisibly.
+    pub fn refresh_maintained_cubes(&self) -> Vec<String> {
+        let mut refreshed = Vec::new();
+        for cube in &self.cubes {
+            let Some(_) = cube.target_lag() else {
+                // Declared, not maintained. Nothing to build, and building it anyway would
+                // charge an operator storage they did not ask for.
+                continue;
+            };
+            let snapshot = self.snapshot_of(cube.fact_table());
+            let base = sankhya_cube::algo::Cuboid::of(
+                &cube.dimensions().iter().map(|d| d.name.as_str()).collect::<Vec<&str>>(),
+            );
+            for measure in cube.measures() {
+                let key = sankhya_cube::materialise::Key::unrestricted(
+                    cube.version(),
+                    snapshot,
+                    base.clone(),
+                );
+                if sankhya_maintenance::cuboid::exists(
+                    &self.settings.warehouse,
+                    &key,
+                    cube.name(),
+                ) {
+                    continue;
+                }
+                let Some(cells) = self.hydrate_unrestricted(cube, measure) else {
+                    continue;
+                };
+                let Some(rule) = cube
+                    .dimensions()
+                    .first()
+                    .and_then(|d| measure.rule(&d.name))
+                else {
+                    continue;
+                };
+                if sankhya_maintenance::cuboid::materialise_quietly(
+                    &self.settings.warehouse,
+                    &key,
+                    cube.name(),
+                    &cells,
+                    rule,
+                ) {
+                    refreshed.push(format!("{}.{}", cube.name(), measure.name));
+                }
+            }
+        }
+        refreshed
+    }
+
+    /// Hydrate a cube over every row, with no policy applied.
+    ///
+    /// The providers are registered **unsecured**, which is what makes this the unrestricted
+    /// scope rather than one principal's. It is only ever used to build a cuboid keyed as
+    /// unrestricted, and such a cuboid may only serve a caller who is themselves
+    /// unrestricted --- so the widest cells never reach a narrower reader.
+    fn hydrate_unrestricted(
+        &self,
+        cube: &sankhya_cube::model::Cube,
+        measure: &sankhya_cube::algo::Measure,
+    ) -> Option<sankhya_cube::cells::Cells> {
+        let context = SessionContext::new();
+        for table in self.servable.read().iter() {
+            context
+                .register_table(table.reference.table.as_str(), Arc::clone(&table.provider))
+                .ok()?;
+        }
+        let catalog = Arc::new(sankhya_cube_sql::catalog::CubeCatalog::new());
+        let hydrated = tokio::task::block_in_place(|| {
+            self.runtime
+                .block_on(sankhya_cube_sql::publish::publish_from_fact_table(
+                    &context,
+                    &catalog,
+                    cube.name(),
+                    Arc::new(cube.clone()),
+                    measure,
+                    self.snapshot_of(cube.fact_table()),
+                ))
+        });
+        hydrated.ok()?;
+        let published = catalog.resolve(cube.name(), &measure.name).ok()?;
+        Some((*published.cells).clone())
+    }
+
     /// Where a materialised cuboid lives under this warehouse.
     ///
     /// Under `_cubes`, which discovery skips: a materialised cuboid is a published table on
@@ -634,6 +738,12 @@ impl Server {
             }
         }
         Some(cells)
+    }
+
+    /// The version a table's log stands at, for a test that must name the same one.
+    #[must_use]
+    pub fn snapshot_for_test(&self, table: &str) -> u64 {
+        self.snapshot_of(table)
     }
 
     /// The version a table's log currently stands at.

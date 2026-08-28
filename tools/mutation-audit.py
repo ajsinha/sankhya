@@ -1708,6 +1708,18 @@ CATALOGUE = [
      "        exact.values().append_value(sum.to_f64());",
      "sankhya-cube"),
 
+    ("server: refresh a cube nobody marked maintained, charging storage nobody asked for",
+     "crates/sankhya-server/src/wiring.rs",
+     "            let Some(_) = cube.target_lag() else {\n                // Declared, not maintained. Nothing to build, and building it anyway would\n                // charge an operator storage they did not ask for.\n                continue;\n            };",
+     "            let _ = cube.target_lag();",
+     "sankhya-server"),
+
+    ("server: build a restricted cuboid from a refresh that has no principal",
+     "crates/sankhya-server/src/wiring.rs",
+     "                let key = sankhya_cube::materialise::Key::unrestricted(\n                    cube.version(),\n                    snapshot,\n                    base.clone(),\n                );",
+     "                let key = sankhya_cube::materialise::Key::new(\n                    cube.version(),\n                    snapshot,\n                    0xdead_beef,\n                    base.clone(),\n                );",
+     "sankhya-server"),
+
     # --- target_lag: a staleness target, not a schedule ------------------------
 
     ("maintenance: treat a cube that materialises nothing as always fresh",

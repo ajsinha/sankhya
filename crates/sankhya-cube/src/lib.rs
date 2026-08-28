@@ -44,6 +44,7 @@
 /// dependency on the algebra crate directly --- which exists to have **no** dependencies, and
 /// whose consumers should not have to know that to use it.
 pub mod algo {
+    pub use sankhya_cube_algo::lattice::Cuboid;
     pub use sankhya_cube_algo::measure::{Along, Measure, Rule};
 }
 

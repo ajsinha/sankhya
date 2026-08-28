@@ -265,6 +265,29 @@ async fn main() -> std::io::Result<()> {
         std::sync::Arc::new(sankhya_maintenance::spawn_maintenance(tables, policy))
     });
 
+    // Maintained cubes, built on the same cadence and for the same reason.
+    //
+    // A cube marked maintained is maintained whether or not whoever declared it is logged in
+    // --- a dashboard is fast at nine because something built its cells at four. The refresher
+    // has no principal, so it builds the *unrestricted* cuboid, which per ADR-0008 may serve
+    // only an unrestricted caller: this helps dashboards and service accounts and does
+    // nothing for a restricted analyst, whose cuboids are built by their own queries.
+    //
+    // Gated on maintenance being enabled, because it is maintenance: an operator who turned
+    // the thread off did not ask for a different background writer to keep going.
+    if let Some(every) = maintenance.as_ref().map(|handle| handle.policy().interval) {
+        let cubes = Arc::clone(&server);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(every).await;
+                let built = tokio::task::block_in_place(|| cubes.refresh_maintained_cubes());
+                if !built.is_empty() {
+                    println!("  materialised {} cuboid(s): {}", built.len(), built.join(", "));
+                }
+            }
+        });
+    }
+
     // Reconfiguration without a restart.
     //
     // An operator who has to restart the server to slow compaction down will not slow
