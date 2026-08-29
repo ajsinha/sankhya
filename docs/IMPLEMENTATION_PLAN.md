@@ -55,7 +55,9 @@ This plan therefore front-loads three things that are nearly free at the start a
 | **M6** | Operability, packaging and hardening | 18–22 | weeks 24–30 |
 | **M7** | Multidimensional analysis — cubes, hierarchies, consolidation | 14–18 | weeks 28–34 |
 | **M8** | **Concurrency and data safety**, crate hygiene, then scale-out, HA, disaster recovery | 25–32 | weeks 32–43 |
-| **M9** | Tiering *(gated — see §13)* | 12–16 | after M8 plus the reconciliation gate |
+| **M9** | Tiering *(gated — see §13)* | 12–16 | after M8; criteria 2 and 3 of the gate |
+| **M11** | Production reconciliation *(not schedulable by development)* | — | after a production deployment exists |
+| **M12** | **Production-like acceptance** — 12 h, two machines, 100 GB, 50 readers, 20 writers | 4–6 | the project's exit criteria |
 | | **Total to a hardened first release** | **~150–190 ew** | **~7–8 months** |
 
 **Team shape:** six engineers. Suggested specialisation — two on ingest and storage, two on query and graph, one on platform and operability, one on security and tenancy — with the extension API owned by whoever owns architecture.
@@ -722,11 +724,22 @@ Attached mode as the production configuration. Leader election through the trans
 
 Tiering may not ship until **all** of the following hold:
 
-1. Continuous reconciliation has run clean in production across every table class for a sustained period.
+1. Continuous reconciliation has run clean in production across every table class for a sustained period. — **moved to M11**, see below.
 2. The restore drill has passed repeatedly.
 3. An archive attestation drill has passed on a non-production archive.
 
 **The gate is explicit so that schedule pressure cannot quietly make this decision.** Purging the system of record before the copy is provably correct is indefensible, and no amount of care in the tiering code substitutes for demonstrated reconciliation.
+
+> **Amended 2026-08-28 by owner decision.** Criterion 1 cannot be met by development at all: it
+> requires a production deployment, and there is not one. Holding M9 behind it would not make
+> the system safer, only unfinished. So criterion 1 moves to **[M11](#13b-m11--production-reconciliation)**,
+> a milestone of its own at the end of the plan, and M9 proceeds against criteria 2 and 3.
+>
+> **What does not move.** M9 builds, tests and drills the whole purge path — the state machine,
+> the verification, the quarantine, the anomaly guard, the kill switches — and **destructive
+> purge against a system of record stays disabled until M11 clears criterion 1.** Building it
+> and arming it are two decisions, and only the first belongs to development. Recording the
+> split here is what stops "M9 is done" from later being read as "purge is safe to enable".
 
 ### Work
 
@@ -811,6 +824,121 @@ A clone demonstrated at constant cost against a large table; divergent writes on
 verified independent; **maintenance run to completion on the origin with the clone proven to
 read every row it could read before**; the same for orphan collection specifically; and every
 refused clone path shown to fail closed.
+
+---
+
+## 13b. M11 — Production reconciliation
+
+**After a production deployment exists. Not schedulable by development.**
+
+### Why this is a milestone and not a checklist item
+
+M9's gate criterion 1 — *continuous reconciliation has run clean in production across every
+table class for a sustained period* — is the one requirement in this plan that **no amount of
+engineering can satisfy**. It is not hard; it is not slow; it is impossible, because it asks for
+evidence from a system that is running for real, and evidence cannot be written.
+
+Leaving it inside M9's gate had a predictable failure mode: M9 would be finished in every
+respect that development controls, the gate would still read unmet, and the pressure to
+reinterpret the words would grow every week. That is precisely the pressure the gate was written
+to resist, so the gate is better served by moving the criterion somewhere it can be honestly
+tracked than by leaving it somewhere it can only be quietly redefined.
+
+### Work
+
+**Continuous reconciliation in production.** Every table class, sustained, with the results
+recorded rather than summarised. The reconciler itself is M9's; what M11 adds is the running of
+it, on real data, for long enough to mean something.
+
+**The arming decision.** Destructive purge, disabled throughout M9, is enabled here or not at
+all. It is an owner decision informed by the reconciliation record, and it is the only place in
+this plan where a milestone completes by somebody choosing rather than by a test passing.
+
+**A substitute is not a pass.** A sustained soak with reconciliation running clean is the
+closest development can get, and it is worth doing — but it is evidence about a soak, not about
+production, and this milestone is not met by it. Saying so here is the point of writing it down.
+
+### Exit
+
+Reconciliation has run clean in production across every table class for a sustained period, the
+record of it is published rather than asserted, and the owner has made the arming decision with
+that record in front of them.
+
+---
+
+## 13c. M12 — Production-like acceptance: the twelve-hour, two-machine run
+
+**The project's exit criteria.** Added 2026-08-29 by owner directive.
+
+### What it is
+
+Two machines drive one SANKHYA instance for **twelve hours**, together pushing **100 GB**
+through **50 concurrent readers and 20 concurrent writers**, while cuboids are built, queried
+and dropped underneath them and saved data is queried and updated.
+
+Every number here is load-bearing and none is a round figure chosen for looking serious:
+
+| | | Why this number |
+|---|---|---|
+| **2 machines** | driving one instance | A single process cannot produce true client concurrency: its clients share a runtime, a page cache and a clock. Two machines is the smallest count that makes the network real and the interleaving genuinely uncoordinated |
+| **50 readers** | concurrent | Enough that the read path's shared structures are contended rather than merely used. §12.1's `LogCache`, `QueryLog` and `Hydrated` choke points are invisible at four readers and obvious at fifty |
+| **20 writers** | concurrent | The commit path is table-scoped by protocol, so twenty writers guarantee sustained version contention — the exact condition under which the pre-M8 claim lost commits silently |
+| **100 GB** | total | Beyond any page cache on either machine, so a read is a read |
+| **12 hours** | duration | Long enough for `report::supported_horizon` to speak about days rather than hours, and long enough for reclamation, compaction and cuboid retirement to run thousands of cycles against live readers |
+
+### Why the workload is mixed rather than clean
+
+The run must do all of it **at once** — build cuboids, query them, drop them, query base data,
+and update saved data — because every defect this project has found lived in an interaction,
+not in a component:
+
+- A cuboid **deleted while a query held it** is the failure `CUBOID_DRIFT_TOLERATED` guards
+  against with a version-space heuristic. Fifty readers against continuous retirement is what
+  turns that heuristic into a measurement.
+- **Two writers claiming one version** is what the pre-M8 commit path lost silently. Twenty
+  writers for twelve hours is the strongest available statement that it no longer can.
+- **Compaction racing a reader** is the case `FR-STORE-23`'s typed conflict exists for, and it
+  only arises when maintenance and ingest are both busy on a table somebody is reading.
+
+A clean workload — readers alone, then writers alone — would pass while every one of those
+remained broken. **The mixing is the test.**
+
+### What it proves that nothing else does
+
+M8 §12.1 states six properties and demonstrates each in isolation, with fault injection and
+sixteen threads inside one process. That is the right way to *prove a mechanism* and it is not
+evidence about a system. This run is the evidence: the same properties, on real hardware,
+across a network, for half a day, with nothing rigged.
+
+It is also the first thing in this plan that can fail for reasons no test suite can produce —
+socket exhaustion, a clock stepping, one machine swapping, a network partition of a few
+seconds. Those are the failures that matter in production and none of them can be unit-tested.
+
+### Depends on
+
+**M8** for the concurrency properties, attached mode and multi-node operation. **Cube DDL** —
+`CREATE CUBE` is not a statement yet, and this run needs cubes created and dropped from SQL by
+a client rather than declared into a warehouse directory. That gap is recorded in
+[`GUIDE.md`](GUIDE.md) and becomes blocking here.
+
+### Exit
+
+1. Twelve hours at 100 GB with 50 readers and 20 writers across two machines, **`PASS` on every
+   declared measure**, judged against a horizon the run's own duration supports.
+2. **Not one lost commit.** Every write that reported success is present in the log at exactly
+   one version, verified by reconciliation after the run rather than by absence of complaint.
+3. **Not one query failed for a file that was deleted underneath it.** Reclamation ran
+   throughout; readers never saw it.
+4. Every answer that came from a cuboid is **bit-identical** to the same answer computed from
+   base data, sampled throughout the run and checked at the end — exit criterion 3a, at scale
+   and under contention.
+5. Read latency and write throughput are **reported as distributions, not means**, and the
+   tail is explained rather than excluded.
+6. The evidence pack is durable: the report, the reconciliation, and the failure of any
+   measure, retained rather than summarised into a sentence.
+
+**This is the project's exit criteria.** Everything before it is a milestone; this is the run
+that says the system does what the documents claim.
 
 ---
 

@@ -144,7 +144,7 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 /// What the soak does, printed on `--help` and on no arguments at all.
 ///
 /// **A bare invocation prints this and exits.** It used to take every default and start a
-/// four-hour job writing ten gigabytes --- so running the binary to find out what it does
+/// four-hour job writing twenty gigabytes --- so running the binary to find out what it does
 /// filled a directory instead of answering the question. A tool whose no-argument behaviour
 /// is "begin the expensive irreversible thing" is a tool that will eventually be run by
 /// somebody who only wanted to look at it.
@@ -213,9 +213,19 @@ fn fan_out_condition(table: usize, strain: &Strain) -> String {
 #[ignore = "a soak takes forty-five minutes; run it deliberately"]
 fn soak() {
     let env = |name: &str| std::env::var(name).ok();
+    // Twenty gigabytes by default, doubled from ten by owner decision on 2026-08-29.
+    //
+    // The figure is a floor on how much data the run cannot hold in page cache, which is what
+    // makes a read a read. Ten gigabytes was chosen when the soak did not read the data at
+    // all; now that it does --- 3.01 billion rows in the run that prompted this --- the
+    // working set matters and a bigger one is a harder test of the same machinery.
+    //
+    // Cost is linear and mostly in the fill: roughly forty-five seconds per gigabyte, so the
+    // preamble goes from about seven minutes to about fifteen. The judged window is unchanged,
+    // because it is counted from when measurement starts.
     let gb: f64 = env("SANKHYA_SOAK_GB")
         .and_then(|v| v.parse().ok())
-        .unwrap_or(10.0);
+        .unwrap_or(20.0);
     let tables: usize = env("SANKHYA_SOAK_TABLES")
         .and_then(|v| v.parse().ok())
         .unwrap_or(10);

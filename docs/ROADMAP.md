@@ -143,6 +143,14 @@ asserted — see [ADR-0013](adr/0013-concurrency-and-data-safety.md).
 
 **What 1.0 means here:** the extension API carries a stability commitment. Everything else may still evolve, but a pack written against 1.0 keeps working.
 
+**And 1.0 is earned by one run, not by a checklist.** The project's exit criteria is a
+twelve-hour, two-machine acceptance test: 100 GB through 50 concurrent readers and 20
+concurrent writers against a single instance, building cuboids, querying them and dropping them
+while saved data is queried and updated — all at once, because every defect this project has
+found lived in an interaction rather than in a component. Not one lost commit, not one query
+failed for a file deleted underneath it, and every materialised answer bit-identical to the same
+answer computed from base data. See `IMPLEMENTATION_PLAN.md` §13c.
+
 ---
 
 ### 1.1 — *Lifecycle*

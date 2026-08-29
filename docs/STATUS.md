@@ -390,7 +390,23 @@ the orphan sweep finds unreferenced files *within* a table, and this is a whole 
 mentions. The same shape as the defect that filled a disk in the soak, reintroduced by adding
 cuboids and closed the same afternoon.
 
-### The cube path under sustained load
+### The cube path under sustained load, with materialisation actually reachable
+
+`PASS` over 59 judged minutes against a two-hour horizon, all seven measures steady, on
+2026-08-29 --- **the first soak in which a cube was served from storage.** Until M7 closed the
+day before, `materialised` was dead code and every cube query went to the fact table however
+many cuboids the refresher had built.
+
+196 rounds, 1,960 publications, **37.2 GB read across 3.01 billion rows**, the cube answered 49
+times, and maintenance reclaimed 11.66 GB over 1,651 ticks while holding the warehouse at 9 GB
+and 90 live files throughout.
+
+Resident memory closed at **2.0 GB against the 2.2 GB of the previous run** --- more work, a
+longer run, and less memory. That is the direction materialisation was supposed to move it and
+the first measurement rather than the first assertion: a cuboid read replaces a fact-table
+hydration rather than adding to it. See [SOAK.md §7b](SOAK.md).
+
+### The earlier cube run
 
 `PASS` over 44 judged minutes with all seven measures steady, on the first soak to exercise a
 cube — 157 rounds, 2.41 billion rows scanned, the cube answered 39 times, maintenance

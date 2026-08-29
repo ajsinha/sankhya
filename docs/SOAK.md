@@ -300,12 +300,68 @@ averaged away.
 
 The counter that used to be called `queries` is now `planned`, because that is what it counts.
 
+## 7b. The sixty-minute run of 2026-08-29, with materialisation load-bearing
+
+`PASS` over 59 judged minutes against a **two-hour** horizon, first ten samples discarded as
+warm-up, and all seven measures steady:
+
+| | | | |
+|---|---|---|---|
+| `resident_bytes` | steady | `open_files` | steady |
+| `metric_series` | steady | `history_bytes` | steady |
+| `audit_records` | steady | `warehouse_bytes` | steady |
+| `live_files` | steady | | |
+
+| | |
+|---|---|
+| Rounds | 196 — 1,960 writes published, 1,960 queries planned |
+| Read | **37.2 GB across 3.01 billion rows** |
+| Cube | answered 49 times |
+| Maintenance | 1,651 ticks, reclaiming **11.66 GB** |
+| Resident memory | 2,017 MB at close |
+| Warehouse | 9 GB throughout, 90 live files throughout |
+
+### Why this run is not a repeat of the last one
+
+The 44-minute run of 2026-08-28 exercised a cube. This one is the first to exercise a cube
+**served from storage**, because until M7 closed, `materialised` was dead code: the refresher
+built cuboids on a timer and every query still went to the fact table. The cuboid read path,
+the completeness columns and the scope match all ran here for the first time under load.
+
+Two numbers are worth putting side by side, because the expectation would be the opposite:
+
+| | 2026-08-28 | 2026-08-29 |
+|---|---|---|
+| Resident memory | 2.2 GB | **2.0 GB** |
+| Judged minutes | 44 | 59 |
+| Rows read | 2.41 bn | 3.01 bn |
+
+**More work, longer run, less memory.** The cuboid path replaces fact-table hydration rather
+than adding to it, so serving from a cuboid reads less than the query it replaces. That was the
+argument for materialising in the first place, and this is the first measurement of it rather
+than the first assertion.
+
+`warehouse_bytes` steady at 9 GB across 1,960 publications is the other number to keep:
+reclamation is keeping pace exactly, and the 11.66 GB reclaimed is more than the warehouse
+holds. Superseded cuboids are part of what it collected --- a path that did not exist a day ago.
+
 ## 8. What has not been done
 
-**The multi-day run at the ten-gigabyte scale, with the reading workload.** That is `M6` exit
+**The multi-day run at the acceptance scale, with the reading workload.** That is `M6` exit
 criterion 4. The four-hour run of 2026-08-26 exercised the append, log-replay and compaction
-paths at that scale and passed; it did not read the data, so it discharges the criterion only
-for the paths it touched. Nothing here claims otherwise.
+paths at ten gigabytes and passed; it did not read the data, so it discharges the criterion
+only for the paths it touched. Nothing here claims otherwise.
+
+**The scale itself doubled on 2026-08-29**, by owner decision: `SANKHYA_SOAK_GB` now defaults
+to **twenty**, not ten. The reason is that the figure means something different than it did
+when it was chosen. Ten gigabytes was picked when the soak did not read its data at all --- it
+was a number about how much got written. Now that a run reads 3.01 billion rows, the dataset
+is a working set, and the property that matters is that it does not fit in page cache. A
+bigger one is a harder test of the same machinery.
+
+The cost is linear and lands almost entirely in the fill: roughly forty-five seconds per
+gigabyte, so the preamble moves from about seven minutes to about fifteen. The judged window
+is unaffected, because it is counted from when measurement starts rather than from launch.
 
 What exists is the harness, driven against the real server on every build, proven to detect
 each shape of failure it claims to detect. **The scheduled run is a change of duration and
