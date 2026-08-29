@@ -317,9 +317,17 @@ seventeen hundred tests, for one reason: every test had a single writer. A test 
 observe a race is not evidence about races, and adding the fix before the test would produce a
 suite that agrees with the fix rather than one that would have caught the bug.
 
-**`hard_link` constrains the filesystem.** ext4, xfs, APFS and NTFS support it; FAT does not, and
-some network mounts are unreliable. Whether that constraint is acceptable, or whether a fallback
-is needed, is a deployment question that must be answered rather than discovered.
+**`hard_link` constrains the filesystem, and the constraint is accepted.** ext4, xfs, APFS and
+NTFS support it; FAT does not, and some network mounts are unreliable. Owner decision,
+2026-08-29: **ruling out FAT is fine.**
+
+Recording it as a decision rather than an implementation detail, because it is now load-bearing
+in two directions. A warehouse on a filesystem without hard links cannot claim a commit version
+safely, and the failure would not be a refusal --- `link` would return `EPERM` or `ENOSYS` and
+the commit would report an I/O error rather than a lost update, which is at least loud. And
+§12.2 builds on the same primitive: the object-store spelling is a conditional put, and a store
+that does not offer one cannot host a warehouse. `sankhya-objectstore`'s conformance probe
+exists to find that out at configuration time rather than during a race.
 
 ## What this does not decide
 
