@@ -18,13 +18,12 @@ use sankhya_cube_sql::catalog::{CubeCatalog, Published};
 use sankhya_cube_sql::register;
 use std::sync::Arc;
 
-const AMOUNT: Measure = Measure {
-    name: "amount",
-    rules: &[
-        Along { dimension: "region", rule: Rule::Sum },
-        Along { dimension: "period", rule: Rule::Sum },
-    ],
-};
+fn amount() -> Measure {
+    Measure::new("amount", vec![
+        Along::new("region", Rule::Sum),
+        Along::new("period", Rule::Sum),
+    ])
+}
 
 /// Declares that it composes along nothing over time --- a ratio, which is not derivable
 /// from its own values at a finer grain.
@@ -32,13 +31,12 @@ const AMOUNT: Measure = Measure {
 /// It has to *declare* that. A measure saying nothing about `period` cannot reach SQL at
 /// all: §11.1 refuses the definition, so the cube never exists. That is the refusal working
 /// one layer earlier than this test first assumed.
-const RATIO: Measure = Measure {
-    name: "ratio",
-    rules: &[
-        Along { dimension: "region", rule: Rule::Sum },
-        Along { dimension: "period", rule: Rule::None },
-    ],
-};
+fn ratio() -> Measure {
+    Measure::new("ratio", vec![
+        Along::new("region", Rule::Sum),
+        Along::new("period", Rule::None),
+    ])
+}
 
 fn address(members: &[&str]) -> Vec<String> {
     members.iter().map(|m| (*m).to_string()).collect()
@@ -53,7 +51,7 @@ fn session() -> (SessionContext, Arc<CubeCatalog>) {
             Dimension::new("region", "dim_region", "region_key", vec![Level::new("id", "id")]),
             Dimension::new("period", "dim_period", "period_key", vec![Level::new("id", "id")]),
         ],
-        vec![AMOUNT, RATIO],
+        vec![amount(), ratio()],
     );
     let cube = Arc::new(definition.validate().expect("well-formed"));
 
@@ -70,12 +68,43 @@ fn session() -> (SessionContext, Arc<CubeCatalog>) {
     catalog.publish(
         "figures",
         Published {
+            // A fixture builds its own cells, which is the opposite of reading a cuboid.
+            from_cuboid: false,
             cube: Arc::clone(&cube),
             cells: Arc::new(cells),
+            // Stated, because cells hold one measure's values and the query names a
+            // measure: a mismatch is a wrong number rather than an error.
+            measure: "amount".to_string(),
             snapshot: 4_242,
             // Stated, not defaulted: `Published` has no default completeness, so a fixture
             // cannot quietly claim a cube saw all of its input.
             completeness: Completeness::complete(3),
+        },
+    );
+
+    // A second entry, hydrated for `ratio`.
+    //
+    // Cells hold one measure's values, so a query naming a measure the cells are not for is
+    // refused before anything is computed. That refusal is correct and it is not what the
+    // composition test is about --- so the non-composing measure gets cells of its own, and
+    // the planner's refusal is the one under test rather than the hydration mismatch.
+    let mut ratio_cells = Cells::over(vec!["region".to_string(), "period".to_string()]);
+    for (region, period, value) in [
+        ("north", "jan", 0.4_f64),
+        ("south", "jan", 0.6),
+    ] {
+        ratio_cells.add(address(&[region, period]), value).expect("well-formed");
+    }
+    catalog.publish(
+        "figures_ratio",
+        Published {
+            // A fixture builds its own cells, which is the opposite of reading a cuboid.
+            from_cuboid: false,
+            cube: Arc::clone(&cube),
+            cells: Arc::new(ratio_cells),
+            measure: "ratio".to_string(),
+            snapshot: 4_242,
+            completeness: Completeness::complete(2),
         },
     );
 
@@ -88,7 +117,7 @@ fn session() -> (SessionContext, Arc<CubeCatalog>) {
     catalog.register_overlay(Arc::new(overlay));
 
     let context = SessionContext::new();
-    register(&context, Arc::clone(&catalog));
+    register(&context, Arc::clone(&catalog), Arc::new(sankhya_cube::querylog::QueryLog::new()));
     (context, catalog)
 }
 
@@ -252,12 +281,92 @@ async fn a_restriction_on_a_dimension_the_cube_lacks_is_refused() {
 }
 
 #[tokio::test]
+async fn two_measures_of_one_cube_are_both_available_at_once() {
+    // The reason the catalogue is keyed by *(cube, measure)* rather than by cube. Keyed by
+    // cube alone, publishing a second measure replaced the first, so a cube could only ever
+    // answer for whichever one was hydrated last --- and a query naming the other got that
+    // one's values with its own rule applied.
+    let (context, catalog) = session();
+    assert_eq!(
+        catalog.published_measures("figures"),
+        vec!["amount".to_string()],
+        "the fixture publishes one measure of `figures`"
+    );
+
+    // `figures_ratio` in the fixture is the same cube under a second name, which is what
+    // keying by cube alone forced. Publishing `ratio` under `figures` itself must now leave
+    // `amount` where it was.
+    let published = catalog.resolve("figures", "amount").expect("amount is published");
+    catalog.publish(
+        "figures",
+        Published {
+            // A fixture builds its own cells, which is the opposite of reading a cuboid.
+            from_cuboid: false,
+            cube: Arc::clone(&published.cube),
+            cells: Arc::clone(&published.cells),
+            measure: "ratio".to_string(),
+            snapshot: published.snapshot,
+            completeness: published.completeness,
+        },
+    );
+
+    let mut both = catalog.published_measures("figures");
+    both.sort();
+    assert_eq!(
+        both,
+        vec!["amount".to_string(), "ratio".to_string()],
+        "publishing a second measure must not evict the first"
+    );
+    assert!(
+        catalog.resolve("figures", "amount").is_ok(),
+        "the first measure still resolves after the second is published"
+    );
+
+    // And the surface still answers for the original.
+    let rows = context
+        .sql("SELECT * FROM cube_rollup('figures', 'amount', 'by=region')")
+        .await
+        .expect("planning")
+        .collect()
+        .await
+        .expect("executing");
+    assert!(!rows.is_empty());
+}
+
+#[tokio::test]
+async fn asking_for_a_measure_the_cells_do_not_hold_is_refused() {
+    // `Cells` is a map from address to contributions and carries no measure of its own, so a
+    // published set of cells is the values of exactly *one* measure --- whichever hydration
+    // was given. The measure a query names is resolved separately, from the definition.
+    //
+    // Nothing tied those together. Hydrate for `amount`, ask for `closing_balance`, and the
+    // rule resolved from the definition is applied to amount's values: a number of the right
+    // shape and the right magnitude, computed from the wrong column, with no complaint
+    // anywhere. It was unreachable only because nothing served cubes yet.
+    let (context, _) = session();
+    let refused = context
+        .sql("SELECT * FROM cube_rollup('figures', 'ratio', 'by=region')")
+        .await
+        .expect_err("answered for a measure the cells are not for");
+    let message = refused.to_string();
+    assert!(
+        message.contains("measure 'ratio'") && message.contains("it has amount"),
+        "the refusal names the measure asked for and the ones that exist, because which is \
+         wrong is the whole point: {message}"
+    );
+    assert!(
+        message.contains("wrong column"),
+        "and says why it refuses rather than answering: {message}"
+    );
+}
+
+#[tokio::test]
 async fn rolling_up_a_measure_that_does_not_compose_is_refused_at_planning_time() {
     // M7's exit criterion 2, at the surface a caller uses: rejected while planning, not
     // computed and then explained afterwards.
     let (context, _) = session();
     let refused = context
-        .sql("SELECT * FROM cube_rollup('figures', 'ratio', 'by=region')")
+        .sql("SELECT * FROM cube_rollup('figures_ratio', 'ratio', 'by=region')")
         .await
         .expect_err("rolled a ratio across time");
     assert!(

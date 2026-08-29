@@ -4,7 +4,7 @@ description  = "The declared cube definition: validated once, versioned by its o
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
-license.workspace      = true
+license-file.workspace      = true
 repository.workspace   = true
 
 [package.metadata.sankhya]
@@ -20,6 +20,10 @@ sankhya-graph-algo = { path = "../sankhya-graph-algo" }
 sankhya-math      = { path = "../sankhya-math" }
 arrow-array       = { workspace = true }
 arrow-schema      = { workspace = true }
+serde             = { workspace = true }
+serde_json        = { workspace = true }
+parking_lot       = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 proptest = { workspace = true }

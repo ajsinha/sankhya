@@ -138,7 +138,7 @@ pub fn inspect(definition: &Definition) -> Vec<Rejection> {
     }
 
     duplicates("dimension", definition.dimensions.iter().map(|d| d.name.as_str()), &mut out);
-    duplicates("measure", definition.measures.iter().map(|m| m.name), &mut out);
+    duplicates("measure", definition.measures.iter().map(|m| m.name.as_str()), &mut out);
 
     let names: BTreeSet<&str> =
         definition.dimensions.iter().map(|d| d.name.as_str()).collect();
@@ -188,8 +188,8 @@ pub fn inspect(definition: &Definition) -> Vec<Rejection> {
                 dimensions: undeclared.dimensions,
             });
         }
-        for rule in measure.rules {
-            if !names.contains(rule.dimension) {
+        for rule in &measure.rules {
+            if !names.contains(rule.dimension.as_str()) {
                 out.push(Rejection::RuleForUnknownDimension {
                     measure: measure.name.to_string(),
                     dimension: rule.dimension.to_string(),

@@ -25,9 +25,9 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M3** Query engine and storage performance | 28–34 ew | **Complete**, all six exit criteria met — closed 2026-08-26. One criterion was corrected first: it required cancellation inside user code, which does not exist until M4, and that clause moved to M4. Parts of the work breakdown remain unbuilt and are listed under *M3, closed* below |
 | **M4** Graph engine and the extension mechanism | 26–32 ew | **Complete.** Every exit criterion met; see below |
 | **M5** Tenancy, security and API surfaces | 22–28 ew | **Closed.** Four of five exit criteria met; the fifth needs a second server version to exist. Two of four API surfaces built — the wire protocol and Flight SQL. The control plane and its gateway are **deferred to M6**, because what they expose is built there |
-| **M6** Operability, packaging and hardening | — | **In progress. Five of seven exit criteria met.** §10.1's diagnostic, §10.2's catalogues, §10.3's backup and restore drill, §10.4's packaging checks, §10.5's timed journey and §10.6's version axes are built; criterion 3 as far as a single release allows. **Criterion 4 is not met** — §10.7's harness is built and proven, and the four-hour 10 GB run of 2026-08-26 passed for the paths it exercised. It did not read the data: the loop counted a log replay as a query, and the 10 GB was written once and scanned by nothing. A reading workload now exists and the run that uses it has not been done. See [SOAK.md §7](SOAK.md). **Criterion 7 is not met** — §10.8's size decision and route table are built and tested; the gRPC transport and every write path are not |
-| **M7** Multidimensional analysis — cubes, slice/dice, roll-up, consolidation | — | **In progress, not complete.** The algebra, navigation, materialisation and SQL surface are built across three crates, and all eight exit criteria have passing tests. **The hydration path does not exist**: nothing builds a cube from a published table, so the exit criteria pass on cells their own fixtures supply. Corrected 2026-08-27 after claiming completion. See below, and [ADR-0007](adr/0007-the-cube-model.md) |
-| **M8**–**M9** Scale-out, then tiering | — | Not started. Renumbered from M7–M8 when M7 was inserted |
+| **M6** Operability, packaging and hardening | 2026-08-28 | **Complete.** Six of seven exit criteria met. Criterion 4 accepted on a forty-five-minute judged run by owner decision — `PASS` over 44 minutes with all seven measures steady, on the first soak to exercise a cube. **Criterion 7 carried into M8**: §10.8's size decision and route table are built and tested; the gRPC transport and every write path are not. See [SOAK.md](SOAK.md) |
+| **M7** Multidimensional analysis — cubes, slice/dice, roll-up, consolidation | 2026-08-28 | **Complete.** All eight exit criteria pass against a cube hydrated from a published table. Declared complete once before, on 2026-08-27, and retracted the same day: the hydration path did not exist and every criterion passed on cells its own fixture supplied. Both that gap and the write-only materialisation found on 2026-08-28 are closed. See below, and [ADR-0007](adr/0007-the-cube-model.md) |
+| **M8**–**M9** Scale-out, then tiering | — | Next. Renumbered from M7–M8 when M7 was inserted. Carries soak criterion 7 — the gRPC transport and write paths — and the scheduled multi-day run |
 
 ---
 
@@ -107,7 +107,7 @@ crash-safety reasoning — sequence-derived names, commit-strictly-after-write, 
 version conflict — and a partitioning change touches all three.
 
 
-## M7, in progress
+## M7, complete
 
 Added 2026-08-27 by owner directive and placed before scale-out: cubes are a stated
 differentiator and multi-node deployment is table stakes.
@@ -163,13 +163,366 @@ claim a cube saw all of its input.
 
 ### What is still not there
 
- MDX, deliberately — see ADR-0007. Cube definitions are not persisted or loaded
-from a catalogue; a cube is registered against a session by the embedding application. The
-lattice selection is implemented and is not driven by a recorded query log, so automatic
-materialisation is available and nothing is currently choosing what to materialise.
+MDX, deliberately — see ADR-0007.
+
+The query log now exists (`sankhya-cube/src/querylog.rs`), so §11.6's greedy selection runs
+against what people have actually asked for rather than against the whole lattice. A bounded
+ring per cube, where the repetition *is* the weighting: a shape asked ten times appears ten
+times and counts ten times, recency falls out of old entries being overwritten, and a cube
+nobody has queried gets its base cuboid and nothing else. It records a shape — which cube,
+which dimensions were grouped by — and has nowhere to put a member, a predicate or a
+principal, which is worth asserting rather than assuming of a query log.
+
+### Materialisation was write-only, and four things were wrong at once
+
+Found 2026-08-28 by asking the compiler which methods the server never calls. The answer was
+`materialised` and `cuboid_root` — **so the refresher built cuboids on a timer and nothing
+ever read one.** The storage was spent, the target lag was checked, the sweep collected the
+old ones, and every query went to the fact table regardless. The seventh instance of a
+capability that is built, tested and unreachable, and the most expensive, because this one was
+also writing files.
+
+Four defects, and each hid the next:
+
+**The test that should have caught it was named for the behaviour and did not test it.**
+`a_materialised_cuboid_answers_without_reading_the_fact_table` said in its own comment
+*"Proved by taking the fact table away. If the answer still comes back, it did not come from
+there"* — and it never took the fact table away and never re-queried. It wrote a cuboid by
+hand and asserted the file existed. It now does what it says, and the first rewrite of it
+still failed to: a second connection to the same process is served from the in-memory cache,
+so the fact table can be deleted and the answer still arrives with no cuboid involved. It
+takes a **restart**, which is the thing a cuboid is actually for.
+
+**A cuboid could not say how much of the fact table reached it.** `Completeness` was not
+stored, so a cuboid read back could only ever be served as complete — the exact trap
+`sankhya_cube::complete` documents. It is now two columns in the stored batch. Not Arrow
+schema metadata: a probe wrote a batch with metadata through the product's writer, read it
+back through DataFusion and got `{}`. Storing it where a reader cannot see it would have been
+worse than not storing it, because the absence would have looked like a value.
+
+**The unrestricted cuboid could serve nobody.** The refresher writes scope 0, and
+`Guard::scope_digest` hashes the tenant and the table, so no real caller's digest is ever 0
+and the lookup could only miss. The rule from ADR-0008 is now stated as what it means — an
+unrestricted cuboid may serve a caller whose guard **withholds nothing** — and asked of the
+guard rather than of a digest comparison that cannot succeed.
+
+**The provenance column reported its own input.** `materialised` was filled from the
+`materialise` argument the caller passed, so the column answering *"why was this fast?"*
+answered with whatever the query had typed. It agreed with reality by accident for the whole
+of M7, because nothing served a cuboid and the honest answer was `false` for every query ever
+run. It now reports `Published::from_cuboid`.
+
+### A journey test that never ran
+
+Found by the same question. `crates/sankhya-server/tests/five_minutes.rs` — the seven-step
+first-user journey, and the file whose own header says *"this test runs on every build and
+proves the path works"* — had **no `#[test]` attribute on its function**. Nothing ran it. It
+passes in 0.05 s and always would have.
+
+Worth recording next to the cuboid finding because it is the same failure in a different
+place: a claim about verification that nothing was checking. The file even contains the line
+*"a budget that can never be reached is documentation with a `#[test]` attribute on it"*,
+which it managed to be the inverse of.
+
+### Tutorials, and why they are executed
+
+`docs/tutorials/` was added: four hands-on documents covering a first cube, making one fast,
+completeness under policy, and every refusal with what to do instead.
+
+Their SQL is executed by the same test as the guide's, and a second test asserts that every
+file in `docs/tutorials/` is in that list — so a tutorial cannot be added and quietly left
+unverified. A tutorial is the document a reader trusts most, because they are following it
+step by step with no independent way to tell a stale instruction from a current one, so an
+untested one rots in the worst place available.
+
+The first draft proved the point immediately: it used `cube_names()`, which does not exist,
+and `by=region, period`, which parses `period` as a separate option because the options string
+is itself comma-separated. Both were caught by the test on the first run.
+
+### §11.6's three levels of control, wired
+
+| Level | Who sets it | How |
+|---|---|---|
+| Definition | whoever models the cube | `pinning(["region"])`, persisted in the catalogue |
+| Configuration | the operator | `cubes.budget_rows`, read at startup |
+| Session | the caller | `materialise=false` or `materialise=pinned` on the query |
+
+The session level only ever narrows. There is no spelling that widens anything, because a
+caller who could raise the budget would be granting themselves an operator's storage — a
+resource exhaustion with a polite interface.
+
+`materialise=false` also bypasses the in-memory cache when what is cached came from a cuboid.
+Without that the reproducibility check compares a cuboid against itself and agrees, which is
+the one way it can fail to do its job.
+
+Two smaller things fell out. `Arguments::boolean` became dead once the provenance column
+stopped reading it, and was removed rather than left as a helper nothing calls. And
+`materialise`'s *value* is now validated: `args.rs` refuses an unknown option name, but a
+value it never reads is never checked, so `materialise=pinnd` would have passed the name check
+and silently taken its default — the failure unknown-option refusal exists to prevent,
+arriving through the value instead of the name.
+
+Four ADRs were written for what comes next, and each was prompted by a question worth
+recording: [ADR-0008](adr/0008-serving-cubes-under-policy.md) on serving under policy,
+[ADR-0009](adr/0009-the-cube-lifecycle.md) on the three lifetimes,
+[ADR-0010](adr/0010-external-aggregations.md) and
+[ADR-0011](adr/0011-sdaf-declared-dependencies.md) on external aggregations that declare what
+they need, and [ADR-0012](adr/0012-open-capabilities.md) on what a standing artefact must
+declare before the system will maintain it on somebody's behalf.
+
+### A cube that could only exist at compile time
+
+Cube definitions were *"registered against a session by the embedding application"*, so a
+cube lasted exactly as long as a process and a server could not serve one. That read like a
+missing storage layer. It was not.
+
+`Measure` held `name: &'static str` and `rules: &'static [Along]`. **A measure was a
+compile-time construct**, so a definition could name only measures a Rust source file had
+already spelled out, and no amount of persistence code could have loaded one — a definition
+read from disk has nowhere to put its own measure's name. The persistence gap was a symptom
+and the type was the cause.
+
+Both are owned now, which cost an allocation per declared measure, once, when a definition is
+built. `catalogue.rs` writes a definition to `<warehouse>/_cubes/<name>.json` and reads it
+back, under an underscore so table discovery and the orphan sweep already skip it — a cube
+definition is not data and must never be mistaken for a table.
+
+The stored form is its own type rather than `Serialize` on the model. `sankhya-cube-algo` has
+zero dependencies and serde would end that; and a stored definition is a *format*, so
+deriving it from an internal struct silently promises never to rename a field. Here a
+refactor breaks a compile instead of orphaning every cube on disk.
+
+**An unknown rule name is refused, never defaulted.** A `Last` that came back as `Sum` turns a
+closing balance into the sum of twelve month-end balances — right magnitude, right sign,
+entirely wrong — and defaulting is precisely the failure the additivity model exists to
+prevent. A catalogue file that will not parse is reported with its path rather than skipped,
+because a server that comes up healthy with a cube missing sends somebody to the wrong place.
+
+### The server knows its cubes, and cannot yet answer with them
+
+The catalogue existed and nothing read it — the same shape `sankhya-maintenance` was in that
+morning, and a capability nothing in production reaches is indistinguishable from one that
+was never built. The server now loads every definition at startup, **validates** it, and
+reports the count and any failure beside the tables that would not open. A malformed
+definition is a complaint, not an outage: one bad JSON file must not stop a server whose other
+cubes and every table are fine.
+
+Validating at startup rather than at first use is the point. A measure with no rule along a
+declared dimension is exactly what the additivity model exists to catch, and catching it when
+somebody runs a query means reporting a deployment error to a user who did nothing wrong, at
+whatever hour they happened to ask.
+
+### Cubes answer, under the policy the caller is subject to
+
+A cube is queryable. `cube_rollup` and `cube_slice` are registered into the session a
+statement runs in, and hydration reads the fact table **through that session** --- so the
+cells a cube is built from are filtered by the same `SecuredTable` that filters a plain
+`SELECT`.
+
+That is the whole authorization story, and the absence is the point: there is no
+cube-specific authorization code, so there is no second implementation of the rule to
+disagree with the first. Two principals with different entitlements get different totals, and
+the test asserting it is the one that would fail loudest if that ever stopped being true ---
+100 unrestricted against 30 for a principal filtered to one region.
+
+Hydration is cached across statements, keyed by *(cube, measure, definition version,
+snapshot, scope digest)*. The scope digest hashes what a guard **permits** --- tenant, table,
+action, row filter, column masks --- and deliberately excludes the subject, so a thousand
+analysts across six roles produce six entries rather than a thousand copies of six answers.
+Any difference in what is visible changes the digest; who is looking does not.
+
+`Guard::scope_digest` carries four mutations against it, including the one that is easy to
+forget: putting the subject *in* would be safe and useless, and a suite testing only
+separation would not notice.
+
+### A client can discover a cube instead of hardcoding it
+
+`cubes()`, `cube_dimensions(cube)` and `cube_measures(cube)` are ordinary table functions
+returning ordinary rows, so a UI, a notebook or an agent composing SQL discovers the model
+with the same `SELECT` it uses for everything else. No second protocol exists to keep in step
+with the first.
+
+Two columns are there because a client that lacked them would draw something wrong rather
+than fail. **`depth`** carries the level order — coarse to fine is a fact about the model, not
+about how rows arrived, and a client sorting the result without it draws a list where there is
+a hierarchy. **`composes`** says whether a measure can be rolled up at all — a UI offering
+"roll up by time" on a ratio offers a button that cannot work, and finding that out at query
+time is worse than not offering it.
+
+Describing reads no data. A picker that cost a hydration per keystroke is a picker nobody
+leaves switched on, so hydration stays gated on a statement naming a navigation function while
+description is registered always.
+
+### Cuboids on disk, refreshed without a caller, and collected
+
+The materialised tier of [ADR-0008](adr/0008-serving-cubes-under-policy.md) and the Maintained
+lifetime of [ADR-0009](adr/0009-the-cube-lifecycle.md) are built.
+
+A cuboid is a published table keyed by *(definition version, snapshot, **scope**, cuboid)*.
+The scope is the addition, and here it is stronger than a cache key: **two scopes are two
+tables**, so a bug in the lookup cannot serve one principal's rows to another, because the
+rows are not in the file being read.
+
+Cells are stored as the components of their Shewchuk expansion and rounded once when read.
+Exit criterion 3a asks for bit-identical results with materialisation on and off, and a cube
+rolls up in stages where every stage rounds — fixing the *order* of summation makes one
+reduction reproducible and does nothing about **associativity**, which is exactly what a
+materialised cuboid is. A test round-tripping one cell passed under a mutation that stored the
+rounded total; the loss only appears when a stored partial is added to another, so the test
+that catches it rolls two of them up.
+
+`target_lag` is a **staleness target, not a schedule** — Snowflake's framing for dynamic
+tables. Staleness here is exact rather than estimated, because a cuboid records the version it
+was computed at, and a cuboid past its target is never served as though it were fresh: the
+answer falls back to live aggregation and says `materialised = false`.
+
+A maintained cube is built **with nobody logged in**. The refresher has no principal, so it
+builds the *unrestricted* cuboid — which may serve only an unrestricted caller. **Background
+refresh therefore helps dashboards and service accounts and does nothing for a restricted
+analyst**, whose cuboids are built by their own queries. Pre-building named scopes is a
+decision nobody has made and is not taken by implication.
+
+And superseded cuboids are collected. One at an old snapshot can never be selected, so it is
+garbage the moment the table advances — and it fell between the two mechanisms that existed:
+the orphan sweep finds unreferenced files *within* a table, and this is a whole table no log
+mentions. The same shape as the defect that filled a disk in the soak, reintroduced by adding
+cuboids and closed the same afternoon.
+
+### The cube path under sustained load
+
+`PASS` over 44 judged minutes with all seven measures steady, on the first soak to exercise a
+cube — 157 rounds, 2.41 billion rows scanned, the cube answered 39 times, maintenance
+reclaimed 11.42 GB. See [SOAK.md](SOAK.md) for the two defects the earlier runs found and why
+neither was visible to a unit test.
+
+Resident memory settles at **2.2 GB against a 779 MB baseline without cubes**. That difference
+is measured rather than assumed, and it is a plateau rather than a climb: the last reading
+*fell* by 128 MB, and a leak does not give memory back.
+
+The remaining cost is `Contributions` retaining every raw `f64` per cell — roughly 1.5 GB of
+plateau. It is real and it does not grow, which changes it from a correctness risk to an
+optimisation with a known price. Doing it means swapping `deterministic_sum` for `Exact`, which
+moves `Sum` in the last bit and lands directly on exit criterion 3's bit-identity tests — so it
+is worth doing deliberately rather than under the impression that something is leaking.
+
+**Answering from a materialised ancestor now happens.** It was the last piece of §11.6 that
+was designed and unreachable, and closing it mattered for a reason beyond completeness: exit
+criterion 3b — *a non-additive measure is never answered from a materialised ancestor* —
+was passing **vacuously**, because nothing answered from an ancestor at all.
+
+`plan` picks the narrowest cuboid that may legally answer, and a cuboid is a candidate only
+when the measure permits every roll-up between it and the query. The grain a statement needs is
+the union, across every cube call in it, of the dimensions grouped by and the dimensions a dice
+restricts — the second because `where=region:north` must find a `region` column to restrict,
+even though slicing drops that axis from the result.
+
+Two things fell out of it, and both were the same shape as the milestone's other findings.
+`materialised` was reading a cuboid at the **cube's** grain rather than the one its key names,
+which worked for exactly as long as the only cuboid ever read was the base one — whose grain
+*is* the cube's — and named a missing column the moment an ancestor was chosen. And the first
+test of the dice rule could not fail: every materialised cuboid in its fixture happened to
+contain `region`, so it could not tell the two behaviours apart, and a mutation dropping
+`where=` survived it. It now pins `[period]`, which puts a cuboid on disk that is cheap,
+current and unable to express the query.
+
+**What is still not there.** A cuboid is pre-built only for the unrestricted scope.
+
+The statement text is scanned for cube function names to decide what to hydrate, which is
+deliberately crude: a `SessionContext` is built per statement, `TableFunctionImpl::call` is
+synchronous while reading a table is not, and a false positive costs a cache lookup while a
+false negative costs a query that fails to resolve a cube it named. It is replaced when the
+surface grows a resolver of its own.
+
+<details>
+<summary>Superseded: why this was blocked before 2026-08-28</summary>
+
+**A cube was loaded but not queryable, and that was a design decision rather than an
+omission.** Hydration had nowhere correct to go:
+
+- `session_for` builds a context **per statement**, so hydrating there reads the whole fact
+  table on every query.
+- Hydrating once at startup and sharing the cells across principals would hand every caller
+  the same totals whatever policy says — the disclosure through arithmetic that `FR-QUERY-13`
+  and §11.5 exist to prevent, and the kind that leaves no trace in a result.
+
+The correct answer was a cache keyed by snapshot **and** the principal's visible scope ---
+which is what was built.
+
+</details>
+
+The other absent half — a definition as a row in a system table, so the store is the warehouse
+rather than a JSON file beside it — waits on the catalogue proper.
 
 
-## M6, in progress
+## The defect wiring maintenance into the server introduced, and fixed
+
+Two decisions, each correct alone, were not put together.
+
+A server resolves its table providers **once**, in `start()`: `resolve_with` reads the log,
+builds a file list, and the provider holds it. That was sound while a served warehouse did not
+move --- the server runs no ingest, and `Settings::read_as_of` says so.
+
+Then the server started **maintaining the warehouse in-process**. Compaction replaces files
+and retirement deletes the ones it replaced, so the warehouse moves whether or not anybody is
+writing to it. A provider fixed at boot names files that are gone, and the query fails with a
+missing-file error naming a path nobody asked about.
+
+**Retirement's grace period is not the protection here.** It protects a reader that listed
+shortly before a merge --- twenty-four ticks --- and cannot protect one that listed at startup
+and has been serving from that listing since. With shipping defaults a deployment would have
+begun failing queries roughly twelve minutes in: one grace period after the first merge.
+
+Reproduced before it was reasoned about, because reasoning about it is how a wrong answer gets
+written down confidently. `crates/sankhya-server/tests/maintenance_and_readers.rs` holds both
+halves: the provider from before retirement can no longer read, and a server re-resolving
+before it registers reads every row across its own maintenance.
+
+**And it fixed something else that had been true all along.** A running server never saw data
+committed after it started. That was defensible while the warehouse did not move; re-resolving
+a table whose log has moved makes new commits visible as a side effect worth having.
+
+---
+
+## M6, closed 2026-08-28
+
+Criterion 4 accepted on a forty-five-minute judged run by owner decision, with the gap from
+the multi-day pipeline it asks for written into `IMPLEMENTATION_PLAN.md` rather than argued
+away. Criterion 7 --- the gRPC transport and the write paths --- is carried into M8, not
+waived.
+
+### The soak, and what it took to make it say anything
+
+Three runs. The first exhausted the disk at t+2833s and wrote a **zero-byte report**
+explaining why: compaction replaced files and nothing retired them, because
+`sankhya-maintenance` was a library the server did not depend on and nothing in production
+ever called. The second died one sample short of `live_files`' first verdict. The third
+returned `PASS` with all seven measures steady --- 168 rounds, 2.58 billion rows scanned,
+resident memory ending at 779 MB, maintenance reclaiming 29.91 GB across 911 ticks.
+
+Both causes were fixed where they were, not worked around: maintenance runs on a thread the
+warehouse owns and the server starts at boot, and the warehouse's own size is a watched
+measure with a stated budget enforced *in the loop*, so a breach is reported while there is
+still room to write the report.
+
+### Two defects the passing run reported about itself
+
+**The fan-out alarm never de-duplicated.** It keyed a "report once" set on its own rendered
+message, and the message counts batches --- so every rendering was unique and a standing
+condition printed 168 times, which is exactly what the code's own comment forbids. It now
+keys on the shape of the strain: which table, the average rounded to a whole partition, and
+the widest batch. A *worsening* condition is a different condition and is still reported.
+
+**And what it was reporting was a workload nothing produces.** Every row was dated `id % 90`,
+in the fill and in the steady-state rounds alike, so every batch touched all ninety
+partitions for the whole run. That is a backfill --- which the fill genuinely is --- and it
+is not what arrival looks like afterwards. A source feeding a warehouse continuously produces
+rows dated *now*, touching one partition or two across a midnight.
+
+So the alarm was right about what it was shown, and what it was shown was a backfill labelled
+as arrival. The harness now models both, with the newest day advancing as the run goes on so
+the hot partition moves and compaction has to keep up with a partition being appended to
+rather than one that is finished. **The daily axis `FR-STORE-20` mandates is not the
+problem**; the harness's idea of arrival was.
 
 ### §10.8 — A gateway that refuses to become the bulk plane
 
@@ -1212,7 +1565,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 357 specific defects applied one at a time; all 357 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 408 specific defects applied one at a time; all 357 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -1437,6 +1790,7 @@ On a 24-core machine with NVMe storage.
 |---|---|
 | Filter pushdown, 5M rows / 523 MiB / 1-in-10,000 selectivity | **1.02× — neutral** |
 | The same measurement with a compressible payload | 0.74× — *slower*, an artefact of the fixture |
+| The same measurement, fixture written by the product's writer (2026-08-28) | 1.06×, 0.94×, 0.96× across runs — noise around neutral |
 
 **This corrected a claim rather than confirming one.** Earlier drafts of the
 requirements and architecture documents asserted that filter pushdown was worth roughly
@@ -1452,6 +1806,27 @@ numbers rather than obviously wrong ones.
 
 The companion claim about the Parquet page row-count limit has **not** been measured and
 should be read as unverified.
+
+**The fixture was writing its own Parquet, and that was the third thing wrong with it.**
+Found 2026-08-28 while auditing test code for reimplemented infrastructure. The benchmark
+configured its own `ArrowWriter`: it duplicated three of `WriterConfig`'s six decisions --- zstd,
+page statistics, the page row limit --- and silently dropped `max_row_group_row_count`, the
+statistics truncation length and the commit-LSN encoding. Pushdown is only as good as the page
+index and the page index is emitted by writer settings, so the measurement was of a file
+Sankhya would never produce, and a change to the product's layout could not have moved the
+number.
+
+Routed through `sankhya_table::write_parquet` the figure is unchanged in substance --- noise
+around neutral, which is what the TPC-H measurement in `session.rs` already concluded from
+better evidence --- so nothing downstream of it moves. What changed is that the number is now
+about the product. The test asserts only what the measurement supports: pushdown does not
+change the answer, and is not materially slower.
+
+The shape is also the reason, and the file's own comment had it backwards. `needle` is
+`id % 10_000` over sequential ids, so every 20,000-row page spans the column's whole range: the
+predicate eliminates 99.99% of *rows* and no *pages* at all, and decoding is per page. The
+comment called this "the ordinary shape of an analytical table". It is not, and the claim went
+unchallenged for as long as the fixture was also choosing its own encoding.
 
 ### Compaction
 
@@ -1706,9 +2081,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,637 tests, none of which needs a database
+cargo test --workspace           # 1,762 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 357 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 408 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

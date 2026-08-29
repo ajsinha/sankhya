@@ -15,13 +15,12 @@ use sankhya_cube::{Definition, Dimension, Level};
 use sankhya_cube_algo::measure::{Along, Measure, Rule};
 use std::sync::Arc;
 
-const AMOUNT: Measure = Measure {
-    name: "amount",
-    rules: &[
-        Along { dimension: "region", rule: Rule::Sum },
-        Along { dimension: "period", rule: Rule::Sum },
-    ],
-};
+fn amount() -> Measure {
+    Measure::new("amount", vec![
+        Along::new("region", Rule::Sum),
+        Along::new("period", Rule::Sum),
+    ])
+}
 
 fn cube() -> sankhya_cube::model::Cube {
     Definition::new(
@@ -31,7 +30,7 @@ fn cube() -> sankhya_cube::model::Cube {
             Dimension::new("region", "dim_region", "region_key", vec![Level::new("id", "id")]),
             Dimension::new("period", "dim_period", "period_key", vec![Level::new("id", "id")]),
         ],
-        vec![AMOUNT],
+        vec![amount()],
     )
     .validate()
     .expect("well-formed")
@@ -66,7 +65,7 @@ fn a_batch_of_facts_becomes_cells() {
     let mut cells = empty_for(&cube);
     let absorbed = absorb(
         &cube,
-        &AMOUNT,
+        &amount(),
         &batch(
             vec![Some("north"), Some("north"), Some("south")],
             vec![Some("jan"), Some("feb"), Some("jan")],
@@ -107,7 +106,7 @@ fn a_row_with_a_null_key_is_counted_not_dropped() {
     let mut cells = empty_for(&cube);
     let absorbed = absorb(
         &cube,
-        &AMOUNT,
+        &amount(),
         &batch(
             vec![Some("north"), None, Some("south")],
             vec![Some("jan"), Some("jan"), Some("jan")],
@@ -131,7 +130,7 @@ fn a_null_member_is_not_a_member_named_empty_string() {
     let mut cells = empty_for(&cube);
     absorb(
         &cube,
-        &AMOUNT,
+        &amount(),
         &batch(vec![None], vec![Some("jan")], vec![Some(9.0)]),
         &mut cells,
     )
@@ -148,7 +147,7 @@ fn a_row_with_one_null_key_of_several_is_placed_nowhere() {
     let mut cells = empty_for(&cube);
     absorb(
         &cube,
-        &AMOUNT,
+        &amount(),
         &batch(vec![Some("north")], vec![None], vec![Some(9.0)]),
         &mut cells,
     )
@@ -164,7 +163,7 @@ fn a_null_measure_is_unplaced_rather_than_zero() {
     let mut cells = empty_for(&cube);
     let absorbed = absorb(
         &cube,
-        &AMOUNT,
+        &amount(),
         &batch(vec![Some("north")], vec![Some("jan")], vec![None]),
         &mut cells,
     )
@@ -194,7 +193,7 @@ fn a_missing_dimension_column_is_refused_not_skipped() {
     )
     .expect("well-formed");
 
-    let refused = absorb(&cube, &AMOUNT, &missing, &mut cells).expect_err("hydrated anyway");
+    let refused = absorb(&cube, &amount(), &missing, &mut cells).expect_err("hydrated anyway");
     let NotHydratable::MissingColumn { dimension, column, found } = &refused else {
         panic!("wrong refusal: {refused:?}");
     };
@@ -220,7 +219,7 @@ fn a_missing_measure_column_is_refused() {
     )
     .expect("well-formed");
     assert!(matches!(
-        absorb(&cube, &AMOUNT, &missing, &mut cells),
+        absorb(&cube, &amount(), &missing, &mut cells),
         Err(NotHydratable::MissingMeasure { .. })
     ));
 }
@@ -244,7 +243,7 @@ fn a_non_numeric_measure_column_is_refused() {
     )
     .expect("well-formed");
     assert!(matches!(
-        absorb(&cube, &AMOUNT, &wrong, &mut cells),
+        absorb(&cube, &amount(), &wrong, &mut cells),
         Err(NotHydratable::UnreadableMeasure { .. })
     ));
 }
@@ -270,7 +269,7 @@ fn integer_keys_and_integer_measures_are_read() {
     )
     .expect("well-formed");
 
-    let absorbed = absorb(&cube, &AMOUNT, &numeric, &mut cells).expect("hydratable");
+    let absorbed = absorb(&cube, &amount(), &numeric, &mut cells).expect("hydratable");
     assert_eq!(absorbed.placed, 1);
     assert_eq!(cells.get(&["7".to_string(), "1".to_string()], Rule::Sum), Some(5.0));
 }
@@ -283,14 +282,14 @@ fn several_batches_accumulate_and_their_completeness_combines() {
     let mut cells = empty_for(&cube);
     let first = absorb(
         &cube,
-        &AMOUNT,
+        &amount(),
         &batch(vec![Some("north")], vec![Some("jan")], vec![Some(1.0)]),
         &mut cells,
     )
     .expect("hydratable");
     let second = absorb(
         &cube,
-        &AMOUNT,
+        &amount(),
         &batch(
             vec![Some("north"), None],
             vec![Some("jan"), Some("jan")],

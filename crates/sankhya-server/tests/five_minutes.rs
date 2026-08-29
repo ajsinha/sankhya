@@ -107,6 +107,7 @@ fn timed<T>(what: &'static str, budget: Duration, step: impl FnOnce() -> T) -> (
     )
 }
 
+#[test]
 fn a_first_time_user_reaches_a_successful_query() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let warehouse = dir.path().join("warehouse");

@@ -40,7 +40,7 @@ use sankhya_diagnostic::soak::report::supported_horizon;
 use sankhya_diagnostic::soak::sample::{file_bytes, open_files, resident_bytes, Samples};
 use sankhya_diagnostic::soak::Report;
 use sankhya_maintenance::{spawn_maintenance, MaintenancePolicy};
-use sankhya_publish::{Accumulator, FanOut, Publication};
+use sankhya_publish::{Accumulator, FanOut, Publication, Strain};
 use sankhya_table::{scan_parquet, Scanned};
 use sankhya_table_delta::live_files;
 use sankhya_types::Lsn;
@@ -172,6 +172,27 @@ counts are sampled every 15s and judged every 120s, so a run killed at hour nine
 hour eight's verdict behind.
 ";
 
+/// What makes one fan-out alarm the same condition as another.
+///
+/// # Why this is not the message
+///
+/// It was the message, and the message reads "...across {batches} batches". That count rises
+/// every round, so every rendering was a new string, so the set that exists to report a
+/// standing condition **once** reported it every round --- 168 times in a forty-five-minute
+/// run, which is exactly what its own comment says not to do.
+///
+/// The condition is the shape of the strain, not the tally of how long it has been observed:
+/// which table, how wide the average batch is, and the widest seen. Rounding the average to
+/// a whole partition is deliberate --- an alarm that re-fires because a mean moved by a
+/// hundredth is the same defect in slower motion.
+///
+/// A *worsening* condition is a different condition and is reported again, which is why the
+/// widest batch is part of the key rather than only the table.
+fn fan_out_condition(table: usize, strain: &Strain) -> String {
+    let average = strain.average_fan_out().unwrap_or(0.0);
+    format!("{table}:{average:.0}:{}", strain.widest_batch)
+}
+
 /// Run a soak.
 ///
 /// **A test, not a binary.** A soak is a test of the product, so it must not add
@@ -255,6 +276,21 @@ fn soak() {
         filling.elapsed().as_secs_f64()
     );
 
+    // --- the cube path ---------------------------------------------------
+    //
+    // Declared over the first table, so the run exercises what M7 built rather than
+    // reporting on M6's surface and calling it M7. A soak that never hydrates a cube says
+    // nothing about whether cells leak, whether cuboids accumulate, or whether hydrating
+    // under sustained write load competes with compaction --- and those are exactly the
+    // questions a soak exists to answer.
+    //
+    // Declared through the catalogue, hydrated through `publish_from_fact_table`, queried
+    // through the registered table functions. Every one is the product's own API: a soak is
+    // a client, and a client that reimplements the thing it is testing tests its own copy.
+    if let Some(first) = roots.first() {
+        declare_soak_cube(&at, first);
+    }
+
     // --- maintenance -----------------------------------------------------
     //
     // Started here and then left alone. The warehouse compacts and retires on its own
@@ -284,11 +320,21 @@ fn soak() {
     let mut refused = 0_u64;
     let mut scanned = Scanned::default();
     let mut unread = 0_u64;
+    // How many cube navigations answered.
+    let mut cube_rounds = 0_u64;
+    // One runtime for the whole run. Built per navigation, it created and dropped
+    // thread-local state forty times over forty-five minutes, and the allocator kept the
+    // high-water mark --- which reads, from outside, exactly like a leak in the product.
+    let cube_runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime for the cube path");
     // One accumulator per table, living for the whole run: deferral only works if what was
     // deferred is still there next round.
     let publications: Vec<Publication> = roots.iter().map(|root| publication(root)).collect();
     // Reported once each, not once a round: a standing condition printed every fifteen
-    // seconds is a condition nobody reads.
+    // seconds is a condition nobody reads. Keyed by [`fan_out_condition`], because the
+    // rendered message carries a running batch count and so is never the same twice.
     let mut fan_out_reported: std::collections::BTreeSet<String> =
         std::collections::BTreeSet::new();
     let mut accumulators: Vec<Accumulator<'_>> = publications
@@ -345,13 +391,26 @@ fn soak() {
         }
         scanned = scanned.and(read);
 
+        // Hydrate and navigate the cube, on the same rotation as the scan.
+        //
+        // Its cost lands in measures that already exist: cells are held in this process, so
+        // a cube-side leak shows in `resident_bytes`; cuboids are written under the
+        // warehouse, so their population shows in `warehouse_bytes`. No new measure is
+        // needed, and adding one nothing distinguishes would be a measure to keep supplied
+        // for nothing.
+        if round % 4 == 0 {
+            if let Some(first) = roots.first() {
+                cube_rounds += u64::from(navigate_the_cube(&cube_runtime, first));
+            }
+        }
+
         // The fan-out alarm, which ARCHITECTURE §6.4.2 calls the important one: "the guards
         // buy time; the alarm gets the design fixed. Silently absorbing it would be the
         // failure." A soak that runs the guards and never reports the strain is doing the
         // absorbing.
-        for accumulator in &accumulators {
+        for (table, accumulator) in accumulators.iter().enumerate() {
             if let Some(why) = accumulator.strain().explain(&FanOut::default()) {
-                if fan_out_reported.insert(why.clone()) {
+                if fan_out_reported.insert(fan_out_condition(table, accumulator.strain())) {
                     println!("{}  FAN-OUT  {why}", stamp());
                 }
             }
@@ -442,7 +501,21 @@ fn soak() {
     }
 
     let live = worst_table(&roots);
-println!(
+    // Reported, and asserted. A soak that declared a cube and never navigated it says
+    // nothing about the cube path --- which is the failure of reporting on one milestone's
+    // surface while calling it another's, and it would look exactly like a clean run.
+    println!("{}  the cube answered {cube_rounds} time(s)", stamp());
+    // Asserted rather than merely printed, because a zero here is invisible in a report
+    // full of healthy measures.
+    //
+    // No mutation entry claims coverage of it: this test is `#[ignore]`d, so the suite the
+    // audit runs never reaches the assertion, and an entry saying otherwise would be a claim
+    // nothing checks. The guard fires when somebody runs the soak, which is when it matters.
+    assert!(
+        cube_rounds > 0,
+        "the cube was declared and never navigated; this run judges nothing about it"
+    );
+    println!(
         "{}  maintenance ran {} tick(s) and reclaimed {:.2} GB",
         stamp(),
         maintenance.ticks(),
@@ -622,8 +695,172 @@ fn publication(root: &Path) -> Publication {
     Publication::external(root, "soak").dated_by("event_date")
 }
 
+/// How the rows in a batch are dated.
+///
+/// # Why one harness needs both
+///
+/// The soak used the same shape for the fill and for the steady-state rounds: every row's
+/// date was `id % 90`, so **every** batch touched all ninety partitions, for the whole run.
+/// That is a bulk backfill, and it is a real workload --- it is what the fill is. It is not
+/// what arrival looks like afterwards.
+///
+/// A source feeding a warehouse continuously produces rows dated *now*. A batch of those
+/// touches one partition, or two across a midnight. Modelling arrival as a uniform spread
+/// over ninety days made the fan-out alarm fire for all 168 rounds of a forty-five-minute
+/// run --- correctly, given what it was shown, and about a workload no source produces.
+///
+/// The alarm's advice is "the partition scheme is the thing to change". Shown a real arrival
+/// pattern it would say nothing, and the daily axis `FR-STORE-20` mandates would be exactly
+/// right. So the harness models both and the alarm becomes informative rather than constant.
+#[derive(Clone, Copy)]
+enum Dating {
+    /// Spread uniformly across the whole range: a backfill, and what the fill genuinely is.
+    Backfill,
+    /// Concentrated on the newest day, which is what a live source produces.
+    ///
+    /// Not *only* the newest: a small tail lands on the day before, because a real source
+    /// has rows in flight across midnight and a harness that never produces one would not
+    /// exercise the two-partition commit at all.
+    Arriving,
+}
+
+impl Dating {
+    /// The day offset within the range for one row.
+    fn day_for(self, row: i64, newest: i64) -> i32 {
+        match self {
+            Self::Backfill => i32::try_from(row.rem_euclid(DAYS)).unwrap_or(0),
+            // One row in thirty-two lands on the previous day.
+            Self::Arriving => {
+                let day = if row.rem_euclid(32) == 0 {
+                    newest.saturating_sub(1)
+                } else {
+                    newest
+                };
+                i32::try_from(day.rem_euclid(DAYS)).unwrap_or(0)
+            }
+        }
+    }
+}
+
+/// Declare a cube over the soak's own table.
+///
+/// The soak's schema is `id`, `region`, `event_date`, `payload`, and a cube needs a numeric
+/// measure --- so `id` is the measure, summed. It is a meaningless total and an entirely
+/// real exercise of hydration, consolidation and the roll-up path, which is what a soak is
+/// for.
+fn declare_soak_cube(warehouse: &Path, table_root: &Path) {
+    use sankhya_cube::algo::{Along, Measure, Rule};
+    use sankhya_cube::model::{Definition, Dimension, Level};
+
+    let table = table_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("soak")
+        .to_string();
+    let definition = Definition::new(
+        "soak_cube",
+        table.clone(),
+        vec![Dimension {
+            name: "region".to_string(),
+            table,
+            joins_on: "region".to_string(),
+            levels: vec![Level::new("area", "region")],
+            rollups: None,
+            parent_child: None,
+        }],
+        vec![Measure::new("id", vec![Along::new("region", Rule::Sum)])],
+    );
+    if let Err(error) = sankhya_cube::catalogue::save(warehouse, &definition) {
+        eprintln!("{}  the cube could not be declared: {error}", stamp());
+    }
+}
+
+/// Hydrate the cube from the table and roll it up, returning whether it answered.
+///
+/// The runtime is the caller's. Building one **per call** --- which this did --- creates and
+/// drops thread-local state forty times over a run, and an allocator does not return that
+/// promptly. It is a test doing infrastructure work, which is the thing the golden rule
+/// exists to catch, and it was in the harness rather than the product.
+///
+/// # Why this is worth doing every few rounds
+///
+/// Hydration reads the whole fact table, so doing it every round would make the soak a
+/// measurement of hydration rather than of the system. Every fourth round exercises the path
+/// --- cells built, held, dropped --- often enough that a leak in it accumulates visibly over
+/// forty-five minutes, and rarely enough that the write and compaction paths still dominate.
+fn navigate_the_cube(runtime: &tokio::runtime::Runtime, table_root: &Path) -> bool {
+    use datafusion::prelude::SessionContext;
+
+    let Ok(definition) = sankhya_cube::catalogue::load(
+        table_root.parent().and_then(Path::parent).unwrap_or(table_root),
+        "soak_cube",
+    ) else {
+        return false;
+    };
+    let Ok(cube) = definition.validate() else {
+        return false;
+    };
+    let Some(measure) = cube.measures().first().cloned() else {
+        return false;
+    };
+
+    let Ok(table) = sankhya_readpath::resolve(
+        schema(),
+        table_root,
+        sankhya_types::LsnRange::new(Lsn::new(0), Lsn::new(u64::MAX)),
+        None,
+        Lsn::new(u64::MAX),
+    ) else {
+        return false;
+    };
+
+    let context = SessionContext::new();
+    let name = table_root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("soak");
+    if context.register_table(name, Arc::new(table)).is_err() {
+        return false;
+    }
+    let catalog = Arc::new(sankhya_cube_sql::catalog::CubeCatalog::new());
+    // A log per navigation, discarded with it. The soak measures the cube path rather than
+    // driving selection, and a log that outlived the call would be state the harness holds
+    // on the product's behalf --- which is what a test must not do.
+    sankhya_cube_sql::functions::register(
+        &context,
+        Arc::clone(&catalog),
+        Arc::new(sankhya_cube::querylog::QueryLog::new()),
+    );
+
+    runtime.block_on(async {
+        if sankhya_cube_sql::publish::publish_from_fact_table(
+            &context,
+            &catalog,
+            "soak_cube",
+            Arc::new(cube),
+            &measure,
+            1,
+        )
+        .await
+        .is_err()
+        {
+            return false;
+        }
+        context
+            .sql("SELECT * FROM cube_rollup('soak_cube', 'id', 'by=region')")
+            .await
+            .ok()
+            .is_some()
+    })
+}
+
 /// One batch of rows, sized so a file is a few megabytes.
 fn batch(from: i64, rows: usize) -> RecordBatch {
+    batch_dated(from, rows, Dating::Backfill, 0)
+}
+
+/// One batch of rows, dated by the given policy.
+fn batch_dated(from: i64, rows: usize, dating: Dating, newest: i64) -> RecordBatch {
     let ids: Vec<i64> = (0..rows as i64).map(|i| from + i).collect();
     let regions: Vec<Option<&str>> = ids
         .iter()
@@ -644,7 +881,7 @@ fn batch(from: i64, rows: usize) -> RecordBatch {
     // partitions and the write path has to split it.
     let dates: Vec<i32> = ids
         .iter()
-        .map(|i| FIRST_DAY + i32::try_from(i.rem_euclid(DAYS)).unwrap_or(0))
+        .map(|i| FIRST_DAY + dating.day_for(*i, newest))
         .collect();
     match RecordBatch::try_new(
         schema(),
@@ -820,19 +1057,36 @@ fn next_version(root: &Path) -> u64 {
 /// of failure a soak exists to find, committed in the soak.
 fn append_one(accumulator: &mut Accumulator<'_>, sequence: u64) -> bool {
     let name = format!("live-{sequence:06}.parquet");
+    let from = i64::try_from(sequence).unwrap_or(0) * 10_000;
+    // Arriving, not backfilling. The fill above lays down ninety days of history; what
+    // happens *after* it is a source feeding rows dated now, and dating those across ninety
+    // partitions modelled a workload nothing produces --- while making the fan-out alarm
+    // fire every round about it.
+    //
+    // The newest day advances with the run, so the hot partition moves and compaction has to
+    // keep up with a partition that is being appended to rather than one that is finished.
+    let newest = i64::try_from(sequence).unwrap_or(0) / ROUNDS_PER_DAY;
     accumulator
         .absorb(
             &name,
-            &batch(i64::try_from(sequence).unwrap_or(0) * 10_000, 5_000),
+            &batch_dated(from, 5_000, Dating::Arriving, newest),
             Lsn::new(sequence.saturating_add(1)),
         )
         .is_ok()
 }
 
+/// How many rounds of arrival make up a day of the soak's calendar.
+///
+/// The clock is the round counter, not the wall clock: a forty-five-minute run has to cross
+/// a day boundary several times or it never exercises a partition going cold, and it must
+/// not cross one every round or every partition is cold immediately.
+const ROUNDS_PER_DAY: i64 = 24;
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::{confined, table_name};
+    use sankhya_publish::Strain;
     use std::path::Path;
 
     /// A warehouse outside the project root is refused.
@@ -841,6 +1095,113 @@ mod tests {
     /// writes nothing outside its own root, and the way that rule got broken a third time
     /// was somebody checking the guard by invoking the thing that writes --- before it had
     /// compiled in. A guard against writing must never be verified by writing.
+    /// Arrival touches one partition, or two across a midnight.
+    ///
+    /// The soak dated every row `id % 90` for the whole run, so every batch touched all
+    /// ninety partitions and the fan-out alarm fired 168 times in forty-five minutes. It was
+    /// right about what it was shown; what it was shown was a backfill labelled as arrival.
+    #[test]
+    fn arriving_rows_land_on_the_newest_day_and_the_one_before() {
+        let days: std::collections::BTreeSet<i32> = (0..10_000)
+            .map(|row| super::Dating::Arriving.day_for(row, 40))
+            .collect();
+        assert_eq!(
+            days.len(),
+            2,
+            "a live source produces rows dated now, and a few in flight across midnight: {days:?}"
+        );
+        assert!(days.contains(&40) && days.contains(&39));
+    }
+
+    /// And a backfill genuinely spans the range, which is what the fill is.
+    #[test]
+    fn a_backfill_spans_every_partition() {
+        let days: std::collections::BTreeSet<i32> = (0..10_000)
+            .map(|row| super::Dating::Backfill.day_for(row, 0))
+            .collect();
+        assert_eq!(
+            days.len(),
+            usize::try_from(super::DAYS).expect("small"),
+            "the fill lays down history and must touch every partition, or per-partition \
+             compaction is never exercised"
+        );
+    }
+
+    /// The newest day advances, so the hot partition moves rather than growing forever.
+    #[test]
+    fn the_hot_partition_moves_as_the_run_goes_on() {
+        let early = super::Dating::Arriving.day_for(1, 0);
+        let later = super::Dating::Arriving.day_for(1, 5);
+        assert_ne!(
+            early, later,
+            "a partition that is appended to for the whole run is never compacted as a cold \
+             one, and the two paths behave differently"
+        );
+    }
+
+    /// A standing condition is one condition however long it stands.
+    ///
+    /// The alarm keyed itself on its own message, and the message counts batches, so the
+    /// count made every rendering unique and the "report once" set reported 168 times in a
+    /// forty-five-minute run. Asserted on the *key* rather than on captured output, because
+    /// the defect was in the key and output capture would have hidden it behind formatting.
+    #[test]
+    fn an_alarm_that_stands_for_longer_is_still_the_same_alarm() {
+        let early = Strain {
+            batches: 3,
+            partitions_touched: 270,
+            widest_batch: 90,
+            ..Strain::default()
+        };
+        let later = Strain {
+            batches: 168,
+            partitions_touched: 15_120,
+            ..early
+        };
+        assert_eq!(
+            super::fan_out_condition(0, &early),
+            super::fan_out_condition(0, &later),
+            "the same strain observed for longer must key the same, or the alarm fires every \
+             round and stops being read"
+        );
+    }
+
+    /// A worse condition is a different condition, and is worth saying again.
+    #[test]
+    fn a_widening_fan_out_is_reported_again() {
+        let before = Strain {
+            batches: 10,
+            partitions_touched: 300,
+            widest_batch: 30,
+            ..Strain::default()
+        };
+        let worse = Strain {
+            widest_batch: 90,
+            ..before
+        };
+        assert_ne!(
+            super::fan_out_condition(0, &before),
+            super::fan_out_condition(0, &worse),
+            "a fan-out that got wider is news"
+        );
+    }
+
+    /// Two tables straining independently are two alarms.
+    #[test]
+    fn each_table_reports_its_own_strain() {
+        let strain = Strain {
+            batches: 10,
+            partitions_touched: 900,
+            widest_batch: 90,
+            ..Strain::default()
+        };
+        assert_ne!(
+            super::fan_out_condition(0, &strain),
+            super::fan_out_condition(1, &strain),
+            "one table's alarm must not silence another's"
+        );
+    }
+
     #[test]
     fn a_warehouse_outside_the_project_root_is_refused() {
         let root = Path::new("/tmp/some-project");

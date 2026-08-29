@@ -4,7 +4,7 @@ description  = "Composition root — wiring only."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
-license.workspace      = true
+license-file.workspace      = true
 repository.workspace   = true
 
 [package.metadata.sankhya]
@@ -25,6 +25,10 @@ sankhya-catalog  = { path = "../sankhya-catalog" }
 sankhya-readpath = { path = "../sankhya-readpath" }
 sankhya-table-delta = { path = "../sankhya-table-delta" }
 sankhya-maintenance = { path = "../sankhya-maintenance" }
+sankhya-cube        = { path = "../sankhya-cube" }
+sankhya-cube-sql    = { path = "../sankhya-cube-sql" }
+sankhya-olap        = { path = "../sankhya-olap" }
+sankhya-graph-sql   = { path = "../sankhya-graph-sql" }
 sankhya-plan     = { path = "../sankhya-plan" }
 datafusion       = { workspace = true }
 arrow-array      = { workspace = true }
@@ -41,6 +45,8 @@ tracing-subscriber = { workspace = true }
 
 
 [dev-dependencies]
+parquet = { workspace = true }
+sankhya-cube-algo = { path = "../sankhya-cube-algo" }
 sankhya-publish = { path = "../sankhya-publish" }
 sankhya-diagnostic = { path = "../sankhya-diagnostic" }
 sankhya-graph = { path = "../sankhya-graph" }

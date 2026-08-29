@@ -11,82 +11,42 @@ use sankhya_cube_algo::ancestor::{answerable_from, rolled_away, Answerable};
 use sankhya_cube_algo::measure::{Along, Measure, Rule};
 
 /// Transaction amount: adds along everything.
-const AMOUNT: Measure = Measure {
-    name: "amount",
-    rules: &[
-        Along {
-            dimension: "time",
-            rule: Rule::Sum,
-        },
-        Along {
-            dimension: "account",
-            rule: Rule::Sum,
-        },
-        Along {
-            dimension: "region",
-            rule: Rule::Sum,
-        },
-    ],
-};
+fn amount() -> Measure {
+    Measure::new("amount", vec![
+        Along::new("time", Rule::Sum),
+        Along::new("account", Rule::Sum),
+        Along::new("region", Rule::Sum),
+    ])
+}
 
 /// A closing balance: adds across accounts, takes the last across time.
 ///
 /// The classic semi-additive measure, and the classic silent wrong answer.
-const BALANCE: Measure = Measure {
-    name: "closing_balance",
-    rules: &[
-        Along {
-            dimension: "time",
-            rule: Rule::Last,
-        },
-        Along {
-            dimension: "account",
-            rule: Rule::Sum,
-        },
-        Along {
-            dimension: "region",
-            rule: Rule::Sum,
-        },
-    ],
-};
+fn balance() -> Measure {
+    Measure::new("closing_balance", vec![
+        Along::new("time", Rule::Last),
+        Along::new("account", Rule::Sum),
+        Along::new("region", Rule::Sum),
+    ])
+}
 
 /// A distinct count: derivable from nothing but the base rows.
-const DISTINCT_CUSTOMERS: Measure = Measure {
-    name: "distinct_customers",
-    rules: &[
-        Along {
-            dimension: "time",
-            rule: Rule::None,
-        },
-        Along {
-            dimension: "account",
-            rule: Rule::None,
-        },
-        Along {
-            dimension: "region",
-            rule: Rule::None,
-        },
-    ],
-};
+fn distinct_customers() -> Measure {
+    Measure::new("distinct_customers", vec![
+        Along::new("time", Rule::None),
+        Along::new("account", Rule::None),
+        Along::new("region", Rule::None),
+    ])
+}
 
 /// A margin percentage: an average that must not be averaged.
-const MARGIN: Measure = Measure {
-    name: "margin_pct",
-    rules: &[
-        Along {
-            dimension: "time",
-            rule: Rule::Mean,
-        },
-        Along {
-            dimension: "account",
-            rule: Rule::Mean,
-        },
-        Along {
-            dimension: "region",
-            rule: Rule::Mean,
-        },
-    ],
-};
+fn margin() -> Measure {
+    Measure::new("margin_pct", vec![
+        Along::new("time", Rule::Mean),
+        Along::new("account", Rule::Mean),
+        Along::new("region", Rule::Mean),
+    ])
+}
 
 const DIMENSIONS: &[&str] = &["time", "account", "region"];
 
@@ -98,14 +58,10 @@ fn a_measure_with_no_rule_along_a_dimension_is_refused() {
     // wrong invisibly: a closing balance summed across twelve months gives the sum of twelve
     // month-end balances, which nobody wanted and which looks exactly like a number that
     // means something.
-    const PARTIAL: Measure = Measure {
-        name: "quantity",
-        rules: &[Along {
-            dimension: "time",
-            rule: Rule::Sum,
-        }],
-    };
-    let refused = PARTIAL.covers(DIMENSIONS).expect_err("two dimensions are undeclared");
+    fn partial() -> Measure {
+        Measure::new("quantity", vec![Along::new("time", Rule::Sum)])
+    }
+    let refused = partial().covers(DIMENSIONS).expect_err("two dimensions are undeclared");
     assert_eq!(refused.dimensions, ["account", "region"]);
     assert!(
         refused.to_string().contains("month-end balances"),
@@ -116,35 +72,34 @@ fn a_measure_with_no_rule_along_a_dimension_is_refused() {
 #[test]
 fn every_undeclared_dimension_is_named_not_just_the_first() {
     // An author fixing them one at a time learns about the next only after another load.
-    const NONE: Measure = Measure {
-        name: "mystery",
-        rules: &[],
-    };
-    let refused = NONE.covers(DIMENSIONS).expect_err("nothing is declared");
+    fn none() -> Measure {
+        Measure::new("mystery", vec![])
+    }
+    let refused = none().covers(DIMENSIONS).expect_err("nothing is declared");
     assert_eq!(refused.dimensions.len(), 3);
 }
 
 #[test]
 fn a_fully_declared_measure_is_accepted() {
-    assert!(AMOUNT.covers(DIMENSIONS).is_ok());
-    assert!(BALANCE.covers(DIMENSIONS).is_ok());
+    assert!(amount().covers(DIMENSIONS).is_ok());
+    assert!(balance().covers(DIMENSIONS).is_ok());
 }
 
 #[test]
 fn additive_everywhere_is_a_different_question_from_declared_everywhere() {
-    assert!(AMOUNT.additive_everywhere());
-    assert!(!BALANCE.additive_everywhere(), "it is not additive over time");
-    assert_eq!(BALANCE.not_additive_along(), ["time"]);
-    assert_eq!(AMOUNT.not_additive_along(), Vec::<&str>::new());
+    assert!(amount().additive_everywhere());
+    assert!(!balance().additive_everywhere(), "it is not additive over time");
+    assert_eq!(balance().not_additive_along(), ["time"]);
+    assert_eq!(amount().not_additive_along(), Vec::<&str>::new());
 }
 
 // --- the roll-up, which is where wrong answers come from ----------------
 
 #[test]
 fn an_additive_measure_rolls_up_along_anything() {
-    assert_eq!(answerable_from(&AMOUNT, &["region"]), Answerable::Yes);
+    assert_eq!(answerable_from(&amount(), &["region"]), Answerable::Yes);
     assert_eq!(
-        answerable_from(&AMOUNT, &["time", "account", "region"]),
+        answerable_from(&amount(), &["time", "account", "region"]),
         Answerable::Yes
     );
 }
@@ -160,10 +115,10 @@ fn a_semi_additive_measure_can_still_be_rolled_up_along_its_non_additive_axis() 
     // A balance rolled up across time is the **last** balance, and that is a perfectly good
     // answer. `last(last(a, b), c) == last(a, b, c)` given an order, so the rule composes and
     // partial aggregates are sufficient.
-    assert_eq!(answerable_from(&BALANCE, &["time"]), Answerable::Yes);
-    assert_eq!(answerable_from(&BALANCE, &["account", "region"]), Answerable::Yes);
+    assert_eq!(answerable_from(&balance(), &["time"]), Answerable::Yes);
+    assert_eq!(answerable_from(&balance(), &["account", "region"]), Answerable::Yes);
     assert_eq!(
-        answerable_from(&BALANCE, &["time", "account", "region"]),
+        answerable_from(&balance(), &["time", "account", "region"]),
         Answerable::Yes
     );
 }
@@ -178,31 +133,30 @@ fn the_danger_of_a_semi_additive_measure_is_the_operator_not_the_axis() {
     // Stated as a test because the two get confused — this file's first version refused a
     // valid roll-up on the strength of the confusion, which would have sent every balance
     // query to base data for no reason.
-    assert_eq!(BALANCE.rule("time"), Some(Rule::Last));
-    assert_eq!(BALANCE.rule("account"), Some(Rule::Sum));
+    assert_eq!(balance().rule("time"), Some(Rule::Last));
+    assert_eq!(balance().rule("account"), Some(Rule::Sum));
     assert!(
-        !BALANCE.additive_everywhere(),
+        !balance().additive_everywhere(),
         "it is not additive over time — which is about the operator, not about permission"
     );
-    assert_eq!(BALANCE.not_additive_along(), ["time"]);
+    assert_eq!(balance().not_additive_along(), ["time"]);
 }
 
 #[test]
 fn one_axis_that_does_not_compose_refuses_the_whole_roll_up() {
     // A roll-up valid along two axes and invalid along a third is invalid. This is the case
     // that survives casual checking, because most of the result is right.
-    const MIXED: Measure = Measure {
-        name: "mixed",
-        rules: &[
-            Along { dimension: "time", rule: Rule::Sum },
-            Along { dimension: "account", rule: Rule::Sum },
+    fn mixed() -> Measure {
+        Measure::new("mixed", vec![
+            Along::new("time", Rule::Sum),
+            Along::new("account", Rule::Sum),
             // A ratio over regions: derivable from nothing but base rows.
-            Along { dimension: "region", rule: Rule::None },
-        ],
-    };
-    assert_eq!(answerable_from(&MIXED, &["time", "account"]), Answerable::Yes);
+            Along::new("region", Rule::None),
+        ])
+    }
+    assert_eq!(answerable_from(&mixed(), &["time", "account"]), Answerable::Yes);
 
-    let refused = answerable_from(&MIXED, &["time", "account", "region"]);
+    let refused = answerable_from(&mixed(), &["time", "account", "region"]);
     let Answerable::No { dimension, rule, .. } = &refused else {
         panic!("one bad axis refuses the roll-up: {refused:?}");
     };
@@ -220,7 +174,7 @@ fn a_non_additive_measure_rolls_up_along_nothing() {
     // Which is the honest outcome: every query goes to base data. Slow, and correct.
     for axis in DIMENSIONS {
         assert!(
-            !answerable_from(&DISTINCT_CUSTOMERS, &[axis]).permitted(),
+            !answerable_from(&distinct_customers(), &[axis]).permitted(),
             "a distinct count cannot be derived from partial distinct counts along {axis}"
         );
     }
@@ -235,7 +189,7 @@ fn a_mean_does_not_compose_even_though_it_is_a_perfectly_good_aggregate() {
     assert!(Rule::Last.composes());
     assert!(Rule::Max.composes());
 
-    let refused = answerable_from(&MARGIN, &["region"]);
+    let refused = answerable_from(&margin(), &["region"]);
     assert!(!refused.permitted(), "{refused:?}");
 }
 
@@ -243,8 +197,8 @@ fn a_mean_does_not_compose_even_though_it_is_a_perfectly_good_aggregate() {
 fn rolling_away_nothing_is_always_permitted() {
     // A query for exactly the cuboid that is materialised aggregates nothing, so no rule can
     // forbid it — not even for a measure that composes along no axis at all.
-    assert_eq!(answerable_from(&DISTINCT_CUSTOMERS, &[]), Answerable::Yes);
-    assert_eq!(answerable_from(&MARGIN, &[]), Answerable::Yes);
+    assert_eq!(answerable_from(&distinct_customers(), &[]), Answerable::Yes);
+    assert_eq!(answerable_from(&margin(), &[]), Answerable::Yes);
 }
 
 #[test]
@@ -252,14 +206,10 @@ fn an_undeclared_axis_is_distinct_from_a_forbidden_one() {
     // `No` means "this is not valid", which is a modelling answer. `Undeclared` means
     // "nobody said", which is a definition error that should have been caught at load. They
     // send somebody to different places.
-    const PARTIAL: Measure = Measure {
-        name: "quantity",
-        rules: &[Along {
-            dimension: "time",
-            rule: Rule::Sum,
-        }],
-    };
-    let verdict = answerable_from(&PARTIAL, &["region"]);
+    fn partial() -> Measure {
+        Measure::new("quantity", vec![Along::new("time", Rule::Sum)])
+    }
+    let verdict = answerable_from(&partial(), &["region"]);
     let Answerable::Undeclared { dimension, .. } = &verdict else {
         panic!("an unknown axis is not the same as a forbidden one: {verdict:?}");
     };
@@ -309,14 +259,14 @@ fn the_two_halves_compose_into_the_decision_a_planner_makes() {
 
     // A by-time-and-account cuboid answers a by-account question for an additive measure,
     // and for a balance too — rolling away time is `last`, which composes.
-    assert!(may_use(&["account"], &["time", "account"], &AMOUNT));
-    assert!(may_use(&["account"], &["time", "account"], &BALANCE));
+    assert!(may_use(&["account"], &["time", "account"], &amount()));
+    assert!(may_use(&["account"], &["time", "account"], &balance()));
 
     // A distinct count cannot be answered from any ancestor at all.
-    assert!(!may_use(&["account"], &["time", "account"], &DISTINCT_CUSTOMERS));
-    assert!(!may_use(&["time"], &["time", "account"], &MARGIN));
+    assert!(!may_use(&["account"], &["time", "account"], &distinct_customers()));
+    assert!(!may_use(&["time"], &["time", "account"], &margin()));
 
     // And nothing answers a query needing a dimension the cuboid does not hold: no
     // aggregation recovers an axis that was already collapsed.
-    assert!(!may_use(&["time", "region"], &["time", "account"], &AMOUNT));
+    assert!(!may_use(&["time", "region"], &["time", "account"], &amount()));
 }

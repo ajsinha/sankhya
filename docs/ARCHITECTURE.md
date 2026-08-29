@@ -9,7 +9,7 @@
 
 **Document ID:** SNK-AD-001
 **Version:** 0.1.0 (draft for review)
-**Status:** Implementation — M0–M6 complete, M7 in progress
+**Status:** Implementation — M0–M7 complete, M8 next
 **Date:** 2026-08-26
 **Companion documents:** `REQUIREMENTS.md` (SNK-RD-001), `IMPLEMENTATION_PLAN.md`, `ROADMAP.md`
 

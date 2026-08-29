@@ -7,23 +7,21 @@ use sankhya_cube::{Definition, Dimension, Level};
 use sankhya_cube_algo::hierarchy::Hierarchy;
 use sankhya_cube_algo::measure::{Along, Measure, Rule};
 
-const AMOUNT: Measure = Measure {
-    name: "amount",
-    rules: &[
-        Along { dimension: "period", rule: Rule::Sum },
-        Along { dimension: "entity", rule: Rule::Sum },
-    ],
-};
+fn amount() -> Measure {
+    Measure::new("amount", vec![
+        Along::new("period", Rule::Sum),
+        Along::new("entity", Rule::Sum),
+    ])
+}
 
 /// The same measure, aggregated differently along time. A cuboid built under one of these
 /// answers a different question than a cuboid built under the other.
-const AMOUNT_LAST: Measure = Measure {
-    name: "amount",
-    rules: &[
-        Along { dimension: "period", rule: Rule::Last },
-        Along { dimension: "entity", rule: Rule::Sum },
-    ],
-};
+fn amount_last() -> Measure {
+    Measure::new("amount", vec![
+        Along::new("period", Rule::Last),
+        Along::new("entity", Rule::Sum),
+    ])
+}
 
 fn dimensions() -> Vec<Dimension> {
     vec![
@@ -48,7 +46,7 @@ fn version_of(measures: Vec<Measure>) -> u64 {
 fn the_same_definition_always_fingerprints_the_same() {
     // Or a restart invalidates every materialised cuboid, and the cost of the cube is paid
     // again on every deployment for no gain anybody can see.
-    assert_eq!(version_of(vec![AMOUNT]), version_of(vec![AMOUNT]));
+    assert_eq!(version_of(vec![amount()]), version_of(vec![amount()]));
 }
 
 #[test]
@@ -57,7 +55,7 @@ fn changing_how_a_measure_aggregates_changes_the_version() {
     // summed across time answers a different question once it is a closing balance, and
     // serving the old rows is a correct-looking number from a definition that no longer
     // exists.
-    assert_ne!(version_of(vec![AMOUNT]), version_of(vec![AMOUNT_LAST]));
+    assert_ne!(version_of(vec![amount()]), version_of(vec![amount_last()]));
 }
 
 #[test]
@@ -72,10 +70,10 @@ fn reordering_levels_changes_the_version() {
         ),
         Dimension::new("entity", "dim_entity", "entity_key", vec![Level::new("id", "id")]),
     ];
-    let a = Definition::new("figures", "fact_figures", dimensions(), vec![AMOUNT])
+    let a = Definition::new("figures", "fact_figures", dimensions(), vec![amount()])
         .validate()
         .expect("well-formed");
-    let b = Definition::new("figures", "fact_figures", reversed, vec![AMOUNT])
+    let b = Definition::new("figures", "fact_figures", reversed, vec![amount()])
         .validate()
         .expect("well-formed");
     assert_ne!(a.version(), b.version());
@@ -90,18 +88,20 @@ fn a_field_boundary_cannot_be_moved_without_changing_the_version() {
     // Against `fingerprint` rather than through `validate`, because a valid definition must
     // declare a rule per dimension — and those rules name the dimensions, so the two cubes
     // would differ for a second reason and the test would pass without the length prefix.
-    const NONE: Measure = Measure { name: "n", rules: &[] };
+    fn none() -> Measure {
+        Measure::new("n", vec![])
+    }
     let one = Definition::new(
         "c",
         "f",
         vec![Dimension::new("ab", "t", "c", vec![Level::new("l", "x")])],
-        vec![NONE],
+        vec![none()],
     );
     let two = Definition::new(
         "c",
         "f",
         vec![Dimension::new("a", "t", "bc", vec![Level::new("l", "x")])],
-        vec![NONE],
+        vec![none()],
     );
     assert_ne!(fingerprint(&one), fingerprint(&two));
 
@@ -111,13 +111,13 @@ fn a_field_boundary_cannot_be_moved_without_changing_the_version() {
         "c",
         "f",
         vec![Dimension::new("d", "t", "c", vec![Level::new("lx", "")])],
-        vec![NONE],
+        vec![none()],
     );
     let four = Definition::new(
         "c",
         "f",
         vec![Dimension::new("d", "t", "c", vec![Level::new("l", "x")])],
-        vec![NONE],
+        vec![none()],
     );
     assert_ne!(fingerprint(&three), fingerprint(&four));
 }
@@ -141,7 +141,7 @@ fn declaring_the_same_rollups_in_a_different_order_is_the_same_cube() {
             Dimension::new("entity", "dim_entity", "entity_key", vec![Level::new("id", "id")])
                 .rolling_up(rollups),
         ];
-        Definition::new("figures", "fact_figures", dims, vec![AMOUNT])
+        Definition::new("figures", "fact_figures", dims, vec![amount()])
             .validate()
             .expect("well-formed")
             .version()
@@ -164,7 +164,7 @@ fn adding_a_rollup_edge_changes_the_version() {
             Dimension::new("entity", "dim_entity", "entity_key", vec![Level::new("id", "id")])
                 .rolling_up(rollups),
         ];
-        Definition::new("figures", "fact_figures", dims, vec![AMOUNT])
+        Definition::new("figures", "fact_figures", dims, vec![amount()])
             .validate()
             .expect("well-formed")
             .version()
@@ -174,13 +174,13 @@ fn adding_a_rollup_edge_changes_the_version() {
 
 #[test]
 fn renaming_the_cube_or_the_fact_table_changes_the_version() {
-    let base = Definition::new("figures", "fact_figures", dimensions(), vec![AMOUNT])
+    let base = Definition::new("figures", "fact_figures", dimensions(), vec![amount()])
         .validate()
         .expect("well-formed");
-    let renamed = Definition::new("totals", "fact_figures", dimensions(), vec![AMOUNT])
+    let renamed = Definition::new("totals", "fact_figures", dimensions(), vec![amount()])
         .validate()
         .expect("well-formed");
-    let retabled = Definition::new("figures", "fact_totals", dimensions(), vec![AMOUNT])
+    let retabled = Definition::new("figures", "fact_totals", dimensions(), vec![amount()])
         .validate()
         .expect("well-formed");
 

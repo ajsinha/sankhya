@@ -7,7 +7,7 @@
 
 # SANKHYA — The invariants, and what each one cost to learn
 
-**Status:** Implementation — M0–M6 complete, M7 in progress
+**Status:** Implementation — M0–M7 complete, M8 next
 
 This system has more than fifty crates. Nobody holds that in their head, and a rule held only
 in somebody's head has a failure rate — this project has the evidence, below, in the column
@@ -64,7 +64,7 @@ Every rule here exists because a document said something untrue and nothing noti
 
 | Rule | Why | Enforced by |
 |---|---|---|
-| A figure in prose matches the repository | Seven documents claimed a test count that was two hundred short | `check-doc-numbers` |
+| A figure in prose matches the repository | Seven documents claimed a test count that was two hundred short | `check-doc-numbers`, fixed by `sync-doc-numbers` |
 | A source path named in prose exists | `GUIDE.md` promised its examples were executed by a file that did not exist | `check-docs` |
 | Every document's status line names every milestone in progress | Seven documents **agreed** on a status that was wrong. Agreement is not accuracy | `check-docs` |
 | Every guide example is executed, or listed with a reason | A block that is neither fails the build | `sankhya-server` guide test |
@@ -77,6 +77,7 @@ Every rule here exists because a document said something untrue and nothing noti
 |---|---|---|
 | No log statement records what a caller supplied | A log line carrying tenant data is a disclosure that survives in backups, and `#[instrument]` without `skip_all` records every argument | `check-logging` |
 | A release binary starts on the oldest platform it claims to support | The build machine's glibc is not the deployment target's, and it cannot tell you that — see [`PLATFORMS.md`](PLATFORMS.md) | `check-package` |
+| Every SQL surface is reachable from the server | Four crates registering SQL functions turned out, in one day, to be unreachable from the thing that serves SQL — each found by accident. A capability nothing reaches is indistinguishable from one that was never built | `check-surfaces` |
 | The build tree is not allowed to consume the machine | Cargo names artefacts by input hash and never removes the ones a rebuild supersedes. Three days of ordinary work grew `target/` to 482 GB and took the disk to 95%, which is how a forty-five-minute soak died at t+2833s and wrote a zero-byte report explaining why | `check-build-tree`, swept by `sweep` |
 
 ## 4b. Configuration

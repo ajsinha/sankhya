@@ -10,6 +10,11 @@
 //! relational one taken at a different moment; `materialised` and `from_cuboid` answer "why
 //! was this fast or slow?". Every one of them would be tidier as query metadata, and every
 //! one would then be lost by the first `SELECT` that did not mention it.
+//!
+//! `materialised` reports **what happened**. Until 2026-08-28 it reported the `materialise`
+//! argument the caller had passed, which made it a mirror rather than a measurement --- and
+//! it went unnoticed for as long as nothing served a cuboid, because the honest answer was
+//! `false` for every query and the echo agreed with it by accident.
 
 use crate::args::Arguments;
 use crate::catalog::{CubeCatalog, Published};
@@ -33,9 +38,60 @@ use std::sync::Arc;
 ///
 /// One call, so a session either has the whole surface or none of it. A partially
 /// registered catalogue means a query works on one node and fails on another.
-pub fn register(context: &SessionContext, catalog: Arc<CubeCatalog>) {
-    context.register_udtf("cube_rollup", Arc::new(RollUp(Arc::clone(&catalog))));
-    context.register_udtf("cube_slice", Arc::new(Slice(catalog)));
+pub fn register(
+    context: &SessionContext,
+    catalog: Arc<CubeCatalog>,
+    log: Arc<sankhya_cube::querylog::QueryLog>,
+) {
+    context.register_udtf(
+        "cube_rollup",
+        Arc::new(RollUp(Arc::clone(&catalog), Arc::clone(&log))),
+    );
+    context.register_udtf("cube_slice", Arc::new(Slice(catalog, log)));
+}
+
+/// Record the shape a query asked for, so selection has something to read.
+///
+/// The **shape**, and nothing else: which cube, and which dimensions were grouped by. There is
+/// nowhere in this call to put a member, a predicate or a principal, which is deliberate ---
+/// a query log is the kind of thing that quietly becomes a record of who asked what about
+/// whom, and this one records a list of column names anybody who may read the cube can
+/// already get from `cube_dimensions`.
+fn note_the_shape(log: &sankhya_cube::querylog::QueryLog, cube: &str, args: &Arguments) {
+    let by = args.list("by");
+    let asked: Vec<&str> = by.iter().map(String::as_str).collect();
+    log.record(cube, sankhya_cube::algo::Cuboid::of(&asked));
+}
+
+/// Refuse a `materialise` option this system does not understand.
+///
+/// # Why this is validated here and decided elsewhere
+///
+/// The option is read **twice**, and that is a consequence of the architecture rather than an
+/// oversight worth hiding. Whether to serve a query from a cuboid has to be decided before
+/// this function runs --- the server publishes cells into the catalogue while registering
+/// them, and by the time `call` happens the choice is already made --- so the server scans
+/// the statement text for it. That scan cannot refuse anything: it runs before planning.
+///
+/// This is where a refusal is possible, so this is where the value is checked. Without it
+/// `materialise=pinnd` would pass the known-option check in `args.rs`, be silently ignored by
+/// the server's scan, take its default, and produce a result wrong in a way the query text
+/// does not reveal --- which is the precise failure `args.rs` refuses unknown options to
+/// prevent, arriving through the value instead of the name.
+fn check_materialise(args: &Arguments) -> Result<()> {
+    let Some(asked) = args.string("materialise") else {
+        return Ok(());
+    };
+    match asked.to_lowercase().as_str() {
+        "true" | "yes" | "on" | "false" | "no" | "off" | "pinned" => Ok(()),
+        other => plan_err!(
+            "the 'materialise' option must be true, false or pinned, and '{other}' is not. \
+             It narrows what this query will use: 'false' computes from the base data, \
+             'pinned' uses only cuboids the definition pins. There is no value that widens \
+             it --- a session that could spend more of an operator's storage would be a \
+             storage grant to anybody who can open one"
+        ),
+    }
 }
 
 /// The columns every cube function carries, whatever else it returns.
@@ -74,11 +130,16 @@ fn provenance_columns(
     ]
 }
 
-/// Resolve the cube named in argument one.
+/// Resolve the cells for the cube named in argument one and the measure in argument two.
+///
+/// Both, together, because a set of cells holds one measure's values --- so the pair is the
+/// identity of what a query is asking for, and resolving on the cube alone gives whichever
+/// measure happened to be published last.
 fn cube_of(catalog: &CubeCatalog, args: &Arguments) -> Result<Published> {
     let name = args.string_at(0, "cube name")?;
+    let measure = args.string_at(1, "measure name")?;
     catalog
-        .resolve(&name)
+        .resolve(&name, &measure)
         .map_err(|e| plan_datafusion_err!("{e}"))
 }
 
@@ -89,8 +150,14 @@ fn cube_of(catalog: &CubeCatalog, args: &Arguments) -> Result<Published> {
 /// under rules nobody chose.
 fn measure_of(published: &Published, args: &Arguments) -> Result<Measure> {
     let name = args.string_at(1, "measure name")?;
-    published.cube.measure(&name).copied().ok_or_else(|| {
-        let known: Vec<&str> = published.cube.measures().iter().map(|m| m.name).collect();
+    // Belt and braces. `cube_of` resolved the cells *by* this measure, so a mismatch here
+    // would mean the catalogue filed cells under a name that is not their own --- which
+    // `CubeCatalog::publish` makes impossible by taking the name from the cells. Asserted
+    // anyway, because the failure it guards is a plausible number rather than an error, and
+    // that is worth one comparison.
+    debug_assert_eq!(published.measure, name, "cells filed under another measure's name");
+    published.cube.measure(&name).cloned().ok_or_else(|| {
+        let known: Vec<&str> = published.cube.measures().iter().map(|m| m.name.as_str()).collect();
         plan_datafusion_err!(
             "cube '{}' has no measure named '{}' — it has {:?}",
             published.cube.name(),
@@ -218,7 +285,7 @@ fn batch(
     materialised: bool,
 ) -> Result<Arc<dyn TableProvider>> {
     let dimensions: Vec<String> = cells.dimensions().to_vec();
-    let schema = schema_for(&dimensions, measure.name);
+    let schema = schema_for(&dimensions, &measure.name);
 
     let rows: Vec<(&Vec<String>, Option<f64>)> = cells
         .addresses()
@@ -275,13 +342,14 @@ fn check_completeness(completeness: &Completeness, args: &Arguments) -> Result<(
 
 /// `cube_rollup(cube, measure, options)` --- a breakdown at the grain `by` names.
 #[derive(Debug)]
-struct RollUp(Arc<CubeCatalog>);
+struct RollUp(Arc<CubeCatalog>, Arc<sankhya_cube::querylog::QueryLog>);
 
 impl TableFunctionImpl for RollUp {
     fn call(&self, exprs: &[Expr]) -> Result<Arc<dyn TableProvider>> {
         let args = Arguments::parse(exprs, 2)?;
         let published = cube_of(&self.0, &args)?;
         let measure = measure_of(&published, &args)?;
+        note_the_shape(&self.1, published.cube.name(), &args);
 
         let applied = overlaid(&self.0, &published, &args)?;
         let overlay = applied.overlay().map(str::to_string);
@@ -294,7 +362,11 @@ impl TableFunctionImpl for RollUp {
         check_completeness(&completeness, &args)?;
 
         let rolled = rolled(&narrowed, &measure, &args)?;
-        let materialised = args.boolean("materialise")?.unwrap_or(false);
+        // **What happened, not what was asked for.** This column used to be
+        // `args.boolean("materialise")` --- the caller's own argument, echoed back --- so an
+        // operator asking "why was this fast?" was told whatever their query had typed.
+        check_materialise(&args)?;
+        let materialised = published.from_cuboid;
         batch(
             &published,
             &rolled,
@@ -308,13 +380,14 @@ impl TableFunctionImpl for RollUp {
 
 /// `cube_slice(cube, measure, options)` --- one member fixed, that axis dropped.
 #[derive(Debug)]
-struct Slice(Arc<CubeCatalog>);
+struct Slice(Arc<CubeCatalog>, Arc<sankhya_cube::querylog::QueryLog>);
 
 impl TableFunctionImpl for Slice {
     fn call(&self, exprs: &[Expr]) -> Result<Arc<dyn TableProvider>> {
         let args = Arguments::parse(exprs, 2)?;
         let published = cube_of(&self.0, &args)?;
         let measure = measure_of(&published, &args)?;
+        note_the_shape(&self.1, published.cube.name(), &args);
 
         let Some(restriction) = args.string("where") else {
             return plan_err!(

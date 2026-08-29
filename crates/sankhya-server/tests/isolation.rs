@@ -204,6 +204,7 @@ async fn an_error_does_not_disclose_that_the_other_tenants_table_exists() {
         warehouse: dir.path().to_path_buf(),
         read_as_of: sankhya_types::Lsn::new(u64::MAX),
         tenant: acme(),
+        cuboid_budget_rows: wiring::CUBOID_ROW_BUDGET,
         maintenance: None,
         require_password: true,
         metrics_listen: None,

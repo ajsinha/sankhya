@@ -20,7 +20,12 @@ pub(crate) fn write_warehouse(root: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("region", DataType::Utf8, true),
+        Field::new("period", DataType::Utf8, true),
         Field::new("amount", DataType::Float64, false),
+        // A ratio, so the guide can show the refusal that matters: a measure with no way to
+        // be derived from its parts must not be rolled up, and saying so is the whole reason
+        // the additivity model exists.
+        Field::new("margin_pct", DataType::Float64, false),
     ]));
     let table_root = root.join("sales").join("orders");
     // Through the product's own writer. This used to build the log by hand --- create the
@@ -43,14 +48,22 @@ pub(crate) fn write_warehouse(root: &std::path::Path) {
                 _ => None,
             })
             .collect();
+        let periods: Vec<Option<&str>> = ids
+            .iter()
+            .map(|i| if i % 2 == 0 { Some("q1") } else { Some("q2") })
+            .collect();
         #[allow(clippy::cast_precision_loss)]
         let amounts: Vec<f64> = ids.iter().map(|i| *i as f64 * 1.5).collect();
+        #[allow(clippy::cast_precision_loss)]
+        let margins: Vec<f64> = ids.iter().map(|i| (*i % 40) as f64 / 100.0).collect();
         let batch = RecordBatch::try_new(
             Arc::clone(&schema),
             vec![
                 Arc::new(Int64Array::from(ids)),
                 Arc::new(StringArray::from(regions)),
+                Arc::new(StringArray::from(periods)),
                 Arc::new(Float64Array::from(amounts)),
+                Arc::new(Float64Array::from(margins)),
             ],
         )
         .expect("a valid batch");
@@ -63,6 +76,62 @@ pub(crate) fn write_warehouse(root: &std::path::Path) {
             )
             .expect("publishing");
     }
+
+    declare_the_sample_cube(root);
+}
+
+/// The cube a first-time user is shown, declared into the warehouse's catalogue.
+///
+/// Two dimensions, because one cannot demonstrate a roll-up: rolling *up* means rolling a
+/// dimension **away**, and with a single dimension every query is already the base. And two
+/// measures of deliberately different kinds --- one that composes and one that cannot --- so
+/// the guide can show both the answer and the refusal.
+fn declare_the_sample_cube(root: &std::path::Path) {
+    use sankhya_cube::algo::{Along, Measure, Rule};
+    use sankhya_cube::model::{Definition, Dimension, Level};
+
+    let definition = Definition::new(
+        "sales",
+        "orders",
+        vec![
+            Dimension {
+                name: "region".to_string(),
+                table: "orders".to_string(),
+                joins_on: "region".to_string(),
+                levels: vec![Level::new("area", "region")],
+                rollups: None,
+                parent_child: None,
+            },
+            Dimension {
+                name: "period".to_string(),
+                table: "orders".to_string(),
+                joins_on: "period".to_string(),
+                levels: vec![Level::new("quarter", "period")],
+                rollups: None,
+                parent_child: None,
+            },
+        ],
+        vec![
+            Measure::new(
+                "amount",
+                vec![
+                    Along::new("region", Rule::Sum),
+                    Along::new("period", Rule::Sum),
+                ],
+            ),
+            // A ratio. There is no operation over the parts that yields the whole, so it is
+            // declared as composing along nothing --- and a roll-up that would need it to is
+            // refused while the query is planned rather than answered with a plausible number.
+            Measure::new(
+                "margin_pct",
+                vec![
+                    Along::new("region", Rule::None),
+                    Along::new("period", Rule::None),
+                ],
+            ),
+        ],
+    );
+    sankhya_cube::catalogue::save(root, &definition).expect("declaring the sample cube");
 }
 
 /// The server, and the port it actually bound.
@@ -195,6 +264,53 @@ pub(crate) fn query(port: u16, sql: &str) -> usize {
     // that rows came back, and a parser here would be a second protocol implementation to
     // keep correct.
     count_tags(&buffer, b'D')
+}
+
+/// Run a statement and say whether the server refused it.
+///
+/// # Why counting rows was not enough
+///
+/// [`query`] returns a row count, and a **refused** statement returns no rows --- so a caller
+/// checking only the count cannot tell a query that failed from one that legitimately matched
+/// nothing. The guide test was doing exactly that: it asserted every example is *executed*,
+/// which they were, and never that a non-error example *succeeded*. A broken example passed.
+///
+/// `E` is an ErrorResponse. Its presence is the difference, and it is one tag to look for.
+pub(crate) fn query_outcome(port: u16, sql: &str) -> Result<usize, String> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connecting");
+    stream.set_nodelay(true).ok();
+
+    let mut startup = Vec::new();
+    let mut body = 196_608i32.to_be_bytes().to_vec();
+    body.extend_from_slice(b"user\0quickstart\0\0");
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    startup.extend_from_slice(&((body.len() + 4) as i32).to_be_bytes());
+    startup.extend_from_slice(&body);
+    stream.write_all(&startup).expect("startup");
+
+    let mut buffer = Vec::new();
+    read_until_ready(&mut stream, &mut buffer);
+
+    let mut message = vec![b'Q'];
+    let payload = format!("{sql}\0");
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    message.extend_from_slice(&((payload.len() + 4) as i32).to_be_bytes());
+    message.extend_from_slice(payload.as_bytes());
+    stream.write_all(&message).expect("query");
+
+    buffer.clear();
+    read_until_ready(&mut stream, &mut buffer);
+
+    if count_tags(&buffer, b'E') > 0 {
+        // The message text, so a failing guide example says what was wrong rather than only
+        // that something was.
+        let text: String = buffer
+            .iter()
+            .map(|byte| if byte.is_ascii_graphic() || *byte == b' ' { *byte as char } else { ' ' })
+            .collect();
+        return Err(text.split_whitespace().collect::<Vec<&str>>().join(" "));
+    }
+    Ok(count_tags(&buffer, b'D'))
 }
 
 /// Read until the server says it is ready for the next statement.

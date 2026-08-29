@@ -29,6 +29,7 @@
 #![doc(html_root_url = "https://docs.rs/sankhya-maintenance")]
 
 mod compaction;
+pub mod cuboid;
 mod driver;
 mod execute;
 pub mod layout;

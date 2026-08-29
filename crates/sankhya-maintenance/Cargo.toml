@@ -4,7 +4,7 @@ description  = "Compaction policy and the maintenance scheduler."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
-license.workspace      = true
+license-file.workspace      = true
 repository.workspace   = true
 
 [package.metadata.sankhya]
@@ -19,6 +19,8 @@ sankhya-types = { path = "../sankhya-types" }
 sankhya-error = { path = "../sankhya-error" }
 sankhya-table = { path = "../sankhya-table" }
 sankhya-table-delta = { path = "../sankhya-table-delta" }
+sankhya-cube      = { path = "../sankhya-cube" }
+sankhya-publish   = { path = "../sankhya-publish" }
 
 [dev-dependencies]
 parquet = { workspace = true }

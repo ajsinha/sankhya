@@ -34,6 +34,7 @@ use sankhya_error::Classify;
 use std::sync::Arc;
 
 /// A table this server can serve, and the provider behind it.
+#[derive(Clone)]
 pub struct ServableTable {
     /// Where it lives.
     pub reference: TableRef,
@@ -46,6 +47,22 @@ pub struct ServableTable {
     pub root: std::path::PathBuf,
     /// What answers a scan of it.
     pub provider: Arc<dyn TableProvider>,
+    /// Its columns, kept so the provider can be resolved again.
+    pub schema: Arc<arrow_schema::Schema>,
+    /// The log version this provider's file list was read at.
+    ///
+    /// # Why a provider has to know this
+    ///
+    /// `resolve` reads the log **once** and the provider holds the resulting file list for
+    /// its lifetime. That was safe while a served warehouse did not move --- the server runs
+    /// no ingest --- and stopped being safe the day the server began maintaining the
+    /// warehouse in-process: compaction replaces files and retirement deletes what it
+    /// replaced, so a list captured at boot eventually names files that are gone.
+    ///
+    /// Retirement's grace period protects a reader that listed *recently*. It cannot protect
+    /// one that listed at startup and has been serving from it for hours. So the version is
+    /// remembered, and a provider whose table has moved past it is resolved again.
+    pub resolved_at: u64,
 }
 
 impl ServableTable {
@@ -80,6 +97,36 @@ pub fn session_for(
     tables: &[ServableTable],
 ) -> Result<(SessionContext, usize), QueryFailure> {
     let context = SessionContext::new();
+
+    // The analytical functions the guide documents in its own sections.
+    //
+    // `sankhya-olap` was not a dependency of this crate at all, so every vector, matrix,
+    // statistic and calculus function a reader was told to type answered `Invalid function`.
+    // The guide's own test could not see it: it counted returned rows, and a refused
+    // statement returns none --- so a broken example was indistinguishable from one that
+    // legitimately matched nothing.
+    //
+    // Third time today that a whole SQL surface turned out to be unreachable from the thing
+    // that serves SQL. The others were `sankhya-maintenance` and `sankhya-cube-sql`.
+    sankhya_olap::register_constructors(&context);
+    sankhya_olap::register_vector_functions(&context);
+    sankhya_olap::register_matrix_functions(&context);
+
+    // The graph functions, against an empty catalogue.
+    //
+    // This process builds no graph epochs, so every call answers "no graph named that; this
+    // session knows none". That is the **truthful** error and it points at the real gap ---
+    // nothing hydrates a graph here --- whereas the previous answer, `Invalid function`,
+    // pointed at a function the guide documents and implied it did not exist.
+    //
+    // Registering a surface whose catalogue is empty is not pretending. A cube does the same
+    // thing: declared and unhydrated is a state worth being able to report, and collapsing it
+    // into "no such name" sends somebody to fix a typo that is not there.
+    sankhya_graph_sql::functions::register(
+        &context,
+        Arc::new(sankhya_graph_sql::catalog::GraphCatalog::new()),
+    );
+
     let mut registered = 0usize;
 
     for table in tables {

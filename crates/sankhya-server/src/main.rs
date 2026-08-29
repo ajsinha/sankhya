@@ -32,7 +32,7 @@ mod wiring;
 use std::collections::BTreeMap;
 use sankhya_authz::principal::TenantId;
 use std::sync::Arc;
-use wiring::{start, Settings};
+use wiring::{start, Settings, CUBOID_ROW_BUDGET};
 
 /// Read configuration: files first, then the environment, then the command line.
 ///
@@ -83,8 +83,18 @@ fn settings() -> Result<Settings, String> {
     // does not orphan the audit chain and the storage prefix from the previous run.
     let tenant = TenantId::from_uuid(uuid::Uuid::from_u128(1));
     let maintenance = maintenance_policy(&config)?;
+    // §11.6's configuration level: the storage an operator lends to automatic
+    // materialisation. Read here rather than left a constant because it is the operator's
+    // storage, and the one number in the three levels of control that only they may set --- a
+    // session that could raise it would be granting itself an unbounded storage quota.
+    let cuboid_budget_rows = config
+        .integer("cubes.budget_rows")
+        .map_err(|error| error.to_string())?
+        .and_then(|value| u64::try_from(value).ok())
+        .unwrap_or(CUBOID_ROW_BUDGET);
     Ok(Settings {
         maintenance,
+        cuboid_budget_rows,
         listen,
         warehouse,
         read_as_of,
@@ -265,6 +275,29 @@ async fn main() -> std::io::Result<()> {
         std::sync::Arc::new(sankhya_maintenance::spawn_maintenance(tables, policy))
     });
 
+    // Maintained cubes, built on the same cadence and for the same reason.
+    //
+    // A cube marked maintained is maintained whether or not whoever declared it is logged in
+    // --- a dashboard is fast at nine because something built its cells at four. The refresher
+    // has no principal, so it builds the *unrestricted* cuboid, which per ADR-0008 may serve
+    // only an unrestricted caller: this helps dashboards and service accounts and does
+    // nothing for a restricted analyst, whose cuboids are built by their own queries.
+    //
+    // Gated on maintenance being enabled, because it is maintenance: an operator who turned
+    // the thread off did not ask for a different background writer to keep going.
+    if let Some(every) = maintenance.as_ref().map(|handle| handle.policy().interval) {
+        let cubes = Arc::clone(&server);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(every).await;
+                let built = tokio::task::block_in_place(|| cubes.refresh_maintained_cubes());
+                if !built.is_empty() {
+                    println!("  materialised {} cuboid(s): {}", built.len(), built.join(", "));
+                }
+            }
+        });
+    }
+
     // Reconfiguration without a restart.
     //
     // An operator who has to restart the server to slow compaction down will not slow
@@ -351,6 +384,10 @@ async fn main() -> std::io::Result<()> {
         // Loud, and on stderr. A table that failed to open looks to whoever queries it like
         // a table that was never created, and they will go looking in the wrong place.
         eprintln!("  COULD NOT OPEN {complaint}");
+    }
+    if !server.cubes().is_empty() {
+        let named: Vec<&str> = server.cubes().iter().map(sankhya_cube::model::Cube::name).collect();
+        println!("  {} cube(s): {}", named.len(), named.join(", "));
     }
     if server.table_count() == 0 {
         println!("  no tables found — set SANKHYA_WAREHOUSE to a directory of <schema>/<table>/");

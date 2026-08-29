@@ -39,6 +39,57 @@ pub struct FoundTable {
     pub schema: Arc<Schema>,
 }
 
+/// Resolve any table whose log has moved since its provider was built.
+///
+/// # Why a running server has to do this at all
+///
+/// It did not, and the reason it did not was sound: a server runs no ingest, so the warehouse
+/// it serves does not move, and a provider resolved once at startup stays correct forever.
+///
+/// The server now runs **maintenance** in-process. Compaction replaces files and retirement
+/// deletes the ones it replaced, so the warehouse moves whether or not anybody is writing to
+/// it. A provider fixed at boot then names files that are gone, and the query fails with a
+/// missing-file error naming a path nobody asked about.
+///
+/// Retirement's grace period is not the answer. It protects a reader that listed shortly
+/// before a merge --- twenty-four ticks of it --- and cannot protect one that listed at
+/// startup and has been serving from that listing since.
+///
+/// Returns how many were re-resolved, so the caller can say so rather than have it happen
+/// invisibly.
+pub fn refresh(tables: &mut [ServableTable], target: Lsn, cache: &LogCache) -> usize {
+    let coverage = sankhya_types::LsnRange::new(sankhya_types::Lsn::new(0), target);
+    let mut redone = 0;
+    for table in tables {
+        let now = sankhya_table_delta::live_files(&table.root)
+            .ok()
+            .and_then(|live| live.version)
+            .unwrap_or(table.resolved_at);
+        if now == table.resolved_at {
+            continue;
+        }
+        // A table that will not resolve keeps the provider it has. The old one may fail on a
+        // retired file, and the new one failed outright --- serving the stale reader is the
+        // better of two bad answers, and the next attempt tries again.
+        if let Ok(provider) = sankhya_readpath::resolve_cached(
+            Arc::clone(&table.schema),
+            &table.root,
+            coverage,
+            None,
+            target,
+            cache,
+        ) {
+            table.provider = Arc::new(provider);
+            // Recorded so the next statement can tell this table has not moved. Forgetting
+            // it costs a log read per query rather than a wrong answer, which is why no test
+            // catches it and why there is no catalogue entry claiming one does.
+            table.resolved_at = now;
+            redone += 1;
+        }
+    }
+    redone
+}
+
 /// Walk a warehouse and find every table in it.
 ///
 /// Returns what it found and, separately, what it could not open and why. A table that
@@ -66,6 +117,17 @@ pub fn discover(warehouse: &Path) -> (Vec<FoundTable>, Vec<(PathBuf, String)>) {
         let Some(schema_name) = schema_dir.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
+        // A schema beginning with `_` holds the warehouse's own bookkeeping --- cube
+        // definitions, materialised cuboids --- not user tables.
+        //
+        // Skipped from *discovery*, not hidden from storage. A materialised cuboid is a
+        // published table on purpose, readable by anything that can read a table, because the
+        // open-storage commitment gets no exception for the fast path. What it must not do is
+        // appear in a catalogue somebody browses, where it looks like a table they should
+        // query and its name is a hash.
+        if schema_name.starts_with('_') {
+            continue;
+        }
         let Ok(tables) = std::fs::read_dir(&schema_dir) else {
             continue;
         };
@@ -158,6 +220,14 @@ pub fn servable(
                 reference: table.reference.clone(),
                 root: table.root.clone(),
                 provider: Arc::new(provider),
+                schema: Arc::clone(&table.schema),
+                // What the log stood at when this file list was read. A provider whose table
+                // has moved past it is stale --- and once the warehouse maintains itself,
+                // stale means naming files retirement has deleted.
+                resolved_at: sankhya_table_delta::live_files(&table.root)
+                    .ok()
+                    .and_then(|live| live.version)
+                    .unwrap_or(0),
             }),
             Err(error) => refused.push((table.root.clone(), error.to_string())),
         }

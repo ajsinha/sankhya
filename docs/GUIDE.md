@@ -7,7 +7,7 @@
 
 # SANKHYA — a guide, by example
 
-**Status:** Implementation — M0–M6 complete, M7 in progress
+**Status:** Implementation — M0–M7 complete, M8 next
 
 Every example here is **executed or accounted for by a test**.
 `crates/sankhya-server/tests/guide.rs` extracts the SQL from this page — this page, not a
@@ -21,6 +21,10 @@ now, and it counts.
 
 The [quickstart](QUICKSTART.md) gets a server running. This shows what to do with it.
 
+If you would rather work through it step by step, the [tutorials](tutorials/) are hands-on and
+in order — cubes from first query to production tuning. This document is the reference: every
+feature, by worked example.
+
 ---
 
 ## Contents
@@ -32,6 +36,7 @@ The [quickstart](QUICKSTART.md) gets a server running. This shows what to do wit
 5. [Vectors and matrices](#5-vectors-and-matrices)
 6. [Statistics and calculus](#6-statistics-and-calculus)
 7. [Graph traversal from SQL](#7-graph-traversal-from-sql)
+7b. [Cubes — slice, dice and roll up](#7b-cubes--slice-dice-and-roll-up)
 8. [Security, and what it refuses](#8-security-and-what-it-refuses)
 9. [Verifying and repairing a table](#9-verifying-and-repairing-a-table)
 10. [The diagnostic](#10-the-diagnostic)
@@ -362,6 +367,226 @@ short list looks exactly like a short answer.
 table function, so bounds arrive as `'max_depth=3, min_conservation=0.9'` — with every key
 checked against a known set, so a misspelled bound is refused rather than silently taking
 its default.
+
+---
+
+## 7b. Cubes — slice, dice and roll up
+
+A `GROUP BY` knows the column names you typed. A **cube** knows a *model*: which columns are
+dimensions, which are measures, and — the part that decides whether an answer is correct —
+**how each measure may be combined along each dimension**.
+
+That last one is why this is not a convenience over `GROUP BY`. Summing a closing balance
+across twelve months gives a number of the right magnitude, the right sign, and no meaning.
+A cube refuses it.
+
+### Finding out what exists
+
+A cube is discoverable, so a client offers a picker instead of hardcoding a model that will
+drift from it.
+
+```sql
+SELECT cube, fact_table, dimensions, measures FROM cubes();
+```
+
+```sql
+SELECT dimension, level, depth, column FROM cube_dimensions('sales');
+```
+
+`depth` is the level's position from coarse to fine. It is a column rather than the row order
+because the order is a fact about the model — sort the result without it and you draw a list
+where there is a hierarchy.
+
+```sql
+SELECT measure, dimension, rule, composes FROM cube_measures('sales');
+```
+
+`composes` says whether a measure can be rolled up **at all**. Offering "roll up by period" on
+something that cannot is offering a button that does not work, and finding out when the query
+fails is worse than never offering it.
+
+### Rolling up
+
+```sql
+SELECT region, amount FROM cube_rollup('sales', 'amount', 'by=region');
+```
+
+Roll-up means rolling a dimension **away**. The sample cube has `region` and `period`, so
+asking `by=region` combines every period into one figure per region.
+
+### Slicing
+
+```sql
+SELECT region, amount FROM cube_slice('sales', 'amount', 'where=period:q1');
+```
+
+A slice narrows to one member. It is a restriction on the question, not a loss of data — which
+is why it does not change the completeness reported below.
+
+### Every answer says what it is
+
+A cube result carries provenance columns, and they exist because a number on its own cannot be
+reconciled with anything.
+
+```sql
+SELECT region, amount, snapshot, completeness, withheld, materialised
+FROM cube_rollup('sales', 'amount', 'by=region');
+```
+
+| Column | What it tells you |
+|---|---|
+| `snapshot` | the table version this was computed at, so a cube figure can be reconciled with a relational one taken at another moment |
+| `completeness` | what fraction of the input reached the cube |
+| `withheld` | how many rows did not, whether from policy or because they could not be placed |
+| `materialised` | whether the answer came from a stored cuboid or from the base data |
+| `from_cuboid` | which one, when it did |
+
+**`completeness` is the one to understand.** Two people with different permissions ask the
+same question and correctly get different totals, because an aggregate is computed over the
+rows the caller may read. Most systems make an operator choose between a true total and a
+visible one; here every answer states how much of its input it saw, so a filtered total is
+distinguishable by looking at it rather than by knowing which role you were in.
+
+A query may insist:
+
+```sql
+SELECT region, amount
+FROM cube_rollup('sales', 'amount', 'by=region, min_completeness=0.5');
+```
+
+### What a cube refuses, and why that is the point
+
+```sql
+-- ERROR: a ratio cannot be derived from its parts
+SELECT region, margin_pct FROM cube_rollup('sales', 'margin_pct', 'by=region');
+```
+
+`margin_pct` is a ratio. There is no operation over the parts that yields the whole — the
+margin of two regions is not the sum, the mean, or anything else derivable from the two
+margins. So it is declared as composing along nothing, and the refusal happens **while the
+query is planned**, not after a plausible number has been computed.
+
+Averaging is refused for the same reason. An average of averages is an average only when every
+group is the same size, and groups are never the same size.
+
+A measure declared with no rule at all is refused when the cube is declared, naming the
+measure. A cube whose measures have not been thought about should not become a cube.
+
+### Three lifetimes
+
+| | Persisted | Materialised | Maintained by | Ends when |
+|---|---|---|---|---|
+| **Ephemeral** | no | no | nothing | the session ends |
+| **Declared** | yes | no | nothing | it is dropped |
+| **Maintained** | yes | yes | the warehouse | it is dropped |
+
+**Ephemeral is the default**, deliberately. Exploring should not require deciding whether a
+question deserves to be durable, and a warehouse should not accumulate a definition per
+abandoned question. Persisting is the deliberate act.
+
+A **Declared** cube costs one small file and computes on demand. It is the right choice for a
+cube asked about occasionally, and for any cube whose readers have different permissions — a
+stored aggregate is only usable by callers entitled to exactly the rows it was built from, so
+materialising a cube read by twenty differently-restricted analysts mostly produces cells
+nobody may use.
+
+A **Maintained** cube adds `target_lag`, and the warehouse keeps it within that lag whether or
+not anybody is logged in. It is a **staleness target, not a schedule**: `target_lag = 5` means
+*the cells may be at most five commits behind*, not *rebuild every five commits*. A schedule
+rebuilds when nothing has changed and fails to rebuild when a build takes longer than its
+interval; a target says what you actually want.
+
+Staleness here is exact rather than estimated, because a stored cuboid records the version it
+was computed at. **A cuboid past its target is never served as though it were fresh** — the
+answer falls back to live aggregation, which is slower and right, and says `materialised =
+false` so you can see which you got.
+
+### Deciding what gets materialised
+
+A Maintained cube does not store every shape it could. The lattice of possible cuboids is
+exponential in the dimension count, so *everything* is not a plan — it is a way to fill a disk.
+
+Three controls decide, and they belong to three different people.
+
+| Level | Who sets it | What it says |
+|---|---|---|
+| **Definition** | whoever models the cube | shapes **pinned** — always worth holding |
+| **Configuration** | the operator | the row **budget** automatic selection may spend |
+| **Session** | the caller | whether *this* query uses materialisation at all |
+
+**The definition pins.** Selection spends the operator's budget on evidence — what people have
+actually asked for. A pin is the statement that a shape is worth holding *before* any evidence
+exists: the month-end roll-up nobody runs until the day it has to be instant. A pin that had to
+compete against a query log would be no control at all, so pinned shapes are not put through
+selection.
+
+**The operator budgets.** It is their storage being spent on their behalf by a selection reading
+somebody else's query log, so it is bounded by a number they set:
+
+```toml
+[cubes]
+budget_rows = 10000000
+```
+
+Set it to `0` and automatic selection buys nothing. The base cuboid and any pinned shape are
+still built — neither is bought from the budget.
+
+**The caller may ask for less, and only less.** There is deliberately no value that widens
+anything: a session that could raise the budget would be an unbounded storage grant to anybody
+who can open a connection.
+
+```sql
+SELECT region, amount, materialised
+FROM cube_rollup('sales', 'amount', 'by=region, materialise=false');
+```
+
+`materialise=false` computes from the base data. That is the **reproducibility check**: a figure
+that differs between it and the default is a defect, not a tuning question — materialisation is
+a cache, and a cache that changes the answer is not one. `materialise=pinned` uses only shapes
+the definition names, and not one selection bought from another user's queries.
+
+An unrecognised value is refused while the query is planned, rather than quietly taking its
+default:
+
+```sql
+-- ERROR: 'materialise' must be true, false or pinned
+SELECT region, amount FROM cube_rollup('sales', 'amount', 'by=region, materialise=maybe');
+```
+
+### What is left when nobody is watching
+
+Automatic materialisation is driven by a **query log**: a bounded record, per cube, of which
+dimensions people grouped by. The repetition is the weighting — a shape asked ten times counts
+ten times — and old entries are overwritten, so a dashboard nobody has opened in a week stops
+pinning storage without anybody deciding it should.
+
+It records a *shape*, and there is nowhere in it to put a member, a predicate, or who was
+asking. That is worth stating plainly, because a query log is the kind of thing that quietly
+becomes a record of who asked what about whom. This one cannot.
+
+**A cube nobody has queried gets its base cuboid and nothing else.** That is the honest answer
+rather than a guess: there is no evidence about what would help, and spending an operator's
+storage on a guess is worse than spending none.
+
+### Who a stored cuboid may serve
+
+A background refresh has no principal — nobody is logged in at four in the morning — so it
+builds the **unrestricted** cuboid: an aggregate over every row.
+
+That cuboid may serve only a caller whose own permissions withhold nothing. Serving it to
+somebody a row policy filters would be a disclosure through arithmetic, and an invisible one:
+the number is real, it is simply computed over rows they may not read. There is no error to
+notice and nothing in a log to find.
+
+The consequence is worth knowing rather than discovering. **Background refresh helps dashboards
+and service accounts, and does nothing for a restricted analyst** — their cuboids can only be
+built by their own queries. A cuboid also carries the completeness it was computed under, so a
+cube served from storage still says how much of the fact table it saw.
+
+### What is not here
+
+MDX, deliberately — see [ADR-0007](adr/0007-the-cube-model.md). And a cube is registered
+against a warehouse rather than written in SQL: `CREATE CUBE` is not a statement yet.
 
 ---
 
@@ -859,6 +1084,7 @@ admits less. [`STATUS.md`](STATUS.md) is the authoritative version.
 
 ## Where to go next
 
+- [`tutorials/`](tutorials/) — hands-on, in order, each example executed by a test
 - [`QUICKSTART.md`](QUICKSTART.md) — build it and get a server running
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — why it is shaped this way
 - [`STATUS.md`](STATUS.md) — what is built, what is measured, and the defects found along the way

@@ -25,7 +25,7 @@
 
 mod common;
 
-use common::{query, start, write_warehouse};
+use common::{query_outcome, start, write_warehouse};
 
 /// Blocks that cannot run here, and why.
 ///
@@ -66,15 +66,41 @@ const NOT_RUN: &[(&str, &str)] = &[
         "FROM salaries",
         "illustrates a row policy over a table the reader defines",
     ),
+    (
+        "\\dt",
+        "psql's own meta-commands, which the client expands before anything reaches the \
+         server. They belong in the guide because a reader will type them, and they are not \
+         SQL for this test to run",
+    ),
 ];
 
-/// The fenced `sql` blocks of the guide, in order.
+/// Every document whose SQL this test executes.
+///
+/// The tutorials are here for the same reason the guide is. A tutorial is the document a
+/// reader trusts most --- they are following it step by step, with no independent way to tell
+/// a stale instruction from a current one --- so an untested one rots in the worst possible
+/// place. Adding a tutorial to `docs/tutorials/` and not to this list is caught by
+/// [`every_tutorial_is_executed`], which fails on a file nothing runs.
+const DOCUMENTS: &[&str] = &[
+    "../../docs/GUIDE.md",
+    "../../docs/tutorials/01-your-first-cube.md",
+    "../../docs/tutorials/02-making-a-cube-fast.md",
+    "../../docs/tutorials/03-completeness-and-policy.md",
+    "../../docs/tutorials/04-when-a-cube-refuses.md",
+];
+
+/// The fenced `sql` blocks of every document in [`DOCUMENTS`], in order.
 fn sql_blocks() -> Vec<String> {
+    DOCUMENTS.iter().flat_map(|relative| blocks_of(relative)).collect()
+}
+
+/// The fenced `sql` blocks of one document.
+fn blocks_of(relative: &str) -> Vec<String> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/GUIDE.md")
+        .join(relative)
         .canonicalize()
-        .expect("the guide is beside the crates it documents");
-    let text = std::fs::read_to_string(path).expect("reading the guide");
+        .unwrap_or_else(|_| panic!("{relative} is beside the crates it documents"));
+    let text = std::fs::read_to_string(path).expect("reading the document");
 
     let mut blocks = Vec::new();
     let mut current: Option<String> = None;
@@ -123,6 +149,38 @@ fn statements(block: &str) -> (Vec<String>, bool) {
 }
 
 #[test]
+fn every_tutorial_is_executed() {
+    // A tutorial that is written and never run is worse than one that does not exist: a
+    // reader following it step by step has no way to tell a stale instruction from a current
+    // one. This asserts the accounting the other direction --- every file present on disk is
+    // named in `DOCUMENTS`, so a new tutorial cannot be added and quietly left unverified.
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/tutorials")
+        .canonicalize()
+        .expect("the tutorials directory exists");
+
+    let mut on_disk: Vec<String> = std::fs::read_dir(&directory)
+        .expect("reading the tutorials")
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str().map(ToString::to_string))
+        .filter(|name| name.ends_with(".md") && name != "README.md")
+        .collect();
+    on_disk.sort();
+
+    let mut listed: Vec<String> = DOCUMENTS
+        .iter()
+        .filter(|relative| relative.contains("/tutorials/"))
+        .filter_map(|relative| relative.rsplit('/').next().map(ToString::to_string))
+        .collect();
+    listed.sort();
+
+    assert_eq!(
+        on_disk, listed,
+        "a tutorial exists that no test runs, or is listed and missing"
+    );
+}
+
+#[test]
 fn every_guide_example_is_executed_or_accounted_for() {
     let blocks = sql_blocks();
     assert!(
@@ -157,17 +215,23 @@ fn every_guide_example_is_executed_or_accounted_for() {
             // A refusal example must refuse. The wire client reports rows, so an error is a
             // query that returns none *and* is documented as an error --- checked together so
             // an empty result cannot pass as a refusal.
-            let rows = std::panic::catch_unwind(|| query(server.port, &statement));
+            let rows = query_outcome(server.port, &statement);
             match (expects_error, rows) {
-                (true, Ok(rows)) => assert_eq!(
-                    rows, 0,
-                    "block {index} is documented as an error and returned {rows} row(s): \
-                     {statement}"
+                // A documented refusal must actually be refused. Accepting "returned no
+                // rows" was the same flaw one level up: a statement that succeeds and matches
+                // nothing is indistinguishable from one the server rejected, so an example
+                // documented as an error could quietly have stopped being one.
+                (true, Ok(rows)) => panic!(
+                    "block {index} is documented as an error and succeeded with {rows} \
+                     row(s): {statement}"
                 ),
                 (true, Err(_)) => {}
                 (false, Ok(_)) => {}
-                (false, Err(_)) => {
-                    panic!("block {index} failed and is not documented as an error: {statement}")
+                (false, Err(why)) => {
+                    panic!(
+                        "block {index} failed and is not documented as an error: {statement}\n\
+                         {why}"
+                    )
                 }
             }
             ran += 1;

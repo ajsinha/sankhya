@@ -109,6 +109,44 @@ pub struct Definition {
     pub dimensions: Vec<Dimension>,
     /// Its measures, each declaring a rule per dimension.
     pub measures: Vec<Measure>,
+    /// How stale this cube's materialised cells may be, in table versions.
+    ///
+    /// # Why versions and not a duration
+    ///
+    /// A materialised cuboid is keyed by the snapshot it was computed at, so its staleness is
+    /// **exactly** the distance from the table's current version --- an integer, known without
+    /// a clock. A duration would have to be estimated from commit rates, and an estimate is
+    /// what makes an SLA a decoration.
+    ///
+    /// A staleness *target*, not a schedule. `Some(0)` means only a cuboid at the current
+    /// version may be used; `Some(5)` tolerates five commits' drift; `None` is the
+    /// [`Lifetime::Declared`] case --- nothing is materialised, so nothing can be stale.
+    ///
+    /// See [ADR-0009](../../../docs/adr/0009-the-cube-lifecycle.md).
+    pub target_lag: Option<u64>,
+    /// Cuboids this cube always wants materialised, whatever the query log says.
+    ///
+    /// The **definition** level of §11.6's three controls, and the one whoever models the
+    /// cube owns. Selection spends an operator's budget on evidence; a pin is the statement
+    /// that a shape is worth holding before any evidence exists --- the month-end roll-up
+    /// nobody runs until the day it must be instant.
+    ///
+    /// Each entry is a list of dimension names. Stored that way rather than as a `Cuboid` so
+    /// this type keeps no dependency it does not need and the persisted form stays obvious.
+    pub pinned: Vec<Vec<String>>,
+}
+
+/// Which of the three lifetimes a cube has.
+///
+/// Derived from the definition rather than stored separately, so a cube cannot claim one
+/// lifetime and behave as another. See
+/// [ADR-0009](../../../docs/adr/0009-the-cube-lifecycle.md).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Lifetime {
+    /// Persisted, and nothing is pre-computed. Every query hydrates under its own scope.
+    Declared,
+    /// Persisted, materialised, and held to a stated lag.
+    Maintained,
 }
 
 impl Definition {
@@ -124,6 +162,33 @@ impl Definition {
             fact_table: fact_table.into(),
             dimensions,
             measures,
+            // Declared, not maintained. Persisting a definition is cheap; materialising is
+            // storage and work, and a cube should not acquire either by being written down.
+            target_lag: None,
+            pinned: Vec::new(),
+        }
+    }
+
+    /// The same definition, held to a staleness target.
+    #[must_use]
+    pub fn maintained_within(mut self, versions: u64) -> Self {
+        self.target_lag = Some(versions);
+        self
+    }
+
+    /// Always materialise this shape, whatever has been asked for.
+    #[must_use]
+    pub fn pinning(mut self, dimensions: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.pinned.push(dimensions.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Which lifetime this definition describes.
+    #[must_use]
+    pub const fn lifetime(&self) -> Lifetime {
+        match self.target_lag {
+            Some(_) => Lifetime::Maintained,
+            None => Lifetime::Declared,
         }
     }
 
@@ -158,6 +223,38 @@ pub struct Cube {
 }
 
 impl Cube {
+    /// How stale its materialised cells may be, in table versions.
+    ///
+    /// `None` for a cube that materialises nothing, which is not the same as a target of
+    /// zero: zero admits a cuboid at the current version, and `None` admits none at all.
+    #[must_use]
+    pub const fn target_lag(&self) -> Option<u64> {
+        self.definition.target_lag
+    }
+
+    /// The cuboids this cube's definition pins.
+    ///
+    /// A pin is a statement of intent, not a promise about this instant: a pinned cuboid that
+    /// has not been built yet is simply not there to use.
+    #[must_use]
+    pub fn pinned(&self) -> Vec<sankhya_cube_algo::lattice::Cuboid> {
+        self.definition
+            .pinned
+            .iter()
+            .map(|dimensions| {
+                sankhya_cube_algo::lattice::Cuboid::of(
+                    &dimensions.iter().map(String::as_str).collect::<Vec<&str>>(),
+                )
+            })
+            .collect()
+    }
+
+    /// Which lifetime it has.
+    #[must_use]
+    pub const fn lifetime(&self) -> Lifetime {
+        self.definition.lifetime()
+    }
+
     /// The cube's name.
     #[must_use]
     pub fn name(&self) -> &str {

@@ -1,201 +1,334 @@
-                                 Apache License
-                           Version 2.0, January 2004
-                        http://www.apache.org/licenses/
+SANKHYA PROPRIETARY SOFTWARE LICENCE
 
-   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+Copyright (c) 2026 Ashutosh Sinha <ajsinha@gmail.com>. All rights reserved.
 
-   1. Definitions.
+NOTICE: This is proprietary and confidential software. It is NOT open source. It
+is not licensed under the Apache License, the MIT License, or any other open
+source or free software licence.
 
-      "License" shall mean the terms and conditions for use, reproduction,
-      and distribution as defined by Sections 1 through 9 of this document.
+--------------------------------------------------------------------------------
+1. DEFINITIONS
+--------------------------------------------------------------------------------
 
-      "Licensor" shall mean the copyright owner or entity authorized by
-      the copyright owner that is granting the License.
+"Licensor" means Ashutosh Sinha <ajsinha@gmail.com>, the sole owner of the
+Software.
 
-      "Legal Entity" shall mean the union of the acting entity and all
-      other entities that control, are controlled by, or are under common
-      control with that entity. For the purposes of this definition,
-      "control" means (i) the power, direct or indirect, to cause the
-      direction or management of such entity, whether by contract or
-      otherwise, or (ii) ownership of fifty percent (50%) or more of the
-      outstanding shares, or (iii) beneficial ownership of such entity.
+"Software" means the Sankhya software in any form, including source code, object
+code, executables, build scripts, configuration, schemas, test suites,
+benchmarks, documentation, specifications, design documents, architecture and
+requirements records, diagrams, and any other materials contained in or
+distributed with this repository, together with any updates, modifications,
+enhancements, derivative works, and successor versions of any of them.
 
-      "You" (or "Your") shall mean an individual or Legal Entity
-      exercising permissions granted by this License.
+"You" means the individual or legal entity that accesses, receives, possesses or
+uses the Software. If you access the Software on behalf of an organisation, "You"
+includes that organisation, and you represent that you are authorised to bind it.
 
-      "Source" form shall mean the preferred form for making modifications,
-      including but not limited to software source code, documentation
-      source, and configuration files.
+"Authorisation" means an express, separate, written and signed agreement granted
+by the Licensor to a named recipient, stating the scope, term and conditions of
+permitted use.
 
-      "Object" form shall mean any form resulting from mechanical
-      transformation or translation of a Source form, including but
-      not limited to compiled object code, generated documentation,
-      and conversions to other media types.
+--------------------------------------------------------------------------------
+2. OWNERSHIP AND RESERVATION OF RIGHTS
+--------------------------------------------------------------------------------
 
-      "Work" shall mean the work of authorship, whether in Source or
-      Object form, made available under the License, as indicated by a
-      copyright notice that is included in or attached to the work
-      (an example is provided in the Appendix below).
+2.1 The Software is the exclusive property of the Licensor. It is protected by
+copyright law, trade secret law, and applicable international treaties.
 
-      "Derivative Works" shall mean any work, whether in Source or Object
-      form, that is based on (or derived from) the Work and for which the
-      editorial revisions, annotations, elaborations, or other modifications
-      represent, as a whole, an original work of authorship. For the purposes
-      of this License, Derivative Works shall not include works that remain
-      separable from, or merely link (or bind by name) to the interfaces of,
-      the Work and Derivative Works thereof.
+2.2 The Software is licensed, never sold. No title, ownership, or intellectual
+property right in the Software transfers to You under this Licence or under any
+Authorisation.
 
-      "Contribution" shall mean any work of authorship, including
-      the original version of the Work and any modifications or additions
-      to that Work or Derivative Works thereof, that is intentionally
-      submitted to Licensor for inclusion in the Work by the copyright owner
-      or by an individual or Legal Entity authorized to submit on behalf of
-      the copyright owner. For the purposes of this definition, "submitted"
-      means any form of electronic, verbal, or written communication sent
-      to the Licensor or its representatives, including but not limited to
-      communication on electronic mailing lists, source code control systems,
-      and issue tracking systems that are managed by, or on behalf of, the
-      Licensor for the purpose of discussing and improving the Work, but
-      excluding communication that is conspicuously marked or otherwise
-      designated in writing by the copyright owner as "Not a Contribution."
+2.3 ALL RIGHTS NOT EXPRESSLY GRANTED IN WRITING ARE RESERVED BY THE LICENSOR. No
+right or licence is granted by implication, estoppel, waiver, course of dealing,
+course of performance, or otherwise. The Licensor's failure to enforce any
+provision is not a waiver of it.
 
-      "Contributor" shall mean Licensor and any individual or Legal Entity
-      on behalf of whom a Contribution has been received by Licensor and
-      subsequently incorporated within the Work.
+2.4 No patent licence, trademark licence, or right to use the name "Sankhya" or
+any Licensor mark is granted by this Licence.
 
-   2. Grant of Copyright License. Subject to the terms and conditions of
-      this License, each Contributor hereby grants to You a perpetual,
-      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-      copyright license to reproduce, prepare Derivative Works of,
-      publicly display, publicly perform, sublicense, and distribute the
-      Work and such Derivative Works in Source or Object form.
+--------------------------------------------------------------------------------
+3. NO LICENCE WITHOUT AUTHORISATION
+--------------------------------------------------------------------------------
 
-   3. Grant of Patent License. Subject to the terms and conditions of
-      this License, each Contributor hereby grants to You a perpetual,
-      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-      (except as stated in this section) patent license to make, have made,
-      use, offer to sell, sell, import, and otherwise transfer the Work,
-      where such license applies only to those patent claims licensable
-      by such Contributor that are necessarily infringed by their
-      Contribution(s) alone or by combination of their Contribution(s)
-      with the Work to which such Contribution(s) was submitted. If You
-      institute patent litigation against any entity (including a
-      cross-claim or counterclaim in a lawsuit) alleging that the Work
-      or a Contribution incorporated within the Work constitutes direct
-      or contributory patent infringement, then any patent licenses
-      granted to You under this License for that Work shall terminate
-      as of the date such litigation is filed.
+3.1 Absent a valid Authorisation, You have NO right to use, execute, run, copy,
+store, install, deploy, host, access, evaluate, benchmark, test, study, or
+otherwise exploit the Software for any purpose, whether commercial or
+non-commercial.
 
-   4. Redistribution. You may reproduce and distribute copies of the
-      Work or Derivative Works thereof in any medium, with or without
-      modifications, and in Source or Object form, provided that You
-      meet the following conditions:
+3.2 Possession of a copy of the Software, by any means and from any source, does
+not constitute Authorisation and does not grant any right.
 
-      (a) You must give any other recipients of the Work or
-          Derivative Works a copy of this License; and
+3.3 If You have obtained the Software without Authorisation, You must
+immediately cease all use, permanently delete all copies in your possession or
+control, and notify the Licensor at ajsinha@gmail.com.
 
-      (b) You must cause any modified files to carry prominent notices
-          stating that You changed the files; and
+--------------------------------------------------------------------------------
+4. PROHIBITED ACTS
+--------------------------------------------------------------------------------
 
-      (c) You must retain, in the Source form of any Derivative Works
-          that You distribute, all copyright, patent, trademark, and
-          attribution notices from the Source form of the Work,
-          excluding those notices that do not pertain to any part of
-          the Derivative Works; and
+Except to the extent expressly permitted by a valid Authorisation, or to the
+extent such restriction is prohibited by applicable law that cannot be waived by
+agreement, You shall NOT:
 
-      (d) If the Work includes a "NOTICE" text file as part of its
-          distribution, then any Derivative Works that You distribute must
-          include a readable copy of the attribution notices contained
-          within such NOTICE file, excluding those notices that do not
-          pertain to any part of the Derivative Works, in at least one
-          of the following places: within a NOTICE text file distributed
-          as part of the Derivative Works; within the Source form or
-          documentation, if provided along with the Derivative Works; or,
-          within a display generated by the Derivative Works, if and
-          wherever such third-party notices normally appear. The contents
-          of the NOTICE file are for informational purposes only and
-          do not modify the License. You may add Your own attribution
-          notices within Derivative Works that You distribute, alongside
-          or as an addendum to the NOTICE text from the Work, provided
-          that such additional attribution notices cannot be construed
-          as modifying the License.
+(a) copy, reproduce, or create backups of the Software except as strictly
+    necessary for a use expressly authorised in writing;
 
-      You may add Your own copyright statement to Your modifications and
-      may provide additional or different license terms and conditions
-      for use, reproduction, or distribution of Your modifications, or
-      for any such Derivative Works as a whole, provided Your use,
-      reproduction, and distribution of the Work otherwise complies with
-      the conditions stated in this License.
+(b) modify, adapt, translate, port, or create derivative works of the Software;
 
-   5. Submission of Contributions. Unless You explicitly state otherwise,
-      any Contribution intentionally submitted for inclusion in the Work
-      by You to the Licensor shall be under the terms and conditions of
-      this License, without any additional terms or conditions.
-      Notwithstanding the above, nothing herein shall supersede or modify
-      the terms of any separate license agreement you may have executed
-      with Licensor regarding such Contributions.
+(c) distribute, publish, disclose, transmit, lease, lend, rent, sell, resell,
+    assign, transfer, sublicense, or otherwise make the Software available to any
+    third party, including by making it available over a network or as a hosted,
+    managed, embedded, or software-as-a-service offering;
 
-   6. Trademarks. This License does not grant permission to use the trade
-      names, trademarks, service marks, or product names of the Licensor,
-      except as required for reasonable and customary use in describing the
-      origin of the Work and reproducing the content of the NOTICE file.
+(d) reverse engineer, decompile, disassemble, or otherwise attempt to derive the
+    source code, algorithms, structure, or organisation of any part of the
+    Software supplied in non-source form;
 
-   7. Disclaimer of Warranty. Unless required by applicable law or
-      agreed to in writing, Licensor provides the Work (and each
-      Contributor provides its Contributions) on an "AS IS" BASIS,
-      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
-      implied, including, without limitation, any warranties or conditions
-      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
-      PARTICULAR PURPOSE. You are solely responsible for determining the
-      appropriateness of using or redistributing the Work and assume any
-      risks associated with Your exercise of permissions under this License.
+(e) remove, obscure, alter, or falsify any copyright, trademark, proprietary, or
+    attribution notice contained in or displayed by the Software, including this
+    Licence file;
 
-   8. Limitation of Liability. In no event and under no legal theory,
-      whether in tort (including negligence), contract, or otherwise,
-      unless required by applicable law (such as deliberate and grossly
-      negligent acts) or agreed to in writing, shall any Contributor be
-      liable to You for damages, including any direct, indirect, special,
-      incidental, or consequential damages of any character arising as a
-      result of this License or out of the use or inability to use the
-      Work (including but not limited to damages for loss of goodwill,
-      work stoppage, computer failure or malfunction, or any and all
-      other commercial damages or losses), even if such Contributor
-      has been advised of the possibility of such damages.
+(f) use the Software to develop, train, or improve any product or service that
+    competes with the Software, or to derive any competitive benchmark or
+    comparison for publication;
 
-   9. Accepting Warranty or Additional Liability. While redistributing
-      the Work or Derivative Works thereof, You may choose to offer,
-      and charge a fee for, acceptance of support, warranty, indemnity,
-      or other liability obligations and/or rights consistent with this
-      License. However, in accepting such obligations, You may act only
-      on Your own behalf and on Your sole responsibility, not on behalf
-      of any other Contributor, and only if You agree to indemnify,
-      defend, and hold each Contributor harmless for any liability
-      incurred by, or claims asserted against, such Contributor by reason
-      of your accepting any such warranty or additional liability.
+(g) use the Software in violation of any applicable law, regulation, sanction, or
+    export control; or
 
-   END OF TERMS AND CONDITIONS
+(h) circumvent or disable any technical restriction, licence check, quota,
+    entitlement mechanism, or security control in the Software.
 
-   APPENDIX: How to apply the Apache License to your work.
+--------------------------------------------------------------------------------
+5. CONFIDENTIALITY
+--------------------------------------------------------------------------------
 
-      To apply the Apache License to your work, attach the following
-      boilerplate notice, with the fields enclosed by brackets "[]"
-      replaced with your own identifying information. (Don't include
-      the brackets!)  The text should be enclosed in the appropriate
-      comment syntax for the file format. We also recommend that a
-      file or class name and description of purpose be included on the
-      same "printed page" as the copyright notice for easier
-      identification within third-party archives.
+5.1 The Software, including its source code, design, architecture, algorithms,
+performance characteristics, and any non-public documentation, constitutes the
+confidential information and trade secrets of the Licensor.
 
-   Copyright [yyyy] [name of copyright owner]
+5.2 You shall keep the Software strictly confidential, shall not disclose it to
+any third party, and shall protect it with at least the degree of care You use
+for your own most sensitive confidential information, and in no event less than a
+reasonable degree of care.
 
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
+5.3 This obligation survives termination of this Licence and any Authorisation,
+and continues for so long as the information remains confidential.
 
-       http://www.apache.org/licenses/LICENSE-2.0
+--------------------------------------------------------------------------------
+6. NO WARRANTY
+--------------------------------------------------------------------------------
 
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
+6.1 THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE", WITH ALL FAULTS AND
+DEFECTS, AND WITHOUT WARRANTY OF ANY KIND.
+
+6.2 TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSOR EXPRESSLY
+DISCLAIMS ALL WARRANTIES, REPRESENTATIONS, CONDITIONS AND TERMS, WHETHER EXPRESS,
+IMPLIED, STATUTORY OR OTHERWISE, INCLUDING BUT NOT LIMITED TO ANY IMPLIED
+WARRANTY OF MERCHANTABILITY, SATISFACTORY QUALITY, FITNESS FOR A PARTICULAR
+PURPOSE, TITLE, NON-INFRINGEMENT, ACCURACY, COMPLETENESS, DATA INTEGRITY, DATA
+DURABILITY, SECURITY, QUIET ENJOYMENT, AND ANY WARRANTY ARISING FROM COURSE OF
+DEALING, COURSE OF PERFORMANCE, USAGE OR TRADE PRACTICE.
+
+6.3 THE LICENSOR DOES NOT WARRANT THAT THE SOFTWARE WILL MEET YOUR REQUIREMENTS,
+THAT ITS OPERATION WILL BE UNINTERRUPTED, TIMELY, SECURE OR ERROR-FREE, THAT
+DEFECTS WILL BE CORRECTED, THAT IT IS FREE OF HARMFUL COMPONENTS, OR THAT ANY
+RESULT, OUTPUT, CALCULATION, AGGREGATE, REPORT OR ANALYSIS PRODUCED BY IT IS
+CORRECT, COMPLETE, CURRENT OR SUITABLE FOR ANY PURPOSE.
+
+6.4 NO ADVICE OR INFORMATION, WHETHER ORAL OR WRITTEN, OBTAINED FROM THE LICENSOR
+OR THROUGH THE SOFTWARE, CREATES ANY WARRANTY NOT EXPRESSLY STATED HERE.
+
+--------------------------------------------------------------------------------
+7. ASSUMPTION OF RISK AND NO RESPONSIBILITY FOR CONSEQUENCES
+--------------------------------------------------------------------------------
+
+7.1 YOU ASSUME THE ENTIRE RISK ARISING OUT OF YOUR ACCESS TO AND USE OF THE
+SOFTWARE, AND THE ENTIRE RISK AS TO THE QUALITY, PERFORMANCE, ACCURACY AND EFFECT
+OF THE SOFTWARE AND OF ANY OUTPUT IT PRODUCES.
+
+7.2 THE LICENSOR ACCEPTS NO RESPONSIBILITY WHATSOEVER FOR ANY CONSEQUENCE OF
+USING, OR BEING UNABLE TO USE, THE SOFTWARE. WITHOUT LIMITING THE GENERALITY OF
+THE FOREGOING, THE LICENSOR ACCEPTS NO RESPONSIBILITY FOR:
+
+(a) any loss, corruption, deletion, disclosure or unavailability of data;
+
+(b) any incorrect, incomplete, delayed, stale or misleading query result,
+    aggregate, cube, report, forecast, metric or other output, or any decision
+    taken in reliance on one;
+
+(c) any financial, accounting, regulatory, tax, actuarial, clinical, safety,
+    trading or other determination made using the Software;
+
+(d) any business interruption, downtime, failed deployment, service outage, or
+    failure to meet any service level or recovery objective;
+
+(e) any breach of security, unauthorised access, or exfiltration of data;
+
+(f) any non-compliance by You with any law, regulation, contract or policy
+    applicable to You or your data; or
+
+(g) any act or omission of any third party, including any provider of
+    infrastructure, storage, network or third-party software.
+
+7.3 THE SOFTWARE IS NOT DESIGNED, CERTIFIED OR INTENDED FOR USE IN HIGH-RISK OR
+SAFETY-CRITICAL ENVIRONMENTS, INCLUDING THE OPERATION OF NUCLEAR FACILITIES,
+AIRCRAFT NAVIGATION OR COMMUNICATION SYSTEMS, AIR TRAFFIC CONTROL, LIFE SUPPORT
+OR MEDICAL DEVICES, WEAPONS SYSTEMS, OR ANY OTHER APPLICATION IN WHICH FAILURE
+COULD LEAD TO DEATH, PERSONAL INJURY, OR SEVERE PHYSICAL, ENVIRONMENTAL OR
+FINANCIAL HARM. ANY SUCH USE IS ENTIRELY AT YOUR OWN RISK AND IS EXPRESSLY
+DISCLAIMED BY THE LICENSOR.
+
+7.4 You are solely responsible for maintaining independent backups, for
+independently verifying any output on which You intend to rely, and for
+implementing appropriate controls, redundancy and human review.
+
+--------------------------------------------------------------------------------
+8. LIMITATION OF LIABILITY
+--------------------------------------------------------------------------------
+
+8.1 TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL THE
+LICENSOR BE LIABLE FOR ANY INDIRECT, INCIDENTAL, CONSEQUENTIAL, SPECIAL,
+EXEMPLARY, PUNITIVE OR AGGRAVATED DAMAGES, OR FOR ANY LOSS OF PROFITS, REVENUE,
+SAVINGS, BUSINESS, CONTRACTS, OPPORTUNITY, GOODWILL, REPUTATION, DATA OR USE,
+ARISING OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THIS LICENCE, HOWEVER
+CAUSED, UNDER ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, TORT (INCLUDING
+NEGLIGENCE), STRICT LIABILITY, BREACH OF STATUTORY DUTY, INDEMNITY OR OTHERWISE,
+AND WHETHER OR NOT THE LICENSOR HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH
+DAMAGES, AND EVEN IF ANY LIMITED REMEDY IS FOUND TO HAVE FAILED OF ITS ESSENTIAL
+PURPOSE.
+
+8.2 TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSOR'S TOTAL
+AGGREGATE LIABILITY ARISING OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THIS
+LICENCE, FROM ALL CAUSES OF ACTION AND UNDER ALL THEORIES OF LIABILITY, SHALL NOT
+EXCEED THE GREATER OF (a) THE AMOUNT ACTUALLY PAID BY YOU TO THE LICENSOR FOR THE
+SOFTWARE IN THE TWELVE MONTHS PRECEDING THE EVENT GIVING RISE TO THE CLAIM, AND
+(b) ONE HUNDRED UNITED STATES DOLLARS (USD 100).
+
+8.3 The limitations in this Section 8 apply to the fullest extent permitted by
+law. Nothing in this Licence excludes or limits liability that cannot lawfully be
+excluded or limited, including liability for death or personal injury caused by
+negligence, or for fraud or fraudulent misrepresentation. Some jurisdictions do
+not allow the exclusion of implied warranties or the limitation of liability for
+incidental or consequential damages; in those jurisdictions the exclusions and
+limitations above apply only to the extent permitted, and the remainder continues
+in force.
+
+8.4 The allocation of risk in Sections 6, 7 and 8 is a fundamental basis of the
+bargain between the parties, and the Software would not be made available on any
+other terms.
+
+--------------------------------------------------------------------------------
+9. INDEMNITY
+--------------------------------------------------------------------------------
+
+You shall defend, indemnify and hold harmless the Licensor from and against any
+and all claims, demands, actions, proceedings, losses, liabilities, damages,
+fines, penalties, costs and expenses (including reasonable legal fees) arising
+out of or relating to (a) your access to or use of the Software, (b) any output
+of the Software that You use, publish, distribute or rely upon, (c) your breach
+of this Licence, or (d) your violation of any law or of the rights of any third
+party.
+
+--------------------------------------------------------------------------------
+10. NO SUPPORT OR MAINTENANCE
+--------------------------------------------------------------------------------
+
+The Licensor has no obligation to provide support, maintenance, updates, bug
+fixes, security patches, migrations, or any other services in respect of the
+Software, and may discontinue, alter or withdraw the Software at any time without
+notice and without liability.
+
+--------------------------------------------------------------------------------
+11. TERM AND TERMINATION
+--------------------------------------------------------------------------------
+
+11.1 This Licence takes effect when You first access the Software and continues
+until terminated.
+
+11.2 Any right You may have under an Authorisation terminates automatically and
+immediately, without notice, upon any breach by You of this Licence or of that
+Authorisation. The Licensor may also terminate at any time as set out in the
+applicable Authorisation.
+
+11.3 On termination You must immediately cease all use of the Software,
+permanently destroy or delete all copies in your possession or control, and, if
+requested, certify in writing that You have done so.
+
+11.4 Sections 2, 4, 5, 6, 7, 8, 9, 12, 13 and 14, and any other provision which
+by its nature should survive, survive termination.
+
+--------------------------------------------------------------------------------
+12. THIRD-PARTY COMPONENTS
+--------------------------------------------------------------------------------
+
+12.1 The Software may incorporate or depend upon third-party components that are
+licensed separately by their respective owners. Those components remain subject
+to their own licences and notices, which are not superseded, modified or
+displaced by this Licence.
+
+12.2 Nothing in this Licence limits any right You may have, or removes any
+obligation You may owe, under a third-party component's own licence. The
+Licensor gives no warranty and accepts no liability whatsoever in respect of any
+third-party component.
+
+--------------------------------------------------------------------------------
+13. EXPORT CONTROL AND SANCTIONS
+--------------------------------------------------------------------------------
+
+You shall comply with all applicable export control, re-export, import and
+sanctions laws and regulations. You represent that You are not located in, under
+the control of, or a national or resident of, any country or entity subject to
+applicable trade sanctions or embargoes, and that You will not export, re-export
+or make the Software available in breach of any such law.
+
+--------------------------------------------------------------------------------
+14. GENERAL
+--------------------------------------------------------------------------------
+
+14.1 GOVERNING LAW AND JURISDICTION. This Licence is governed by, and construed
+in accordance with, the laws of the jurisdiction stated below, without regard to
+its conflict of laws rules. The courts of that jurisdiction shall have exclusive
+jurisdiction over any dispute arising out of or in connection with this Licence,
+and You irrevocably submit to that jurisdiction. The United Nations Convention on
+Contracts for the International Sale of Goods does not apply.
+
+    Governing jurisdiction: TO BE SPECIFIED BY THE LICENSOR
+
+14.2 SEVERABILITY. If any provision of this Licence is held invalid, illegal or
+unenforceable, that provision shall be modified to the minimum extent necessary
+to make it enforceable, or if it cannot be so modified, severed. The remaining
+provisions continue in full force and effect.
+
+14.3 ENTIRE AGREEMENT. This Licence, together with any applicable Authorisation,
+is the entire agreement between You and the Licensor in respect of the Software,
+and supersedes all prior or contemporaneous understandings, communications and
+proposals, whether oral or written.
+
+14.4 AMENDMENT AND WAIVER. This Licence may be amended only in a writing signed
+by the Licensor. No waiver is effective unless in writing and signed by the
+Licensor, and no waiver of any breach is a waiver of any other or subsequent
+breach.
+
+14.5 ASSIGNMENT. You may not assign, delegate or transfer this Licence or any
+Authorisation, in whole or in part, by operation of law or otherwise, without the
+Licensor's prior written consent. The Licensor may assign freely. Any purported
+assignment in breach of this clause is void.
+
+14.6 RELATIONSHIP. Nothing in this Licence creates a partnership, joint venture,
+agency, fiduciary or employment relationship between the parties.
+
+14.7 EQUITABLE RELIEF. You acknowledge that a breach of Sections 3, 4 or 5 would
+cause irreparable harm for which monetary damages would be an inadequate remedy,
+and that the Licensor is entitled to seek injunctive and other equitable relief
+without posting bond and without proof of actual damages, in addition to any
+other remedy.
+
+14.8 CONTACT. All notices and requests for Authorisation:
+
+    Ashutosh Sinha
+    ajsinha@gmail.com
+
+--------------------------------------------------------------------------------
+
+END OF TERMS AND CONDITIONS
