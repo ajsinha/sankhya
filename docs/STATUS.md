@@ -163,9 +163,23 @@ claim a cube saw all of its input.
 
 ### What is still not there
 
- MDX, deliberately — see ADR-0007. The lattice selection is implemented and is not
-driven by a recorded query log, so automatic materialisation is available and nothing is
-currently choosing what to materialise.
+MDX, deliberately — see ADR-0007.
+
+The query log now exists (`sankhya-cube/src/querylog.rs`), so §11.6's greedy selection runs
+against what people have actually asked for rather than against the whole lattice. A bounded
+ring per cube, where the repetition *is* the weighting: a shape asked ten times appears ten
+times and counts ten times, recency falls out of old entries being overwritten, and a cube
+nobody has queried gets its base cuboid and nothing else. It records a shape — which cube,
+which dimensions were grouped by — and has nowhere to put a member, a predicate or a
+principal, which is worth asserting rather than assuming of a query log.
+
+**§11.6's three levels of control are still not wired.** `sankhya_cube::materialise::Policy`
+implements all three — cuboids pinned in the definition, a budget set in configuration,
+overridable per session — and is exercised only by its own crate's tests. The refresher passes
+a hardcoded `CUBOID_ROW_BUDGET` and never builds a `Policy`, so a pinned cuboid is never built
+and an operator cannot change the budget. **This is the sixth instance of the same pattern**,
+and `check-surfaces` did not catch it: the check reaches crates, and here the crate is reachable
+while the type is stranded inside it.
 
 Four ADRs were written for what comes next, and each was prompted by a question worth
 recording: [ADR-0008](adr/0008-serving-cubes-under-policy.md) on serving under policy,
@@ -310,9 +324,10 @@ optimisation with a known price. Doing it means swapping `deterministic_sum` for
 moves `Sum` in the last bit and lands directly on exit criterion 3's bit-identity tests — so it
 is worth doing deliberately rather than under the impression that something is leaking.
 
-**What is still not there.** Cube selection waits on the recorded query log §11.6 asks for —
-building the selector before the signal exists would repeat the error M7 already made once.
-And a cuboid is pre-built only for the unrestricted scope.
+**What is still not there.** A cuboid is pre-built only for the unrestricted scope. Selection
+no longer waits on anything: the query log it needed was built on 2026-08-28, and the selector
+now runs against it — but it spends a constant rather than the operator's budget, because
+`Policy` is not wired in.
 
 The statement text is scanned for cube function names to decide what to hydrate, which is
 deliberately crude: a `SessionContext` is built per statement, `TableFunctionImpl::call` is
@@ -1452,7 +1467,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 393 specific defects applied one at a time; all 357 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 398 specific defects applied one at a time; all 357 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -1677,6 +1692,7 @@ On a 24-core machine with NVMe storage.
 |---|---|
 | Filter pushdown, 5M rows / 523 MiB / 1-in-10,000 selectivity | **1.02× — neutral** |
 | The same measurement with a compressible payload | 0.74× — *slower*, an artefact of the fixture |
+| The same measurement, fixture written by the product's writer (2026-08-28) | 1.06×, 0.94×, 0.96× across runs — noise around neutral |
 
 **This corrected a claim rather than confirming one.** Earlier drafts of the
 requirements and architecture documents asserted that filter pushdown was worth roughly
@@ -1692,6 +1708,27 @@ numbers rather than obviously wrong ones.
 
 The companion claim about the Parquet page row-count limit has **not** been measured and
 should be read as unverified.
+
+**The fixture was writing its own Parquet, and that was the third thing wrong with it.**
+Found 2026-08-28 while auditing test code for reimplemented infrastructure. The benchmark
+configured its own `ArrowWriter`: it duplicated three of `WriterConfig`'s six decisions --- zstd,
+page statistics, the page row limit --- and silently dropped `max_row_group_row_count`, the
+statistics truncation length and the commit-LSN encoding. Pushdown is only as good as the page
+index and the page index is emitted by writer settings, so the measurement was of a file
+Sankhya would never produce, and a change to the product's layout could not have moved the
+number.
+
+Routed through `sankhya_table::write_parquet` the figure is unchanged in substance --- noise
+around neutral, which is what the TPC-H measurement in `session.rs` already concluded from
+better evidence --- so nothing downstream of it moves. What changed is that the number is now
+about the product. The test asserts only what the measurement supports: pushdown does not
+change the answer, and is not materially slower.
+
+The shape is also the reason, and the file's own comment had it backwards. `needle` is
+`id % 10_000` over sequential ids, so every 20,000-row page spans the column's whole range: the
+predicate eliminates 99.99% of *rows* and no *pages* at all, and decoding is per page. The
+comment called this "the ordinary shape of an analytical table". It is not, and the claim went
+unchallenged for as long as the fixture was also choosing its own encoding.
 
 ### Compaction
 
@@ -1946,9 +1983,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,737 tests, none of which needs a database
+cargo test --workspace           # 1,748 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 393 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 398 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

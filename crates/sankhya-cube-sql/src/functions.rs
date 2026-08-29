@@ -33,9 +33,29 @@ use std::sync::Arc;
 ///
 /// One call, so a session either has the whole surface or none of it. A partially
 /// registered catalogue means a query works on one node and fails on another.
-pub fn register(context: &SessionContext, catalog: Arc<CubeCatalog>) {
-    context.register_udtf("cube_rollup", Arc::new(RollUp(Arc::clone(&catalog))));
-    context.register_udtf("cube_slice", Arc::new(Slice(catalog)));
+pub fn register(
+    context: &SessionContext,
+    catalog: Arc<CubeCatalog>,
+    log: Arc<sankhya_cube::querylog::QueryLog>,
+) {
+    context.register_udtf(
+        "cube_rollup",
+        Arc::new(RollUp(Arc::clone(&catalog), Arc::clone(&log))),
+    );
+    context.register_udtf("cube_slice", Arc::new(Slice(catalog, log)));
+}
+
+/// Record the shape a query asked for, so selection has something to read.
+///
+/// The **shape**, and nothing else: which cube, and which dimensions were grouped by. There is
+/// nowhere in this call to put a member, a predicate or a principal, which is deliberate ---
+/// a query log is the kind of thing that quietly becomes a record of who asked what about
+/// whom, and this one records a list of column names anybody who may read the cube can
+/// already get from `cube_dimensions`.
+fn note_the_shape(log: &sankhya_cube::querylog::QueryLog, cube: &str, args: &Arguments) {
+    let by = args.list("by");
+    let asked: Vec<&str> = by.iter().map(String::as_str).collect();
+    log.record(cube, sankhya_cube::algo::Cuboid::of(&asked));
 }
 
 /// The columns every cube function carries, whatever else it returns.
@@ -286,13 +306,14 @@ fn check_completeness(completeness: &Completeness, args: &Arguments) -> Result<(
 
 /// `cube_rollup(cube, measure, options)` --- a breakdown at the grain `by` names.
 #[derive(Debug)]
-struct RollUp(Arc<CubeCatalog>);
+struct RollUp(Arc<CubeCatalog>, Arc<sankhya_cube::querylog::QueryLog>);
 
 impl TableFunctionImpl for RollUp {
     fn call(&self, exprs: &[Expr]) -> Result<Arc<dyn TableProvider>> {
         let args = Arguments::parse(exprs, 2)?;
         let published = cube_of(&self.0, &args)?;
         let measure = measure_of(&published, &args)?;
+        note_the_shape(&self.1, published.cube.name(), &args);
 
         let applied = overlaid(&self.0, &published, &args)?;
         let overlay = applied.overlay().map(str::to_string);
@@ -319,13 +340,14 @@ impl TableFunctionImpl for RollUp {
 
 /// `cube_slice(cube, measure, options)` --- one member fixed, that axis dropped.
 #[derive(Debug)]
-struct Slice(Arc<CubeCatalog>);
+struct Slice(Arc<CubeCatalog>, Arc<sankhya_cube::querylog::QueryLog>);
 
 impl TableFunctionImpl for Slice {
     fn call(&self, exprs: &[Expr]) -> Result<Arc<dyn TableProvider>> {
         let args = Arguments::parse(exprs, 2)?;
         let published = cube_of(&self.0, &args)?;
         let measure = measure_of(&published, &args)?;
+        note_the_shape(&self.1, published.cube.name(), &args);
 
         let Some(restriction) = args.string("where") else {
             return plan_err!(

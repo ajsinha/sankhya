@@ -113,6 +113,12 @@ pub struct Server {
     /// cache outlives the session; the *key* --- which includes the scope digest --- is what
     /// keeps that safe.
     hydrated: Arc<sankhya_cube_sql::hydrated::Hydrated>,
+    /// What people have asked each cube for.
+    ///
+    /// Selection has been implemented and untestable since M7 began, because nothing recorded
+    /// the signal it reads. Bounded per cube, and it records a *shape* --- which dimensions
+    /// were grouped by --- with nowhere to put a member or a principal.
+    query_log: Arc<sankhya_cube::querylog::QueryLog>,
     clock: parking_lot::Mutex<i64>,
     /// How many connections are open, so the gauge can be set from either hook.
     ///
@@ -130,6 +136,72 @@ pub struct Server {
     /// for one call. This is where the two worlds meet, and doing it in one place is what
     /// keeps the protocol code free of it.
     runtime: tokio::runtime::Handle,
+}
+
+/// Roll base-grain cells to the grain a cuboid names.
+///
+/// `None` when a dimension cannot be rolled away --- the measure does not compose along it ---
+/// which is a shape that must not be materialised rather than one to store approximately.
+fn roll_to(
+    cells: &sankhya_cube::cells::Cells,
+    shape: &sankhya_cube::algo::Cuboid,
+    measure: &sankhya_cube::algo::Measure,
+) -> Option<sankhya_cube::cells::Cells> {
+    let keep: Vec<&str> = shape.dimensions();
+    let dropping: Vec<String> = cells
+        .dimensions()
+        .iter()
+        .filter(|name| !keep.contains(&name.as_str()))
+        .cloned()
+        .collect();
+    let mut out = cells.clone();
+    for dimension in dropping {
+        out = sankhya_cube::navigate::roll_up(
+            &out,
+            &dimension,
+            measure,
+            sankhya_cube::navigate::Ordered::Unstated,
+        )
+        .ok()?;
+    }
+    Some(out)
+}
+
+/// The row budget selection may spend on materialised cuboids, per cube.
+///
+/// An operator's storage, spent on their behalf, so it is bounded by a number rather than by
+/// what the lattice happens to contain --- which is exponential in the dimension count and
+/// would be a budget in name only.
+const CUBOID_ROW_BUDGET: u64 = 10_000_000;
+
+/// What a cuboid costs, when nothing better is known.
+///
+/// # Why this is not uniform, which was the first attempt
+///
+/// Counting every cuboid the same makes selection a **no-op**, and not obviously: a cuboid is
+/// chosen for the rows it *saves*, and if every cuboid costs the same then answering from a
+/// coarser one saves nothing, so nothing is ever worth holding. The first version of this
+/// returned a constant and carried a comment claiming it "still selects usefully". It selects
+/// nothing, and a test asking for one shape five times and finding it unmaterialised is what
+/// said so.
+///
+/// So cost is monotone in width: a cuboid over fewer dimensions holds fewer distinct member
+/// combinations. `ASSUMED_MEMBERS` per dimension is an estimate and is stated as one --- the
+/// real figure is the distinct combinations actually present, which nothing here has measured.
+/// What matters for selection is not the absolute number but that dropping a dimension makes a
+/// cuboid cheaper, and that is true of the data whatever the constant is.
+///
+/// Replaced when cardinality is recorded rather than assumed; until then this is a shape that
+/// ranks correctly rather than a number anybody should read.
+struct EstimatedCost;
+
+/// Distinct members assumed per dimension, for want of a measurement.
+const ASSUMED_MEMBERS: u64 = 100;
+
+impl sankhya_cube::algo::Cost for EstimatedCost {
+    fn rows(&self, cuboid: &sankhya_cube::algo::Cuboid) -> u64 {
+        ASSUMED_MEMBERS.saturating_pow(u32::try_from(cuboid.width()).unwrap_or(u32::MAX))
+    }
 }
 
 /// How many versions of drift a superseded cuboid is allowed before it is removed.
@@ -228,6 +300,7 @@ impl Server {
             log_cache: sankhya_table_delta::LogCache::new(),
             cubes: Vec::new(),
             hydrated: Arc::new(sankhya_cube_sql::hydrated::Hydrated::default()),
+            query_log: Arc::new(sankhya_cube::querylog::QueryLog::new()),
             clock: parking_lot::Mutex::new(0),
             connections: AtomicUsize::new(0),
             metrics: Arc::new(Registry::new()),
@@ -555,7 +628,11 @@ impl Server {
                 }
             }
         }
-        sankhya_cube_sql::functions::register(context, Arc::clone(&catalog));
+        sankhya_cube_sql::functions::register(
+            context,
+            Arc::clone(&catalog),
+            Arc::clone(&self.query_log),
+        );
         // Description alongside navigation, always. A surface a client can use only by
         // already knowing the model is a surface only its author can use, and a picker that
         // hardcodes a cube's dimensions is a picker that drifts from the cube.
@@ -595,11 +672,45 @@ impl Server {
             let base = sankhya_cube::algo::Cuboid::of(
                 &cube.dimensions().iter().map(|d| d.name.as_str()).collect::<Vec<&str>>(),
             );
+            // What people have actually asked this cube for.
+            //
+            // §11.6's selection has existed and been tested since M7 began and could not run,
+            // because nothing recorded the signal its own documentation says it needs:
+            // selecting against the whole lattice "optimises for queries nobody runs, which
+            // is the same mistake as a person guessing, made faster".
+            //
+            // A cube nobody has queried gets its base cuboid and nothing else. That is the
+            // honest answer rather than a guess: there is no evidence about what would help,
+            // and spending an operator's storage on a guess is worse than spending none.
+            let asked = self.query_log.asked(cube.name());
+            // The base, plus whatever selection says is worth holding given what has been
+            // asked. Selection spends a row budget, so a cube asked for one shape repeatedly
+            // gets that shape and a cube asked for twenty gets whichever few fit.
+            let mut wanted = vec![base.clone()];
+            if !asked.is_empty() {
+                let lattice = sankhya_cube::algo::Lattice::over(asked.clone());
+                for measure in cube.measures() {
+                    for chosen in sankhya_cube::algo::select(
+                        &lattice,
+                        &asked,
+                        measure,
+                        &EstimatedCost,
+                        CUBOID_ROW_BUDGET,
+                        &base,
+                    ) {
+                        if !wanted.contains(&chosen.cuboid) {
+                            wanted.push(chosen.cuboid);
+                        }
+                    }
+                }
+            }
+
             for measure in cube.measures() {
+              for shape in &wanted {
                 let key = sankhya_cube::materialise::Key::unrestricted(
                     cube.version(),
                     snapshot,
-                    base.clone(),
+                    shape.clone(),
                 );
                 if sankhya_maintenance::cuboid::exists(
                     &self.settings.warehouse,
@@ -608,7 +719,19 @@ impl Server {
                 ) {
                     continue;
                 }
-                let Some(cells) = self.hydrate_unrestricted(cube, measure) else {
+                let Some(base_cells) = self.hydrate_unrestricted(cube, measure) else {
+                    continue;
+                };
+                // Rolled to the shape being stored.
+                //
+                // Hydration produces cells at the **base** grain, and storing those under a
+                // coarser cuboid's key would file `[region, period]` cells as a `[region]`
+                // cuboid --- a cache that lies about its own grain, which is worse than no
+                // cache because a reader trusts the key.
+                //
+                // A dimension that will not roll away is a measure that does not compose
+                // there, and the shape is skipped rather than stored wrong.
+                let Some(cells) = roll_to(&base_cells, shape, measure) else {
                     continue;
                 };
                 let Some(rule) = cube
@@ -627,6 +750,7 @@ impl Server {
                 ) {
                     refreshed.push(format!("{}.{}", cube.name(), measure.name));
                 }
+              }
             }
         }
         // Built, then swept. In that order: a cuboid written this pass is at the current

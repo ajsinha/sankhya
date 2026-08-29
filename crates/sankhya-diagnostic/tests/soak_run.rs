@@ -823,7 +823,14 @@ fn navigate_the_cube(runtime: &tokio::runtime::Runtime, table_root: &Path) -> bo
         return false;
     }
     let catalog = Arc::new(sankhya_cube_sql::catalog::CubeCatalog::new());
-    sankhya_cube_sql::functions::register(&context, Arc::clone(&catalog));
+    // A log per navigation, discarded with it. The soak measures the cube path rather than
+    // driving selection, and a log that outlived the call would be state the harness holds
+    // on the product's behalf --- which is what a test must not do.
+    sankhya_cube_sql::functions::register(
+        &context,
+        Arc::clone(&catalog),
+        Arc::new(sankhya_cube::querylog::QueryLog::new()),
+    );
 
     runtime.block_on(async {
         if sankhya_cube_sql::publish::publish_from_fact_table(

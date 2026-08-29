@@ -3379,6 +3379,7 @@ version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
+ "parking_lot",
  "proptest",
  "sankhya-cube-algo",
  "sankhya-error",
@@ -3693,6 +3694,7 @@ dependencies = [
  "arrow-schema",
  "datafusion",
  "parking_lot",
+ "parquet",
  "sankhya-api-pg",
  "sankhya-audit",
  "sankhya-authz",

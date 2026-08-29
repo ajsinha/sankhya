@@ -113,7 +113,7 @@ fn session() -> (SessionContext, Arc<CubeCatalog>) {
     catalog.register_overlay(Arc::new(overlay));
 
     let context = SessionContext::new();
-    register(&context, Arc::clone(&catalog));
+    register(&context, Arc::clone(&catalog), Arc::new(sankhya_cube::querylog::QueryLog::new()));
     (context, catalog)
 }
 

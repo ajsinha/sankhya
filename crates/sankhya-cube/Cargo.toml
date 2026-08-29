@@ -22,6 +22,7 @@ arrow-array       = { workspace = true }
 arrow-schema      = { workspace = true }
 serde             = { workspace = true }
 serde_json        = { workspace = true }
+parking_lot       = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -45,6 +45,7 @@ tracing-subscriber = { workspace = true }
 
 
 [dev-dependencies]
+parquet = { workspace = true }
 sankhya-cube-algo = { path = "../sankhya-cube-algo" }
 sankhya-publish = { path = "../sankhya-publish" }
 sankhya-diagnostic = { path = "../sankhya-diagnostic" }

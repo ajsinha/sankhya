@@ -55,6 +55,7 @@ fn schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("region", DataType::Utf8, false),
+        Field::new("period", DataType::Utf8, false),
         Field::new("amount", DataType::Float64, false),
     ]))
 }
@@ -72,6 +73,7 @@ fn warehouse_with_a_fact_table() -> tempfile::TempDir {
         vec![
             Arc::new(Int64Array::from(vec![1_i64, 2, 3, 4])),
             Arc::new(StringArray::from(vec!["north", "north", "south", "south"])),
+            Arc::new(StringArray::from(vec!["q1", "q2", "q1", "q2"])),
             Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0, 40.0])),
         ],
     )
@@ -92,23 +94,49 @@ fn sales() -> Definition {
     Definition::new(
         "sales",
         "orders",
-        vec![Dimension {
-            name: "region".to_string(),
-            table: "orders".to_string(),
-            joins_on: "region".to_string(),
-            // Two levels, so their *order* is observable. With one level every ordering is
-            // the same ordering, and a test over it cannot tell a hierarchy from a list.
-            levels: vec![Level::new("country", "region"), Level::new("area", "region")],
-            rollups: None,
-            parent_child: None,
-        }],
         vec![
-            Measure::new("amount", vec![Along::new("region", CubeRule::Sum)]),
+            Dimension {
+                name: "region".to_string(),
+                table: "orders".to_string(),
+                joins_on: "region".to_string(),
+                // Two levels, so their *order* is observable. With one level every ordering
+                // is the same ordering, and a test over it cannot tell a hierarchy from a
+                // list.
+                levels: vec![Level::new("country", "region"), Level::new("area", "region")],
+                rollups: None,
+                parent_child: None,
+            },
+            // A second dimension, so a query can ask for a shape *coarser* than the base.
+            // With one dimension every ask is the base, and a test cannot tell selection
+            // running from selection never running.
+            Dimension {
+                name: "period".to_string(),
+                table: "orders".to_string(),
+                joins_on: "period".to_string(),
+                levels: vec![Level::new("quarter", "period")],
+                rollups: None,
+                parent_child: None,
+            },
+        ],
+        vec![
+            Measure::new(
+                "amount",
+                vec![
+                    Along::new("region", CubeRule::Sum),
+                    Along::new("period", CubeRule::Sum),
+                ],
+            ),
             // A measure that does *not* compose, so composability is observable. A ratio
             // cannot be derived from its parts: there is no operation over the pieces that
             // yields the whole, which is exactly what a client must be told before it offers
             // to roll one up.
-            Measure::new("ratio", vec![Along::new("region", CubeRule::None)]),
+            Measure::new(
+                "ratio",
+                vec![
+                    Along::new("region", CubeRule::None),
+                    Along::new("period", CubeRule::None),
+                ],
+            ),
         ],
     )
 }
@@ -317,16 +345,16 @@ async fn a_client_can_discover_a_cube_s_dimensions_and_their_order() {
         .expect("dimensions are listable");
     assert_eq!(
         first_column(&result, "dimension"),
-        vec!["region".to_string(), "region".to_string()]
+        vec!["region".to_string(), "region".to_string(), "period".to_string()]
     );
     assert_eq!(
         first_column(&result, "level"),
-        vec!["country".to_string(), "area".to_string()],
+        vec!["country".to_string(), "area".to_string(), "quarter".to_string()],
         "coarse to fine, as declared"
     );
     assert_eq!(
         first_column(&result, "depth"),
-        vec!["0".to_string(), "1".to_string()],
+        vec!["0".to_string(), "1".to_string(), "0".to_string()],
         "the depth is what tells a client which level is coarser, and it must not be \
          constant --- a client drawing a hierarchy from a constant draws a list"
     );
@@ -343,19 +371,31 @@ async fn a_client_can_discover_which_roll_ups_are_even_legal() {
     let result = server
         .query("SELECT * FROM cube_measures('sales')")
         .expect("measures are listable");
+    // One row per (measure, dimension): a rule is declared per dimension, which is what
+    // makes a semi-additive measure expressible at all.
     assert_eq!(
         first_column(&result, "measure"),
-        vec!["amount".to_string(), "ratio".to_string()]
+        vec![
+            "amount".to_string(),
+            "amount".to_string(),
+            "ratio".to_string(),
+            "ratio".to_string()
+        ]
     );
     assert_eq!(
         first_column(&result, "rule"),
-        vec!["sum".to_string(), "none".to_string()]
+        vec![
+            "sum".to_string(),
+            "sum".to_string(),
+            "none".to_string(),
+            "none".to_string()
+        ]
     );
     // `t`, because the wire renders booleans the way PostgreSQL does and a client parsing
     // this is a PostgreSQL client.
     assert_eq!(
         first_column(&result, "composes"),
-        vec!["t".to_string(), "f".to_string()],
+        vec!["t".to_string(), "t".to_string(), "f".to_string(), "f".to_string()],
         "a sum composes and a ratio does not, and a client offering to roll up the second \
          offers a button that cannot work"
     );
@@ -452,6 +492,7 @@ async fn a_commit_after_a_cube_was_hydrated_changes_the_answer() {
         vec![
             Arc::new(Int64Array::from(vec![5_i64])),
             Arc::new(StringArray::from(vec!["north"])),
+            Arc::new(StringArray::from(vec!["q1"])),
             Arc::new(Float64Array::from(vec![50.0])),
         ],
     )
@@ -499,7 +540,7 @@ async fn a_materialised_cuboid_answers_without_reading_the_fact_table() {
         cube.version(),
         snapshot,
         scope,
-        sankhya_cube_algo::lattice::Cuboid::of(&["region"]),
+        sankhya_cube_algo::lattice::Cuboid::of(&["region", "period"]),
     );
 
     let mut cells = sankhya_cube::cells::Cells::over(vec!["region".to_string()]);
@@ -541,7 +582,7 @@ async fn a_materialised_cuboid_is_not_served_as_a_user_table() {
         cube.version(),
         1,
         0,
-        sankhya_cube_algo::lattice::Cuboid::of(&["region"]),
+        sankhya_cube_algo::lattice::Cuboid::of(&["region", "period"]),
     );
     let mut cells = sankhya_cube::cells::Cells::over(vec!["region".to_string()]);
     cells.add(vec!["north".to_string()], 1.0).expect("well-formed");
@@ -571,7 +612,7 @@ async fn materialising_the_same_cuboid_twice_writes_it_once() {
         cube.version(),
         1,
         0,
-        sankhya_cube_algo::lattice::Cuboid::of(&["region"]),
+        sankhya_cube_algo::lattice::Cuboid::of(&["region", "period"]),
     );
     let mut cells = sankhya_cube::cells::Cells::over(vec!["region".to_string()]);
     cells.add(vec!["north".to_string()], 1.0).expect("well-formed");
@@ -600,7 +641,7 @@ async fn an_empty_cuboid_is_not_written() {
         cube.version(),
         1,
         0,
-        sankhya_cube_algo::lattice::Cuboid::of(&["region"]),
+        sankhya_cube_algo::lattice::Cuboid::of(&["region", "period"]),
     );
     let empty = sankhya_cube::cells::Cells::over(vec!["region".to_string()]);
 
@@ -695,7 +736,7 @@ async fn what_the_refresher_builds_is_the_unrestricted_scope() {
 
     let cube = &server.cubes()[0];
     let snapshot = server.snapshot_for_test(cube.fact_table());
-    let base = sankhya_cube::algo::Cuboid::of(&["region"]);
+    let base = sankhya_cube::algo::Cuboid::of(&["region", "period"]);
     let unrestricted =
         sankhya_cube::materialise::Key::unrestricted(cube.version(), snapshot, base.clone());
     let restricted =
@@ -742,6 +783,7 @@ async fn the_refresher_collects_cuboids_the_table_has_left_behind() {
             vec![
                 Arc::new(Int64Array::from(vec![version as i64])),
                 Arc::new(StringArray::from(vec!["north"])),
+                Arc::new(StringArray::from(vec!["q1"])),
                 Arc::new(Float64Array::from(vec![1.0])),
             ],
         )
@@ -759,5 +801,129 @@ async fn the_refresher_collects_cuboids_the_table_has_left_behind() {
     assert!(
         !sankhya_maintenance::cuboid::exists(dir.path(), &stale, cube.name()),
         "a cuboid nothing can ask for is collected, or the population grows without bound"
+    );
+}
+
+// --- the query log closes the loop -------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn what_was_asked_for_is_what_gets_materialised() {
+    // The loop M7 could not close: selection has existed and been tested since the milestone
+    // began, and nothing recorded the signal its own documentation says it needs. A cube
+    // asked repeatedly for one shape should end up holding that shape.
+    let dir = maintained_warehouse();
+    let server = server_over(&dir, policy("reader", None));
+    connect(&server, "ana");
+
+    // Ask for a coarser grain than the base, several times over.
+    for _ in 0..5 {
+        server
+            .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+            .expect("the cube answers");
+    }
+
+    server.refresh_maintained_cubes();
+
+    let cube = &server.cubes()[0];
+    let snapshot = server.snapshot_for_test(cube.fact_table());
+    let asked = sankhya_cube::materialise::Key::unrestricted(
+        cube.version(),
+        snapshot,
+        sankhya_cube::algo::Cuboid::of(&["region"]),
+    );
+    assert!(
+        sankhya_maintenance::cuboid::exists(dir.path(), &asked, cube.name()),
+        "the shape people asked for five times is the shape that got materialised"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cube_nobody_queried_gets_its_base_and_no_guesses() {
+    // The honest answer for an unqueried cube. There is no evidence about what would help,
+    // and spending an operator's storage on a guess is worse than spending none --- which is
+    // exactly what selecting against the whole lattice would do.
+    let dir = maintained_warehouse();
+    let server = server_over(&dir, policy("reader", None));
+
+    // No queries at all before refreshing.
+    server.refresh_maintained_cubes();
+
+    let cube = &server.cubes()[0];
+    let snapshot = server.snapshot_for_test(cube.fact_table());
+    // The base is both dimensions. `region` alone is a shape selection could choose --- and
+    // must not, with nothing asked for.
+    let base = sankhya_cube::materialise::Key::unrestricted(
+        cube.version(),
+        snapshot,
+        sankhya_cube::algo::Cuboid::of(&["region", "period"]),
+    );
+    let guessed = sankhya_cube::materialise::Key::unrestricted(
+        cube.version(),
+        snapshot,
+        sankhya_cube::algo::Cuboid::of(&["region"]),
+    );
+    assert!(
+        sankhya_maintenance::cuboid::exists(dir.path(), &base, cube.name()),
+        "the base is built regardless --- it is the cube"
+    );
+    assert!(
+        !sankhya_maintenance::cuboid::exists(dir.path(), &guessed, cube.name()),
+        "and nothing else, because nothing has been asked for"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_materialised_cuboid_holds_the_grain_its_key_names() {
+    // A cache that lies about its own grain is worse than no cache, because a reader trusts
+    // the key. Hydration produces cells at the *base* grain, so a coarser cuboid has to be
+    // rolled to its shape before it is stored --- and the first version of the refresher
+    // stored base cells under whatever key it was writing.
+    let dir = maintained_warehouse();
+    let server = server_over(&dir, policy("reader", None));
+    connect(&server, "ana");
+
+    for _ in 0..5 {
+        server
+            .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+            .expect("the cube answers");
+    }
+    server.refresh_maintained_cubes();
+
+    let cube = &server.cubes()[0];
+    let snapshot = server.snapshot_for_test(cube.fact_table());
+    let key = sankhya_cube::materialise::Key::unrestricted(
+        cube.version(),
+        snapshot,
+        sankhya_cube::algo::Cuboid::of(&["region"]),
+    );
+    let root = sankhya_maintenance::cuboid::root_of(dir.path(), &key, cube.name());
+    assert!(root.join("_delta_log").is_dir(), "the cuboid was written");
+
+    // The columns **in the file**, read from its own footer.
+    //
+    // Not from `resolve`, which returns the schema it was handed rather than the schema on
+    // disk --- so asserting on that is asserting on the test's own input. The first version
+    // of this test did exactly that and passed under a mutation that stored the wrong grain.
+    let live = sankhya_table_delta::live_files(&root).expect("its log replays");
+    let file = live.files.first().expect("a file");
+    let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+        std::fs::File::open(root.join(&file.path)).expect("openable"),
+    )
+    .expect("a parquet file");
+    let columns: Vec<String> = reader
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect();
+
+    assert!(
+        columns.contains(&"region".to_string()),
+        "the grain its key names: {columns:?}"
+    );
+    assert!(
+        !columns.contains(&"period".to_string()),
+        "and not the base's --- storing base cells under a coarser key files them at a grain \
+         they do not have: {columns:?}"
     );
 }
