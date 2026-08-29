@@ -1910,6 +1910,12 @@ CATALOGUE = [
      "    match sankhya_atomicfs::publish(&path, body.as_bytes()) {",
      "sankhya-table-delta"),
 
+    ("leases: let a reader that could not announce go untracked, so a sweeper thinks it idle",
+     "crates/sankhya-leases/src/lib.rs",
+     "        if self.unannounced.load(Ordering::SeqCst) > 0 {\n            return Some(0);\n        }",
+     "",
+     "sankhya-leases"),
+
     ("atomicfs: claim a name by renaming, which replaces the winner instead of failing",
      "crates/sankhya-atomicfs/src/lib.rs",
      "    let claimed = std::fs::hard_link(&staging, final_path);",

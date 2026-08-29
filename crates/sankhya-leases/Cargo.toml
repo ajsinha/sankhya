@@ -1,0 +1,18 @@
+[package]
+name         = "sankhya-leases"
+description  = "Epoch-based reclamation: readers never block, and nothing is deleted while read. No dependencies."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license-file.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 0
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
