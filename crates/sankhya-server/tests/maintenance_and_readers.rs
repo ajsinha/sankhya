@@ -232,3 +232,95 @@ async fn a_server_keeps_reading_across_its_own_maintenance() {
         "every row survives a merge; the file list must be re-read, not the rows re-counted"
     );
 }
+
+// --- leases: retirement waits for readers, not for a count of ticks ------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_statement_pins_the_warehouse_for_as_long_as_it_runs() {
+    // The property the whole registry exists for, checked at the level where it matters: a
+    // statement running against this server is announced, so a sweeper consulting the same
+    // registry cannot conclude the warehouse is idle.
+    //
+    // Checked through the server's own registry rather than by racing a real deletion, because
+    // a test that has to *win* a race to observe a property fails to observe it whenever it
+    // loses --- which is a flaky test asserting a safety guarantee, the worst kind.
+    let (dir, _root) = table_with_small_files();
+    let (found, refused) = warehouse::discover(dir.path());
+    assert!(refused.is_empty(), "the fixture opens: {refused:?}");
+    let cache = sankhya_table_delta::LogCache::new();
+    let (servable, unreadable) = warehouse::servable(&found, Lsn::new(u64::MAX), &cache);
+    assert!(unreadable.is_empty(), "the fixture reads: {unreadable:?}");
+
+    let tenant = TenantId::from_uuid(uuid::Uuid::from_u128(1));
+    let policy = PolicySet::new().with(Rule::grant(
+        tenant,
+        Role::new("reader"),
+        TableRef::new("sales", "orders"),
+        Action::Read,
+    ));
+    let server = wiring::Server::with_tables(
+        wiring::Settings {
+            listen: "127.0.0.1:0".to_string(),
+            warehouse: dir.path().to_path_buf(),
+            read_as_of: Lsn::new(u64::MAX),
+            tenant,
+            cuboid_budget_rows: wiring::CUBOID_ROW_BUDGET,
+            maintenance: None,
+            require_password: false,
+            metrics_listen: None,
+        },
+        policy,
+        warehouse::describe(&found),
+        servable,
+    );
+
+    server
+        .authenticate(&[("user".to_string(), "ana".to_string())], Some(b"x"))
+        .expect("authenticated");
+
+    let leases = server.leases();
+    let idle = leases.mark();
+    assert!(
+        leases.drained(idle),
+        "no statement is running, so nothing is holding the warehouse"
+    );
+
+    // Real statements, observed from outside while they run.
+    //
+    // Pinning by hand here would test the registry and not the server: a version of this test
+    // that called `leases.pin()` itself passed with the pin removed from `run_statement`
+    // altogether, which is the whole behaviour it was named for.
+    let server = std::sync::Arc::new(server);
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let querying = {
+        let server = std::sync::Arc::clone(&server);
+        let stop = std::sync::Arc::clone(&stop);
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                server.query("SELECT * FROM orders").expect("reads");
+            }
+        })
+    };
+
+    let mut saw_a_reader = false;
+    for _ in 0..20_000 {
+        let during = leases.mark();
+        if !leases.drained(during) {
+            saw_a_reader = true;
+            break;
+        }
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    querying.join().expect("no panic");
+
+    assert!(
+        saw_a_reader,
+        "statements ran continuously and the registry never reported a reader inside"
+    );
+
+    let after = leases.mark();
+    assert!(
+        leases.drained(after),
+        "and the warehouse drains once the statements stop"
+    );
+}

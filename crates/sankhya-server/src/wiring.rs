@@ -103,6 +103,13 @@ pub struct Server {
     /// schema browser is told, the other is what a query reads. Keeping them together would
     /// invite a table that is described but not readable, or readable but not described.
     servable: parking_lot::RwLock<Vec<ServableTable>>,
+    /// Which readers are inside the warehouse right now.
+    ///
+    /// Shared with the maintenance thread, which is the entire point: a registry the sweeper
+    /// cannot see protects nothing. A statement pins it for as long as it runs, so a file that
+    /// stops being referenced while a query is in flight is not deleted until that query has
+    /// finished --- rather than after a number of ticks chosen to be probably long enough.
+    leases: Arc<sankhya_leases::Leases>,
     /// The log cache the refresh above reads through.
     ///
     /// Shared with nothing else deliberately: it exists so that checking whether a table has
@@ -388,6 +395,7 @@ impl Server {
             audit: parking_lot::Mutex::new(Chain::new()),
             tables,
             servable: parking_lot::RwLock::new(servable),
+            leases: Arc::new(sankhya_leases::Leases::new()),
             log_cache: sankhya_table_delta::LogCache::new(),
             cubes: Vec::new(),
             hydrated: Arc::new(sankhya_cube_sql::hydrated::Hydrated::default()),
@@ -1245,6 +1253,16 @@ impl Server {
         })
     }
 
+    /// The registry this server's statements pin, for the maintenance thread to consult.
+    ///
+    /// Handed out rather than rebuilt, because two registries would be worse than none: the
+    /// sweeper would consult one that no reader ever announces into, conclude the warehouse is
+    /// idle, and delete files under live queries --- while every test of either half passed.
+    #[must_use]
+    pub fn leases(&self) -> Arc<sankhya_leases::Leases> {
+        Arc::clone(&self.leases)
+    }
+
     /// The version a table's log stands at, for a test that must name the same one.
     #[must_use]
     pub fn snapshot_for_test(&self, table: &str) -> u64 {
@@ -1289,6 +1307,15 @@ impl Server {
     /// duration histogram fed only by the successful path describes a system that never
     /// fails, and the tail an operator goes looking for is made of failures.
     fn run_statement(&self, sql: &str) -> Result<QueryResult, QueryFailure> {
+        // Announced for as long as this statement runs.
+        //
+        // Taken here rather than around the scan, because the window that matters opens when
+        // the statement resolves a table into a set of file paths and closes when the last of
+        // them has been read. Pinning any later would leave the resolve unprotected, which is
+        // exactly the gap: the paths are chosen from a log, and the files behind them can be
+        // retired between the choosing and the opening.
+        let _reading = self.leases.pin();
+
         // Admission first. A statement refused for quota must not reach anything else, and
         // must be distinguishable from one refused for permission — the client's correct
         // response differs.

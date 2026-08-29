@@ -594,6 +594,16 @@ against a warehouse rather than written in SQL: `CREATE CUBE` is not a statement
 
 ## 7a. Arrow Flight SQL — the bulk plane
 
+> **Not reachable yet, as of 2026-08-29.** The ticket model, the size decision and the route
+> table are built and tested; nothing serves them. `sankhya-api-flight` is depended on only by
+> `sankhya-api-rest`, which no binary depends on either, so a client has nowhere to send a
+> `GetFlightInfo`. This section describes a design and a library rather than something you can
+> connect to today.
+>
+> It went unnoticed because `check-surfaces` looked for crates registering *SQL functions*,
+> which Flight does not; widening that check to plain reachability found it. Wiring it is
+> M8 §12.2, beside the gRPC transport it shares a transport story with.
+
 The wire protocol is a **row** protocol: the last step of every query takes columnar batches
 apart one value at a time. For an interactive query that costs nothing worth measuring; for
 a bulk extract it is the whole cost. Flight SQL does not do that — the client's Arrow buffers

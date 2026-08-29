@@ -272,7 +272,13 @@ async fn main() -> std::io::Result<()> {
             policy.compact_every,
             policy.orphan_sweep_every
         );
-        std::sync::Arc::new(sankhya_maintenance::spawn_maintenance(tables, policy))
+        // The *same* registry the query path pins. Building a second one here would leave the
+        // sweeper watching a registry nobody announces into.
+        std::sync::Arc::new(sankhya_maintenance::spawn_maintenance_watching(
+            tables,
+            policy,
+            Some(server.leases()),
+        ))
     });
 
     // Maintained cubes, built on the same cadence and for the same reason.

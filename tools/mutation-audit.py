@@ -1910,6 +1910,24 @@ CATALOGUE = [
      "    match sankhya_atomicfs::publish(&path, body.as_bytes()) {",
      "sankhya-table-delta"),
 
+    ("server: run a statement without announcing it, so a sweeper sees an idle warehouse",
+     "crates/sankhya-server/src/wiring.rs",
+     "        let _reading = self.leases.pin();",
+     "",
+     "sankhya-server"),
+
+    ("maintenance: retire a merge's inputs on the grace period alone, ignoring readers",
+     "crates/sankhya-maintenance/src/service.rs",
+     "            let unreachable = self\n                .leases\n                .as_ref()\n                .is_none_or(|leases| leases.drained(marked));",
+     "            let unreachable = true;",
+     "sankhya-maintenance"),
+
+    ("maintenance: mark the epoch when retirement is considered rather than when it merged",
+     "crates/sankhya-maintenance/src/service.rs",
+     "        let marked = self.leases.as_ref().map_or(0, |leases| leases.mark());",
+     "        let marked = 0;",
+     "sankhya-maintenance"),
+
     ("leases: let a reader that could not announce go untracked, so a sweeper thinks it idle",
      "crates/sankhya-leases/src/lib.rs",
      "        if self.unannounced.load(Ordering::SeqCst) > 0 {\n            return Some(0);\n        }",

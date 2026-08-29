@@ -131,6 +131,68 @@ unreferenced and collected by the orphan sweep. Safety there comes from **orderi
 atomicity. It is excused with that reasoning rather than changed, and routing it through
 `publish` would have meant buffering a whole Parquet file in memory.
 
+### §12.1c — reclamation waits for readers
+
+`sankhya-leases`, layer 0, no dependencies. Readers do not register *what* they hold --- that
+would be a shared set behind a mutex on the read path, which is a GIL with a filesystem accent.
+They announce *when they started*, into a slot nobody else writes, with one atomic store. A
+sweeper reads the slots and takes the oldest.
+
+That is enough because a reader pins **before** it resolves: a file that stopped being
+referenced at epoch *e* is unreachable once every reader that started before *e* has finished,
+and a reader that starts later resolves a log that does not name it. Nothing needs to know which
+files which reader holds.
+
+The path is wired end to end. `Maintainer::watching` takes the registry, the epoch is marked at
+the moment a commit stops referencing a merge's inputs, and `retire_due` waits for it to drain.
+`Server::run_statement` pins for the life of a statement, and `main` hands the maintenance
+thread **the same registry** --- two would be worse than none, because the sweeper would watch
+one nobody announces into, conclude the warehouse idle, and delete files under live queries
+while every test of either half passed.
+
+`grace_ticks`, `min_age_ticks` and `CUBOID_DRIFT_TOLERATED` all remain, demoted from the
+protection to a **backstop against a leaked announcement**, which is the job they are actually
+good at. A registry with a leak and no backstop reclaims nothing for ever, which is the failure
+this warehouse has met from the other direction.
+
+### Four defects in the crate built to prevent defects
+
+`slot_for` took its modulus from the constant rather than the actual slot count, so every
+registry built at another size indexed past its own array.
+
+**A reader whose slot was already taken was announced nowhere.** When the older pin holding that
+slot was released first, every slot read free and a sweeper concluded the warehouse was idle
+--- while that reader was inside. That is precisely the failure the crate exists to prevent,
+inside the crate written to prevent it.
+
+The epoch was taken *before* the reader was counted, leaving a window in which a reader existed
+and was invisible; a hammer test found it in twenty rounds out of four hundred.
+
+And a test that **hung rather than failed**: an assertion inside `thread::scope` left twelve
+reader threads spinning on a stop flag nobody would ever set.
+
+### Tests that passed against the behaviour they were named for
+
+Four, now, and they are the most useful thing in this milestone.
+
+**Asking the registry twice observes two different instants.** `drained` and then
+`oldest_active` are not one observation, and a reader in its pending window makes the second
+answer conservatively. Counting that as a violation made two tests fail two runs in five, and
+the flakiness was entirely mine. The property has to be checked against what the readers
+themselves record.
+
+**A test that marks and asks in the same instant essentially never drains** while readers churn
+--- which is correct behaviour and proves nothing. Real reclamation marks when a file stops
+being referenced and deletes on a later tick, so the test has to defer too.
+
+**A test that pins by hand tests the registry, not the server.** The first version of
+`a_statement_pins_the_warehouse_for_as_long_as_it_runs` called `leases.pin()` itself and passed
+with the pin removed from `run_statement` altogether --- the entire behaviour it was named for.
+It now runs real statements in another thread and watches from outside.
+
+**A lease test with a zero grace period has no window to observe.** Retirement then happens in
+the same tick as the merge, so there is no moment in which a reader can arrive.
+
 ### Two tests that passed against the defect they were named for
 
 Both were caught by mutation testing, and both are the same lesson at different sizes.

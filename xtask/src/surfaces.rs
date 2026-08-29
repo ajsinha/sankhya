@@ -102,20 +102,122 @@ pub fn check(root: &Path) -> bool {
     if ok {
         println!("   {checked} SQL surface(s) registered, and every one is reachable");
     }
+    ok && every_crate_is_reachable_or_owned(root, &served)
+}
+
+/// A crate that nothing reaches, with the reason it is allowed to exist anyway.
+///
+/// Every entry needs a **milestone**, not just a sentence. "We will get to it" is how ten
+/// crates came to hold one line of source each while being named nowhere in the plan.
+const UNREACHED: &[(&str, &str)] = &[
+    ("sankhya-datagen", "generates the synthetic data the soak and the OLAP benchmarks load. Reached only from dev-dependencies, which this traversal deliberately ignores --- a *surface* reachable only from a test is the defect; a generator of test data is not one"),
+    ("sankhya-api-flight", "Arrow Flight SQL: reached only from `sankhya-api-rest`, which is itself unreached, so the bulk plane `GUIDE.md` §7a documents cannot be used. Found by this check on 2026-08-29 and the guide now says so. Wiring it is M8 §12.2, beside the gRPC transport it shares a transport story with"),
+    ("sankhya-api-grpc", "M6's carried exit criterion 7, scheduled for M8 §12.2"),
+    ("sankhya-objectstore", "M8 §12.1 --- where ADR-0013's version claim lands on an object store, as a conditional put"),
+    ("sankhya-oltp-pg", "M8 §12.2 --- leader election runs through a transactional store nothing supervises today"),
+    ("sankhya-testkit", "M8 §12.1e --- deterministic fault injection, which is why the concurrency defects went unseen"),
+    ("sankhya-tiering", "M9, and explicitly gated on the drills in IMPLEMENTATION_PLAN.md §13"),
+    ("sankhya-mv", "undecided by ADR-0014, and listed rather than deleted because the design question is open"),
+    ("sankhya-alloc", "a counting global allocator that nothing installs. Wiring it is M8 §12.1f and returns allocation figures the soak currently cannot see"),
+    ("sankhya-api-rest", "a REST surface no server depends on. Wire or delete is an M8 §12.1f decision"),
+    ("sankhya-cdc-pg", "a capture source no server depends on. Wire or delete is an M8 §12.1f decision"),
+    ("sankhya-ports", "trait definitions nothing implements, including a `Clock` the crate claims is injected everywhere and enforced by lint --- neither is true. M8 §12.1f"),
+    ("sankhya-pack", "the declarative pack tier: a parser, bundles, validation and hot reload that no server loads, so a bundle cannot be used. M8 §12.1f"),
+];
+
+/// Every crate is reachable from a binary, or listed with a reason and a milestone.
+///
+/// # Why the SQL check above was not enough
+///
+/// It looks for crates that register SQL functions, which is narrower than its purpose. A REST
+/// surface, a capture source, a global allocator, a set of port traits and an entire declarative
+/// pack tier --- about 2,600 lines --- all fell straight through it and were found by reading
+/// manifests by hand.
+///
+/// A crate is a claim the repository makes about itself. This is what makes the claim checkable.
+fn every_crate_is_reachable_or_owned(root: &Path, served: &BTreeSet<String>) -> bool {
+    // Reachability from **every** root that ships, not only from the server. A pack is a
+    // deliverable and `sankhya-ext` is the API it is written against; counting only the server
+    // would report the published extension API as dead code.
+    let mut reached = served.clone();
+    let mut roots = vec!["sankhya-cli".to_string()];
+    if let Ok(packs) = std::fs::read_dir(root.join("packs")) {
+        for pack in packs.flatten() {
+            if let Some(name) = pack.file_name().to_str() {
+                roots.push(name.to_string());
+            }
+        }
+    }
+    for start in roots {
+        reached.extend(reachable_from(root, &start));
+    }
+    let served = &reached;
+    let Ok(entries) = std::fs::read_dir(root.join("crates")) else {
+        return true;
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|entry| entry.path().join("Cargo.toml").is_file())
+        .filter_map(|entry| entry.file_name().to_str().map(ToString::to_string))
+        .collect();
+    names.sort();
+
+    let mut ok = true;
+    let mut listed = BTreeSet::new();
+    for name in &names {
+        if served.contains(name) {
+            continue;
+        }
+        match UNREACHED.iter().find(|(crate_name, _)| crate_name == name) {
+            Some((_, why)) => {
+                assert!(why.len() > 30, "`{name}` is excused without a usable reason");
+                listed.insert(name.clone());
+            }
+            None => {
+                eprintln!(
+                    "  UNREACHED      `{name}` is in the workspace and no binary depends on                      it. Wire it, delete it, or list it in `UNREACHED` with the milestone that                      will. A crate nothing reaches is a claim the repository does not keep"
+                );
+                ok = false;
+            }
+        }
+    }
+    // An excuse for a crate that is now reachable, or gone, must go too --- or the list only
+    // grows and stops describing anything.
+    for (name, _) in UNREACHED {
+        if !listed.contains(*name) {
+            eprintln!(
+                "  STALE EXCUSE   `{name}` is listed as unreached and is either reachable now                  or no longer exists"
+            );
+            ok = false;
+        }
+    }
+    if ok {
+        println!("   {} crate(s) reachable, {} listed with a milestone", served.len(), listed.len());
+    }
     ok
 }
 
 
 /// Every crate the server depends on, transitively, within this workspace.
 pub(crate) fn reachable_from_server(root: &Path) -> BTreeSet<String> {
+    reachable_from(root, "sankhya-server")
+}
+
+/// Every crate `start` depends on, transitively, within this workspace.
+pub(crate) fn reachable_from(root: &Path, start: &str) -> BTreeSet<String> {
     let mut reached = BTreeSet::new();
-    let mut queue = vec!["sankhya-server".to_string()];
+    let mut queue = vec![start.to_string()];
     while let Some(name) = queue.pop() {
         if !reached.insert(name.clone()) {
             continue;
         }
-        let Ok(manifest) = std::fs::read_to_string(root.join("crates").join(&name).join("Cargo.toml"))
-        else {
+        let in_crates = root.join("crates").join(&name).join("Cargo.toml");
+        let manifest_path = if in_crates.is_file() {
+            in_crates
+        } else {
+            root.join("packs").join(&name).join("Cargo.toml")
+        };
+        let Ok(manifest) = std::fs::read_to_string(&manifest_path) else {
             continue;
         };
         // Only the real dependencies. A dev-dependency is what a test reaches for, and a
