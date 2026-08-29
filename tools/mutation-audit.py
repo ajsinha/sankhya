@@ -1916,6 +1916,36 @@ CATALOGUE = [
      "",
      "sankhya-server"),
 
+    ("oltp-pg: re-run initdb over an existing cluster, destroying the system of record",
+     "crates/sankhya-oltp-pg/src/lib.rs",
+     "        if !self.exists() {\n            self.initialise()?;\n        }",
+     "        self.initialise()?;",
+     "sankhya-oltp-pg"),
+
+    ("oltp-pg: let the postmaster listen on the network instead of a private socket",
+     "crates/sankhya-oltp-pg/src/lib.rs",
+     "            \"-c listen_addresses='' -c unix_socket_directories='{}'\",",
+     "            \"-c unix_socket_directories='{}'\",",
+     "sankhya-oltp-pg"),
+
+    ("oltp-pg: report readiness from bookkeeping rather than asking the cluster",
+     "crates/sankhya-oltp-pg/src/lib.rs",
+     "        Command::new(self.binaries.program(\"pg_isready\"))\n            .args([\"-h\", &self.socket_directory().to_string_lossy()])\n            .output()\n            .is_ok_and(|out| out.status.success())",
+     "        self.running",
+     "sankhya-oltp-pg"),
+
+    ("oltp-pg: leave the child running when its supervisor goes away",
+     "crates/sankhya-oltp-pg/src/lib.rs",
+     "    fn drop(&mut self) {\n        let _ = self.stop();\n    }",
+     "    fn drop(&mut self) {}",
+     "sankhya-oltp-pg"),
+
+    ("oltp-pg: accept a directory that holds only some of the programs",
+     "crates/sankhya-oltp-pg/src/lib.rs",
+     "        let complete = [\"initdb\", \"pg_ctl\", \"pg_isready\", \"postgres\"]\n            .iter()\n            .all(|program| directory.join(program).is_file());\n        complete.then_some(Self(directory))",
+     "        Some(Self(directory))",
+     "sankhya-oltp-pg"),
+
     ("cube: take the map's write lock on every recorded ask, serializing every cube",
      "crates/sankhya-cube/src/querylog.rs",
      "        let existing = self.asks.read().get(cube).map(Arc::clone);\n        if let Some(ring) = existing {\n            ring.lock().record(cuboid, self.capacity);\n            return;\n        }",

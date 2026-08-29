@@ -157,6 +157,46 @@ lookups. With one lock put back it manages **618** --- a factor of seventy-five.
 passed with the global lock restored: a test of contention that could not detect contention.
 The threshold is now three thousand, chosen from both measurements rather than from taste.
 
+### PostgreSQL is supervised, and "embedded" means what the requirements say it means
+
+`sankhya-oltp-pg` was one line of source. It now creates, starts, proves ready and stops a
+PostgreSQL cluster, and its six tests run against the vendored **17.11** rather than a stub ---
+because there is no way to fake a database lifecycle usefully. The failures worth catching are
+`initdb` refusing a non-empty directory, a postmaster that has started and is not yet accepting
+connections, and a shutdown that leaves a lock file behind, and a stub producing any of those
+would be asserting what its author already believed. When the vendored build is absent the
+tests **skip loudly and by name** rather than passing quietly.
+
+`REQUIREMENTS.md` DEC-02 settled the claim this implements: PostgreSQL is not linked into the
+binary and does not run in-process. It is a child whose whole lifecycle SANKHYA owns, so an
+operator sees one process tree and no DBA action. That is defensible; the literal reading of
+"embedded" is not.
+
+Four properties are load-bearing and each has a mutation proving its test:
+
+- **`initdb` is never run over an existing cluster.** Re-initialising a live data directory
+  destroys the system of record, and a restart is the ordinary case rather than the exception.
+- **`listen_addresses = ''`.** The postmaster is reachable only through a Unix socket inside the
+  data directory, which is what lets a managed cluster hold the system of record without an
+  operator reasoning about firewalls. Asserted by finding the socket, because a setting nobody
+  checks is one somebody tidies away.
+- **Readiness is asked of the cluster, never remembered.** A supervised child can die without
+  telling its parent, and a supervisor that trusts its own bookkeeping reports a database as
+  healthy while it is gone.
+- **A supervisor that goes away takes its child with it.** Otherwise a panic leaves a postmaster
+  owning a data directory nothing owns, and the next start finds the lock held by a process that
+  is not its child.
+
+**No new dependency.** Everything drives the vendored programs --- `initdb`, `pg_ctl`,
+`pg_isready` --- which are the same ones an operator would run, so the supervisor cannot drift
+from what doing it by hand produces. Pooling and migrations need a client library, and that is
+an open decision rather than one made by reaching for a crate.
+
+**Managed mode is single-node, deliberately.** `REQUIREMENTS.md` records it as a product
+boundary: multi-node uses *attached* mode against an externally managed cluster, and M8's leader
+election runs against that. Building the supervisor first is still right --- it is what makes a
+single-binary evaluation real, and it needs nothing this workspace does not already have.
+
 ### Deadlock is a different problem from a race, and needed a different answer
 
 A race appears under load: run it enough times and the bad interleaving happens, which is why

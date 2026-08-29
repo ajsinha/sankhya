@@ -3610,6 +3610,9 @@ dependencies = [
 [[package]]
 name = "sankhya-oltp-pg"
 version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
 
 [[package]]
 name = "sankhya-pack"
