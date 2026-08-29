@@ -75,6 +75,8 @@ pub async fn publish_from_fact_table(
     catalog.publish(
         name,
         Published {
+            // Hydrated from the fact table, which is the opposite of a cuboid read.
+            from_cuboid: false,
             cube,
             cells: Arc::new(cells),
             measure: measure.name.clone(),
@@ -102,6 +104,8 @@ pub fn publish_cells(
     catalog.publish(
         name,
         Published {
+            // Hydrated from the fact table, which is the opposite of a cuboid read.
+            from_cuboid: false,
             cube,
             cells: Arc::new(cells),
             measure: measure.to_string(),

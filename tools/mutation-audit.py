@@ -1768,8 +1768,8 @@ CATALOGUE = [
 
     ("server: build a restricted cuboid from a refresh that has no principal",
      "crates/sankhya-server/src/wiring.rs",
-     "                let key = sankhya_cube::materialise::Key::unrestricted(\n                    cube.version(),\n                    snapshot,\n                    base.clone(),\n                );",
-     "                let key = sankhya_cube::materialise::Key::new(\n                    cube.version(),\n                    snapshot,\n                    0xdead_beef,\n                    base.clone(),\n                );",
+     "                let key = sankhya_cube::materialise::Key::unrestricted(\n                    cube.version(),\n                    snapshot,\n                    shape.clone(),\n                );",
+     "                let key = sankhya_cube::materialise::Key::new(\n                    cube.version(),\n                    snapshot,\n                    0xdead_beef,\n                    shape.clone(),\n                );",
      "sankhya-server"),
 
     # --- target_lag: a staleness target, not a schedule ------------------------
@@ -1840,6 +1840,98 @@ CATALOGUE = [
      "crates/sankhya-server/src/wiring.rs",
      "            let snapshot = self.snapshot_of(cube.fact_table());",
      "            let snapshot = self.settings.read_as_of.get();",
+     "sankhya-server"),
+
+    # --- the query log, and selecting from it ---------------------------------
+
+    ("cube: let the query log grow once per query and never trim",
+     "crates/sankhya-cube/src/querylog.rs",
+     "        if self.entries.len() < capacity {",
+     "        if true {",
+     "sankhya-cube"),
+
+    ("cube: let one cube's asks crowd out another's",
+     "crates/sankhya-cube/src/querylog.rs",
+     "            .entry(cube.to_string())",
+     "            .entry(String::new())",
+     "sankhya-cube"),
+
+    ("server: answer from any materialised cuboid, ignoring whether it can express the query",
+     "crates/sankhya-server/src/wiring.rs",
+     "        let chosen = sankhya_cube::materialise::plan(needed, measure, &usable, &base);\n        if !chosen.materialised {\n            return None;\n        }",
+     "        let chosen = sankhya_cube::materialise::Plan {\n            from: usable.first().map_or_else(|| base.clone(), |first| (*first).clone()),\n            rolling_away: Vec::new(),\n            materialised: true,\n        };",
+     "sankhya-server"),
+
+    ("server: forget that a dice needs the dimension it restricts",
+     "crates/sankhya-server/src/wiring.rs",
+     "    for (option, take_dimension) in [(\"by=\", false), (\"where=\", true)] {",
+     "    for (option, take_dimension) in [(\"by=\", false)] {",
+     "sankhya-server"),
+
+    ("server: read a cuboid at the cube's grain rather than the one its key names",
+     "crates/sankhya-server/src/wiring.rs",
+     "        let dimensions: Vec<String> = key\n            .cuboid\n            .dimensions()\n            .iter()\n            .map(ToString::to_string)\n            .collect();",
+     "        let dimensions: Vec<String> =\n            cube.dimensions().iter().map(|d| d.name.clone()).collect();",
+     "sankhya-server"),
+
+    ("server: ignore a session that asked for the base data and serve it a cuboid",
+     "crates/sankhya-server/src/wiring.rs",
+     "        let usable: Vec<&sankhya_cube::algo::Cuboid> = policy.usable(&available, session);",
+     "        let usable: Vec<&sankhya_cube::algo::Cuboid> = available.iter().collect();",
+     "sankhya-server"),
+
+    ("server: ignore the definition's pinned cuboids",
+     "crates/sankhya-server/src/wiring.rs",
+     "            for shape in policy.pinned() {\n                if !wanted.contains(shape) {\n                    wanted.push(shape.clone());\n                }\n            }",
+     "",
+     "sankhya-server"),
+
+    ("server: spend a constant instead of the operator's configured budget",
+     "crates/sankhya-server/src/wiring.rs",
+     "                        policy.budget_rows(),",
+     "                        CUBOID_ROW_BUDGET,",
+     "sankhya-server"),
+
+    ("cube-sql: report the caller's materialise argument instead of what happened",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "        let materialised = published.from_cuboid;",
+     "        let materialised = false;",
+     "sankhya-server"),
+
+    ("server: serve the unrestricted cuboid to a caller whose policy withholds rows",
+     "crates/sankhya-server/src/wiring.rs",
+     "                if self.withholds_nothing(principal, cube.fact_table()) {\n                    scopes.push(sankhya_cube::materialise::Key::UNRESTRICTED);\n                }",
+     "                scopes.push(sankhya_cube::materialise::Key::UNRESTRICTED);",
+     "sankhya-server"),
+
+    ("server: never read a materialised cuboid, leaving materialisation write-only",
+     "crates/sankhya-server/src/wiring.rs",
+     "                if let Some(published) = scopes\n                    .into_iter()\n                    .find_map(|under| {\n                        self.from_a_cuboid(cube, measure, under, snapshot, session, &needed)\n                    })\n                {\n                    catalog.publish(cube.name(), published.clone());\n                    self.hydrated.put(key, published);\n                    continue;\n                }",
+     "                let _ = scopes;",
+     "sankhya-server"),
+
+    ("cube: let a stored cuboid claim completeness it never measured",
+     "crates/sankhya-cube/src/store.rs",
+     "    let completeness = one_completeness(batch, &names)?;",
+     "    let completeness = Completeness::complete(batch.num_rows() as u64);",
+     "sankhya-cube"),
+
+    ("server: store base cells under a coarser cuboid's key, at a grain it does not have",
+     "crates/sankhya-server/src/wiring.rs",
+     "                let Some(cells) = roll_to(&base_cells, shape, measure) else {\n                    continue;\n                };",
+     "                let cells = base_cells.clone();",
+     "sankhya-server"),
+
+    ("server: cost every cuboid the same, so selection can never choose one",
+     "crates/sankhya-server/src/wiring.rs",
+     "        ASSUMED_MEMBERS.saturating_pow(u32::try_from(cuboid.width()).unwrap_or(u32::MAX))",
+     "        let _ = cuboid;\n        ASSUMED_MEMBERS",
+     "sankhya-server"),
+
+    ("server: materialise every shape in the lattice rather than the ones asked for",
+     "crates/sankhya-server/src/wiring.rs",
+     "            if !asked.is_empty() {",
+     "            if false {",
      "sankhya-server"),
 
     # --- describing a cube, so a client need not hardcode it ------------------

@@ -123,6 +123,31 @@ impl Guard {
         hasher.finish()
     }
 
+    /// Whether this guard removes nothing --- no row filter, no column mask.
+    ///
+    /// # Why this is a question worth naming
+    ///
+    /// A materialised cuboid built with no policy applied ([`Key::unrestricted`]) holds an
+    /// aggregate over **every** row. Per
+    /// [ADR-0008](../../../docs/adr/0008-serving-cubes-under-policy.md) it may serve only a
+    /// caller who is themselves unrestricted, and this is that test.
+    ///
+    /// It is deliberately not the scope digest. The digest is a *cache key* and is never the
+    /// zero sentinel, because it hashes the tenant and the table --- so comparing a caller's
+    /// digest against the unrestricted key can only ever miss. Asking the guard directly says
+    /// what is actually meant: not "was this computed for you" but "does your guard withhold
+    /// anything that aggregate would have included".
+    ///
+    /// Answering `true` for a guard that withholds something would serve one principal's
+    /// total to another. That is a disclosure through arithmetic, and it is invisible ---
+    /// the number is real, it is simply over rows the caller may not read.
+    ///
+    /// [`Key::unrestricted`]: https://docs.rs/sankhya-cube
+    #[must_use]
+    pub fn withholds_nothing(&self) -> bool {
+        self.row_filter.is_none() && self.column_masks.is_empty()
+    }
+
     /// Whose data this permits reaching.
     #[must_use]
     pub const fn tenant(&self) -> &TenantId {

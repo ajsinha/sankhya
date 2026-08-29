@@ -18,6 +18,7 @@
 
 use sankhya_cube::algo::Rule;
 use sankhya_cube::cells::Cells;
+use sankhya_cube::complete::Completeness;
 use sankhya_cube::materialise::Key;
 use sankhya_cube::store;
 use sankhya_publish::{Publication, PublishError};
@@ -48,10 +49,15 @@ pub fn exists(warehouse: &Path, key: &Key, cube: &str) -> bool {
     root_of(warehouse, key, cube).join("_delta_log").is_dir()
 }
 
-/// Write cells as a materialised cuboid.
+/// Write cells as a materialised cuboid, with the completeness they were computed under.
 ///
 /// Idempotent: a cuboid that already exists is left alone rather than rewritten, because the
 /// key that named it also guarantees its contents.
+///
+/// `completeness` is not optional and is not derivable here. A cuboid is read back by
+/// something that will serve its numbers to somebody, and a set of cells cannot say how much
+/// of the fact table reached it --- so a cuboid written without it could only ever be served
+/// as complete, which is the one thing nobody may assume.
 ///
 /// # Errors
 ///
@@ -64,11 +70,12 @@ pub fn materialise(
     cube: &str,
     cells: &Cells,
     rule: Rule,
+    completeness: &Completeness,
 ) -> Result<bool, PublishError> {
     if exists(warehouse, key, cube) {
         return Ok(false);
     }
-    let batch = store::to_batch(cells, rule).map_err(|error| PublishError::Write {
+    let batch = store::to_batch(cells, rule, completeness).map_err(|error| PublishError::Write {
         file: key.table(cube),
         detail: error.to_string(),
     })?;
@@ -97,8 +104,9 @@ pub fn materialise_quietly(
     cube: &str,
     cells: &Cells,
     rule: Rule,
+    completeness: &Completeness,
 ) -> bool {
-    match materialise(warehouse, key, cube, cells, rule) {
+    match materialise(warehouse, key, cube, cells, rule, completeness) {
         Ok(written) => written,
         Err(error) => {
             eprintln!("  could not materialise cuboid for cube `{cube}`: {error}");

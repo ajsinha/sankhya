@@ -7,7 +7,7 @@
 
 # SANKHYA — The invariants, and what each one cost to learn
 
-**Status:** Implementation — M0–M6 complete, M7 in progress
+**Status:** Implementation — M0–M7 complete, M8 next
 
 This system has more than fifty crates. Nobody holds that in their head, and a rule held only
 in somebody's head has a failure rate — this project has the evidence, below, in the column

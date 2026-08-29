@@ -4,7 +4,7 @@ description  = "Cube navigation exposed as SQL table functions, with provenance 
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
-license.workspace      = true
+license-file.workspace      = true
 repository.workspace   = true
 
 [package.metadata.sankhya]

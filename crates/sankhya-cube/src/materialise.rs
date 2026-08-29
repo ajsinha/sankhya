@@ -77,6 +77,14 @@ impl Key {
         Self { definition, snapshot, scope, cuboid }
     }
 
+    /// The scope of a cuboid computed with nothing withheld.
+    ///
+    /// Zero, and a sentinel rather than a digest: `Guard::scope_digest` hashes the tenant and
+    /// the table, so no real guard can produce this value. That is deliberate --- a reader is
+    /// matched to this cuboid by asking whether their guard withholds anything
+    /// (`Guard::withholds_nothing`), never by comparing digests, which could only ever miss.
+    pub const UNRESTRICTED: u64 = 0;
+
     /// A key for a cuboid computed with nothing withheld.
     ///
     /// The unrestricted scope, named rather than written as a bare zero: a caller reaching
@@ -84,7 +92,7 @@ impl Key {
     /// assertion should be legible at the call site.
     #[must_use]
     pub const fn unrestricted(definition: u64, snapshot: u64, cuboid: Cuboid) -> Self {
-        Self::new(definition, snapshot, 0, cuboid)
+        Self::new(definition, snapshot, Self::UNRESTRICTED, cuboid)
     }
 
     /// The table this cuboid is published as.

@@ -25,7 +25,7 @@ use sankhya_cube::navigate::{roll_up, Ordered};
 use sankhya_cube::{Definition, Dimension, Level};
 use sankhya_cube_algo::lattice::Cuboid;
 use sankhya_cube_algo::measure::{Along, Measure, Rule};
-use sankhya_cube_sql::catalog::{CubeCatalog, Published};
+use sankhya_cube_sql::catalog::CubeCatalog;
 use sankhya_cube_sql::{publish_from_fact_table, register};
 use sankhya_graph_algo::budget::Budget;
 use sankhya_graph_algo::csr::{AdjacencyBuilder, Edge, Validity};
@@ -364,7 +364,7 @@ async fn six_dimensional() -> SessionContext {
     context.register_batch("fact_wide", batch).expect("registered");
 
     let catalog = Arc::new(CubeCatalog::new());
-    register(&context, Arc::clone(&catalog));
+    register(&context, Arc::clone(&catalog), Arc::new(sankhya_cube::querylog::QueryLog::new()));
     let absorbed = publish_from_fact_table(&context, &catalog, "wide", cube, &wide(), 7)
         .await
         .expect("hydrated from the table its definition names");

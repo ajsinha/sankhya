@@ -17,6 +17,24 @@
 //! So a cell is stored as the **components of its Shewchuk expansion** — the unrounded exact
 //! sum — and rounded once when read. [`Exact::components`] exists for this.
 //!
+//! # Why completeness is stored beside the cells, and as columns
+//!
+//! A set of cells cannot say how much of the fact table reached it. A row that hydration
+//! could not place, or that policy withheld, **leaves no trace**: counting what arrived and
+//! dividing by what arrived gives one, always. So [`Completeness`] has to be carried, and a
+//! cuboid read back without it could only claim completeness it never measured --- the exact
+//! trap [`crate::complete`] documents, and one this crate has already walked into once.
+//!
+//! It is stored as two columns rather than as Arrow schema metadata, and that was measured
+//! rather than assumed: metadata does not survive the read path the server uses. A probe
+//! wrote a batch with metadata through `sankhya_table::write_parquet`, read it back through
+//! DataFusion, and got `{}`. Storing completeness where a reader cannot see it would have
+//! been worse than not storing it, because the absence would have looked like a value.
+//!
+//! Two columns of a value constant within the file cost almost nothing once encoded, and
+//! they are visible to anything that opens the table --- which is the open-storage
+//! commitment applying to the fact that a number is partial, not only to the number.
+//!
 //! # Why a list column rather than a scalar
 //!
 //! The expansion is a handful of non-overlapping doubles whose sum is exact. Storing their
@@ -24,8 +42,9 @@
 //! does not have. A list is the shape of the thing.
 
 use crate::cells::{Address, Cells, WrongWidth};
+use crate::complete::Completeness;
 use arrow_array::builder::{Float64Builder, ListBuilder, StringBuilder};
-use arrow_array::{Array, ListArray, RecordBatch, StringArray};
+use arrow_array::{Array, ListArray, RecordBatch, StringArray, UInt64Array};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use sankhya_cube_algo::measure::Rule;
 use sankhya_math::Exact;
@@ -36,6 +55,12 @@ use std::sync::Arc;
 /// Prefixed, because a cuboid's other columns are dimension names chosen by whoever modelled
 /// the cube and a collision would silently replace a dimension with an aggregate.
 pub const EXACT: &str = "__sankhya_exact";
+
+/// The column holding how many rows contributed to these cells.
+pub const CONTRIBUTED: &str = "__sankhya_contributed";
+
+/// The column holding how many rows were withheld from them.
+pub const WITHHELD: &str = "__sankhya_withheld";
 
 /// Why a batch could not be read back as cells.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -54,6 +79,15 @@ pub enum NotCells {
     },
     /// A row addressed the wrong number of dimensions.
     Width(WrongWidth),
+    /// The completeness columns are absent, or disagree between rows.
+    ///
+    /// Not defaulted to complete. A cuboid that cannot say what it saw is a cuboid whose
+    /// answer nobody can qualify, and serving it as complete is the failure this whole
+    /// column exists to prevent.
+    NoCompleteness {
+        /// What the batch does hold.
+        found: Vec<String>,
+    },
 }
 
 impl std::fmt::Display for NotCells {
@@ -70,6 +104,12 @@ impl std::fmt::Display for NotCells {
                 "the stored cuboid has no `{EXACT}` column of doubles; it holds {found:?}. \
                  Without the unrounded expansion a materialised answer cannot be \
                  bit-identical to the base one, which is the only reason to trust it"
+            ),
+            Self::NoCompleteness { found } => write!(
+                f,
+                "the stored cuboid has no `{CONTRIBUTED}`/`{WITHHELD}` columns agreeing on \
+                 one value; it holds {found:?}. A cuboid that cannot say how much of the \
+                 fact table reached it can only claim completeness it never measured"
             ),
             Self::Width(width) => write!(f, "{width}"),
         }
@@ -92,16 +132,28 @@ pub fn schema_for(dimensions: &[String]) -> SchemaRef {
         DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
         false,
     ));
+    // Constant within a cuboid, and stored per row anyway: encoded, a constant column costs
+    // almost nothing, and it is the only place a reader is guaranteed to find it.
+    fields.push(Field::new(CONTRIBUTED, DataType::UInt64, false));
+    fields.push(Field::new(WITHHELD, DataType::UInt64, false));
     Arc::new(Schema::new(fields))
 }
 
-/// Cells as a batch, with every aggregate unrounded.
+/// Cells as a batch, with every aggregate unrounded and their completeness beside them.
+///
+/// `completeness` is required rather than optional. It cannot be derived from `cells` --- a
+/// withheld or unplaceable row leaves no trace --- so a default here would let every cuboid
+/// nobody thought about report itself complete.
 ///
 /// # Errors
 ///
 /// Returns an Arrow error only if the columns cannot be assembled, which means the cells
 /// disagreed with their own declared dimensions.
-pub fn to_batch(cells: &Cells, rule: Rule) -> Result<RecordBatch, arrow_schema::ArrowError> {
+pub fn to_batch(
+    cells: &Cells,
+    rule: Rule,
+    completeness: &Completeness,
+) -> Result<RecordBatch, arrow_schema::ArrowError> {
     let schema = schema_for(cells.dimensions());
     let width = cells.dimensions().len();
 
@@ -137,21 +189,35 @@ pub fn to_batch(cells: &Cells, rule: Rule) -> Result<RecordBatch, arrow_schema::
         .into_iter()
         .map(|mut builder| Arc::new(builder.finish()) as arrow_array::ArrayRef)
         .collect();
-    columns.push(Arc::new(exact.finish()));
+    let exact = exact.finish();
+    let rows = exact.len();
+    columns.push(Arc::new(exact));
+    columns.push(Arc::new(UInt64Array::from(vec![
+        completeness.contributed();
+        rows
+    ])));
+    columns.push(Arc::new(UInt64Array::from(vec![
+        completeness.withheld();
+        rows
+    ])));
     RecordBatch::try_new(schema, columns)
 }
 
-/// A batch read back as cells, rounding once.
+/// A batch read back as cells and the completeness they were computed under, rounding once.
+///
+/// Both, together, because they are only meaningful together: cells without their
+/// completeness are a number nobody can qualify, and this signature is what stops a caller
+/// from getting one without the other.
 ///
 /// # Errors
 ///
-/// [`NotCells`] when a dimension column or the expansion column is missing, or when a row
-/// addresses the wrong number of dimensions.
+/// [`NotCells`] when a dimension column, the expansion column or the completeness columns are
+/// missing, or when a row addresses the wrong number of dimensions.
 pub fn from_batch(
     batch: &RecordBatch,
     dimensions: &[String],
     rule: Rule,
-) -> Result<Cells, NotCells> {
+) -> Result<(Cells, Completeness), NotCells> {
     let names: Vec<String> = batch
         .schema()
         .fields()
@@ -176,6 +242,12 @@ pub fn from_batch(
         .ok_or_else(|| NotCells::MissingExact {
             found: names.clone(),
         })?;
+
+    // Read before the cells, so a cuboid that cannot say what it saw is refused rather than
+    // half-read. Every row must agree: the value is constant within a cuboid by construction,
+    // so rows that disagree mean the file was assembled by something that did not know that,
+    // and picking the first would be choosing which of two claims to believe.
+    let completeness = one_completeness(batch, &names)?;
 
     let mut cells = Cells::over(dimensions.to_vec());
     for row in 0..batch.num_rows() {
@@ -202,5 +274,41 @@ pub fn from_batch(
             .add_reduced(address, rule, restored)
             .map_err(NotCells::Width)?;
     }
-    Ok(cells)
+    Ok((cells, completeness))
+}
+
+/// The one completeness every row of a cuboid must agree on.
+///
+/// An empty batch has no rows to read it from, and the honest answer is `Completeness::of(0,
+/// 0)` --- nothing contributed and nothing withheld, whose `fraction()` is `None`. That is the
+/// absent-versus-complete distinction the rest of this crate keeps: an aggregate over no rows
+/// is not a complete aggregate, and rounding it up to complete is how an empty result passes a
+/// threshold. An error would be wrong too, because reading an empty batch is not a failure.
+///
+/// It does not arise on disk in any case: `cuboid::materialise` refuses to write an empty
+/// cuboid, because one is indistinguishable on the way back from a cube that saw nothing.
+fn one_completeness(batch: &RecordBatch, names: &[String]) -> Result<Completeness, NotCells> {
+    let column = |name: &str| {
+        batch
+            .column_by_name(name)
+            .and_then(|column| column.as_any().downcast_ref::<UInt64Array>())
+            .ok_or_else(|| NotCells::NoCompleteness {
+                found: names.to_vec(),
+            })
+    };
+    let contributed = column(CONTRIBUTED)?;
+    let withheld = column(WITHHELD)?;
+    if batch.num_rows() == 0 {
+        return Ok(Completeness::of(0, 0));
+    }
+    let (first_contributed, first_withheld) = (contributed.value(0), withheld.value(0));
+    let agrees = (0..batch.num_rows()).all(|row| {
+        contributed.value(row) == first_contributed && withheld.value(row) == first_withheld
+    });
+    if !agrees {
+        return Err(NotCells::NoCompleteness {
+            found: names.to_vec(),
+        });
+    }
+    Ok(Completeness::of(first_contributed, first_withheld))
 }

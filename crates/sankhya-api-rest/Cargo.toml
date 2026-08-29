@@ -4,7 +4,7 @@ description  = "A REST gateway that refuses to become the bulk plane, and hands 
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
-license.workspace      = true
+license-file.workspace      = true
 repository.workspace   = true
 
 [package.metadata.sankhya]

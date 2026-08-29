@@ -32,6 +32,13 @@ fn address(members: &[&str]) -> Vec<String> {
 /// one. Any storage that rounds before the final addition loses the one.
 const CATASTROPHIC: [f64; 4] = [1e16, 1.0, -1e16, 1.0];
 
+/// What a fixture's cells saw: their own rows, with nothing withheld.
+///
+/// Stated rather than defaulted. `Completeness` has no `Default` so that a value nobody
+/// thought about cannot report itself complete, and a test fixture is no exception.
+const SAW_EVERYTHING: sankhya_cube::complete::Completeness =
+    sankhya_cube::complete::Completeness::complete(2);
+
 #[test]
 fn a_cell_survives_the_round_trip_exactly() {
     let mut cells = over(&["region"]);
@@ -41,8 +48,8 @@ fn a_cell_survives_the_round_trip_exactly() {
     let expected = cells.get(&address(&["north"]), Rule::Sum).expect("a total");
     assert_eq!(expected, 2.0, "the exact sum is two, whatever the order");
 
-    let batch = store::to_batch(&cells, Rule::Sum).expect("storable");
-    let read = store::from_batch(&batch, cells.dimensions(), Rule::Sum).expect("readable");
+    let batch = store::to_batch(&cells, Rule::Sum, &SAW_EVERYTHING).expect("storable");
+    let (read, _) = store::from_batch(&batch, cells.dimensions(), Rule::Sum).expect("readable");
 
     let got = read.get(&address(&["north"]), Rule::Sum).expect("a total");
     assert_eq!(
@@ -69,8 +76,8 @@ fn a_stored_partial_can_be_rolled_up_further_without_drifting() {
     }
     cells.add(address(&["south"]), -1e16).expect("well-formed");
 
-    let batch = store::to_batch(&cells, Rule::Sum).expect("storable");
-    let read = store::from_batch(&batch, cells.dimensions(), Rule::Sum).expect("readable");
+    let batch = store::to_batch(&cells, Rule::Sum, &SAW_EVERYTHING).expect("storable");
+    let (read, _) = store::from_batch(&batch, cells.dimensions(), Rule::Sum).expect("readable");
 
     // Roll the two stored cells up, the way an ancestor answers a coarser query.
     let mut rolled = sankhya_math::Exact::zero();
@@ -116,10 +123,10 @@ fn every_cell_and_every_member_comes_back() {
         cells.add(address(&[region, period]), value).expect("well-formed");
     }
 
-    let batch = store::to_batch(&cells, Rule::Sum).expect("storable");
+    let batch = store::to_batch(&cells, Rule::Sum, &SAW_EVERYTHING).expect("storable");
     assert_eq!(batch.num_rows(), 3, "one row per cell");
 
-    let read = store::from_batch(&batch, cells.dimensions(), Rule::Sum).expect("readable");
+    let (read, _) = store::from_batch(&batch, cells.dimensions(), Rule::Sum).expect("readable");
     assert_eq!(read.get(&address(&["north", "jan"]), Rule::Sum), Some(10.0));
     assert_eq!(read.get(&address(&["north", "feb"]), Rule::Sum), Some(20.0));
     assert_eq!(read.get(&address(&["south", "jan"]), Rule::Sum), Some(30.0));
@@ -141,11 +148,11 @@ fn two_runs_produce_the_same_rows_in_the_same_order() {
         cells.add(address(&[region]), value).expect("well-formed");
     }
 
-    let once = store::to_batch(&cells, Rule::Sum).expect("storable");
-    let twice = store::to_batch(&cells, Rule::Sum).expect("storable");
+    let once = store::to_batch(&cells, Rule::Sum, &SAW_EVERYTHING).expect("storable");
+    let twice = store::to_batch(&cells, Rule::Sum, &SAW_EVERYTHING).expect("storable");
     assert_eq!(format!("{once:?}"), format!("{twice:?}"));
 
-    let read = store::from_batch(&once, cells.dimensions(), Rule::Sum).expect("readable");
+    let (read, _) = store::from_batch(&once, cells.dimensions(), Rule::Sum).expect("readable");
     let members: Vec<&str> = read
         .addresses()
         .filter_map(|address| address.first().map(String::as_str))
@@ -156,10 +163,10 @@ fn two_runs_produce_the_same_rows_in_the_same_order() {
 #[test]
 fn an_empty_cuboid_stores_and_reads_as_empty() {
     let cells = over(&["region"]);
-    let batch = store::to_batch(&cells, Rule::Sum).expect("storable");
+    let batch = store::to_batch(&cells, Rule::Sum, &SAW_EVERYTHING).expect("storable");
     assert_eq!(batch.num_rows(), 0);
 
-    let read = store::from_batch(&batch, cells.dimensions(), Rule::Sum).expect("readable");
+    let (read, _) = store::from_batch(&batch, cells.dimensions(), Rule::Sum).expect("readable");
     assert_eq!(read.addresses().count(), 0);
 }
 
@@ -169,7 +176,7 @@ fn a_batch_missing_a_dimension_is_refused_by_name() {
     // which is the failure mode this whole crate is arranged against.
     let mut cells = over(&["region"]);
     cells.add(address(&["north"]), 1.0).expect("well-formed");
-    let batch = store::to_batch(&cells, Rule::Sum).expect("storable");
+    let batch = store::to_batch(&cells, Rule::Sum, &SAW_EVERYTHING).expect("storable");
 
     let wanted = vec!["region".to_string(), "period".to_string()];
     let error = store::from_batch(&batch, &wanted, Rule::Sum).expect_err("refused");
@@ -195,5 +202,54 @@ fn a_batch_without_the_expansion_column_is_refused() {
         matches!(error, NotCells::MissingExact { .. }),
         "without the unrounded expansion a materialised answer cannot be bit-identical, \
          which is the only reason to trust it: {error}"
+    );
+}
+
+#[test]
+fn completeness_survives_the_round_trip() {
+    // The reason it is stored at all. A set of cells cannot say how much of the fact table
+    // reached it --- a withheld or unplaceable row leaves no trace, so counting what arrived
+    // and dividing by what arrived gives one, always. A cuboid that lost this on the way to
+    // disk could only ever be served as complete, which is the one claim nothing may make on
+    // its own behalf.
+    let mut cells = Cells::over(vec!["region".to_string()]);
+    cells.add(vec!["north".to_string()], 1.0).expect("well-formed");
+    cells.add(vec!["south".to_string()], 2.0).expect("well-formed");
+
+    let partial = sankhya_cube::complete::Completeness::of(80, 20);
+    let batch = store::to_batch(&cells, Rule::Sum, &partial).expect("storable");
+    let (_, read) = store::from_batch(&batch, cells.dimensions(), Rule::Sum).expect("readable");
+
+    assert_eq!(read, partial);
+    assert_eq!(read.withheld(), 20, "and the withheld count is the half nothing can recover");
+    assert!(!read.is_complete(), "a policy-filtered cuboid does not read back as complete");
+}
+
+#[test]
+fn a_cuboid_whose_rows_disagree_about_what_it_saw_is_refused() {
+    // The value is constant within a cuboid by construction, so rows that disagree mean the
+    // file was assembled by something that did not know that. Picking the first would be
+    // choosing which of two claims to believe, and the claim decides whether a number gets
+    // presented as the whole picture.
+    let mut cells = Cells::over(vec!["region".to_string()]);
+    cells.add(vec!["north".to_string()], 1.0).expect("well-formed");
+    cells.add(vec!["south".to_string()], 2.0).expect("well-formed");
+    let batch = store::to_batch(&cells, Rule::Sum, &SAW_EVERYTHING).expect("storable");
+
+    // Rebuilt with a disagreeing `__sankhya_contributed` column.
+    // The contributed column is second from the end; see `store::schema_for`.
+    let mut columns: Vec<arrow_array::ArrayRef> = batch.columns().to_vec();
+    let contributed = columns.len().saturating_sub(2);
+    if let Some(slot) = columns.get_mut(contributed) {
+        *slot = std::sync::Arc::new(arrow_array::UInt64Array::from(vec![2_u64, 99]));
+    }
+    let tampered =
+        arrow_array::RecordBatch::try_new(batch.schema(), columns).expect("a valid batch");
+
+    let error = store::from_batch(&tampered, cells.dimensions(), Rule::Sum)
+        .expect_err("two answers to how much this saw is not an answer");
+    assert!(
+        matches!(error, store::NotCells::NoCompleteness { .. }),
+        "{error:?}"
     );
 }

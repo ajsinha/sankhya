@@ -7,7 +7,7 @@
 
 # SANKHYA — a guide, by example
 
-**Status:** Implementation — M0–M6 complete, M7 in progress
+**Status:** Implementation — M0–M7 complete, M8 next
 
 Every example here is **executed or accounted for by a test**.
 `crates/sankhya-server/tests/guide.rs` extracts the SQL from this page — this page, not a
@@ -20,6 +20,10 @@ That sentence used to claim all of them ran, and the file it named did not exist
 now, and it counts.
 
 The [quickstart](QUICKSTART.md) gets a server running. This shows what to do with it.
+
+If you would rather work through it step by step, the [tutorials](tutorials/) are hands-on and
+in order — cubes from first query to production tuning. This document is the reference: every
+feature, by worked example.
 
 ---
 
@@ -496,6 +500,88 @@ Staleness here is exact rather than estimated, because a stored cuboid records t
 was computed at. **A cuboid past its target is never served as though it were fresh** — the
 answer falls back to live aggregation, which is slower and right, and says `materialised =
 false` so you can see which you got.
+
+### Deciding what gets materialised
+
+A Maintained cube does not store every shape it could. The lattice of possible cuboids is
+exponential in the dimension count, so *everything* is not a plan — it is a way to fill a disk.
+
+Three controls decide, and they belong to three different people.
+
+| Level | Who sets it | What it says |
+|---|---|---|
+| **Definition** | whoever models the cube | shapes **pinned** — always worth holding |
+| **Configuration** | the operator | the row **budget** automatic selection may spend |
+| **Session** | the caller | whether *this* query uses materialisation at all |
+
+**The definition pins.** Selection spends the operator's budget on evidence — what people have
+actually asked for. A pin is the statement that a shape is worth holding *before* any evidence
+exists: the month-end roll-up nobody runs until the day it has to be instant. A pin that had to
+compete against a query log would be no control at all, so pinned shapes are not put through
+selection.
+
+**The operator budgets.** It is their storage being spent on their behalf by a selection reading
+somebody else's query log, so it is bounded by a number they set:
+
+```toml
+[cubes]
+budget_rows = 10000000
+```
+
+Set it to `0` and automatic selection buys nothing. The base cuboid and any pinned shape are
+still built — neither is bought from the budget.
+
+**The caller may ask for less, and only less.** There is deliberately no value that widens
+anything: a session that could raise the budget would be an unbounded storage grant to anybody
+who can open a connection.
+
+```sql
+SELECT region, amount, materialised
+FROM cube_rollup('sales', 'amount', 'by=region, materialise=false');
+```
+
+`materialise=false` computes from the base data. That is the **reproducibility check**: a figure
+that differs between it and the default is a defect, not a tuning question — materialisation is
+a cache, and a cache that changes the answer is not one. `materialise=pinned` uses only shapes
+the definition names, and not one selection bought from another user's queries.
+
+An unrecognised value is refused while the query is planned, rather than quietly taking its
+default:
+
+```sql
+-- ERROR: 'materialise' must be true, false or pinned
+SELECT region, amount FROM cube_rollup('sales', 'amount', 'by=region, materialise=maybe');
+```
+
+### What is left when nobody is watching
+
+Automatic materialisation is driven by a **query log**: a bounded record, per cube, of which
+dimensions people grouped by. The repetition is the weighting — a shape asked ten times counts
+ten times — and old entries are overwritten, so a dashboard nobody has opened in a week stops
+pinning storage without anybody deciding it should.
+
+It records a *shape*, and there is nowhere in it to put a member, a predicate, or who was
+asking. That is worth stating plainly, because a query log is the kind of thing that quietly
+becomes a record of who asked what about whom. This one cannot.
+
+**A cube nobody has queried gets its base cuboid and nothing else.** That is the honest answer
+rather than a guess: there is no evidence about what would help, and spending an operator's
+storage on a guess is worse than spending none.
+
+### Who a stored cuboid may serve
+
+A background refresh has no principal — nobody is logged in at four in the morning — so it
+builds the **unrestricted** cuboid: an aggregate over every row.
+
+That cuboid may serve only a caller whose own permissions withhold nothing. Serving it to
+somebody a row policy filters would be a disclosure through arithmetic, and an invisible one:
+the number is real, it is simply computed over rows they may not read. There is no error to
+notice and nothing in a log to find.
+
+The consequence is worth knowing rather than discovering. **Background refresh helps dashboards
+and service accounts, and does nothing for a restricted analyst** — their cuboids can only be
+built by their own queries. A cuboid also carries the completeness it was computed under, so a
+cube served from storage still says how much of the fact table it saw.
 
 ### What is not here
 
@@ -998,6 +1084,7 @@ admits less. [`STATUS.md`](STATUS.md) is the authoritative version.
 
 ## Where to go next
 
+- [`tutorials/`](tutorials/) — hands-on, in order, each example executed by a test
 - [`QUICKSTART.md`](QUICKSTART.md) — build it and get a server running
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — why it is shaped this way
 - [`STATUS.md`](STATUS.md) — what is built, what is measured, and the defects found along the way

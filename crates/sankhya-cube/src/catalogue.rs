@@ -97,6 +97,12 @@ pub struct Stored {
     /// difference between the two persisted lifetimes.
     #[serde(default)]
     pub target_lag: Option<u64>,
+    /// Cuboids the definition pins, as lists of dimension names.
+    ///
+    /// Defaulted when absent, so a cube written before pinning existed still reads --- an
+    /// empty list is exactly "pins nothing", which is what those cubes meant.
+    #[serde(default)]
+    pub pinned: Vec<Vec<String>>,
 }
 
 /// A dimension, on disk.
@@ -142,6 +148,7 @@ impl Stored {
             name: definition.name.clone(),
             fact_table: definition.fact_table.clone(),
             target_lag: definition.target_lag,
+            pinned: definition.pinned.clone(),
             dimensions: definition
                 .dimensions
                 .iter()
@@ -239,6 +246,7 @@ impl Stored {
 
         let mut definition = Definition::new(self.name, self.fact_table, dimensions, measures);
         definition.target_lag = self.target_lag;
+        definition.pinned = self.pinned.clone();
         Ok(definition)
     }
 }

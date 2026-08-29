@@ -43,6 +43,7 @@ fn settings(warehouse: &std::path::Path) -> Settings {
         warehouse: warehouse.to_path_buf(),
         read_as_of: sankhya_types::Lsn::new(u64::MAX),
         tenant: tenant(),
+        cuboid_budget_rows: wiring::CUBOID_ROW_BUDGET,
         maintenance: None,
         require_password: false,
         metrics_listen: None,

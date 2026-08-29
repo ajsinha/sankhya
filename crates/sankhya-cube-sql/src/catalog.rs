@@ -52,6 +52,16 @@ pub struct Published {
     /// query surface did exactly that and reported every result complete --- the trap
     /// `sankhya_cube::complete` documents, walked into one crate away from the warning.
     pub completeness: Completeness,
+    /// **Whether these cells were read from a materialised cuboid.**
+    ///
+    /// A fact about how they were obtained, recorded by whoever obtained them. The result's
+    /// `materialised` column reported this until 2026-08-28 by echoing an argument the caller
+    /// passed --- so the column that answers "why was this fast?" answered with whatever the
+    /// query had typed, and an operator reading it learned only what they had asked for.
+    ///
+    /// A diagnostic that reports its own input is worse than an absent one, because it looks
+    /// like evidence.
+    pub from_cuboid: bool,
 }
 
 /// Every cube a session can navigate, and every overlay it may apply.

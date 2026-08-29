@@ -113,7 +113,12 @@ fn write_at(warehouse: &std::path::Path, cube: &str, snapshot: u64) -> Key {
     let key = Key::unrestricted(1, snapshot, Cuboid::of(&["region"]));
     let mut cells = Cells::over(vec!["region".to_string()]);
     cells.add(vec!["north".to_string()], 1.0).expect("well-formed");
-    cuboid::materialise(warehouse, &key, cube, &cells, Rule::Sum).expect("materialising");
+    // Stated rather than defaulted: a fixture's cells are its own, so "complete over the rows
+    // it holds" is the honest description --- and `Completeness` has no `Default` precisely so
+    // that a value nobody thought about cannot report itself complete.
+    let saw_everything = sankhya_cube::complete::Completeness::complete(1);
+    cuboid::materialise(warehouse, &key, cube, &cells, Rule::Sum, &saw_everything)
+        .expect("materialising");
     key
 }
 

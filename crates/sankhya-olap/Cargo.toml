@@ -4,7 +4,7 @@ description  = "Query session construction and the engine settings SANKHYA requi
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
-license.workspace      = true
+license-file.workspace      = true
 repository.workspace   = true
 
 [package.metadata.sankhya]

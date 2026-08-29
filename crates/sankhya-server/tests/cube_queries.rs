@@ -55,6 +55,7 @@ fn schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("region", DataType::Utf8, false),
+        Field::new("period", DataType::Utf8, false),
         Field::new("amount", DataType::Float64, false),
     ]))
 }
@@ -72,6 +73,7 @@ fn warehouse_with_a_fact_table() -> tempfile::TempDir {
         vec![
             Arc::new(Int64Array::from(vec![1_i64, 2, 3, 4])),
             Arc::new(StringArray::from(vec!["north", "north", "south", "south"])),
+            Arc::new(StringArray::from(vec!["q1", "q2", "q1", "q2"])),
             Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0, 40.0])),
         ],
     )
@@ -92,23 +94,49 @@ fn sales() -> Definition {
     Definition::new(
         "sales",
         "orders",
-        vec![Dimension {
-            name: "region".to_string(),
-            table: "orders".to_string(),
-            joins_on: "region".to_string(),
-            // Two levels, so their *order* is observable. With one level every ordering is
-            // the same ordering, and a test over it cannot tell a hierarchy from a list.
-            levels: vec![Level::new("country", "region"), Level::new("area", "region")],
-            rollups: None,
-            parent_child: None,
-        }],
         vec![
-            Measure::new("amount", vec![Along::new("region", CubeRule::Sum)]),
+            Dimension {
+                name: "region".to_string(),
+                table: "orders".to_string(),
+                joins_on: "region".to_string(),
+                // Two levels, so their *order* is observable. With one level every ordering
+                // is the same ordering, and a test over it cannot tell a hierarchy from a
+                // list.
+                levels: vec![Level::new("country", "region"), Level::new("area", "region")],
+                rollups: None,
+                parent_child: None,
+            },
+            // A second dimension, so a query can ask for a shape *coarser* than the base.
+            // With one dimension every ask is the base, and a test cannot tell selection
+            // running from selection never running.
+            Dimension {
+                name: "period".to_string(),
+                table: "orders".to_string(),
+                joins_on: "period".to_string(),
+                levels: vec![Level::new("quarter", "period")],
+                rollups: None,
+                parent_child: None,
+            },
+        ],
+        vec![
+            Measure::new(
+                "amount",
+                vec![
+                    Along::new("region", CubeRule::Sum),
+                    Along::new("period", CubeRule::Sum),
+                ],
+            ),
             // A measure that does *not* compose, so composability is observable. A ratio
             // cannot be derived from its parts: there is no operation over the pieces that
             // yields the whole, which is exactly what a client must be told before it offers
             // to roll one up.
-            Measure::new("ratio", vec![Along::new("region", CubeRule::None)]),
+            Measure::new(
+                "ratio",
+                vec![
+                    Along::new("region", CubeRule::None),
+                    Along::new("period", CubeRule::None),
+                ],
+            ),
         ],
     )
 }
@@ -119,6 +147,7 @@ fn settings(warehouse: &std::path::Path) -> Settings {
         warehouse: warehouse.to_path_buf(),
         read_as_of: Lsn::new(u64::MAX),
         tenant: tenant(),
+        cuboid_budget_rows: wiring::CUBOID_ROW_BUDGET,
         maintenance: None,
         require_password: false,
         metrics_listen: None,
@@ -317,16 +346,16 @@ async fn a_client_can_discover_a_cube_s_dimensions_and_their_order() {
         .expect("dimensions are listable");
     assert_eq!(
         first_column(&result, "dimension"),
-        vec!["region".to_string(), "region".to_string()]
+        vec!["region".to_string(), "region".to_string(), "period".to_string()]
     );
     assert_eq!(
         first_column(&result, "level"),
-        vec!["country".to_string(), "area".to_string()],
+        vec!["country".to_string(), "area".to_string(), "quarter".to_string()],
         "coarse to fine, as declared"
     );
     assert_eq!(
         first_column(&result, "depth"),
-        vec!["0".to_string(), "1".to_string()],
+        vec!["0".to_string(), "1".to_string(), "0".to_string()],
         "the depth is what tells a client which level is coarser, and it must not be \
          constant --- a client drawing a hierarchy from a constant draws a list"
     );
@@ -343,19 +372,31 @@ async fn a_client_can_discover_which_roll_ups_are_even_legal() {
     let result = server
         .query("SELECT * FROM cube_measures('sales')")
         .expect("measures are listable");
+    // One row per (measure, dimension): a rule is declared per dimension, which is what
+    // makes a semi-additive measure expressible at all.
     assert_eq!(
         first_column(&result, "measure"),
-        vec!["amount".to_string(), "ratio".to_string()]
+        vec![
+            "amount".to_string(),
+            "amount".to_string(),
+            "ratio".to_string(),
+            "ratio".to_string()
+        ]
     );
     assert_eq!(
         first_column(&result, "rule"),
-        vec!["sum".to_string(), "none".to_string()]
+        vec![
+            "sum".to_string(),
+            "sum".to_string(),
+            "none".to_string(),
+            "none".to_string()
+        ]
     );
     // `t`, because the wire renders booleans the way PostgreSQL does and a client parsing
     // this is a PostgreSQL client.
     assert_eq!(
         first_column(&result, "composes"),
-        vec!["t".to_string(), "f".to_string()],
+        vec!["t".to_string(), "t".to_string(), "f".to_string(), "f".to_string()],
         "a sum composes and a ratio does not, and a client offering to roll up the second \
          offers a button that cannot work"
     );
@@ -452,6 +493,7 @@ async fn a_commit_after_a_cube_was_hydrated_changes_the_answer() {
         vec![
             Arc::new(Int64Array::from(vec![5_i64])),
             Arc::new(StringArray::from(vec!["north"])),
+            Arc::new(StringArray::from(vec!["q1"])),
             Arc::new(Float64Array::from(vec![50.0])),
         ],
     )
@@ -481,9 +523,16 @@ async fn a_materialised_cuboid_answers_without_reading_the_fact_table() {
     // server that restarts makes every dashboard pay for a fact-table read again. A cuboid on
     // disk is the same cells, surviving.
     //
-    // Proved by taking the fact table away. If the answer still comes back, it did not come
-    // from there.
-    let (server, dir) = server_with(policy("reader", None));
+    // **Proved by taking the fact table away.** If the answer still comes back, it did not
+    // come from there.
+    //
+    // The version of this test that stood here until 2026-08-28 said exactly that in a
+    // comment and did neither: it wrote a cuboid by hand and asserted the file existed. So it
+    // passed for as long as the server never read a cuboid at all --- which it did not, for
+    // the whole of M7. `materialised` was dead code and the compiler said so. A test named
+    // for a behaviour is not a test of it.
+    let dir = maintained_warehouse();
+    let server = server_over(&dir, policy("reader", None));
     connect(&server, "ana");
 
     let live = server
@@ -491,40 +540,43 @@ async fn a_materialised_cuboid_answers_without_reading_the_fact_table() {
         .expect("the cube answers from its table");
     assert_eq!(total_from(&live), 100.0);
 
-    // Materialise, through the crate whose remit is writing derived data.
-    let cube = &server.cubes()[0];
-    let snapshot: u64 = first_column(&live, "snapshot")[0].parse().expect("a version");
-    let scope: u64 = 0; // an unrestricted reader
-    let key = sankhya_cube::materialise::Key::new(
-        cube.version(),
-        snapshot,
-        scope,
-        sankhya_cube_algo::lattice::Cuboid::of(&["region"]),
-    );
+    // Built by the server, through the maintenance tick, at the scope and snapshot the
+    // server itself will look under. Building it by hand here would prove only that this test
+    // can agree with itself about a key.
+    let refreshed = server.refresh_maintained_cubes();
+    assert!(!refreshed.is_empty(), "a cuboid was built: {refreshed:?}");
 
-    let mut cells = sankhya_cube::cells::Cells::over(vec!["region".to_string()]);
-    cells
-        .add(vec!["north".to_string()], 30.0)
-        .expect("well-formed");
-    cells
-        .add(vec!["south".to_string()], 70.0)
-        .expect("well-formed");
-    let written = sankhya_maintenance::cuboid::materialise(
-        dir.path(),
-        &key,
-        cube.name(),
-        &cells,
-        CubeRule::Sum,
-    )
-    .expect("materialising");
-    assert!(written, "the cuboid was written");
+    // Now take the fact table's data away, leaving its log alone so the snapshot --- and
+    // therefore the cuboid's key --- does not move. Any read of the fact table now fails.
+    let facts = dir.path().join("sales").join("orders");
+    let mut removed = 0;
+    for file in sankhya_table_delta::live_files(&facts)
+        .expect("the fact table's log replays")
+        .files
+    {
+        std::fs::remove_file(facts.join(&file.path)).expect("removing");
+        removed += 1;
+    }
+    assert!(removed > 0, "the fixture must have had data files to remove");
 
-    // It is on disk, under a schema table discovery skips.
-    let root = sankhya_maintenance::cuboid::root_of(dir.path(), &key, cube.name());
-    assert!(root.join("_delta_log").is_dir(), "a published table at {root:?}");
-    assert!(
-        sankhya_maintenance::cuboid::exists(dir.path(), &key, cube.name()),
-        "and the key that named it finds it again"
+    // A **new server**, not a new connection --- which is the whole point, and the first
+    // version of this rewrite got wrong. `hydrated` is a process-lifetime cache and a second
+    // connection to the same process is served straight out of it, so the fact table can be
+    // deleted and the answer still comes back without a cuboid being involved at all. A
+    // mutation removing the cuboid read survived exactly that test.
+    //
+    // Restarting is what the cuboid is for: the in-memory cache dies with the process, and
+    // this is the thing that outlives it.
+    drop(server);
+    let restarted = server_over(&dir, policy("reader", None));
+    connect(&restarted, "ana");
+    let from_disk = restarted
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .expect("the cuboid answers with no fact table to read");
+    assert_eq!(
+        total_from(&from_disk),
+        100.0,
+        "the same total, and it cannot have come from the fact table because there is none"
     );
 }
 
@@ -541,11 +593,11 @@ async fn a_materialised_cuboid_is_not_served_as_a_user_table() {
         cube.version(),
         1,
         0,
-        sankhya_cube_algo::lattice::Cuboid::of(&["region"]),
+        sankhya_cube_algo::lattice::Cuboid::of(&["region", "period"]),
     );
     let mut cells = sankhya_cube::cells::Cells::over(vec!["region".to_string()]);
     cells.add(vec!["north".to_string()], 1.0).expect("well-formed");
-    sankhya_maintenance::cuboid::materialise(dir.path(), &key, cube.name(), &cells, CubeRule::Sum)
+    sankhya_maintenance::cuboid::materialise(dir.path(), &key, cube.name(), &cells, CubeRule::Sum, &SAW_EVERYTHING)
         .expect("materialising");
 
     let (found, _) = warehouse::discover(dir.path());
@@ -571,17 +623,19 @@ async fn materialising_the_same_cuboid_twice_writes_it_once() {
         cube.version(),
         1,
         0,
-        sankhya_cube_algo::lattice::Cuboid::of(&["region"]),
+        sankhya_cube_algo::lattice::Cuboid::of(&["region", "period"]),
     );
     let mut cells = sankhya_cube::cells::Cells::over(vec!["region".to_string()]);
     cells.add(vec!["north".to_string()], 1.0).expect("well-formed");
 
     let first = sankhya_maintenance::cuboid::materialise(
         dir.path(), &key, cube.name(), &cells, CubeRule::Sum,
+        &SAW_EVERYTHING,
     )
     .expect("materialising");
     let second = sankhya_maintenance::cuboid::materialise(
         dir.path(), &key, cube.name(), &cells, CubeRule::Sum,
+        &SAW_EVERYTHING,
     )
     .expect("materialising again");
 
@@ -600,12 +654,13 @@ async fn an_empty_cuboid_is_not_written() {
         cube.version(),
         1,
         0,
-        sankhya_cube_algo::lattice::Cuboid::of(&["region"]),
+        sankhya_cube_algo::lattice::Cuboid::of(&["region", "period"]),
     );
     let empty = sankhya_cube::cells::Cells::over(vec!["region".to_string()]);
 
     let written = sankhya_maintenance::cuboid::materialise(
         dir.path(), &key, cube.name(), &empty, CubeRule::Sum,
+        &SAW_EVERYTHING,
     )
     .expect("materialising");
     assert!(!written);
@@ -615,6 +670,14 @@ async fn an_empty_cuboid_is_not_written() {
 // --- maintained cubes refresh without a caller -------------------------------
 
 /// The fixture cube, marked maintained.
+/// What a hand-built fixture cuboid saw.
+///
+/// Stated rather than defaulted, and the same reason `Completeness` has no `Default`: a value
+/// nobody thought about must not be able to report itself complete. These cells are the
+/// fixture's own, so "complete over the rows it holds" is the honest description of them.
+const SAW_EVERYTHING: sankhya_cube::complete::Completeness =
+    sankhya_cube::complete::Completeness::complete(2);
+
 fn maintained_warehouse() -> tempfile::TempDir {
     let dir = warehouse_with_a_fact_table();
     catalogue::save(dir.path(), &sales().maintained_within(5)).expect("declaring maintained");
@@ -681,6 +744,382 @@ async fn refreshing_twice_builds_once() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restricted_caller_is_never_served_the_unrestricted_cuboid() {
+    // The other half of serving a cuboid, and the half that must not be got wrong once.
+    //
+    // The refresher builds the unrestricted cuboid: an aggregate over **every** row. Serving
+    // it to a caller a policy filters would be a disclosure through arithmetic, and an
+    // invisible one --- the number is real, it is simply over rows they may not read. There
+    // is no error, no refusal, and nothing in a log to notice.
+    //
+    // Proved the same way as its sibling: build the cuboid, take the fact table away, and
+    // restart. An unrestricted caller gets an answer. A filtered one must get **no answer at
+    // all**, because the only cells that could serve them are ones nothing has computed.
+    let dir = maintained_warehouse();
+    let building = server_over(&dir, policy("reader", None));
+    let refreshed = building.refresh_maintained_cubes();
+    assert!(!refreshed.is_empty(), "a cuboid was built: {refreshed:?}");
+    drop(building);
+
+    let facts = dir.path().join("sales").join("orders");
+    for file in sankhya_table_delta::live_files(&facts).expect("its log replays").files {
+        std::fs::remove_file(facts.join(&file.path)).expect("removing");
+    }
+
+    // Same warehouse, same cuboid on disk --- a policy that withholds rows.
+    let restricted = server_over(&dir, policy("reader", Some("region = 'north'")));
+    connect(&restricted, "ana");
+    let answer = restricted.query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')");
+
+    assert!(
+        answer.is_err(),
+        "a filtered caller was served an aggregate over rows they may not read: {:?}",
+        answer.map(|result| total_from(&result))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_provenance_column_says_where_the_answer_came_from() {
+    // "Why was this fast?" and "why was this slow?" are the same question asked twice, and an
+    // operator cannot answer either from a column that reports what the query typed. This one
+    // did exactly that until 2026-08-28 --- it echoed the caller's `materialise` argument ---
+    // and the echo agreed with reality by accident, because nothing served a cuboid and the
+    // honest answer was `false` for every query ever run.
+    let dir = maintained_warehouse();
+    let server = server_over(&dir, policy("reader", None));
+    connect(&server, "ana");
+
+    let live = server
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .expect("the cube answers from its table");
+    assert_eq!(
+        first_column(&live, "materialised"),
+        vec!["f".to_string(); first_column(&live, "materialised").len()],
+        "hydrated from the fact table, and it says so"
+    );
+
+    server.refresh_maintained_cubes();
+    drop(server);
+
+    // Restarted, so the only thing left is the cuboid on disk.
+    let restarted = server_over(&dir, policy("reader", None));
+    connect(&restarted, "ana");
+    let cached = restarted
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .expect("the cuboid answers");
+    assert_eq!(
+        first_column(&cached, "materialised"),
+        vec!["t".to_string(); first_column(&cached, "materialised").len()],
+        "read from a cuboid, and it says that instead"
+    );
+}
+
+// --- answering from a materialised ancestor ----------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_query_is_answered_from_the_narrowest_cuboid_that_can_answer_it() {
+    // §11.6's reason for having a lattice at all. A cuboid over `[region]` is far cheaper to
+    // scan than one over `[region, period]`, and it can answer `by=region` exactly --- there
+    // is nothing left to roll away.
+    //
+    // Until this existed the server only ever read the *base* cuboid, so the lattice, the
+    // ancestor-answering predicate and `materialise::plan` were all written, tested, and
+    // reached by nothing that serves a query.
+    let dir = maintained_warehouse();
+    let building = server_over(&dir, policy("reader", None));
+    connect(&building, "ana");
+    // Ask for `by=region` repeatedly so selection buys that shape from the query log.
+    for _ in 0..5 {
+        building
+            .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+            .expect("the cube answers");
+    }
+    building.refresh_maintained_cubes();
+    drop(building);
+
+    let cube_version = {
+        let peek = server_over(&dir, policy("reader", None));
+        let cube = &peek.cubes()[0];
+        (cube.version(), peek.snapshot_for_test(cube.fact_table()))
+    };
+    let narrow = sankhya_cube::materialise::Key::unrestricted(
+        cube_version.0,
+        cube_version.1,
+        sankhya_cube::algo::Cuboid::of(&["region"]),
+    );
+    assert!(
+        sankhya_maintenance::cuboid::exists(dir.path(), &narrow, "sales"),
+        "selection bought the shape that was asked for, which this test depends on"
+    );
+
+    // Remove the **base** cuboid and the fact table, leaving only the narrow ancestor. If the
+    // answer still comes back it came from there, and from nowhere else.
+    let base = sankhya_cube::materialise::Key::unrestricted(
+        cube_version.0,
+        cube_version.1,
+        sankhya_cube::algo::Cuboid::of(&["region", "period"]),
+    );
+    std::fs::remove_dir_all(sankhya_maintenance::cuboid::root_of(dir.path(), &base, "sales"))
+        .expect("removing the base cuboid");
+    let facts = dir.path().join("sales").join("orders");
+    for file in sankhya_table_delta::live_files(&facts).expect("its log replays").files {
+        std::fs::remove_file(facts.join(&file.path)).expect("removing");
+    }
+
+    let restarted = server_over(&dir, policy("reader", None));
+    connect(&restarted, "ana");
+    let answer = restarted
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .expect("the narrow cuboid answers on its own");
+    assert_eq!(total_from(&answer), 100.0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_query_finer_than_every_cuboid_is_not_answered_from_one() {
+    // The other direction, and the one that would be a wrong number rather than an error.
+    //
+    // Cells published to a session are the finest grain a query may reach: the SQL surface
+    // dices and rolls up *from* them. A cuboid over `[region]` cannot answer `by=region|period`
+    // --- the period column is gone --- and answering from it anyway would report each region's
+    // total under every period.
+    let dir = maintained_warehouse();
+    let building = server_over(&dir, policy("reader", None));
+    connect(&building, "ana");
+    for _ in 0..5 {
+        building
+            .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+            .expect("the cube answers");
+    }
+    building.refresh_maintained_cubes();
+    drop(building);
+
+    let cube_version = {
+        let peek = server_over(&dir, policy("reader", None));
+        let cube = &peek.cubes()[0];
+        (cube.version(), peek.snapshot_for_test(cube.fact_table()))
+    };
+    let base = sankhya_cube::materialise::Key::unrestricted(
+        cube_version.0,
+        cube_version.1,
+        sankhya_cube::algo::Cuboid::of(&["region", "period"]),
+    );
+    std::fs::remove_dir_all(sankhya_maintenance::cuboid::root_of(dir.path(), &base, "sales"))
+        .expect("removing the base cuboid");
+    let facts = dir.path().join("sales").join("orders");
+    for file in sankhya_table_delta::live_files(&facts).expect("its log replays").files {
+        std::fs::remove_file(facts.join(&file.path)).expect("removing");
+    }
+
+    // Only the `[region]` cuboid is left, and the query needs `[region, period]`.
+    let restarted = server_over(&dir, policy("reader", None));
+    connect(&restarted, "ana");
+    assert!(
+        restarted
+            .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region|period')")
+            .is_err(),
+        "a query was answered from a cuboid too coarse to express it"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_dice_is_not_answered_from_a_cuboid_that_rolled_its_dimension_away() {
+    // A dice needs its column to still be there. `where=region:north` over a cuboid that
+    // rolled `region` away has nothing to restrict, so `region` counts towards the grain a
+    // statement needs **even though it never appears in the result** --- slicing drops the
+    // axis it fixes.
+    //
+    // Pinning `[period]` is what makes this falsifiable: it puts a cuboid on disk that is
+    // cheap, current, and unable to express the query. A test where every materialised cuboid
+    // happens to contain `region` cannot tell the two behaviours apart, and the first version
+    // of this test was exactly that --- a mutation dropping `where=` from the grain survived it.
+    let dir = warehouse_with_a_fact_table();
+    catalogue::save(
+        dir.path(),
+        &sales().maintained_within(5).pinning(["period"]),
+    )
+    .expect("declaring a cube that pins the wrong shape for this query");
+
+    let server = server_over(&dir, policy("reader", None));
+    server.refresh_maintained_cubes();
+    connect(&server, "ana");
+
+    let sliced = server
+        .query("SELECT * FROM cube_slice('sales', 'amount', 'where=region:north')")
+        .expect("the slice answers");
+
+    assert_eq!(total_from(&sliced), 30.0, "north's total, and only north's");
+    assert_eq!(
+        first_column(&sliced, "materialised"),
+        vec!["f".to_string(); first_column(&sliced, "materialised").len()],
+        "the only cuboid on disk cannot express this query, so it must not have been used"
+    );
+}
+
+// --- §11.6's three levels of control -----------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_session_may_ask_for_the_base_data_and_get_the_same_answer() {
+    // Exit criterion 3a, from the caller's side. `materialisation=off` is the reproducibility
+    // check: a figure that differs between it and the default is a defect, not a tuning
+    // question. That is the whole reason materialisation can be automatic --- being wrong
+    // about what to cache costs latency, never correctness.
+    let dir = maintained_warehouse();
+    let server = server_over(&dir, policy("reader", None));
+    server.refresh_maintained_cubes();
+    connect(&server, "ana");
+
+    let cached = server
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .expect("the default path answers");
+    let base = server
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region', 'materialise=false')")
+        .expect("and so does the base path");
+
+    assert_eq!(
+        total_from(&cached).to_bits(),
+        total_from(&base).to_bits(),
+        "bit-identical with materialisation on and off, which is what makes it a cache"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_session_that_asks_for_the_base_data_is_not_served_a_cuboid() {
+    // The previous test would pass if `materialisation=off` did nothing at all --- both
+    // answers would come from the same place and agree trivially. This one takes the fact
+    // table away, so the base path has nothing to read: a caller asking for it must fail
+    // rather than be quietly handed the cuboid they said not to use.
+    let dir = maintained_warehouse();
+    let building = server_over(&dir, policy("reader", None));
+    building.refresh_maintained_cubes();
+    drop(building);
+
+    let facts = dir.path().join("sales").join("orders");
+    for file in sankhya_table_delta::live_files(&facts).expect("its log replays").files {
+        std::fs::remove_file(facts.join(&file.path)).expect("removing");
+    }
+
+    let server = server_over(&dir, policy("reader", None));
+    connect(&server, "ana");
+
+    assert_eq!(
+        total_from(
+            &server
+                .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+                .expect("the cuboid answers")
+        ),
+        100.0
+    );
+    assert!(
+        server
+            .query(
+                "SELECT * FROM cube_rollup('sales', 'amount', 'by=region', 'materialise=false')"
+            )
+            .is_err(),
+        "a caller who asked for the base data was served the cuboid instead"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_definition_can_pin_a_shape_nobody_has_asked_for() {
+    // The definition level. Selection spends the operator's budget on evidence, and a pin is
+    // the statement that a shape is worth holding *before* any evidence exists --- the
+    // month-end roll-up nobody runs until the day it must be instant. A pin that had to
+    // compete against a query log would be no control at all.
+    let dir = warehouse_with_a_fact_table();
+    catalogue::save(
+        dir.path(),
+        &sales().maintained_within(5).pinning(["region"]),
+    )
+    .expect("declaring a cube with a pinned shape");
+
+    let server = server_over(&dir, policy("reader", None));
+    // No queries at all, so the query log is empty and selection can choose nothing.
+    let refreshed = server.refresh_maintained_cubes();
+    assert!(!refreshed.is_empty(), "{refreshed:?}");
+
+    let cube = &server.cubes()[0];
+    let snapshot = server.snapshot_for_test(cube.fact_table());
+    let pinned = sankhya_cube::materialise::Key::unrestricted(
+        cube.version(),
+        snapshot,
+        sankhya_cube::algo::Cuboid::of(&["region"]),
+    );
+    assert!(
+        sankhya_maintenance::cuboid::exists(dir.path(), &pinned, cube.name()),
+        "the pinned shape was built with nothing in the query log to justify it"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pin_survives_being_written_down_and_read_back() {
+    // A pin lives in the definition, and the definition lives on disk. A control that is
+    // honoured in memory and lost by the catalogue is a control that works until a restart.
+    let dir = warehouse_with_a_fact_table();
+    catalogue::save(dir.path(), &sales().pinning(["region"]).pinning(["period"]))
+        .expect("declaring");
+
+    let server = server_over(&dir, policy("reader", None));
+    let mut pinned: Vec<Vec<String>> = server.cubes()[0]
+        .pinned()
+        .iter()
+        .map(|shape| shape.dimensions().iter().map(ToString::to_string).collect())
+        .collect();
+    pinned.sort();
+
+    assert_eq!(
+        pinned,
+        vec![vec!["period".to_string()], vec!["region".to_string()]],
+        "both pins came back"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_zero_budget_buys_nothing_beyond_the_base_and_the_pins() {
+    // The operator's level. The budget is what selection may spend on somebody else's query
+    // log, so setting it to nothing must stop selection buying anything --- while leaving the
+    // base cuboid, which is not bought but required, and any pinned shape, which the modeller
+    // asked for rather than the log.
+    let dir = maintained_warehouse();
+    let mut with_no_budget = settings(dir.path());
+    with_no_budget.cuboid_budget_rows = 0;
+
+    let (found, refused) = warehouse::discover(dir.path());
+    assert!(refused.is_empty(), "{refused:?}");
+    let cache = sankhya_table_delta::LogCache::new();
+    let (servable, unreadable) = warehouse::servable(&found, Lsn::new(u64::MAX), &cache);
+    assert!(unreadable.is_empty(), "{unreadable:?}");
+    let (server, complaints) = Server::with_tables(
+        with_no_budget,
+        policy("reader", None),
+        warehouse::describe(&found),
+        servable,
+    )
+    .adopting_cubes(dir.path());
+    assert!(complaints.is_empty(), "{complaints:?}");
+
+    // Ask for a shape repeatedly, so the query log has evidence selection would act on.
+    connect(&server, "ana");
+    for _ in 0..5 {
+        server
+            .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+            .expect("the cube answers");
+    }
+    server.refresh_maintained_cubes();
+
+    let cube = &server.cubes()[0];
+    let snapshot = server.snapshot_for_test(cube.fact_table());
+    let asked_for = sankhya_cube::materialise::Key::unrestricted(
+        cube.version(),
+        snapshot,
+        sankhya_cube::algo::Cuboid::of(&["region"]),
+    );
+    assert!(
+        !sankhya_maintenance::cuboid::exists(dir.path(), &asked_for, cube.name()),
+        "a zero budget bought a cuboid anyway, so the operator's number is decorative"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn what_the_refresher_builds_is_the_unrestricted_scope() {
     // A refresh running on a timer has no principal, so it builds the unrestricted cuboid —
     // and per ADR-0008 an unrestricted cuboid may serve only an unrestricted caller. The
@@ -695,7 +1134,7 @@ async fn what_the_refresher_builds_is_the_unrestricted_scope() {
 
     let cube = &server.cubes()[0];
     let snapshot = server.snapshot_for_test(cube.fact_table());
-    let base = sankhya_cube::algo::Cuboid::of(&["region"]);
+    let base = sankhya_cube::algo::Cuboid::of(&["region", "period"]);
     let unrestricted =
         sankhya_cube::materialise::Key::unrestricted(cube.version(), snapshot, base.clone());
     let restricted =
@@ -730,7 +1169,7 @@ async fn the_refresher_collects_cuboids_the_table_has_left_behind() {
     );
     let mut cells = sankhya_cube::cells::Cells::over(vec!["region".to_string()]);
     cells.add(vec!["north".to_string()], 1.0).expect("well-formed");
-    sankhya_maintenance::cuboid::materialise(dir.path(), &stale, cube.name(), &cells, CubeRule::Sum)
+    sankhya_maintenance::cuboid::materialise(dir.path(), &stale, cube.name(), &cells, CubeRule::Sum, &SAW_EVERYTHING)
         .expect("materialising a stale cuboid");
     assert!(sankhya_maintenance::cuboid::exists(dir.path(), &stale, cube.name()));
 
@@ -742,6 +1181,7 @@ async fn the_refresher_collects_cuboids_the_table_has_left_behind() {
             vec![
                 Arc::new(Int64Array::from(vec![version as i64])),
                 Arc::new(StringArray::from(vec!["north"])),
+                Arc::new(StringArray::from(vec!["q1"])),
                 Arc::new(Float64Array::from(vec![1.0])),
             ],
         )
@@ -759,5 +1199,129 @@ async fn the_refresher_collects_cuboids_the_table_has_left_behind() {
     assert!(
         !sankhya_maintenance::cuboid::exists(dir.path(), &stale, cube.name()),
         "a cuboid nothing can ask for is collected, or the population grows without bound"
+    );
+}
+
+// --- the query log closes the loop -------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn what_was_asked_for_is_what_gets_materialised() {
+    // The loop M7 could not close: selection has existed and been tested since the milestone
+    // began, and nothing recorded the signal its own documentation says it needs. A cube
+    // asked repeatedly for one shape should end up holding that shape.
+    let dir = maintained_warehouse();
+    let server = server_over(&dir, policy("reader", None));
+    connect(&server, "ana");
+
+    // Ask for a coarser grain than the base, several times over.
+    for _ in 0..5 {
+        server
+            .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+            .expect("the cube answers");
+    }
+
+    server.refresh_maintained_cubes();
+
+    let cube = &server.cubes()[0];
+    let snapshot = server.snapshot_for_test(cube.fact_table());
+    let asked = sankhya_cube::materialise::Key::unrestricted(
+        cube.version(),
+        snapshot,
+        sankhya_cube::algo::Cuboid::of(&["region"]),
+    );
+    assert!(
+        sankhya_maintenance::cuboid::exists(dir.path(), &asked, cube.name()),
+        "the shape people asked for five times is the shape that got materialised"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cube_nobody_queried_gets_its_base_and_no_guesses() {
+    // The honest answer for an unqueried cube. There is no evidence about what would help,
+    // and spending an operator's storage on a guess is worse than spending none --- which is
+    // exactly what selecting against the whole lattice would do.
+    let dir = maintained_warehouse();
+    let server = server_over(&dir, policy("reader", None));
+
+    // No queries at all before refreshing.
+    server.refresh_maintained_cubes();
+
+    let cube = &server.cubes()[0];
+    let snapshot = server.snapshot_for_test(cube.fact_table());
+    // The base is both dimensions. `region` alone is a shape selection could choose --- and
+    // must not, with nothing asked for.
+    let base = sankhya_cube::materialise::Key::unrestricted(
+        cube.version(),
+        snapshot,
+        sankhya_cube::algo::Cuboid::of(&["region", "period"]),
+    );
+    let guessed = sankhya_cube::materialise::Key::unrestricted(
+        cube.version(),
+        snapshot,
+        sankhya_cube::algo::Cuboid::of(&["region"]),
+    );
+    assert!(
+        sankhya_maintenance::cuboid::exists(dir.path(), &base, cube.name()),
+        "the base is built regardless --- it is the cube"
+    );
+    assert!(
+        !sankhya_maintenance::cuboid::exists(dir.path(), &guessed, cube.name()),
+        "and nothing else, because nothing has been asked for"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_materialised_cuboid_holds_the_grain_its_key_names() {
+    // A cache that lies about its own grain is worse than no cache, because a reader trusts
+    // the key. Hydration produces cells at the *base* grain, so a coarser cuboid has to be
+    // rolled to its shape before it is stored --- and the first version of the refresher
+    // stored base cells under whatever key it was writing.
+    let dir = maintained_warehouse();
+    let server = server_over(&dir, policy("reader", None));
+    connect(&server, "ana");
+
+    for _ in 0..5 {
+        server
+            .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+            .expect("the cube answers");
+    }
+    server.refresh_maintained_cubes();
+
+    let cube = &server.cubes()[0];
+    let snapshot = server.snapshot_for_test(cube.fact_table());
+    let key = sankhya_cube::materialise::Key::unrestricted(
+        cube.version(),
+        snapshot,
+        sankhya_cube::algo::Cuboid::of(&["region"]),
+    );
+    let root = sankhya_maintenance::cuboid::root_of(dir.path(), &key, cube.name());
+    assert!(root.join("_delta_log").is_dir(), "the cuboid was written");
+
+    // The columns **in the file**, read from its own footer.
+    //
+    // Not from `resolve`, which returns the schema it was handed rather than the schema on
+    // disk --- so asserting on that is asserting on the test's own input. The first version
+    // of this test did exactly that and passed under a mutation that stored the wrong grain.
+    let live = sankhya_table_delta::live_files(&root).expect("its log replays");
+    let file = live.files.first().expect("a file");
+    let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+        std::fs::File::open(root.join(&file.path)).expect("openable"),
+    )
+    .expect("a parquet file");
+    let columns: Vec<String> = reader
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect();
+
+    assert!(
+        columns.contains(&"region".to_string()),
+        "the grain its key names: {columns:?}"
+    );
+    assert!(
+        !columns.contains(&"period".to_string()),
+        "and not the base's --- storing base cells under a coarser key files them at a grain \
+         they do not have: {columns:?}"
     );
 }

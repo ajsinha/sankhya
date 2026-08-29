@@ -124,6 +124,16 @@ pub struct Definition {
     ///
     /// See [ADR-0009](../../../docs/adr/0009-the-cube-lifecycle.md).
     pub target_lag: Option<u64>,
+    /// Cuboids this cube always wants materialised, whatever the query log says.
+    ///
+    /// The **definition** level of §11.6's three controls, and the one whoever models the
+    /// cube owns. Selection spends an operator's budget on evidence; a pin is the statement
+    /// that a shape is worth holding before any evidence exists --- the month-end roll-up
+    /// nobody runs until the day it must be instant.
+    ///
+    /// Each entry is a list of dimension names. Stored that way rather than as a `Cuboid` so
+    /// this type keeps no dependency it does not need and the persisted form stays obvious.
+    pub pinned: Vec<Vec<String>>,
 }
 
 /// Which of the three lifetimes a cube has.
@@ -155,6 +165,7 @@ impl Definition {
             // Declared, not maintained. Persisting a definition is cheap; materialising is
             // storage and work, and a cube should not acquire either by being written down.
             target_lag: None,
+            pinned: Vec::new(),
         }
     }
 
@@ -162,6 +173,13 @@ impl Definition {
     #[must_use]
     pub fn maintained_within(mut self, versions: u64) -> Self {
         self.target_lag = Some(versions);
+        self
+    }
+
+    /// Always materialise this shape, whatever has been asked for.
+    #[must_use]
+    pub fn pinning(mut self, dimensions: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.pinned.push(dimensions.into_iter().map(Into::into).collect());
         self
     }
 
@@ -212,6 +230,23 @@ impl Cube {
     #[must_use]
     pub const fn target_lag(&self) -> Option<u64> {
         self.definition.target_lag
+    }
+
+    /// The cuboids this cube's definition pins.
+    ///
+    /// A pin is a statement of intent, not a promise about this instant: a pinned cuboid that
+    /// has not been built yet is simply not there to use.
+    #[must_use]
+    pub fn pinned(&self) -> Vec<sankhya_cube_algo::lattice::Cuboid> {
+        self.definition
+            .pinned
+            .iter()
+            .map(|dimensions| {
+                sankhya_cube_algo::lattice::Cuboid::of(
+                    &dimensions.iter().map(String::as_str).collect::<Vec<&str>>(),
+                )
+            })
+            .collect()
     }
 
     /// Which lifetime it has.

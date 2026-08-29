@@ -9,7 +9,7 @@
 
 **Document ID:** SNK-RD-001
 **Version:** 0.1.0 (draft for review)
-**Status:** Implementation — M0–M6 complete, M7 in progress
+**Status:** Implementation — M0–M7 complete, M8 next
 **Date:** 2026-08-26
 **Supersedes:** `docs/initial_reqmt.docx` ("Unified Enterprise Data Architecture & Requirements Document", URARD)
 
@@ -134,7 +134,7 @@ Constraints are externally imposed and not negotiable within this project.
 | `CON-09` | Analytical table naming SHALL be relatable to operational table naming | Owner directive, 2026-08-25 |
 | `CON-10` | The architecture SHALL be general-purpose; domain capabilities are use cases | Owner directive, 2026-08-25 |
 | `CON-11` | The analytical tier MAY lag the transactional tier by a few seconds | Owner directive, 2026-08-25 — this is a *relaxation*, and it is load-bearing for `DEC-08` |
-| `CON-12` | Licensed under Apache License 2.0; all dependencies MUST be licence-compatible | Repository `LICENSE` |
+| `CON-12` | **Proprietary**, owned by Ashutosh Sinha; not open source, and no right granted without express written authorisation. Dependencies remain under their own licences, which this does not displace, and their obligations MUST still be honoured | Repository `LICENSE`; owner directive, 2026-08-28 |
 
 ---
 

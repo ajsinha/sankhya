@@ -202,6 +202,7 @@ async fn a_server_keeps_reading_across_its_own_maintenance() {
             warehouse: dir.path().to_path_buf(),
             read_as_of: Lsn::new(u64::MAX),
             tenant,
+            cuboid_budget_rows: wiring::CUBOID_ROW_BUDGET,
             maintenance: None,
             require_password: false,
             metrics_listen: None,
