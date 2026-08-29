@@ -157,6 +157,36 @@ lookups. With one lock put back it manages **618** --- a factor of seventy-five.
 passed with the global lock restored: a test of contention that could not detect contention.
 The threshold is now three thousand, chosen from both measurements rather than from taste.
 
+### Deadlock is a different problem from a race, and needed a different answer
+
+A race appears under load: run it enough times and the bad interleaving happens, which is why
+hammer tests found four of them this milestone. A **deadlock** needs two threads taking two
+locks in opposite orders at the same moment --- and while only one call path holds both, there
+is no order to reverse and no amount of hammering finds anything.
+
+That is what makes it dangerous rather than merely hard. **The code that holds two locks is not
+the bug. The code written six months later that holds them the other way round is**, and by
+then the first ordering is one function among thousands and nothing announces it.
+
+So `check-lock-order` does not look for deadlocks. It looks for the precondition --- a place
+where two locks are held at once --- and requires each one to be declared with its order. Two
+existed, both introduced within hours of the check that found them:
+
+**`QueryLog::record` held the map's read lock across the ring's lock, under a comment saying it
+did not.** In edition 2021 a temporary in an `if let` scrutinee lives to the end of the whole
+`if let`, so `if let Some(ring) = self.asks.read()...` holds the guard through `ring.lock()`.
+Binding it to a `let` first is not a style preference; it is the difference between the comment
+being true and being false.
+
+**`CubeCatalog::resolve` held `cubes` across two `declared` acquisitions.** Nothing took them
+the other way round, so there was no cycle --- which is exactly the state in which an ordering
+gets established by accident and reversed by somebody who never knew it existed.
+
+The check is syntactic and single-function, and says so: it cannot see a lock taken inside a
+function called while a guard is held, because that needs a call graph, and a lint that is half
+a call graph reports confidently about the half it has. What it catches is the shape that
+appeared here twice in one day.
+
 ### The cube query path stopped serializing too
 
 `QueryLog::record` runs on **every** cube query and took a write lock over the whole map to

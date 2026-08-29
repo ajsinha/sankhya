@@ -1852,8 +1852,8 @@ CATALOGUE = [
 
     ("cube: let one cube's asks crowd out another's",
      "crates/sankhya-cube/src/querylog.rs",
-     "            .entry(cube.to_string())",
-     "            .entry(String::new())",
+     "                asks.entry(cube.to_string())",
+     "                asks.entry(String::new())",
      "sankhya-cube"),
 
     ("server: answer from any materialised cuboid, ignoring whether it can express the query",
@@ -1918,7 +1918,7 @@ CATALOGUE = [
 
     ("cube: take the map's write lock on every recorded ask, serializing every cube",
      "crates/sankhya-cube/src/querylog.rs",
-     "        if let Some(ring) = self.asks.read().get(cube).map(Arc::clone) {\n            ring.lock().record(cuboid, self.capacity);\n            return;\n        }",
+     "        let existing = self.asks.read().get(cube).map(Arc::clone);\n        if let Some(ring) = existing {\n            ring.lock().record(cuboid, self.capacity);\n            return;\n        }",
      "",
      "sankhya-cube"),
 
@@ -2360,7 +2360,7 @@ CATALOGUE = [
 
     ("cube-sql: refuse an unknown cube without naming the ones that exist",
      "crates/sankhya-cube-sql/src/catalog.rs",
-     "                known: self.declared.read().iter().cloned().collect(),",
+     "                known: declared,",
      "                known: Vec::new(),",
      "sankhya-cube-sql"),
 

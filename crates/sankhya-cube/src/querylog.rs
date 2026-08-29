@@ -109,20 +109,35 @@ impl QueryLog {
 
     /// Record that somebody asked this cube for this shape.
     pub fn record(&self, cube: &str, cuboid: Cuboid) {
-        // The common path: a read lock, a lookup, and out. The map lock is not held while the
-        // ring is written, so two cubes recording at once never meet.
-        if let Some(ring) = self.asks.read().get(cube).map(Arc::clone) {
+        // The common path: a read lock, a lookup, and out.
+        //
+        // **Bound to a `let` before the ring is locked, and that is not a style preference.**
+        // In edition 2021 a temporary in an `if let` scrutinee lives until the end of the whole
+        // `if let` --- so writing this as `if let Some(ring) = self.asks.read()...` holds the
+        // map's read lock across `ring.lock()`. The first version of this did exactly that,
+        // under a comment claiming the opposite.
+        //
+        // Two costs, and the second is the one that matters. The map cannot be written while
+        // any cube is recording, which is the contention this change existed to remove. And it
+        // establishes a nested order --- map before ring --- that nothing else must ever
+        // reverse. No path does today; every path that might is a deadlock waiting for the
+        // load that makes it likely.
+        let existing = self.asks.read().get(cube).map(Arc::clone);
+        if let Some(ring) = existing {
             ring.lock().record(cuboid, self.capacity);
             return;
         }
         // First sight of this cube. Taken under a write lock, and re-checked because another
         // thread may have inserted it between the read above and this write.
-        let ring = Arc::clone(
-            self.asks
-                .write()
-                .entry(cube.to_string())
-                .or_insert_with(|| Arc::new(parking_lot::Mutex::new(Ring::default()))),
-        );
+        // Also bound first, for the same reason: `Arc::clone(self.asks.write().entry(..))`
+        // keeps the write guard alive across the `ring.lock()` that follows it.
+        let ring = {
+            let mut asks = self.asks.write();
+            Arc::clone(
+                asks.entry(cube.to_string())
+                    .or_insert_with(|| Arc::new(parking_lot::Mutex::new(Ring::default()))),
+            )
+        };
         ring.lock().record(cuboid, self.capacity);
     }
 

@@ -8,6 +8,7 @@
 mod catalogues;
 mod logging;
 mod atomicwrites;
+mod lockorder;
 mod buildtree;
 mod docnumbers;
 mod surfaces;
@@ -151,6 +152,10 @@ fn main() -> ExitCode {
     if run_all || task == "check-atomic-writes" {
         failed |= !atomicwrites::check(&root);
     }
+    if run_all || task == "check-lock-order" {
+        println!("== check-lock-order ==");
+        failed |= !lockorder::check(&root);
+    }
     if run_all || task == "check-writers" {
         failed |= !check_writers(&root);
     }
@@ -245,6 +250,7 @@ fn main() -> ExitCode {
                 | "check-build-tree"
                 | "check-surfaces"
                 | "check-atomic-writes"
+                | "check-lock-order"
                 | "sweep"
                 | "sync-doc-numbers"
                 | "sweep-dry-run"
@@ -257,7 +263,7 @@ fn main() -> ExitCode {
             "usage: cargo xtask \
              [check-all|check-tests|check-invariants|check-writers|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
              |check-features|check-lints|check-mutations|check-doc-numbers\
-             |check-catalogues|write-catalogues|check-logging|check-package|check-build-tree|check-surfaces|check-atomic-writes|sweep|sweep-dry-run|sync-doc-numbers|check-performance]"
+             |check-catalogues|write-catalogues|check-logging|check-package|check-build-tree|check-surfaces|check-atomic-writes|check-lock-order|sweep|sweep-dry-run|sync-doc-numbers|check-performance]"
         );
         return ExitCode::from(2);
     }
@@ -1850,6 +1856,7 @@ const KNOWN_CHECKS: &[&str] = &[
     "check-doc-numbers",
     "check-surfaces",
     "check-atomic-writes",
+    "check-lock-order",
     "check-build-tree",
     "check-tests",
 ];
