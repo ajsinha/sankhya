@@ -3249,10 +3249,6 @@ name = "sankhya-api-grpc"
 version = "0.1.0"
 
 [[package]]
-name = "sankhya-api-http"
-version = "0.1.0"
-
-[[package]]
 name = "sankhya-api-pg"
 version = "0.1.0"
 dependencies = [
@@ -3672,10 +3668,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sankhya-rules"
-version = "0.1.0"
-
-[[package]]
 name = "sankhya-schema"
 version = "0.1.0"
 dependencies = [
@@ -3794,10 +3786,6 @@ dependencies = [
  "sankhya-plan",
  "sankhya-types",
 ]
-
-[[package]]
-name = "sankhya-telemetry"
-version = "0.1.0"
 
 [[package]]
 name = "sankhya-testkit"

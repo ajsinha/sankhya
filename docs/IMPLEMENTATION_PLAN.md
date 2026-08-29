@@ -660,7 +660,19 @@ scope is narrower than its purpose: it checks crates that **register SQL functio
 surface, a capture source, an allocator, a pack loader and a set of port traits all fall
 straight through it.
 
-**The work.**
+**Done 2026-08-28, before M8 opened**, because a decision per crate is cheap while the review
+is fresh and expensive once it is not:
+
+| Disposition | Crates |
+|---|---|
+| **Deleted** — no code, no milestone, duplicated something that exists | `api-http` (a second HTTP surface beside the unreachable `api-rest`), `rules` (the declarative pack tier already is a rule engine), `telemetry` (`sankhya-metrics` is 789 lines and used) |
+| **Adopted with a dated milestone**, stated in the crate's own header | `api-grpc` (M8 §12.2 — M6's carried criterion 7), `objectstore` (M8 §12.1 — conditional put is where ADR-0013's claim lands remotely), `oltp-pg` (M8 §12.2 — leader election runs *through* a store nothing supervises today), `testkit` (M8 §12.1e — no fault injection exists, which is why every concurrency defect went unseen), `cli` (M8), `tiering` (M9, gated) |
+| **Listed with a reason, undecided** | `mv` — the machinery exists in `sankhya-cube` and a view is not a cube with a query for a fact table; see [ADR-0014](adr/0014-materialized-views-and-the-cube-lifetime.md) |
+
+Fifty-five crates became fifty-two. An empty crate now says when it stops being empty, or why
+that cannot be decided yet.
+
+**The remaining work.**
 
 1. **Widen `check-surfaces` to reachability.** Every crate must be reachable from a binary, or
    listed with a reason and a milestone. That one change catches all five stranded crates and
