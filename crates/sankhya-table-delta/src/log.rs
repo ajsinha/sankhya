@@ -316,6 +316,11 @@ pub fn commit(
         .map_err(|e| CommitError::Io(format!("creating the log directory: {e}")))?;
 
     let path = commit_path(table_root, version);
+    // A cheap early exit, and **not** the concurrency control.
+    //
+    // Worth saying, because this line used to be the control and looked adequate: it lets an
+    // obviously-taken version fail without encoding a body first. A version that passes it can
+    // still be taken by the time the claim below happens, and the claim is what decides.
     if path.exists() {
         return Err(CommitError::VersionTaken(version));
     }
@@ -340,21 +345,29 @@ pub fn commit(
         body.push('\n');
     }
 
-    // Written to a temporary name and renamed, so a reader never observes a partial
-    // commit. A half-written commit file would be a log the protocol has no way to
-    // describe.
-    let staging = path.with_extension("json.tmp");
-    std::fs::write(&staging, body)
-        .map_err(|e| CommitError::Io(format!("writing {}: {e}", staging.display())))?;
-
-    if path.exists() {
-        let _ = std::fs::remove_file(&staging);
-        return Err(CommitError::VersionTaken(version));
+    // **Claimed, not renamed.** `sankhya_atomicfs::claim` writes to a staging name no other
+    // writer can be using and then links it into place, so the claim fails when the version is
+    // taken instead of replacing it.
+    //
+    // This line used to be a check followed by a rename, and `rename(2)` replaces its
+    // destination silently --- so two committers could both see the version free and the second
+    // would overwrite the first, with no error to either and the rebase loop never running,
+    // because the `VersionTaken` it waits for was never returned. Every test had a single
+    // writer per version, so nothing could see it.
+    //
+    // The staging name also used to be shared per version, which is its own defect: two
+    // committers racing for one version wrote the same temporary path, and either could publish
+    // the other's actions.
+    match sankhya_atomicfs::claim(&path, body.as_bytes()) {
+        Ok(()) => Ok(version),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(CommitError::VersionTaken(version))
+        }
+        Err(error) => Err(CommitError::Io(format!(
+            "publishing {}: {error}",
+            path.display()
+        ))),
     }
-    std::fs::rename(&staging, &path)
-        .map_err(|e| CommitError::Io(format!("publishing {}: {e}", path.display())))?;
-
-    Ok(version)
 }
 
 /// The commit files present, in version order.

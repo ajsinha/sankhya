@@ -3273,6 +3273,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sankhya-atomicfs"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "sankhya-audit"
 version = "0.1.0"
 dependencies = [
@@ -3377,6 +3384,7 @@ dependencies = [
  "arrow-schema",
  "parking_lot",
  "proptest",
+ "sankhya-atomicfs",
  "sankhya-cube-algo",
  "sankhya-error",
  "sankhya-graph-algo",
@@ -3688,6 +3696,7 @@ dependencies = [
  "parking_lot",
  "parquet",
  "sankhya-api-pg",
+ "sankhya-atomicfs",
  "sankhya-audit",
  "sankhya-authz",
  "sankhya-backup",
@@ -3765,6 +3774,7 @@ dependencies = [
  "delta_kernel",
  "delta_kernel_default_engine",
  "parquet",
+ "sankhya-atomicfs",
  "sankhya-error",
  "sankhya-stats",
  "sankhya-types",

@@ -109,6 +109,46 @@ crash-safety reasoning — sequence-derived names, commit-strictly-after-write, 
 version conflict — and a partitioning change touches all three.
 
 
+## M8, in progress
+
+### §12.1 — the version claim is atomic, and four writers publish all at once
+
+`sankhya-atomicfs` is a new layer-0 crate with no dependencies and two functions. `publish`
+makes a file visible all at once; `claim` does that **and fails if the name is taken**. The
+distinction is the whole of the protocol's concurrency control, and using the first where the
+second was meant loses the loser's work in silence --- which is what `commit` was doing.
+
+`commit` now claims through `link(2)`, which returns `EEXIST`, so a loser is told `VersionTaken`
+and the rebase loop that has existed since M5 finally runs. The cube catalogue, the
+`_last_checkpoint` pointer and the backup manifest are published rather than written onto their
+live paths. `check-atomic-writes` refuses the two shapes anywhere else, and `INVARIANTS.md`
+carries the rule --- `check-invariants` refused the build until it did.
+
+**The one case the gate found that was already right.** `write_parquet` creates its file and
+streams into it, and that is safe for a reason the gate cannot see: no log names the path until
+the file is closed, so no reader can ask for it, and a partial file left by a crash is
+unreferenced and collected by the orphan sweep. Safety there comes from **ordering**, not from
+atomicity. It is excused with that reasoning rather than changed, and routing it through
+`publish` would have meant buffering a whole Parquet file in memory.
+
+### Two tests that passed against the defect they were named for
+
+Both were caught by mutation testing, and both are the same lesson at different sizes.
+
+**The staging-name test.** A shared staging name lets two writers publish each other's bytes.
+The first test asserted the file held *some* writer's body --- which it does, because a small
+`fs::write` lands atomically, so the winner still gets a well-formed body belonging to somebody
+who was told they lost. The property is that the winner's **own** bytes are on disk, and
+showing it needs 256 KB bodies so two interleaved writes cannot both land whole.
+
+**The half-written-read test.** It asserted every read was homogeneous --- all `a` or all `b`.
+Writing onto a live path truncates first, so a reader catches a **short** file far more often
+than a mixed one, and `all()` on an empty slice is `true`. The test passed against precisely
+the defect it was written for until it asserted the **length**.
+
+Neither would have been found by reading the tests. Both were found by mutating the code and
+noticing the suite did not care.
+
 ## M7, complete
 
 Added 2026-08-27 by owner directive and placed before scale-out: cubes are a stated
@@ -1583,7 +1623,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 408 specific defects applied one at a time; all 357 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 412 specific defects applied one at a time; all 357 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -2099,9 +2139,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,762 tests, none of which needs a database
+cargo test --workspace           # 1,772 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 408 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 412 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

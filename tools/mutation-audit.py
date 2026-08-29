@@ -1904,6 +1904,30 @@ CATALOGUE = [
      "                scopes.push(sankhya_cube::materialise::Key::UNRESTRICTED);",
      "sankhya-server"),
 
+    ("table-delta: claim a commit version by renaming, losing one of two racing commits",
+     "crates/sankhya-table-delta/src/log.rs",
+     "    match sankhya_atomicfs::claim(&path, body.as_bytes()) {",
+     "    match sankhya_atomicfs::publish(&path, body.as_bytes()) {",
+     "sankhya-table-delta"),
+
+    ("atomicfs: claim a name by renaming, which replaces the winner instead of failing",
+     "crates/sankhya-atomicfs/src/lib.rs",
+     "    let claimed = std::fs::hard_link(&staging, final_path);",
+     "    let claimed = std::fs::rename(&staging, final_path);",
+     "sankhya-atomicfs"),
+
+    ("atomicfs: share one staging name, so a writer can publish another's bytes",
+     "crates/sankhya-atomicfs/src/lib.rs",
+     "    let unique = NEXT.fetch_add(1, Ordering::Relaxed);",
+     "    let unique = 0;",
+     "sankhya-atomicfs"),
+
+    ("atomicfs: publish by writing onto the live path, so a reader sees it half-written",
+     "crates/sankhya-atomicfs/src/lib.rs",
+     "pub fn publish(final_path: &Path, bytes: &[u8]) -> io::Result<()> {\n    let staging = staging_for(final_path);",
+     "pub fn publish(final_path: &Path, bytes: &[u8]) -> io::Result<()> {\n    let staging = final_path.to_path_buf();",
+     "sankhya-atomicfs"),
+
     ("server: never read a materialised cuboid, leaving materialisation write-only",
      "crates/sankhya-server/src/wiring.rs",
      "                if let Some(published) = scopes\n                    .into_iter()\n                    .find_map(|under| {\n                        self.from_a_cuboid(cube, measure, under, snapshot, session, &needed)\n                    })\n                {\n                    catalog.publish(cube.name(), published.clone());\n                    self.hydrated.put(key, published);\n                    continue;\n                }",

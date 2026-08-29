@@ -318,10 +318,13 @@ pub fn write_checkpoint(
         "sizeInBytes": bytes,
         "numOfAddFiles": live.files.len(),
     });
-    std::fs::write(
-        log_dir(table_root).join(LAST_CHECKPOINT),
-        serde_json::to_string(&pointer)
-            .map_err(|e| CommitError::Io(format!("encoding the checkpoint pointer: {e}")))?,
+    // The checkpoint parquet above is staged and renamed; this pointer beside it was not,
+    // which meant the expensive half was safe and the half a reader consults first was not.
+    let encoded = serde_json::to_string(&pointer)
+        .map_err(|e| CommitError::Io(format!("encoding the checkpoint pointer: {e}")))?;
+    sankhya_atomicfs::publish(
+        &log_dir(table_root).join(LAST_CHECKPOINT),
+        encoded.as_bytes(),
     )
     .map_err(|e| CommitError::Io(format!("writing {LAST_CHECKPOINT}: {e}")))?;
 

@@ -103,9 +103,12 @@ pub(crate) fn take(warehouse: &Path, data_dir: &Path, now: i64) -> i32 {
     };
 
     let path = data_dir.join(MANIFEST_FILE);
-    if let Err(error) = std::fs::create_dir_all(data_dir)
-        .and_then(|()| std::fs::write(&path, manifest.to_json().unwrap_or_default()))
-    {
+    // Published, not written: a manifest read while it is being rewritten is a manifest that
+    // parses as nothing, and a restore drill reads it at exactly the moment somebody is
+    // taking the next backup.
+    if let Err(error) = std::fs::create_dir_all(data_dir).and_then(|()| {
+        sankhya_atomicfs::publish(&path, manifest.to_json().unwrap_or_default().as_bytes())
+    }) {
         eprintln!("could not write {}: {error}", path.display());
         return COULD_NOT_RUN;
     }

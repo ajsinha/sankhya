@@ -7,6 +7,7 @@
 
 mod catalogues;
 mod logging;
+mod atomicwrites;
 mod buildtree;
 mod docnumbers;
 mod surfaces;
@@ -147,6 +148,9 @@ fn main() -> ExitCode {
     if run_all || task == "check-surfaces" {
         failed |= !surfaces::check(&root);
     }
+    if run_all || task == "check-atomic-writes" {
+        failed |= !atomicwrites::check(&root);
+    }
     if run_all || task == "check-writers" {
         failed |= !check_writers(&root);
     }
@@ -240,6 +244,7 @@ fn main() -> ExitCode {
                 | "check-package"
                 | "check-build-tree"
                 | "check-surfaces"
+                | "check-atomic-writes"
                 | "sweep"
                 | "sync-doc-numbers"
                 | "sweep-dry-run"
@@ -252,7 +257,7 @@ fn main() -> ExitCode {
             "usage: cargo xtask \
              [check-all|check-tests|check-invariants|check-writers|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
              |check-features|check-lints|check-mutations|check-doc-numbers\
-             |check-catalogues|write-catalogues|check-logging|check-package|check-build-tree|check-surfaces|sweep|sweep-dry-run|sync-doc-numbers|check-performance]"
+             |check-catalogues|write-catalogues|check-logging|check-package|check-build-tree|check-surfaces|check-atomic-writes|sweep|sweep-dry-run|sync-doc-numbers|check-performance]"
         );
         return ExitCode::from(2);
     }
@@ -1844,6 +1849,7 @@ const KNOWN_CHECKS: &[&str] = &[
     "check-package",
     "check-doc-numbers",
     "check-surfaces",
+    "check-atomic-writes",
     "check-build-tree",
     "check-tests",
 ];
