@@ -466,7 +466,7 @@ Three requirements in the original brief are stated in a single clause each, and
 
 **Trade-off, stated plainly.** Scale-up gives lower latency (no shuffle, no serialization), far simpler failure semantics, simpler memory accounting and simpler security. It costs the ability to run one query larger than one node. Scale-out inverts every one of those.
 
-**Two seams to design now and build later**, both near-zero cost today and expensive retrofits: keep the applier's commit path per-table rather than globally serialized, and allow a table reference to resolve to a shard set.
+**Two seams to design now and build later**, both near-zero cost today and expensive retrofits: keep the applier's commit path per-table rather than globally serialized, and allow a table reference to resolve to a shard set. The first is no longer a seam: [ADR-0013](adr/0013-concurrency-and-data-safety.md) makes it an M8 exit criterion, because a single warehouse-wide lock would satisfy every concurrency *safety* requirement while destroying concurrency itself.
 
 ---
 

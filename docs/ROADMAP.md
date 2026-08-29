@@ -133,7 +133,13 @@ See [`adr/0007-the-cube-model.md`](adr/0007-the-cube-model.md).
 ### 1.0 — *Production*
 **Theme: the first release intended to be depended upon.**
 
-**Available:** multi-node deployment with stateless executor scale-out · leader election · high availability and failover · cross-region recovery with measured objectives · metering.
+**Available:** end-to-end concurrency and data safety · multi-node deployment with stateless executor scale-out · leader election · high availability and failover · cross-region recovery with measured objectives · metering.
+
+**Concurrency comes first, and is a stated property rather than an implementation detail.** A
+commit is never lost, no reader ever sees a partial file, and no file is deleted while it is
+being read. Writers to different tables do not contend, readers are never blocked by writers, and
+contention on one table degrades by retry rather than by waiting. Those are measured, not
+asserted — see [ADR-0013](adr/0013-concurrency-and-data-safety.md).
 
 **What 1.0 means here:** the extension API carries a stability commitment. Everything else may still evolve, but a pack written against 1.0 keeps working.
 

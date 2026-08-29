@@ -54,7 +54,7 @@ This plan therefore front-loads three things that are nearly free at the start a
 | **M5** | Tenancy, security and API surfaces | 22–28 | weeks 18–25 |
 | **M6** | Operability, packaging and hardening | 18–22 | weeks 24–30 |
 | **M7** | Multidimensional analysis — cubes, hierarchies, consolidation | 14–18 | weeks 28–34 |
-| **M8** | Scale-out, high availability, disaster recovery | 16–20 | weeks 32–38 |
+| **M8** | **Concurrency and data safety**, crate hygiene, then scale-out, HA, disaster recovery | 25–32 | weeks 32–43 |
 | **M9** | Tiering *(gated — see §13)* | 12–16 | after M8 plus the reconciliation gate |
 | | **Total to a hardened first release** | **~150–190 ew** | **~7–8 months** |
 
@@ -584,18 +584,121 @@ views rather than a store, and why MDX is deliberately not planned.
 
 ---
 
-## 12. M8 — Scale-out, availability and recovery
+## 12. M8 — Concurrency and data safety, then scale-out
 
-**Weeks 32–38 · 16–20 ew**
+**Weeks 32–43 · 25–32 ew**
 
-### Work
+> **Rescoped 2026-08-28 by owner directive**, from 16–20 ew: *"look at the whole platform and
+> make it concurrency safe end to end. This whole system needs very high level of concurrency
+> and data safety."* The estimate increase was accepted explicitly rather than absorbed. The
+> audit behind it and the properties it must deliver are
+> [ADR-0013](adr/0013-concurrency-and-data-safety.md).
+
+### 12.1 Concurrency and data safety (8–10 ew)
+
+**This runs first, and the ordering is a decision.** Leader election is how a system *avoids
+needing* concurrency safety, so it is tempting to do it first and declare the problem handled.
+But M8's shape is multi-node with cache-affinity routing: many readers on other nodes, racing
+with a leader's compaction and retirement, holding the paths it is deleting. Safety must exist
+before the topology that stresses it, or the first failure arrives looking like a networking
+fault and is debugged as one.
+
+**12.1a One publishing helper (1 ew).** `publish` makes a file visible all at once; `claim`
+does that *and* fails when the name is taken. The audit found the technique implemented
+correctly three times and wrongly four, which is what a three-line technique does when it is
+retyped instead of reused.
+
+**12.1b The version claim (1 ew).** `commit` claims through `claim`, so a loser is told and
+the rebase loop that already exists finally runs. The object-store equivalent — conditional
+put — is specified alongside it so the two implementations stay honest against each other.
+
+**12.1c Reclamation that waits for readers (3–4 ew).** A reader registers what it resolved;
+reclamation skips what is registered. The elapsed-tick and version-space guards are **kept and
+demoted to backstops** against a leaked registration, which is the job they are actually good
+at. The pattern already exists here: the CDC ring's epoch-based reclamation, where readers
+never block and are never blocked.
+
+**12.1d `check-atomic-writes` (0.5 ew).** `fs::write` and `File::create` onto a live path, and
+`exists()`-then-`rename`, refused outside the helper. A convention held in three places and
+lapsed in four; this is why it becomes a gate.
+
+**12.1e The concurrency suite (2–3 ew).** Every defect above was invisible to seventeen hundred
+tests for one reason: **every test had a single writer.** Each fix gets its failing test first,
+and the throughput properties are measured rather than asserted.
+
+### 12.1f Crate hygiene: reachability as a gate (1–2 ew)
+
+*Added 2026-08-28 after an owner-requested review of all 55 crates.*
+
+The review found the M7 pattern again — **built, tested, unreachable** — this time at crate
+scale rather than function scale, and one gate away from being impossible.
+
+**About 2,600 lines nothing can reach:**
+
+| Crate | Lines | What is stranded |
+|---|---|---|
+| `sankhya-pack` | 1,438 | The whole declarative pack tier: TOML bundles, an expression parser, validation, hot reload. No server depends on it, so a bundle cannot be loaded. The reference packs use `sankhya-ext`, the *compiled* API — the two are not duplicates, and only one is wired |
+| `sankhya-api-rest` | 416 | A REST surface nothing depends on |
+| `sankhya-cdc-pg` | 368 | A PostgreSQL capture source nothing depends on |
+| `sankhya-ports` | 222 | Port traits nothing implements or calls |
+| `sankhya-alloc` | 165 | A counting `GlobalAlloc` **never installed** — no `#[global_allocator]` anywhere, so every allocation figure it exists to provide is unavailable |
+
+**Ten crates hold one line of source each** — a doc comment and nothing else:
+`api-grpc`, `api-http`, `mv`, `objectstore`, `oltp-pg`, `rules`, `telemetry`, `testkit`,
+`tiering`, and `cli` with an empty `main`. **None of the ten is named anywhere in this plan or
+in `ARCHITECTURE.md`.** They are not roadmap placeholders; they are scaffolding from an early
+layout that the documents then grew past.
+
+Some have a real home even though nothing says so — `api-grpc` is M6's carried criterion 7,
+`objectstore` and `tiering` belong to M9, `cli` is the maintenance CLI the owner has asked for.
+Others duplicate something that exists: **`telemetry` overlaps `sankhya-metrics`** (789 lines,
+built and used), and `oltp-pg` sits beside `api-pg` with a name that invites confusion between
+a Postgres *lifecycle* and the Postgres *wire protocol*.
+
+**Why this went unseen.** `check-surfaces` was built in M7 for exactly this failure, and its
+scope is narrower than its purpose: it checks crates that **register SQL functions**. A REST
+surface, a capture source, an allocator, a pack loader and a set of port traits all fall
+straight through it.
+
+**The work.**
+
+1. **Widen `check-surfaces` to reachability.** Every crate must be reachable from a binary, or
+   listed with a reason and a milestone. That one change catches all five stranded crates and
+   forces a decision on all ten empty ones, instead of leaving both to be rediscovered.
+2. **Wire or delete**, one decision per stranded crate, recorded. Wiring `sankhya-alloc` is
+   near-free and returns allocation figures the soak currently cannot see.
+3. **Adopt or delete the empty crates.** A crate with no code and no milestone is a claim the
+   repository makes about itself and does not keep — and it inflates a "55 crates" figure that
+   should describe what exists.
+4. **Resolve the name collisions** — `telemetry`/`metrics`, `oltp-pg`/`api-pg` — by deleting or
+   renaming, so a reader does not have to open both to learn which is real.
+
+**Not consolidation for its own sake.** The three-way splits — `cube`/`cube-algo`/`cube-sql` and
+`graph`/`graph-algo`/`graph-sql` — are load-bearing and stay: the zero-dependency algebra crates
+are what make their property tests fast enough to exhaust rather than sample. The finding is
+about crates that are *unreachable* or *empty*, not about crates that are small.
+
+### 12.2 Scale-out, availability and recovery (16–20 ew)
 
 Attached mode as the production configuration. Leader election through the transactional store. Stateless executor scale-out and query routing with cache affinity. Graph node partitioning with published rebuild times. Cross-region replication and recovery objectives per tier. Key management integration. Metering and chargeback.
 
-**Two seams are *designed* here and built later**, both near-free now and expensive retrofits: keeping the commit path per-table rather than globally serialized, and allowing a table reference to resolve to a shard set.
+**One seam remains *designed* here and built later**, near-free now and an expensive retrofit: allowing a table reference to resolve to a shard set. The other — keeping the commit path per-table rather than globally serialized — is no longer a seam. It is exit criterion 4 below, because the cheapest way to satisfy every safety criterion is one lock over the warehouse, and that is the outcome criterion 4 exists to forbid.
 
 ### Exit
-Multi-node deployment with executor scale-out demonstrated; failover tested under load; recovery objectives measured and published rather than estimated.
+
+**Safety.**
+1. N writers racing for one commit version: exactly one wins and every loser is **told**, with no lost commit under sustained contention.
+2. A reader never observes a partial file, for every file this system publishes, under a writer republishing continuously.
+3. Reclamation running against continuous scans **never** deletes a file a reader holds — demonstrated under load, not argued from a grace period.
+
+**Concurrency.**
+4. Writers to different tables do not contend: throughput scales with writer count, and no global serialization point exists.
+5. Read latency is flat under write load — readers are never blocked by writers.
+6. Contention on a single table degrades by rebase-and-retry, bounded, so a runaway committer is a diagnosable failure rather than a hang.
+
+**Scale-out.**
+7. Multi-node deployment with executor scale-out demonstrated; failover tested under load; recovery objectives measured and published rather than estimated.
+8. Soak criterion 7 carried from M6: the gRPC transport and every write path, plus the scheduled multi-day run.
 
 ---
 
