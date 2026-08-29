@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # SANKHYA — The soak: method, results, and what four attempts taught
 
 **Status:** Implementation — M0–M7 complete, M8 next

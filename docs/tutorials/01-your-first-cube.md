@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # Tutorial 1 — Your first cube
 
 **Time:** about ten minutes · **You need:** a running server and a table

@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # SANKHYA — The invariants, and what each one cost to learn
 
 **Status:** Implementation — M0–M7 complete, M8 next

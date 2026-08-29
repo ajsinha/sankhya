@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # SANKHYA — Build Status
 
 **Updated:** 2026-08-26 · Tracks what is *actually built* against

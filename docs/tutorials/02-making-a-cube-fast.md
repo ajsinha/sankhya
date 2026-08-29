@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # Tutorial 2 — Making a cube fast
 
 **Time:** about fifteen minutes · **Before this:** [Tutorial 1](01-your-first-cube.md)

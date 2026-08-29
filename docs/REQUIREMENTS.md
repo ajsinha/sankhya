@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # SANKHYA — Requirements Specification
 
 **Document ID:** SNK-RD-001
