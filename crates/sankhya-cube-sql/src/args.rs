@@ -136,22 +136,6 @@ impl Arguments {
             plan_datafusion_err!("the '{name}' option must be a number, and '{text}' is not")
         })
     }
-
-    /// A named boolean option.
-    ///
-    /// # Errors
-    /// Anything other than `true` or `false`. `materialise=maybe` taking its default is a
-    /// query whose text does not describe what it did.
-    pub(crate) fn boolean(&self, name: &str) -> Result<Option<bool>> {
-        let Some(text) = self.string(name) else {
-            return Ok(None);
-        };
-        match text.to_lowercase().as_str() {
-            "true" | "yes" | "on" => Ok(Some(true)),
-            "false" | "no" | "off" => Ok(Some(false)),
-            other => plan_err!("the '{name}' option must be true or false, and '{other}' is not"),
-        }
-    }
 }
 
 /// A literal expression's value.

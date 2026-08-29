@@ -9,7 +9,7 @@
 
 *A general-purpose unified OLTP + OLAP + Graph data server — one binary, written entirely in Rust.*
 
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-M6%20closing%2C%20M7%20in%20progress-yellow.svg)](docs/STATUS.md)
 [![Rust](https://img.shields.io/badge/rust-1.97%2B-b7410e.svg)](https://www.rust-lang.org)
 [![JVM](https://img.shields.io/badge/JVM-none-success.svg)](#design-principles)
@@ -220,6 +220,7 @@ Start here:
 | Document | What it covers |
 |---|---|
 | [`docs/QUICKSTART.md`](docs/QUICKSTART.md) | Build it, load ten gigabytes, watch capture reconcile — and what does not work yet |
+| [`docs/tutorials/`](docs/tutorials/) | Hands-on, in order — start here. Every example executed by a test |
 | [`docs/GUIDE.md`](docs/GUIDE.md) | Every feature by worked example, each one executed by a test |
 | [`docs/STATUS.md`](docs/STATUS.md) | What is actually built today, what is not, and what broke along the way |
 | [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) | The amended, traceable functional and non-functional requirements |
@@ -244,7 +245,17 @@ Generated from the code, and checked against it on every build:
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE).
+**Proprietary and confidential.** Copyright (c) 2026 Ashutosh Sinha
+<ajsinha@gmail.com>. All rights reserved. This software is **not** open source.
+
+No right to use, copy, modify or distribute it is granted except under an express written
+authorisation from the copyright holder. It is provided "as is", with no warranty of any
+kind, and the copyright holder accepts no responsibility for any consequence of using it.
+See [LICENSE](LICENSE) for the full terms, including the warranty disclaimer and the
+limitation of liability.
+
+Third-party dependencies remain under their own licences, which this licence does not
+displace.
 
 <div align="center">
 

@@ -32,7 +32,7 @@ mod wiring;
 use std::collections::BTreeMap;
 use sankhya_authz::principal::TenantId;
 use std::sync::Arc;
-use wiring::{start, Settings};
+use wiring::{start, Settings, CUBOID_ROW_BUDGET};
 
 /// Read configuration: files first, then the environment, then the command line.
 ///
@@ -83,8 +83,18 @@ fn settings() -> Result<Settings, String> {
     // does not orphan the audit chain and the storage prefix from the previous run.
     let tenant = TenantId::from_uuid(uuid::Uuid::from_u128(1));
     let maintenance = maintenance_policy(&config)?;
+    // §11.6's configuration level: the storage an operator lends to automatic
+    // materialisation. Read here rather than left a constant because it is the operator's
+    // storage, and the one number in the three levels of control that only they may set --- a
+    // session that could raise it would be granting itself an unbounded storage quota.
+    let cuboid_budget_rows = config
+        .integer("cubes.budget_rows")
+        .map_err(|error| error.to_string())?
+        .and_then(|value| u64::try_from(value).ok())
+        .unwrap_or(CUBOID_ROW_BUDGET);
     Ok(Settings {
         maintenance,
+        cuboid_budget_rows,
         listen,
         warehouse,
         read_as_of,

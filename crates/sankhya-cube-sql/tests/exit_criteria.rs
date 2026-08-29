@@ -25,7 +25,7 @@ use sankhya_cube::navigate::{roll_up, Ordered};
 use sankhya_cube::{Definition, Dimension, Level};
 use sankhya_cube_algo::lattice::Cuboid;
 use sankhya_cube_algo::measure::{Along, Measure, Rule};
-use sankhya_cube_sql::catalog::{CubeCatalog, Published};
+use sankhya_cube_sql::catalog::CubeCatalog;
 use sankhya_cube_sql::{publish_from_fact_table, register};
 use sankhya_graph_algo::budget::Budget;
 use sankhya_graph_algo::csr::{AdjacencyBuilder, Edge, Validity};

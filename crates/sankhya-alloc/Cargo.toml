@@ -4,7 +4,7 @@ description  = "The counting allocator. The only crate in which unsafe code is p
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
-license.workspace      = true
+license-file.workspace      = true
 repository.workspace   = true
 
 [package.metadata.sankhya]

@@ -10,6 +10,11 @@
 //! relational one taken at a different moment; `materialised` and `from_cuboid` answer "why
 //! was this fast or slow?". Every one of them would be tidier as query metadata, and every
 //! one would then be lost by the first `SELECT` that did not mention it.
+//!
+//! `materialised` reports **what happened**. Until 2026-08-28 it reported the `materialise`
+//! argument the caller had passed, which made it a mirror rather than a measurement --- and
+//! it went unnoticed for as long as nothing served a cuboid, because the honest answer was
+//! `false` for every query and the echo agreed with it by accident.
 
 use crate::args::Arguments;
 use crate::catalog::{CubeCatalog, Published};
@@ -56,6 +61,37 @@ fn note_the_shape(log: &sankhya_cube::querylog::QueryLog, cube: &str, args: &Arg
     let by = args.list("by");
     let asked: Vec<&str> = by.iter().map(String::as_str).collect();
     log.record(cube, sankhya_cube::algo::Cuboid::of(&asked));
+}
+
+/// Refuse a `materialise` option this system does not understand.
+///
+/// # Why this is validated here and decided elsewhere
+///
+/// The option is read **twice**, and that is a consequence of the architecture rather than an
+/// oversight worth hiding. Whether to serve a query from a cuboid has to be decided before
+/// this function runs --- the server publishes cells into the catalogue while registering
+/// them, and by the time `call` happens the choice is already made --- so the server scans
+/// the statement text for it. That scan cannot refuse anything: it runs before planning.
+///
+/// This is where a refusal is possible, so this is where the value is checked. Without it
+/// `materialise=pinnd` would pass the known-option check in `args.rs`, be silently ignored by
+/// the server's scan, take its default, and produce a result wrong in a way the query text
+/// does not reveal --- which is the precise failure `args.rs` refuses unknown options to
+/// prevent, arriving through the value instead of the name.
+fn check_materialise(args: &Arguments) -> Result<()> {
+    let Some(asked) = args.string("materialise") else {
+        return Ok(());
+    };
+    match asked.to_lowercase().as_str() {
+        "true" | "yes" | "on" | "false" | "no" | "off" | "pinned" => Ok(()),
+        other => plan_err!(
+            "the 'materialise' option must be true, false or pinned, and '{other}' is not. \
+             It narrows what this query will use: 'false' computes from the base data, \
+             'pinned' uses only cuboids the definition pins. There is no value that widens \
+             it --- a session that could spend more of an operator's storage would be a \
+             storage grant to anybody who can open one"
+        ),
+    }
 }
 
 /// The columns every cube function carries, whatever else it returns.
@@ -326,7 +362,11 @@ impl TableFunctionImpl for RollUp {
         check_completeness(&completeness, &args)?;
 
         let rolled = rolled(&narrowed, &measure, &args)?;
-        let materialised = args.boolean("materialise")?.unwrap_or(false);
+        // **What happened, not what was asked for.** This column used to be
+        // `args.boolean("materialise")` --- the caller's own argument, echoed back --- so an
+        // operator asking "why was this fast?" was told whatever their query had typed.
+        check_materialise(&args)?;
+        let materialised = published.from_cuboid;
         batch(
             &published,
             &rolled,
