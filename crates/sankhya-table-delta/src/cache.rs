@@ -30,19 +30,58 @@
 //! the cache exists to remove.
 //!
 //! There is no invalidation, no expiry, and no notification to miss.
+//!
+//! # Why one lock over every table was the wrong shape
+//!
+//! Until 2026-08-29 this held a single `Mutex<HashMap<PathBuf, Replay>>` --- and held it
+//! **across the filesystem work**: the probe for a newer version, and the replay of whatever
+//! it found. Every query on every table took that lock, so a cold replay of a large log blocked
+//! queries against unrelated tables for its whole duration.
+//!
+//! Nothing about it was unsafe, which is why it survived: it returned correct answers and no
+//! test could tell. It was a throughput defect, and the question that finds those is not "can
+//! this corrupt?" but "does this serialize?".
+//!
+//! Two changes, and the first matters more than the second. **The lock is no longer held across
+//! I/O**: the map is locked only long enough to find a table's entry, and the reading happens
+//! under that table's own lock. And the map itself is **striped**, so two tables rarely touch
+//! the same one.
+//!
+//! Striping alone would have been the lesser fix. It reduces how many threads wait; taking the
+//! I/O out of the critical section changes what they are waiting for. Two queries on the *same*
+//! table still serialize, and must --- they are advancing the same replay.
 
 use crate::log::{newest_after, CommitError, LiveSet, Replay};
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+
+/// How many independent maps the cache is split across.
+///
+/// A power of two, and well above any plausible core count: two tables sharing a shard wait
+/// on each other for the length of a map lookup, which is cheap, and the cost of more shards
+/// is one empty `HashMap` each.
+const SHARDS: usize = 64;
 
 /// A cache of table file sets, safe to share across query plans.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct LogCache {
     /// The replay is kept rather than the live set, so resuming does not rebuild the
     /// index over every live file — which would swap "linear in the history" for
     /// "linear in the table", better and still not right.
-    entries: Mutex<HashMap<PathBuf, Replay>>,
+    ///
+    /// Each table's replay is behind **its own** lock, and the shard lock is held only to find
+    /// it. That is what keeps a long replay of one table off every other table's path.
+    shards: Vec<Mutex<HashMap<PathBuf, Arc<Mutex<Replay>>>>>,
+}
+
+impl Default for LogCache {
+    fn default() -> Self {
+        Self {
+            shards: (0..SHARDS).map(|_| Mutex::new(HashMap::new())).collect(),
+        }
+    }
 }
 
 /// What a lookup did.
@@ -71,48 +110,77 @@ impl LogCache {
     /// value is derived state and can be recomputed, so refusing every future query over
     /// it would turn one panic into a permanent outage.
     pub fn live_files(&self, table_root: &Path) -> Result<(LiveSet, Outcome), CommitError> {
-        let mut entries = self
-            .entries
+        // The shard is locked only to find this table's entry, and released before any
+        // filesystem work happens. Holding it across the probe and the replay is what made a
+        // cold read of one table block queries against every other.
+        let Some(shard) = self.shard_for(table_root) else {
+            // A cache with no shards holds nothing. Replaying directly is correct and slower,
+            // which is the right way round for a case that cannot happen.
+            let mut replay = Replay::default();
+            replay.advance(table_root)?;
+            return Ok((replay.live_set(), Outcome::Cold));
+        };
+        let entry = {
+            let mut shard = shard
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Arc::clone(
+                shard
+                    .entry(table_root.to_path_buf())
+                    .or_insert_with(|| Arc::new(Mutex::new(Replay::default()))),
+            )
+        };
+
+        // This table's own lock. Two queries on one table serialize here and must: they are
+        // advancing the same replay, and letting both advance it would apply the same commits
+        // twice.
+        let mut replay = entry
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        let cached = entries.get(table_root).map(Replay::version);
-        let newest = newest_after(table_root, cached.flatten());
+        let cached = replay.version();
+        let newest = newest_after(table_root, cached);
 
         // A cached version the log no longer has means the table was rebuilt underneath
         // us — dropped and recreated at the same path. Resuming from it would carry
         // files that no longer exist and every query would then read files that are not
         // there, so the entry is discarded and the log read from the beginning.
-        let rebuilt = match (cached.flatten(), newest) {
+        let rebuilt = match (cached, newest) {
             (Some(c), Some(n)) => c > n,
             (Some(_), None) => true,
             _ => false,
         };
         if rebuilt {
-            entries.remove(table_root);
+            *replay = Replay::default();
         }
 
         let outcome = match (cached, rebuilt) {
             (None, _) | (_, true) => Outcome::Cold,
-            (Some(c), false) if c == newest => Outcome::Current,
+            (Some(c), false) if Some(c) == newest => Outcome::Current,
             (Some(c), false) => Outcome::Advanced {
-                commits_read: usize::try_from(newest.unwrap_or(0).saturating_sub(c.unwrap_or(0)))
+                commits_read: usize::try_from(newest.unwrap_or(0).saturating_sub(c))
                     .unwrap_or(0),
             },
         };
 
-        // `Current` is only produced when the entry was found above, so this lookup
-        // cannot miss. Falling through to the replay below if it ever did is both
-        // correct and slower, which is the right way round for an impossible case.
         if outcome == Outcome::Current {
-            if let Some(replay) = entries.get(table_root) {
-                return Ok((replay.live_set(), outcome));
-            }
+            return Ok((replay.live_set(), outcome));
         }
 
-        let replay = entries.entry(table_root.to_path_buf()).or_default();
         replay.advance(table_root)?;
         Ok((replay.live_set(), outcome))
+    }
+
+    /// Which shard a table's entry lives in, or `None` for a cache with no shards.
+    ///
+    /// `None` is structurally unreachable --- `default` always builds [`SHARDS`] of them ---
+    /// and is returned rather than papered over because the alternatives are worse: indexing
+    /// panics in a library, and a fallback shard would silently make every table share one.
+    fn shard_for(&self, table_root: &Path) -> Option<&Mutex<HashMap<PathBuf, Arc<Mutex<Replay>>>>> {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        table_root.hash(&mut hasher);
+        let index = usize::try_from(hasher.finish()).unwrap_or(0) % self.shards.len().max(1);
+        self.shards.get(index)
     }
 
     /// Forget everything.
@@ -120,19 +188,26 @@ impl LogCache {
     /// Correctness never requires this — the cache cannot go stale. It exists so a
     /// process can release memory for tables it will not query again.
     pub fn clear(&self) {
-        self.entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+        for shard in &self.shards {
+            shard
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
+        }
     }
 
     /// How many tables are held.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len()
+        self.shards
+            .iter()
+            .map(|shard| {
+                shard
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .len()
+            })
+            .sum()
     }
 
     #[must_use]

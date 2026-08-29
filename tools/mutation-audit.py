@@ -642,13 +642,13 @@ CATALOGUE = [
 
     ("cache: trust the cached version instead of asking the log",
      "crates/sankhya-table-delta/src/cache.rs",
-     "        let newest = newest_after(table_root, cached.flatten());",
-     "        let newest = cached.flatten();",
+     "        let newest = newest_after(table_root, cached);",
+     "        let newest = cached;",
      "sankhya-table-delta"),
 
     ("cache: resume from a stale base after the table was rebuilt",
      "crates/sankhya-table-delta/src/cache.rs",
-     "        if rebuilt {\n            entries.remove(table_root);\n        }",
+     "        if rebuilt {\n            *replay = Replay::default();\n        }",
      "",
      "sankhya-table-delta"),
 
@@ -1915,6 +1915,18 @@ CATALOGUE = [
      "        let _reading = self.leases.pin();",
      "",
      "sankhya-server"),
+
+    ("cube: take the map's write lock on every recorded ask, serializing every cube",
+     "crates/sankhya-cube/src/querylog.rs",
+     "        if let Some(ring) = self.asks.read().get(cube).map(Arc::clone) {\n            ring.lock().record(cuboid, self.capacity);\n            return;\n        }",
+     "",
+     "sankhya-cube"),
+
+    ("table-delta: put back one lock over every table, held across the log probe and the replay",
+     "crates/sankhya-table-delta/src/cache.rs",
+     "        let entry = {\n            let mut shard = shard\n                .lock()\n                .unwrap_or_else(std::sync::PoisonError::into_inner);\n            Arc::clone(\n                shard\n                    .entry(table_root.to_path_buf())\n                    .or_insert_with(|| Arc::new(Mutex::new(Replay::default()))),\n            )\n        };",
+     "        let _ = shard;\n        let mut one_lock_for_everything = self\n            .shards\n            .first()\n            .map(|shard| shard.lock().unwrap_or_else(std::sync::PoisonError::into_inner))\n            .expect(\"a shard\");\n        let entry = Arc::clone(\n            one_lock_for_everything\n                .entry(table_root.to_path_buf())\n                .or_insert_with(|| Arc::new(Mutex::new(Replay::default()))),\n        );",
+     "sankhya-table-delta"),
 
     ("maintenance: retire a merge's inputs on the grace period alone, ignoring readers",
      "crates/sankhya-maintenance/src/service.rs",

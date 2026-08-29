@@ -131,6 +131,45 @@ unreferenced and collected by the orphan sweep. Safety there comes from **orderi
 atomicity. It is excused with that reasoning rather than changed, and routing it through
 `publish` would have meant buffering a whole Parquet file in memory.
 
+### The read path stopped serializing on one lock
+
+`LogCache` held a single `Mutex<HashMap<PathBuf, Replay>>` over **every** table --- and held it
+**across the filesystem work**: the probe for a newer version and the replay of whatever it
+found. Every query on every table took that lock, so a cold replay of a large log blocked
+queries against unrelated tables for its whole duration.
+
+Nothing about it was unsafe, which is exactly why it survived: it returned correct answers and
+no correctness test could tell. The audit that found the commit defect walked straight past it,
+because that audit asked *"can this corrupt?"* and the answer was no. The question that finds
+these is *"does this serialize?"*.
+
+Two changes, and the first matters more. The lock is **no longer held across I/O** --- the map
+is locked only long enough to find a table's entry, and the reading happens under that table's
+own lock. And the map is **striped** across 64 shards. Striping alone would have been the lesser
+fix: it reduces how many threads wait, while taking the I/O out of the critical section changes
+what they wait for. Two queries on the *same* table still serialize, and must, because they are
+advancing one replay.
+
+Measured: while a 400-commit table replays continuously, a second table manages **46,570**
+lookups. With one lock put back it manages **618** --- a factor of seventy-five.
+
+**The first version of that test asserted `> 100`**, which is *below* the blocked figure, so it
+passed with the global lock restored: a test of contention that could not detect contention.
+The threshold is now three thousand, chosen from both measurements rather than from taste.
+
+### The cube query path stopped serializing too
+
+`QueryLog::record` runs on **every** cube query and took a write lock over the whole map to
+push one entry, so every cube's navigation serialized against every other cube's. Each cube's
+ring is now behind its own small lock; recording takes a read lock to find it, releases that,
+and holds the ring's lock for the length of a push.
+
+Measured as a ratio on one machine in one run, which is what makes it a measurement of the code
+rather than of the hardware: recording to eight **different** cubes against recording to
+**one**. With per-cube locks the ratio is **3.19** --- different cubes genuinely do not meet.
+With the map's write lock put back it is **1.06**, because then the map lock is the only lock
+that matters and eight cubes are as slow as one.
+
 ### §12.1c — reclamation waits for readers
 
 `sankhya-leases`, layer 0, no dependencies. Readers do not register *what* they hold --- that

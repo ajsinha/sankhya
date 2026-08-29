@@ -39,6 +39,7 @@
 
 use sankhya_cube_algo::lattice::Cuboid;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// How many asks are remembered per cube.
 ///
@@ -48,9 +49,22 @@ use std::collections::BTreeMap;
 pub const REMEMBERED: usize = 256;
 
 /// The cuboids recently asked for, per cube.
+///
+/// # Why the map lock is only ever taken for a lookup
+///
+/// `record` runs on **every** cube query. Holding a write lock over the whole map to push one
+/// entry made every cube's navigation serialize against every other cube's --- a choke point
+/// on the hot path, and one no correctness test could see, because the answers were right.
+///
+/// Each cube's ring is behind its own small lock instead. Recording takes a *read* lock on the
+/// map to find the ring, releases it, and takes the ring's own lock for the length of a push.
+/// Two cubes never meet; two queries against one cube contend for a mutex held over a handful
+/// of pointer writes.
+///
+/// The write lock is still taken the first time a cube is seen, which happens once.
 #[derive(Debug, Default)]
 pub struct QueryLog {
-    asks: parking_lot::RwLock<BTreeMap<String, Ring>>,
+    asks: parking_lot::RwLock<BTreeMap<String, Arc<parking_lot::Mutex<Ring>>>>,
     /// How many asks are kept per cube.
     capacity: usize,
 }
@@ -95,11 +109,21 @@ impl QueryLog {
 
     /// Record that somebody asked this cube for this shape.
     pub fn record(&self, cube: &str, cuboid: Cuboid) {
-        self.asks
-            .write()
-            .entry(cube.to_string())
-            .or_default()
-            .record(cuboid, self.capacity);
+        // The common path: a read lock, a lookup, and out. The map lock is not held while the
+        // ring is written, so two cubes recording at once never meet.
+        if let Some(ring) = self.asks.read().get(cube).map(Arc::clone) {
+            ring.lock().record(cuboid, self.capacity);
+            return;
+        }
+        // First sight of this cube. Taken under a write lock, and re-checked because another
+        // thread may have inserted it between the read above and this write.
+        let ring = Arc::clone(
+            self.asks
+                .write()
+                .entry(cube.to_string())
+                .or_insert_with(|| Arc::new(parking_lot::Mutex::new(Ring::default()))),
+        );
+        ring.lock().record(cuboid, self.capacity);
     }
 
     /// What this cube has been asked for, most-asked shapes appearing most often.
@@ -108,11 +132,8 @@ impl QueryLog {
     /// weighting `select` reads: a shape asked ten times counts ten times.
     #[must_use]
     pub fn asked(&self, cube: &str) -> Vec<Cuboid> {
-        self.asks
-            .read()
-            .get(cube)
-            .map(|ring| ring.entries.clone())
-            .unwrap_or_default()
+        let ring = self.asks.read().get(cube).map(Arc::clone);
+        ring.map(|ring| ring.lock().entries.clone()).unwrap_or_default()
     }
 
     /// Which cubes have been asked about at all.
@@ -124,7 +145,8 @@ impl QueryLog {
     /// How many asks are held for a cube.
     #[must_use]
     pub fn len(&self, cube: &str) -> usize {
-        self.asks.read().get(cube).map_or(0, |ring| ring.entries.len())
+        let ring = self.asks.read().get(cube).map(Arc::clone);
+        ring.map_or(0, |ring| ring.lock().entries.len())
     }
 
     /// Whether nothing has been asked of any cube.
