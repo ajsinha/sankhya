@@ -569,6 +569,70 @@ the defect it was written for until it asserted the **length**.
 Neither would have been found by reading the tests. Both were found by mutating the code and
 noticing the suite did not care.
 
+## Cube DDL, built 2026-08-30
+
+Not part of a milestone, and built out of order on purpose. `CREATE CUBE` was one of M12's
+three dependencies and **the only one hardware did not block** — the other two are a second
+machine and the scale-out work that moved there with §12.2. Doing it now costs nothing that
+waiting would have saved, and leaves M12 blocked on exactly one thing instead of two.
+
+### What a client can now say
+
+```sql
+CREATE CUBE sales FROM orders
+  DIMENSION geography FROM regions ON region_id (LEVEL country = country_code, …)
+  MEASURE amount (SUM ALONG geography, SUM ALONG period)
+  MAINTAINED WITHIN 5 VERSIONS
+  PINNED (geography);
+
+DROP CUBE sales;
+```
+
+The grammar covers everything the stored form does — levels, parent-child hierarchies,
+declared roll-up edges, every additivity rule, the staleness target and pinned shapes — because
+a cube a file can declare and a statement cannot is the gap reopened rather than closed.
+
+### Three decisions worth not re-litigating
+
+**The parser sits before the engine, and must be able to say "not mine".** `CREATE CUBE` is not
+SQL, so `sqlparser` rejects it before any DataFusion hook could see it, and every extension
+point that exists sits downstream of a successful parse. So it is recognised first — which
+means the load-bearing test is not that a cube parses but that **everything else in the
+language passes through untouched**, including malformed SQL, whose error must come from the
+component that owns the language.
+
+**Nothing in the parser validates a cube.** It produces a `Definition` and stops. `validate`
+turns that into a `Cube` and reports *every* rejection rather than the first. A second
+implementation of those rules in the parser would be a second implementation to disagree with
+the first, and the disagreement would show up as a cube a file can declare and a statement
+cannot — the very gap being closed.
+
+**There is no `CREATE OR REPLACE CUBE`.** Replacing a cube retires every cuboid it
+materialised, and that must not happen because somebody re-ran a script.
+
+### The finding: a drop had to reclaim, or the storage was permanent
+
+`retire_superseded` **deliberately retains** a cuboid whose cube has no known current version —
+*"deleting on a guess is how a cache becomes a data loss"* — and that is right for a cube it
+merely cannot see. It also means a dropped cube's cuboids would have been kept **forever, on
+purpose, by the one mechanism that could have reclaimed them**. Nothing would have errored and
+no query would have failed; the directories simply never go away.
+
+`DROP CUBE` is the only moment at which anything knows the difference between *gone* and
+*unrecognised*, so `cuboid::retire_cube` reclaims there. It parses each directory name rather
+than matching a prefix — the names are length-prefixed precisely so they can be read back — so
+dropping `sales` cannot take `sales_archive`'s cuboids with it. There is a mutation for that
+one, because a prefix match is the obvious shortcut and it passes every other test.
+
+### Cost
+
+`Server.cubes` became `RwLock<Arc<Vec<Cube>>>`: readers take the lock, clone one pointer and
+drop it, so **nothing is held across a hydration**. Writers are DDL and rare; readers are every
+statement, which is why it is an `RwLock` rather than a `Mutex` and why the `Arc` is inside it
+rather than the `Vec` being cloned per statement.
+
+50 tests — 21 on the grammar, 11 through a running server, 18 on retirement — and 5 mutations.
+
 ## M7, complete
 
 Added 2026-08-27 by owner directive and placed before scale-out: cubes are a stated

@@ -214,3 +214,60 @@ fn a_warehouse_that_never_materialised_anything_sweeps_cleanly() {
     let swept = retire_superseded(dir.path(), &current("sales", 100), 0);
     assert_eq!(swept, sankhya_maintenance::cuboid::Swept::default());
 }
+
+// --- retiring the cuboids of a cube that is gone -----------------------------
+
+#[test]
+fn a_dropped_cubes_cuboids_are_reclaimed_because_nothing_else_ever_would() {
+    // The test above proves the sweep *keeps* a cuboid whose cube has no current version,
+    // deliberately and with a reason. That is right for a cube it merely cannot see, and it
+    // is exactly what makes a dropped cube's storage permanent: the one mechanism that could
+    // reclaim it has decided not to. `DROP CUBE` is the only moment at which something knows
+    // the cube is gone rather than unrecognised, so it is the only moment this can happen.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let one = write_at(dir.path(), "sales", 1);
+    let two = write_at(dir.path(), "sales", 2);
+    assert!(cuboid::exists(dir.path(), &one, "sales"));
+
+    let swept = cuboid::retire_cube(dir.path(), "sales");
+
+    assert_eq!(swept.removed.len(), 2, "every snapshot of it, not just the newest: {swept:?}");
+    assert!(swept.bytes_reclaimed > 0, "and the space came back");
+    assert!(!cuboid::exists(dir.path(), &one, "sales"));
+    assert!(!cuboid::exists(dir.path(), &two, "sales"));
+}
+
+#[test]
+fn retiring_one_cube_leaves_every_other_cube_alone() {
+    // A cube named `sales` must not take `sales_archive` with it. The cuboid name is
+    // length-prefixed so it can be read back rather than matched by prefix, and this is the
+    // test that would fail if somebody replaced the parse with a `starts_with`.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let doomed = write_at(dir.path(), "sales", 1);
+    let neighbour = write_at(dir.path(), "sales_archive", 1);
+
+    let swept = cuboid::retire_cube(dir.path(), "sales");
+
+    assert_eq!(swept.removed.len(), 1, "{swept:?}");
+    assert!(!cuboid::exists(dir.path(), &doomed, "sales"));
+    assert!(
+        cuboid::exists(dir.path(), &neighbour, "sales_archive"),
+        "a cube whose name merely begins the same keeps its own cuboids"
+    );
+}
+
+#[test]
+fn retiring_a_cube_that_materialised_nothing_is_not_an_error() {
+    // The ordinary case: most cubes are declared rather than maintained, so most drops have
+    // nothing to reclaim and must not report a problem.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    assert_eq!(
+        cuboid::retire_cube(dir.path(), "sales"),
+        sankhya_maintenance::cuboid::Swept::default()
+    );
+
+    let kept = write_at(dir.path(), "other", 1);
+    let swept = cuboid::retire_cube(dir.path(), "sales");
+    assert!(swept.removed.is_empty(), "{swept:?}");
+    assert!(cuboid::exists(dir.path(), &kept, "other"));
+}

@@ -131,15 +131,31 @@ pub struct Server {
     /// Shared with nothing else deliberately: it exists so that checking whether a table has
     /// moved costs a stat rather than a log replay, on a path that now runs per statement.
     log_cache: sankhya_table_delta::LogCache,
-    /// The cubes this warehouse declares, validated at startup.
+    /// The cubes this warehouse declares, validated when they are adopted.
     ///
-    /// Read once, here, rather than per query: a definition is a small JSON document, and
+    /// Read at startup rather than per query: a definition is a small JSON document, and
     /// re-reading it per statement would make a cube's cost depend on how often it is asked
-    /// about. **Validated** here too, because a definition that cannot become a `Cube` is a
+    /// about. **Validated** there too, because a definition that cannot become a `Cube` is a
     /// deployment problem and belongs in the startup log beside the tables that would not
     /// open --- not in the first query that happens to name it, hours later, reported to
     /// whoever ran that query as though they had done something wrong.
-    cubes: Vec<sankhya_cube::model::Cube>,
+    ///
+    /// # Why this is behind a lock, and why an `Arc` inside it
+    ///
+    /// `CREATE CUBE` and `DROP CUBE` change this set while the server is serving, so it can no
+    /// longer be a plain field read by an `&self`. The lock is the smaller half of the choice.
+    ///
+    /// The `Arc` is the half that matters: a reader takes the lock, clones one pointer, and
+    /// drops it. **Nothing is held across a hydration**, which is the whole discipline
+    /// [ADR-0013](../../../docs/adr/0013-concurrency-and-data-safety.md) was written to
+    /// establish --- hydrating a cube reads a fact table, and a lock spanning that would make
+    /// every cube query wait behind every other one. Cloning the `Vec` instead would be
+    /// correct and would copy every definition on every statement, which is a cost that grows
+    /// with how many cubes a warehouse has rather than with what the statement asked for.
+    ///
+    /// Writers are DDL and therefore rare; readers are every statement. That asymmetry is why
+    /// this is an `RwLock` and not a `Mutex`.
+    cubes: std::sync::RwLock<Arc<Vec<sankhya_cube::model::Cube>>>,
     /// Cells already hydrated, keyed by everything that makes them an answer.
     ///
     /// Shared across statements, which is the point: `session_for` builds a context per
@@ -349,8 +365,6 @@ impl Server {
         Self::with_tables(settings, policy, tables, Vec::new())
     }
 
-    /// Assemble a server that can actually answer queries.
-    #[must_use]
     /// Load, validate and adopt the cubes a warehouse declares.
     ///
     /// # Why loudly, and why at startup
@@ -367,7 +381,7 @@ impl Server {
     /// Returns a complaint per definition that could not be adopted, in the same shape as the
     /// table complaints the caller already prints.
     #[must_use]
-    pub fn adopting_cubes(mut self, warehouse: &std::path::Path) -> (Self, Vec<String>) {
+    pub fn adopting_cubes(self, warehouse: &std::path::Path) -> (Self, Vec<String>) {
         let mut complaints = Vec::new();
         let definitions = match sankhya_cube::catalogue::load_all(warehouse) {
             Ok(definitions) => definitions,
@@ -376,10 +390,11 @@ impl Server {
                 Vec::new()
             }
         };
+        let mut adopted = Vec::new();
         for definition in definitions {
             let name = definition.name.clone();
             match definition.validate() {
-                Ok(cube) => self.cubes.push(cube),
+                Ok(cube) => adopted.push(cube),
                 Err(rejections) => {
                     let why: Vec<String> =
                         rejections.iter().map(ToString::to_string).collect();
@@ -387,15 +402,29 @@ impl Server {
                 }
             }
         }
+        // Constructing, so nothing else can hold the lock. Poisoning is recovered from
+        // rather than propagated for the reason it is everywhere else here: a panic in a
+        // statement that touched this list must not make every later cube query fail.
+        if let Ok(mut cubes) = self.cubes.write() {
+            *cubes = Arc::new(adopted);
+        }
         (self, complaints)
     }
 
-    /// The cubes this server adopted.
+    /// The cubes this server currently serves.
+    ///
+    /// Returns a snapshot rather than a borrow, because `CREATE CUBE` and `DROP CUBE` can
+    /// change the set between two statements. A caller holding this sees a consistent list
+    /// for as long as it holds it, which is the right guarantee: a statement is planned
+    /// against the cubes that existed when it started.
     #[must_use]
-    pub fn cubes(&self) -> &[sankhya_cube::model::Cube] {
-        &self.cubes
+    pub fn cubes(&self) -> Arc<Vec<sankhya_cube::model::Cube>> {
+        self.cubes
+            .read()
+            .map_or_else(|poisoned| Arc::clone(&poisoned.into_inner()), |cubes| Arc::clone(&cubes))
     }
 
+    /// Assemble a server that can actually answer queries.
     pub fn with_tables(
         settings: Settings,
         policy: PolicySet,
@@ -413,7 +442,7 @@ impl Server {
             servable: parking_lot::RwLock::new(Arc::new(servable)),
             leases: Arc::new(sankhya_leases::Leases::new()),
             log_cache: sankhya_table_delta::LogCache::new(),
-            cubes: Vec::new(),
+            cubes: std::sync::RwLock::new(Arc::new(Vec::new())),
             hydrated: Arc::new(sankhya_cube_sql::hydrated::Hydrated::default()),
             query_log: Arc::new(sankhya_cube::querylog::QueryLog::new()),
             clock: parking_lot::Mutex::new(0),
@@ -670,7 +699,8 @@ impl Server {
     /// that fails to resolve a cube rather than one that answers wrongly. It is replaced by
     /// planning against a registered catalogue when the surface grows a resolver of its own.
     fn register_cubes(&self, context: &SessionContext, principal: &Principal, sql: &str) {
-        if self.cubes.is_empty() {
+        let cubes = self.cubes();
+        if cubes.is_empty() {
             return;
         }
         // Describing a cube reads no data, so it is registered whatever the statement says.
@@ -687,7 +717,7 @@ impl Server {
             &grain_needed(sql).iter().map(String::as_str).collect::<Vec<&str>>(),
         );
         let catalog = Arc::new(sankhya_cube_sql::catalog::CubeCatalog::new());
-        for cube in &self.cubes {
+        for cube in cubes.iter() {
             catalog.declare(cube.name());
             if !navigating || !sql.contains(cube.name()) {
                 continue;
@@ -815,7 +845,7 @@ impl Server {
         // Description alongside navigation, always. A surface a client can use only by
         // already knowing the model is a surface only its author can use, and a picker that
         // hardcodes a cube's dimensions is a picker that drifts from the cube.
-        sankhya_cube_sql::describe::register(context, Arc::new(self.cubes.clone()), catalog);
+        sankhya_cube_sql::describe::register(context, self.cubes(), catalog);
     }
 
     /// Build the cuboids maintained cubes are missing, and report what was built.
@@ -841,7 +871,7 @@ impl Server {
     /// invisibly.
     pub fn refresh_maintained_cubes(&self) -> Vec<String> {
         let mut refreshed = Vec::new();
-        for cube in &self.cubes {
+        for cube in self.cubes().iter() {
             let Some(_) = cube.target_lag() else {
                 // Declared, not maintained. Nothing to build, and building it anyway would
                 // charge an operator storage they did not ask for.
@@ -976,11 +1006,11 @@ impl Server {
     /// may be **served**; this decides what may be **deleted**, and a query that resolved a
     /// cuboid a moment ago is still reading it.
     fn retire_superseded_cuboids(&self) {
-        if self.cubes.is_empty() {
+        let cubes = self.cubes();
+        if cubes.is_empty() {
             return;
         }
-        let current: std::collections::BTreeMap<String, u64> = self
-            .cubes
+        let current: std::collections::BTreeMap<String, u64> = cubes
             .iter()
             .map(|cube| {
                 (
@@ -1387,6 +1417,174 @@ impl Server {
             .map(|guard| guard.scope_digest())
     }
 
+    /// Run a `CREATE CUBE` or `DROP CUBE`.
+    ///
+    /// # Why the same failure is reported for "no such table" and "you may not read it"
+    ///
+    /// Because they must be indistinguishable. The query path already refuses to confirm a
+    /// table's existence to somebody who may not read it, and cube DDL naming a fact table
+    /// would be a way to ask the same question through a different door: a `CREATE CUBE` that
+    /// answered *"you may not read `payroll`"* has told you `payroll` exists.
+    ///
+    /// So the check is [`Self::scope_for`] --- the same authorization the query path uses,
+    /// with no second implementation to disagree with it --- and both answers are the one
+    /// sentence below.
+    fn run_cube_ddl(
+        &self,
+        statement: Result<sankhya_cube_sql::Statement, sankhya_cube_sql::DdlError>,
+        principal: &Principal,
+    ) -> Result<QueryResult, QueryFailure> {
+        use sankhya_error::protocol::sqlstate;
+
+        let statement = statement.map_err(|error| {
+            refusal(sqlstate::SYNTAX_ERROR.as_str(), &error.to_string())
+        })?;
+
+        match statement {
+            sankhya_cube_sql::Statement::Create(definition) => {
+                self.create_cube(*definition, principal)
+            }
+            sankhya_cube_sql::Statement::Drop { name, if_exists } => {
+                self.drop_cube(&name, if_exists, principal)
+            }
+        }
+    }
+
+    /// Validate a definition, persist it, and start serving it.
+    fn create_cube(
+        &self,
+        definition: sankhya_cube::model::Definition,
+        principal: &Principal,
+    ) -> Result<QueryResult, QueryFailure> {
+        use sankhya_error::protocol::sqlstate;
+
+        let name = definition.name.clone();
+
+        // A name already taken is refused rather than replaced, and there is no
+        // `OR REPLACE`. Replacing a cube orphans every cuboid it materialised, and the
+        // reclamation of those is a real operation with a real cost --- see
+        // `cuboid::retire_cube`. Hiding that inside a `CREATE` would make an expensive,
+        // irreversible thing happen because somebody re-ran a script. `DROP` then `CREATE`
+        // says it out loud.
+        if self.cubes().iter().any(|cube| cube.name() == name) {
+            return Err(refusal(
+                sqlstate::DATA_EXCEPTION.as_str(),
+                &format!(
+                    "the cube `{name}` already exists. Drop it first: replacing a cube \
+                     retires every cuboid it materialised, which is not something a \
+                     re-run of a script should do silently"
+                ),
+            ));
+        }
+
+        // Every table the cube reads, checked against the same authorization the query path
+        // uses. A cube whose fact table this principal cannot read would hydrate to nothing
+        // anyway; refusing here means the refusal names the statement rather than arriving
+        // later as an empty answer nobody can explain.
+        let mut tables = vec![definition.fact_table.clone()];
+        tables.extend(definition.dimensions.iter().map(|d| d.table.clone()));
+        for table in tables {
+            if self.scope_for(principal, &table).is_none() {
+                return Err(refusal(
+                    sqlstate::DATA_EXCEPTION.as_str(),
+                    &format!("there is no table `{table}` to build a cube on"),
+                ));
+            }
+        }
+
+        // The one validator, reporting every rejection rather than the first. A definition
+        // fixable in one sitting should be reported in one message.
+        let cube = definition.validate().map_err(|rejections| {
+            let why: Vec<String> = rejections.iter().map(ToString::to_string).collect();
+            refusal(
+                sqlstate::DATA_EXCEPTION.as_str(),
+                &format!("the cube `{name}` was not created: {}", why.join("; ")),
+            )
+        })?;
+
+        // Persisted before it is served, so a cube that answers a query is a cube that would
+        // survive a restart. The other order produces a cube that works until it does not,
+        // and the moment it stops is a restart nobody connects to the statement.
+        sankhya_cube::catalogue::save(&self.settings.warehouse, cube.definition()).map_err(
+            |error| refusal(sqlstate::IO_ERROR.as_str(), &error.to_string()),
+        )?;
+
+        if let Ok(mut cubes) = self.cubes.write() {
+            let mut next: Vec<_> = cubes.iter().cloned().collect();
+            next.push(cube);
+            *cubes = Arc::new(next);
+        }
+
+        // Audited as an insert against the cube's own name. There is no `Action` for DDL
+        // and inventing one would mean a second vocabulary for the audit reader to learn;
+        // creating a cube adds something that was not there, which is what `Insert` says.
+        self.record(principal, TableRef::new("", &name), Action::Insert, true);
+        Ok(acknowledged("CREATE CUBE"))
+    }
+
+    /// Stop serving a cube, remove its definition, and reclaim what it materialised.
+    fn drop_cube(
+        &self,
+        name: &str,
+        if_exists: bool,
+        principal: &Principal,
+    ) -> Result<QueryResult, QueryFailure> {
+        use sankhya_error::protocol::sqlstate;
+
+        let Some(cube) = self.cubes().iter().find(|cube| cube.name() == name).cloned() else {
+            if if_exists {
+                return Ok(acknowledged("DROP CUBE"));
+            }
+            return Err(refusal(
+                sqlstate::DATA_EXCEPTION.as_str(),
+                &format!("there is no cube `{name}`"),
+            ));
+        };
+
+        // Dropping a cube reads no table, so there is nothing to authorize against a fact
+        // table --- but a principal who cannot read what the cube is built on has no business
+        // removing it, and the check costs nothing. The refusal is the same sentence as
+        // everywhere else, for the same reason.
+        if self.scope_for(principal, cube.fact_table()).is_none() {
+            return Err(refusal(
+                sqlstate::DATA_EXCEPTION.as_str(),
+                &format!("there is no cube `{name}`"),
+            ));
+        }
+
+        // Out of the served set first, so no statement started after this point can resolve
+        // the cube and reach files that are about to go. A statement already running holds
+        // its files open and finishes against them.
+        if let Ok(mut cubes) = self.cubes.write() {
+            let next: Vec<_> =
+                cubes.iter().filter(|held| held.name() != name).cloned().collect();
+            *cubes = Arc::new(next);
+        }
+
+        let definition = sankhya_cube::catalogue::path_of(&self.settings.warehouse, name);
+        if let Err(error) = std::fs::remove_file(&definition) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Err(refusal(sqlstate::IO_ERROR.as_str(), &error.to_string()));
+            }
+        }
+
+        // And the cuboids, which nothing else will ever reclaim: `retire_superseded` keeps a
+        // cuboid whose cube has no known current version, deliberately and with a reason, so
+        // a dropped cube's materialised storage would otherwise be retained for good.
+        let swept = sankhya_maintenance::cuboid::retire_cube(&self.settings.warehouse, name);
+        if !swept.removed.is_empty() {
+            tracing::info!(
+                cube = name,
+                cuboids = swept.removed.len(),
+                bytes = swept.bytes_reclaimed,
+                "retired the cuboids of a dropped cube"
+            );
+        }
+
+        self.record(principal, TableRef::new("", name), Action::Delete, true);
+        Ok(acknowledged("DROP CUBE"))
+    }
+
     /// Everything `query` does, without the measuring.
     ///
     /// Split out so that the counter and the histogram are recorded on **every** path out of
@@ -1423,6 +1621,19 @@ impl Server {
                 "no principal is established for this connection",
             ));
         };
+
+        // Cube DDL, before the engine is asked anything.
+        //
+        // `CREATE CUBE` is not SQL, so `sqlparser` rejects it before any DataFusion hook can
+        // see it. It has to be recognised here or not at all. `parse_ddl` returns `None` for
+        // everything that is not cube DDL, which is every other statement in the language.
+        //
+        // After admission and after the principal, because a cube is created *by* somebody
+        // and against tables they must be allowed to read; before the session, because none
+        // of what `session_for` builds is any use to a statement that reads no data.
+        if let Some(statement) = sankhya_cube_sql::parse_ddl(sql) {
+            return self.run_cube_ddl(statement, &principal);
+        }
 
         // Only the tables this principal may read are registered, so a query naming one
         // they may not fails to resolve — indistinguishable from naming one that does not
@@ -1532,6 +1743,15 @@ fn statement_shape(sql: &str) -> String {
 }
 
 /// A refusal in the shape the wire wants.
+/// A statement that did something and returns no rows.
+///
+/// The tag is what a client prints and what a driver branches on, so it names the statement
+/// rather than being an empty string that leaves `psql` silent about whether anything
+/// happened.
+fn acknowledged(tag: &str) -> QueryResult {
+    QueryResult { fields: Vec::new(), rows: Vec::new(), tag: tag.to_string() }
+}
+
 fn refusal(sqlstate: &str, message: &str) -> QueryFailure {
     QueryFailure {
         sqlstate: sqlstate.to_string(),

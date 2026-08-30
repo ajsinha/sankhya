@@ -9,7 +9,7 @@
 
 # SANKHYA — a guide, by example
 
-**Status:** Implementation — M0–M7 complete, M8 next
+**Status:** Implementation — M0–M8 complete; M8 on six of eight, its scale-out half moved to M12; M9 next
 
 Every example here is **executed or accounted for by a test**.
 `crates/sankhya-server/tests/guide.rs` extracts the SQL from this page — this page, not a
@@ -381,6 +381,95 @@ dimensions, which are measures, and — the part that decides whether an answer 
 That last one is why this is not a convenience over `GROUP BY`. Summing a closing balance
 across twelve months gives a number of the right magnitude, the right sign, and no meaning.
 A cube refuses it.
+
+### Declaring one
+
+```sql
+CREATE CUBE quarterly FROM orders
+  DIMENSION region FROM orders ON region (LEVEL area = region)
+  DIMENSION period FROM orders ON period (LEVEL quarter = period)
+  MEASURE amount (SUM ALONG region, SUM ALONG period);
+```
+
+Read it as: the facts are in `orders`; `region` takes its members from `orders` itself, joined
+on the fact table's `region` column; and `amount` adds along both dimensions.
+
+A dimension usually has its own table — `DIMENSION geography FROM regions ON region_id` — and
+several levels, coarse to fine, which is the order a drill-down walks:
+
+```text
+  DIMENSION geography FROM regions ON region_id (
+      LEVEL country = country_code,
+      LEVEL region  = region_code
+  )
+```
+
+The rule is the part that decides whether an answer is correct. `SUM ALONG period` says a
+measure adds over time; `LAST ALONG period` says it does not, which is what a balance needs,
+because a December balance is not the sum of twelve month-end balances.
+
+**Every measure needs a rule for every dimension, and there is no default.** A missing rule is
+refused when the cube is declared, naming the measure and the dimension. That is the whole
+design: the alternative is an implicit `SUM` that produces a plausible wrong number.
+
+| Rule | Combines by | Composes further? |
+|---|---|---|
+| `SUM` | adding | yes |
+| `MIN`, `MAX` | the extreme | yes |
+| `FIRST`, `LAST` | position in the dimension's order | yes |
+| `MEAN` | the arithmetic mean | **no** — an average of averages is not an average |
+| `NONE` | it cannot be derived from parts at all | **no** — a ratio, a distinct count |
+
+`MEAN` and `NONE` are declarable and are refused where they would be composed, rather than
+quietly producing a figure. That refusal is the feature.
+
+**Optional clauses**, in this order:
+
+```text
+  MAINTAINED WITHIN 5 VERSIONS      -- materialise, and tolerate five commits' drift
+  PINNED (geography)                -- always materialise this shape
+```
+
+Without `MAINTAINED`, a cube is *declared*: persisted, and computed on demand under each
+caller's own permissions. Adding it costs storage and maintenance work, so a cube does not
+acquire either by being written down.
+
+A ragged hierarchy — an organisation chart, where depth varies — is declared as parent-child
+rather than as levels, because flattening it forces padding:
+
+```text
+  DIMENSION people FROM employees ON employee_id (
+      LEVEL person = employee_id,
+      PARENT employee_id TO manager_id
+  )
+```
+
+And an alternate roll-up that lives in the definition rather than in the data:
+
+```text
+      ROLLUP emea TO world
+```
+
+### Removing one
+
+```sql
+DROP CUBE quarterly;
+DROP CUBE IF EXISTS quarterly;
+```
+
+**Dropping a cube also reclaims every cuboid it materialised.** That matters more than it
+sounds: the ordinary cuboid sweep deliberately *keeps* anything belonging to a cube it cannot
+find a current version for — deleting on a guess is how a cache becomes a data loss — so a
+drop is the only moment at which that storage can be released. Nothing else will ever
+reclaim it.
+
+**There is no `CREATE OR REPLACE CUBE`**, deliberately. Replacing a cube retires everything it
+materialised, and that should not happen because somebody re-ran a script. Drop it and create
+it, so the expensive half is written down.
+
+A cube named in a `CREATE` whose fact table or dimension tables you cannot read is refused
+with the same sentence as one whose tables do not exist. A refusal that distinguished them
+would tell you the table is there.
 
 ### Finding out what exists
 
