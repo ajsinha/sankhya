@@ -25,6 +25,7 @@
 mod backup;
 mod doctor;
 mod execute;
+mod flight;
 mod scrape;
 mod warehouse;
 mod wiring;
@@ -62,6 +63,16 @@ fn settings() -> Result<Settings, String> {
     .map_err(|error| error.to_string())?;
 
     let listen = config.get_or("server.listen", "127.0.0.1:5433").to_string();
+    // Arrow Flight SQL, the bulk plane. `None` turns it off.
+    //
+    // On by default and on its own port: it is a different protocol from the wire front door,
+    // spoken by different clients, and an operator who wants only one of them should not have
+    // to reason about which requests reach which handler on a shared port.
+    let flight_listen = Some(
+        config
+            .get_or("server.flight_listen", "127.0.0.1:5434")
+            .to_string(),
+    );
     let metrics_listen = Some(
         config
             .get_or("server.metrics_listen", "127.0.0.1:9464")
@@ -100,6 +111,7 @@ fn settings() -> Result<Settings, String> {
         read_as_of,
         tenant,
         require_password,
+        flight_listen,
         metrics_listen,
     })
 }
@@ -235,6 +247,7 @@ async fn main() -> std::io::Result<()> {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, why));
         }
     };
+    let settings_flight = settings.flight_listen.clone();
     let settings_metrics = settings.metrics_listen.clone();
     let settings_listen = settings.listen.clone();
 
@@ -280,6 +293,39 @@ async fn main() -> std::io::Result<()> {
             Some(server.leases()),
         ))
     });
+
+    // Arrow Flight SQL, served on its own listener.
+    //
+    // The protocol has been complete and tested since M6 and **nothing served it** ---
+    // `GUIDE.md` §7a documented a bulk plane with nowhere to send a `GetFlightInfo`. This is
+    // the line that made the difference, and it is worth how little it is: the surface was
+    // built, the transport was not, and no test could tell because every test of the protocol
+    // constructed the service directly.
+    if let Some(address) = settings_flight {
+        match address.parse::<std::net::SocketAddr>() {
+            Ok(socket) => {
+                let flying = flight::Flying::new(Arc::clone(&server));
+                println!("  Arrow Flight SQL on {socket}");
+                tokio::spawn(async move {
+                    let transport = sankhya_api_grpc::Transport::new(socket);
+                    let service = sankhya_api_flight::SankhyaFlight::new(std::sync::Arc::new(
+                        flying,
+                    ));
+                    // Served until the process ends. A bulk plane that stopped on its own
+                    // would be indistinguishable, to a client, from one that was never there.
+                    if let Err(error) = transport
+                        .serve_until(service, std::future::pending::<()>())
+                        .await
+                    {
+                        eprintln!("  Arrow Flight SQL stopped: {error}");
+                    }
+                });
+            }
+            Err(error) => {
+                eprintln!("  server.flight_listen is not an address: {address}: {error}");
+            }
+        }
+    }
 
     // Maintained cubes, built on the same cadence and for the same reason.
     //

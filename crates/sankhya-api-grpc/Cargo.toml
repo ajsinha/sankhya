@@ -14,3 +14,12 @@ layer = 4
 workspace = true
 
 [dependencies]
+sankhya-api-flight = { path = "../sankhya-api-flight" }
+arrow-flight = { workspace = true }
+tonic        = { workspace = true }
+tokio        = { workspace = true }
+tracing      = { workspace = true }
+tokio-stream = "0.1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

@@ -594,15 +594,17 @@ against a warehouse rather than written in SQL: `CREATE CUBE` is not a statement
 
 ## 7a. Arrow Flight SQL — the bulk plane
 
-> **Not reachable yet, as of 2026-08-29.** The ticket model, the size decision and the route
-> table are built and tested; nothing serves them. `sankhya-api-flight` is depended on only by
-> `sankhya-api-rest`, which no binary depends on either, so a client has nowhere to send a
-> `GetFlightInfo`. This section describes a design and a library rather than something you can
-> connect to today.
+> **Served since 2026-08-29**, on its own port. `server.flight_listen` defaults to
+> `127.0.0.1:5434`; set it to nothing to turn the bulk plane off.
 >
-> It went unnoticed because `check-surfaces` looked for crates registering *SQL functions*,
-> which Flight does not; widening that check to plain reachability found it. Wiring it is
-> M8 §12.2, beside the gRPC transport it shares a transport story with.
+> It is worth recording that this section described a working, tested protocol that **nothing
+> served** for the whole of M6 and M7 --- a client had nowhere to send a `GetFlightInfo`. It
+> went unnoticed because `check-surfaces` looked for crates registering *SQL functions*, which
+> Flight does not; widening that check to plain reachability found it in a minute.
+>
+> Identify yourself with the **sankhya-user** metadata key. A request that does not is refused
+> rather than defaulted, for the same reason the wire protocol refuses a connection with no
+> user: an unattributable request cannot be audited.
 
 The wire protocol is a **row** protocol: the last step of every query takes columnar batches
 apart one value at a time. For an interactive query that costs nothing worth measuring; for

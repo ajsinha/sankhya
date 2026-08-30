@@ -64,6 +64,12 @@ pub struct Settings {
     /// doing it. Two maintainers on one warehouse are two committers racing for the same
     /// version.
     pub maintenance: Option<sankhya_maintenance::MaintenancePolicy>,
+    /// Where Arrow Flight SQL listens, or `None` not to serve it.
+    ///
+    /// Its own port rather than a path on the wire-protocol one: Flight is a different
+    /// protocol spoken by different clients, and an operator who wants one and not the other
+    /// should not have to reason about which requests reach which handler.
+    pub flight_listen: Option<String>,
     /// The rows greedy selection may spend on materialised cuboids, per cube.
     ///
     /// The **configuration** level of §11.6's three controls, and the operator's. It is an
@@ -1251,6 +1257,59 @@ impl Server {
             completeness,
             from_cuboid: true,
         })
+    }
+
+    /// The tenant this server serves.
+    #[must_use]
+    pub const fn tenant(&self) -> sankhya_authz::principal::TenantId {
+        self.settings.tenant
+    }
+
+    /// The policy every session is built against.
+    #[must_use]
+    pub const fn policy_set(&self) -> &PolicySet {
+        &self.policy
+    }
+
+    /// The tables that can be served right now, refreshed if their logs have moved.
+    ///
+    /// Refreshed here rather than read stale, for the reason the statement path refreshes:
+    /// providers resolved once at boot name files that maintenance later retires, and a
+    /// reader holding them fails on a path the caller never mentioned.
+    #[must_use]
+    pub fn servable_now(&self) -> Vec<ServableTable> {
+        {
+            let mut servable = self.servable.write();
+            crate::warehouse::refresh(&mut servable, self.settings.read_as_of, &self.log_cache);
+        }
+        self.servable.read().clone()
+    }
+
+    /// The principal a Flight request acts as.
+    ///
+    /// Tenant-scoped, because a ticket carries a tenant and not a subject. Every user of a
+    /// tenant currently receives the same roles, so this is exactly the principal any of them
+    /// would get --- and when that stops being true the subject has to travel in the ticket.
+    #[must_use]
+    pub fn flight_principal(&self) -> Option<Principal> {
+        self.principal("flight")
+    }
+
+    /// The newest version any servable table stands at.
+    ///
+    /// What a Flight ticket records as the snapshot it was planned against. The newest across
+    /// tables rather than one table's, because a statement may name several and the ticket has
+    /// one field --- and taking the newest is the value that cannot be *older* than what the
+    /// plan saw.
+    #[must_use]
+    pub fn newest_snapshot(&self) -> u64 {
+        self.servable
+            .read()
+            .iter()
+            .filter_map(|servable| sankhya_table_delta::live_files(&servable.root).ok())
+            .filter_map(|live| live.version)
+            .max()
+            .unwrap_or(0)
     }
 
     /// The registry this server's statements pin, for the maintenance thread to consult.

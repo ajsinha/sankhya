@@ -111,8 +111,6 @@ pub fn check(root: &Path) -> bool {
 /// crates came to hold one line of source each while being named nowhere in the plan.
 const UNREACHED: &[(&str, &str)] = &[
     ("sankhya-datagen", "generates the synthetic data the soak and the OLAP benchmarks load. Reached only from dev-dependencies, which this traversal deliberately ignores --- a *surface* reachable only from a test is the defect; a generator of test data is not one"),
-    ("sankhya-api-flight", "Arrow Flight SQL: reached only from `sankhya-api-rest`, which is itself unreached, so the bulk plane `GUIDE.md` §7a documents cannot be used. Found by this check on 2026-08-29 and the guide now says so. Wiring it is M8 §12.2, beside the gRPC transport it shares a transport story with"),
-    ("sankhya-api-grpc", "M6's carried exit criterion 7, scheduled for M8 §12.2"),
     ("sankhya-objectstore", "M8 §12.1 --- where ADR-0013's version claim lands on an object store, as a conditional put"),
     ("sankhya-oltp-pg", "the PostgreSQL supervisor is built and tested against the vendored 17.11, and nothing wires it into the server yet: `Settings` has no OLTP configuration. Wiring it is M8 §12.2, beside leader election, which is what will need a running store"),
     ("sankhya-testkit", "M8 §12.1e --- deterministic fault injection, which is why the concurrency defects went unseen"),

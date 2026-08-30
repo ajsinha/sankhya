@@ -3247,6 +3247,14 @@ dependencies = [
 [[package]]
 name = "sankhya-api-grpc"
 version = "0.1.0"
+dependencies = [
+ "arrow-flight",
+ "sankhya-api-flight",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tracing",
+]
 
 [[package]]
 name = "sankhya-api-pg"
@@ -3703,6 +3711,8 @@ dependencies = [
  "datafusion",
  "parking_lot",
  "parquet",
+ "sankhya-api-flight",
+ "sankhya-api-grpc",
  "sankhya-api-pg",
  "sankhya-atomicfs",
  "sankhya-audit",
@@ -3731,6 +3741,7 @@ dependencies = [
  "sankhya-types",
  "tempfile",
  "tokio",
+ "tonic",
  "tracing",
  "tracing-subscriber",
  "uuid",

@@ -152,6 +152,7 @@ async fn a_short_run_under_concurrent_load_is_judged() {
             read_as_of: Lsn::new(u64::MAX),
             tenant,
             cuboid_budget_rows: wiring::CUBOID_ROW_BUDGET,
+            flight_listen: None,
             maintenance: None,
             require_password: false,
             metrics_listen: None,
