@@ -35,7 +35,7 @@
 
 use arrow_array::{Date32Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use sankhya_diagnostic::soak::measure::{Bound, Watched};
+use sankhya_diagnostic::soak::measure::{Bound, Scale, Watched};
 use sankhya_diagnostic::soak::report::supported_horizon;
 use sankhya_diagnostic::soak::sample::{file_bytes, open_files, resident_bytes, Samples};
 use sankhya_diagnostic::soak::Report;
@@ -134,43 +134,6 @@ fn confined(root: &Path, at: &Path) -> Result<PathBuf, String> {
     Ok(absolute)
 }
 
-fn flag(args: &[String], name: &str) -> Option<String> {
-    args.iter()
-        .position(|a| a == name)
-        .and_then(|i| args.get(i + 1))
-        .cloned()
-}
-
-/// What the soak does, printed on `--help` and on no arguments at all.
-///
-/// **A bare invocation prints this and exits.** It used to take every default and start a
-/// four-hour job writing twenty gigabytes --- so running the binary to find out what it does
-/// filled a directory instead of answering the question. A tool whose no-argument behaviour
-/// is "begin the expensive irreversible thing" is a tool that will eventually be run by
-/// somebody who only wanted to look at it.
-const USAGE: &str = "\
-sankhya-soak — run a long-duration soak and judge it
-
-USAGE:
-    sankhya-soak --at <DIR> [--gb <N>] [--tables <N>] [--minutes <N>]
-
-OPTIONS:
-    --at <DIR>       Warehouse directory (default: .build/warehouse under the project
-                     root). REFUSED if it resolves outside the project root — this
-                     binary writes gigabytes, and a stray path puts them somewhere
-                     nobody will think to look for them. Emptied before filling, so
-                     a run does not inherit the tail of the last one.
-    --schema <NAME>  Schema the tables live under (default: soak). Tables are laid
-                     out as <warehouse>/<schema>/<table>.
-    --gb <N>         Total data to generate across all tables (default 10)
-    --tables <N>     How many tables to spread it across (default 10)
-    --minutes <N>    How long to run after filling (default 45)
-
-The warehouse is filled once, then writes, log replays, bounded reads and a compaction
-duty cycle run together until the deadline. Memory, open files, metric series and file
-counts are sampled every 15s and judged every 120s, so a run killed at hour nine leaves
-hour eight's verdict behind.
-";
 
 /// What makes one fan-out alarm the same condition as another.
 ///
@@ -223,12 +186,12 @@ fn soak() {
     // Cost is linear and mostly in the fill: roughly forty-five seconds per gigabyte, so the
     // preamble goes from about seven minutes to about fifteen. The judged window is unchanged,
     // because it is counted from when measurement starts.
-    let gb: f64 = env("SANKHYA_SOAK_GB")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(20.0);
-    let tables: usize = env("SANKHYA_SOAK_TABLES")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(10);
+    //
+    // Read from the library rather than parsed here, because two of the thresholds a run is
+    // judged against are arithmetic on this figure. When the harness kept its own copy the
+    // doubling landed here and nowhere else, and the next run aborted against a budget
+    // written for half the data.
+    let Scale { gb, tables } = Scale::declared();
     let minutes: u64 = env("SANKHYA_SOAK_MINUTES")
         .and_then(|v| v.parse().ok())
         .unwrap_or(45);

@@ -29,8 +29,11 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M5** Tenancy, security and API surfaces | 22–28 ew | **Closed.** Four of five exit criteria met; the fifth needs a second server version to exist. Two of four API surfaces built — the wire protocol and Flight SQL. The control plane and its gateway are **deferred to M6**, because what they expose is built there |
 | **M6** Operability, packaging and hardening | 2026-08-28 | **Complete.** Six of seven exit criteria met. Criterion 4 accepted on a forty-five-minute judged run by owner decision — `PASS` over 44 minutes with all seven measures steady, on the first soak to exercise a cube. **Criterion 7 carried into M8**: §10.8's size decision and route table are built and tested; the gRPC transport and every write path are not. See [SOAK.md](SOAK.md) |
 | **M7** Multidimensional analysis — cubes, slice/dice, roll-up, consolidation | 2026-08-28 | **Complete.** All eight exit criteria pass against a cube hydrated from a published table. Declared complete once before, on 2026-08-27, and retracted the same day: the hydration path did not exist and every criterion passed on cells its own fixture supplied. Both that gap and the write-only materialisation found on 2026-08-28 are closed. See below, and [ADR-0007](adr/0007-the-cube-model.md) |
-| **M8** **Concurrency and data safety**, then scale-out | 24–30 ew | **In progress. §12.1 is complete** — six of eight exit criteria proven, the three concurrency criteria measured against a control taken in the same run. What remains is §12.2 and only §12.2: attached mode, leader election, executor scale-out, failover, replication, key management, metering, the REST gateway's transport and the multi-day soak. **Rescoped 2026-08-28 to 24–30 ew** by owner directive after an end-to-end audit found a version claim that could lose a commit silently, four files published non-atomically, and three reclamation paths guarding against a proxy rather than against readers. See [ADR-0013](adr/0013-concurrency-and-data-safety.md) |
-| **M9** Tiering | 12–16 ew | After M8, and **gated** on the drills in [`IMPLEMENTATION_PLAN.md` §13](IMPLEMENTATION_PLAN.md) |
+| **M8** **Concurrency and data safety** | 2026-08-30 | **Complete on six of eight**, and the other two moved rather than met. S1–S3 and C1–C3 are proven, each concurrency criterion measured against a control taken in the same run. **§12.2 and criteria 7–8 moved whole to M12 on 2026-08-30** by owner decision: both need a second machine, and a recovery objective measured on one host excludes the failures the criterion exists to price. The one item in §12.2 that could not be safely parked — the shard-set seam — was designed first and turned out to be mislabelled; see [ADR-0015](adr/0015-the-shard-set-seam.md). **Rescoped 2026-08-28** by owner directive after an end-to-end audit found a version claim that could lose a commit silently, four files published non-atomically, and three reclamation paths guarding against a proxy rather than against readers. See [ADR-0013](adr/0013-concurrency-and-data-safety.md) |
+| **M9** Tiering | 12–16 ew | **Next**, started 2026-08-30. **Gated** on the drills in [`IMPLEMENTATION_PLAN.md` §13](IMPLEMENTATION_PLAN.md): the restore drill exists from M6 §10.3, the archive attestation drill does not. Gate criterion 1 moved to M11 on 2026-08-28, and **destructive purge stays disabled until M11 clears it** — building the purge path and arming it are two decisions |
+| **M10** Zero-copy cloning | 10–14 ew | After M9. **Design-gated: no code before an accepted ADR**, covering shared-file lifetime, the maintenance interaction, and what a clone means for backup, tiering, audit and time travel |
+| **M11** Production reconciliation | — | **Not schedulable by development.** Needs a production deployment that does not exist. Holds M9's gate criterion 1 and the arming decision for destructive purge |
+| **M12** Scale-out, HA and disaster recovery, then production-like acceptance | 20–26 ew | **Needs a second machine**, which is why it holds M8 §12.2 and criteria 7–8 as of 2026-08-30. The project's exit criteria: 12 h, two machines, 100 GB, 50 readers, 20 writers. `CREATE CUBE` is a blocking dependency here and is **not** hardware-blocked, so it can be built at any point before the run |
 
 ---
 
@@ -110,9 +113,9 @@ crash-safety reasoning — sequence-derived names, commit-strictly-after-write, 
 version conflict — and a partitioning change touches all three.
 
 
-## M8, in progress
+## M8, complete on six of eight
 
-### Where it stands, as of 2026-08-29
+### Where it stands, as of 2026-08-30
 
 The rest of this section is *why*. This is *what*, for somebody picking the work up cold.
 
@@ -126,12 +129,13 @@ The rest of this section is *why*. This is *what*, for somebody picking the work
 | C1–C3, the three measurement criteria | done — measured against a control in the same run |
 | Crate hygiene | 55 crates → 52; `alloc` **wired**, `ports` **decided: delete**, and `api-rest`, `cdc-pg`, `pack` each carry a dated milestone |
 
-| §12.2 Scale-out | |
+| §12.2 Scale-out — **moved to M12 on 2026-08-30** | |
 |---|---|
-| gRPC transport, Arrow Flight SQL served | done — M6's carried criterion 7, partly |
-| `sankhya-oltp-pg` supervisor | done, tested against vendored PostgreSQL 17.11 |
-| Leader election, attached mode, executor scale-out, replication, key management, metering | **not started** |
-| The REST gateway's transport, and the multi-day soak | **not started** — criterion 8 |
+| gRPC transport, Arrow Flight SQL served | done here — M6's carried criterion 7, partly |
+| `sankhya-oltp-pg` supervisor | done here, tested against vendored PostgreSQL 17.11 |
+| The shard-set seam | **decided, not moved** — [ADR-0015](adr/0015-the-shard-set-seam.md); no code change was required |
+| Leader election, attached mode, executor scale-out, replication, key management, metering | **moved to M12** |
+| The REST gateway's transport, and the multi-day soak | **moved to M12** — criterion 8 |
 
 **Exit criteria: six of eight proven.** S1–S3 (no lost commit, no partial read, nothing
 deleted while read) have tests and mutations. **C1–C3 are now measured**, each against a
@@ -141,13 +145,36 @@ write load holds **0.59–0.80** of its idle rate where a reader sharing a lock 
 writers holds **0.00–0.07**; and sixteen writers contending for one table all commit, with a
 worst rebase count of eleven.
 
-**What is left is §12.2 and nothing else.** Criteria 7 and 8 need a second node: leader
-election through the transactional store, attached mode, executor scale-out and failover,
-recovery objectives measured rather than estimated, the REST gateway's HTTP transport, and
-the scheduled multi-day run. The plan sizes that at 16–20 ew and none of it is started.
+**The two that are not proven left the milestone on 2026-08-30**, by owner decision, and went
+whole to M12 along with §12.2. The reason is a machine, not an estimate.
 
-**The next piece of work** is attached mode, because leader election runs against it and
-everything else in §12.2 runs against leader election.
+Most of §12.2 is in fact buildable on one host — leader election, fencing and a lost lease are
+proven by contending *processes*, and a partition can be induced with `SIGSTOP` or a firewall
+rule. What cannot be produced here is the evidence criterion 7 asks for. It requires *"recovery
+objectives measured and published rather than estimated"*, and an objective measured on one box
+silently excludes network detection, machine loss and clock skew — publishing it would be the
+same species of claim as **a contention threshold set below the contended figure**, which this
+repository has shipped twice and which §12.1 exists to have stopped doing. Cross-region
+replication is not measurable here by definition.
+
+**M12 was chosen over a new milestone** because M12 already declared the dependency — *"M8 for
+the concurrency properties, attached mode and multi-node operation"* — already requires two
+machines, and had no work breakdown precisely because it expected §12.2 to supply one. One
+blocker, one milestone.
+
+**The seam was the one thing that could not simply be parked**, and it is the reason the move
+took a day rather than an edit. Both `IMPLEMENTATION_PLAN.md` and `DEC-14` recorded *"allowing a
+table reference to resolve to a shard set"* as near-free now and an expensive retrofit later.
+Read against the code, it was **mislabelled**: `plan_splice` already resolves one reference to
+several sources and proves exact coverage, and `AddFile.partition` already records every file's
+partition values, so the resolution layer was never single-valued. The expensive reading —
+shards as independently committed logs — costs a cross-shard commit protocol and lands on exit
+criterion 1, not on resolution. It is refused rather than deferred, and **no code change was
+required**, which is the finding rather than the convenient answer. [ADR-0015](adr/0015-the-shard-set-seam.md).
+
+**The next piece of work is M9**, not attached mode. When M12 is picked up, attached mode is
+still the entry point, because leader election runs against it and everything else runs against
+leader election.
 
 ### Two decisions a newcomer would otherwise re-litigate
 

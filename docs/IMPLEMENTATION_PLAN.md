@@ -54,10 +54,10 @@ This plan therefore front-loads three things that are nearly free at the start a
 | **M5** | Tenancy, security and API surfaces | 22–28 | weeks 18–25 |
 | **M6** | Operability, packaging and hardening | 18–22 | weeks 24–30 |
 | **M7** | Multidimensional analysis — cubes, hierarchies, consolidation | 14–18 | weeks 28–34 |
-| **M8** | **Concurrency and data safety**, crate hygiene, then scale-out, HA, disaster recovery | 25–32 | weeks 32–43 |
+| **M8** | **Concurrency and data safety**, crate hygiene | 9–12 | weeks 32–37 |
 | **M9** | Tiering *(gated — see §13)* | 12–16 | after M8; criteria 2 and 3 of the gate |
 | **M11** | Production reconciliation *(not schedulable by development)* | — | after a production deployment exists |
-| **M12** | **Production-like acceptance** — 12 h, two machines, 100 GB, 50 readers, 20 writers | 4–6 | the project's exit criteria |
+| **M12** | **Scale-out, HA and disaster recovery**, then production-like acceptance — 12 h, two machines, 100 GB, 50 readers, 20 writers | 20–26 | the project's exit criteria; **needs a second machine** |
 | | **Total to a hardened first release** | **~150–190 ew** | **~7–8 months** |
 
 **Team shape:** six engineers. Suggested specialisation — two on ingest and storage, two on query and graph, one on platform and operability, one on security and tenancy — with the extension API owned by whoever owns architecture.
@@ -586,9 +586,13 @@ views rather than a store, and why MDX is deliberately not planned.
 
 ---
 
-## 12. M8 — Concurrency and data safety, then scale-out
+## 12. M8 — Concurrency and data safety
 
-**Weeks 32–43 · 25–32 ew**
+**Weeks 32–37 · 9–12 ew**
+
+> **Scope reduced 2026-08-30 by owner decision**, from 25–32 ew: §12.2 and exit criteria 7–8
+> move whole to [M12](#13c-m12--scale-out-and-production-like-acceptance-the-twelve-hour-two-machine-run),
+> because both criteria need a second machine. The title loses *"then scale-out"* with them.
 
 > **Rescoped 2026-08-28 by owner directive**, from 16–20 ew: *"look at the whole platform and
 > make it concurrency safe end to end. This whole system needs very high level of concurrency
@@ -701,11 +705,49 @@ whoever notices it last.
 are what make their property tests fast enough to exhaust rather than sample. The finding is
 about crates that are *unreachable* or *empty*, not about crates that are small.
 
-### 12.2 Scale-out, availability and recovery (16–20 ew)
+### 12.2 Scale-out, availability and recovery — moved to M12 on 2026-08-30
 
-Attached mode as the production configuration. Leader election through the transactional store. Stateless executor scale-out and query routing with cache affinity. Graph node partitioning with published rebuild times. Cross-region replication and recovery objectives per tier. Key management integration. Metering and chargeback.
+> **Moved in its entirety to
+> [M12](#13c-m12--scale-out-and-production-like-acceptance-the-twelve-hour-two-machine-run) by
+> owner decision, 2026-08-30.** Attached mode, leader election,
+> executor scale-out and routing, graph node partitioning, cross-region replication, key
+> management, metering and chargeback, the REST gateway's transport and the multi-day run.
+> Exit criteria 7 and 8 move with it.
+>
+> **Why, and it is not effort.** Criteria 7 and 8 both require a second machine, and the
+> project has one. Most of the *work* is buildable on a single host — leader election, fencing
+> and a lost lease are proven by contending processes, not by contending hosts — but criterion
+> 7 asks for *"recovery objectives measured and published rather than estimated"*, and a
+> recovery objective measured on one box excludes network detection, machine loss and clock
+> skew. Publishing it would be the same species of claim as a contention threshold set below
+> the contended figure, which this repository has shipped twice. Cross-region replication is
+> not measurable here at all, by definition.
+>
+> **M12 is where it goes** rather than a milestone of its own, because M12 already declares
+> the dependency — *"**M8** for the concurrency properties, attached mode and multi-node
+> operation"* — already requires two machines, and had no work breakdown precisely because it
+> assumed this section would deliver one. Both are now blocked on the identical missing
+> resource, and splitting them across two milestones would have made that one fact look like
+> two.
+>
+> **What stays here:** §12.1, which is complete, and exit criteria 1–6, which are met.
 
-**One seam remains *designed* here and built later**, near-free now and an expensive retrofit: allowing a table reference to resolve to a shard set. The other — keeping the commit path per-table rather than globally serialized — is no longer a seam. It is exit criterion 4 below, because the cheapest way to satisfy every safety criterion is one lock over the warehouse, and that is the outcome criterion 4 exists to forbid.
+**The seam is decided rather than moved.** §12.2 carried one item that could not be safely
+deferred: *"allowing a table reference to resolve to a shard set"*, described in this plan and
+in `DEC-14` as near-free now and an expensive retrofit later. Parking an undesigned seam is
+exactly what that sentence warns against, so it was designed before the parking and is
+[ADR-0015](adr/0015-the-shard-set-seam.md).
+
+Its conclusion is that the seam was **mislabelled**. Resolution is already multi-valued —
+`plan_splice` resolves one reference to several sources and proves they cover the span exactly
+once, and `AddFile.partition` already records every file's partition values — so shards as file
+groups beneath one log are built. Shards as *independently committed logs* are the expensive
+reading, and their cost is a cross-shard commit protocol rather than anything in the resolution
+layer. That reading is refused, not deferred: `DEC-14`'s own preferred v2 path distributes
+execution through exchange operators over file groups and never asks the catalog for N logs.
+**No code change was required**, which is the finding rather than the convenient answer.
+
+The sibling seam — keeping the commit path per-table rather than globally serialized — is no longer a seam. It is exit criterion 4 below, because the cheapest way to satisfy every safety criterion is one lock over the warehouse, and that is the outcome criterion 4 exists to forbid.
 
 ### Exit
 
@@ -729,9 +771,16 @@ Attached mode as the production configuration. Leader election through the trans
 > from version zero on every append and every rebase. It was invisible to every test because
 > every test had a short log.
 
-**Scale-out.**
-7. Multi-node deployment with executor scale-out demonstrated; failover tested under load; recovery objectives measured and published rather than estimated.
-8. Soak criterion 7 carried from M6: the gRPC transport and every write path, plus the scheduled multi-day run.
+**Scale-out. — both moved to [M12](#13c-m12--scale-out-and-production-like-acceptance-the-twelve-hour-two-machine-run) on 2026-08-30, with §12.2. Neither is met, and neither is reachable on a single machine.**
+
+7. ~~Multi-node deployment with executor scale-out demonstrated; failover tested under load; recovery objectives measured and published rather than estimated.~~ — **moved.** Needs a second machine. A one-host measurement would exclude the failures the criterion exists to price.
+8. ~~Soak criterion 7 carried from M6: the gRPC transport and every write path, plus the scheduled multi-day run.~~ — **moved.** Carried once already, from M6 to M8; carried a second time rather than quietly reinterpreted. The gRPC transport and Arrow Flight SQL *are* served, which is the part that was reachable here.
+
+> **M8 completes on six of eight**, and says so rather than renumbering to eight of eight. The
+> two that moved are moved because the hardware to judge them does not exist, which is the same
+> reason M9's gate criterion 1 moved to M11 on 2026-08-28. A criterion that leaves a milestone
+> for want of a machine is a schedule fact; a criterion that leaves it for want of an argument
+> is how gates rot.
 
 ---
 
@@ -885,9 +934,11 @@ that record in front of them.
 
 ---
 
-## 13c. M12 — Production-like acceptance: the twelve-hour, two-machine run
+## 13c. M12 — Scale-out and production-like acceptance: the twelve-hour, two-machine run
 
-**The project's exit criteria.** Added 2026-08-29 by owner directive.
+**The project's exit criteria.** Added 2026-08-29 by owner directive. **Absorbed M8 §12.2 —
+scale-out, availability and recovery — on 2026-08-30**, taking its exit criteria 7 and 8 with
+it; see [§12.2](#122-scale-out-availability-and-recovery--moved-to-m12-on-2026-08-30).
 
 ### What it is
 
@@ -933,12 +984,52 @@ It is also the first thing in this plan that can fail for reasons no test suite 
 socket exhaustion, a clock stepping, one machine swapping, a network partition of a few
 seconds. Those are the failures that matter in production and none of them can be unit-tested.
 
+### Work — scale-out, availability and recovery (16–20 ew)
+
+**Moved here whole from M8 §12.2 on 2026-08-30 by owner decision.** This milestone originally
+had no work breakdown because it assumed M8 would deliver one. M8 could not: every criterion
+below needs the second machine that this run also needs, so the build and the run that judges
+it are now one milestone blocked on one thing.
+
+Attached mode as the production configuration. Leader election through the transactional store.
+Stateless executor scale-out and query routing with cache affinity. Graph node partitioning with
+published rebuild times. Cross-region replication and recovery objectives per tier. Key
+management integration. Metering and chargeback. The REST gateway's HTTP transport.
+
+**What was already delivered under M8** and is not repeated here: the gRPC transport with Arrow
+Flight SQL served, and the `sankhya-oltp-pg` supervisor tested against vendored PostgreSQL
+17.11. Both were prerequisites for this work; neither closed a criterion.
+
+**Not a seam.** ADR-0015 settled the one item in §12.2 that could not be deferred — see §12.2
+for what it found and why nothing had to be built to keep it safe.
+
+**Scaling is bounded by `DEC-14` and that is not revisited here.** Each query executes entirely
+on one node; scale-out adds throughput, not per-query capacity. A workload that exceeds one
+node's memory and cores is the *measured* trigger `DEC-14` names for adopting
+`datafusion-distributed`, and it is a decision for whoever has that measurement.
+
+### Exit, for the work above
+
+7. Multi-node deployment with executor scale-out demonstrated; failover tested under load;
+   recovery objectives measured and published rather than estimated. — *carried from M8.*
+8. Soak criterion 7, carried from M6 to M8 to here: the gRPC transport and every write path,
+   plus the scheduled multi-day run. — *the transport is served; the write paths and the run
+   are not.*
+
 ### Depends on
 
-**M8** for the concurrency properties, attached mode and multi-node operation. **Cube DDL** —
-`CREATE CUBE` is not a statement yet, and this run needs cubes created and dropped from SQL by
-a client rather than declared into a warehouse directory. That gap is recorded in
-[`GUIDE.md`](GUIDE.md) and becomes blocking here.
+**M8** for the concurrency properties — criteria 1–6, met and measured against controls. Attached
+mode and multi-node operation are no longer inherited from M8; they are this milestone's own
+work, above.
+
+**A second machine.** Stated as a dependency rather than assumed, because it is the sole reason
+§12.2 is here rather than finished.
+
+**Cube DDL** — `CREATE CUBE` is not a statement yet, and this run needs cubes created and
+dropped from SQL by a client rather than declared into a warehouse directory. That gap is
+recorded in [`GUIDE.md`](GUIDE.md) and becomes blocking here. **It is not blocked on hardware**,
+so unlike everything else in this milestone it can be built at any point before the run, and
+should be scheduled deliberately rather than discovered on the morning of it.
 
 ### Exit
 

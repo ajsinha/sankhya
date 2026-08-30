@@ -1886,10 +1886,10 @@ Executors scale out over shared storage, so scan throughput is not the first wal
 
 ### 19.2 Seams to design now, build later
 
-Two are near-zero cost today and expensive retrofits:
+Two were recorded as near-zero cost today and expensive retrofits. **Neither is a seam any longer, and they stopped being one for opposite reasons** — one was promoted to a criterion, the other turned out not to be a seam at all.
 
-- **Keep the commit path per-table**, never globally serialized, so the applier can be partitioned without restructuring. **Promoted from a seam to an M8 exit criterion** by [ADR-0013](adr/0013-concurrency-and-data-safety.md): the cheapest way to satisfy every safety requirement is one lock over the warehouse, and this is the criterion that forbids it.
-- **Allow a table reference to resolve to a shard set**, so a hot table can be split behind one logical name.
+- **Keep the commit path per-table**, never globally serialized, so the applier can be partitioned without restructuring. **Promoted from a seam to an M8 exit criterion** by [ADR-0013](adr/0013-concurrency-and-data-safety.md): the cheapest way to satisfy every safety requirement is one lock over the warehouse, and this is the criterion that forbids it. Met 2026-08-29.
+- **Allow a table reference to resolve to a shard set**, so a hot table can be split behind one logical name. **Mislabelled**, and [ADR-0015](adr/0015-the-shard-set-seam.md) says why. Resolution has never been single-valued: `plan_splice` resolves one reference to several sources and proves they cover the span exactly once, and `AddFile.partition` records every file's partition values, so shards as file groups beneath one log are built. Shards as *independently committed logs* is the expensive reading; its cost is a cross-shard commit protocol rather than anything in the resolution layer, and it is **refused rather than deferred** because §19.3's preferred distribution path partitions execution over file groups and never asks the catalog for N logs. **No code change was required to keep the option open**, because no code was holding it open.
 
 Three are legitimate future work and are named so they are not promised prematurely: replicating the arrival buffer to executors, distributed query execution, and a distributed graph with cross-shard traversal — the last being the hardest and the most likely to require a redesign rather than an extension.
 

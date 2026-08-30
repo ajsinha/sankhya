@@ -363,6 +363,66 @@ The cost is linear and lands almost entirely in the fill: roughly forty-five sec
 gigabyte, so the preamble moves from about seven minutes to about fifteen. The judged window
 is unaffected, because it is counted from when measurement starts rather than from launch.
 
+### The doubling landed in one line, and three thresholds stayed where they were
+
+**Found 2026-08-30, when the first run at the new scale aborted inside ten minutes.** The
+verdict read *"the warehouse holds 33.2 GB against a budget of 32.0 GB"*, and the report called
+it a reclamation failure. It was not one. `measure.rs` said so in its own comment: *"Thirty-two
+gigabytes against a **ten**-gigabyte target."* The budget was a flat constant sized at 3.2× the
+old figure, the doubling moved only the harness's default, and headroom fell from 22 GB to 12 GB
+without anything recording that it had.
+
+Two more were stranded the same way, and one of them was already breaching in silence:
+
+| | Was | Why it was that | Now |
+|---|---|---|---|
+| `warehouse_bytes` | 32 GB flat | 3.2× a ten-gigabyte target | `3.2 × scale.gb` |
+| `live_files` | 1,000 flat | a two-GB-per-table run measured 1,080 in its worst table | `1,000 × per-table GB` |
+| `USAGE` text | "default 10" | restated the harness's own default | deleted — it could only go stale again |
+
+**The fix is structural rather than three new numbers.** A `Scale` type now lives in the library
+beside the measures, the harness reads the target *from* it instead of parsing its own copy, and
+both limits are arithmetic on it. A scale change now moves everything that follows from it,
+which is the property that was missing — the numbers were only the symptom.
+
+**It made a passing unit test scale-dependent, which is worth recording because it nearly
+shipped.** `a_sawtooth_is_judged_from_its_peaks_even_when_it_ends_in_a_trough` built its fixture
+from values tuned to sit under a flat 1,000. Once the limit derived from the scale, the fixture
+was measuring the environment. It now asks the declaration what the limit is and states the
+fixture as fractions of it, so it proves the same thing at any scale.
+
+### The run of 2026-08-30 — the first `PASS` at twenty gigabytes
+
+The prior green run was at ten, so **nothing had ever judged this scale**. Forty-five judged
+minutes, every measure `PASS`.
+
+| | 2026-08-28, 10 GB | 2026-08-30, 20 GB |
+|---|---|---|
+| Judged minutes | 44 | 45 |
+| Rounds | 157 | 77 |
+| Files published | 1,570 | 770 of 770 planned |
+| Scanned | 29.7 GB / 2.41 bn rows | 14.5 GB / 1.16 bn rows |
+| Resident memory | 2,246 MB steady | **2,271 MB** |
+| Reclaimed | 11.66 GB | **21.50 GB** over 816 maintenance ticks |
+| `warehouse_bytes` peak | 9 GB | **41.58 GB** |
+
+**Both stranded thresholds were exercised, which is what makes the fix evidence rather than
+argument.** The warehouse peaked at 41.58 GB — over the old flat budget by more than nine
+gigabytes, and comfortably inside the derived one. `live_files` went **1,080 → 90** across a
+reclamation cycle, a sawtooth doing exactly what `Bound::Sawtooth` exists to permit and exactly
+what the flat limit of 1,000 would have called a breach. Neither of those is a number that
+needed changing; both are the same machinery working, judged against a scale it was told about.
+
+**Fewer rounds at more data is expected and is not a regression.** A round publishes to every
+table, and each table now holds twice as much, so a round costs proportionally more. The rows
+scanned per second is the comparable figure and it is unchanged.
+
+**Resident memory is the one worth watching.** It rose across the run — 1,223 MB at t+478s to
+2,458 MB at t+2671s, settling at 2,271 MB — and passed its bound throughout. That it lands
+within 25 MB of the ten-gigabyte run's steady figure, at double the data, is the statement
+worth keeping: the working set is bounded by the machinery rather than by the dataset. A future
+run that ends materially above this is a finding.
+
 What exists is the harness, driven against the real server on every build, proven to detect
 each shape of failure it claims to detect. **The scheduled run is a change of duration and
 scale rather than a first attempt at the whole thing** — which is the difference between
