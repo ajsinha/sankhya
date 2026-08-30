@@ -111,6 +111,65 @@ version conflict — and a partitioning change touches all three.
 
 ## M8, in progress
 
+### Where it stands, as of 2026-08-30
+
+The rest of this section is *why*. This is *what*, for somebody picking the work up cold.
+
+| §12.1 Concurrency and data safety | |
+|---|---|
+| `sankhya-atomicfs`, atomic version claim, `check-atomic-writes` | done |
+| `sankhya-leases`, wired through maintenance and the query path | done |
+| `check-lock-order` and the two nested-lock sites it found | done |
+| Lock striping: `LogCache`, `QueryLog`, `servable` | done — `Hydrated` **deliberately not**, see below |
+| `sankhya-testkit` | done, with a measured floor |
+| Crate hygiene | 55 crates → 52; `alloc`, `api-rest`, `cdc-pg`, `ports`, `pack` still wire-or-delete |
+
+| §12.2 Scale-out | |
+|---|---|
+| gRPC transport, Arrow Flight SQL served | done — M6's carried criterion 7, partly |
+| `sankhya-oltp-pg` supervisor | done, tested against vendored PostgreSQL 17.11 |
+| Leader election, attached mode, executor scale-out, replication, key management, metering | **not started** |
+
+**Exit criteria: three of eight proven.** S1–S3 (no lost commit, no partial read, nothing
+deleted while read) have tests and mutations. **C1–C3 are measurement criteria and are not
+claimed** --- no global lock exists and the four choke points are fixed, but read latency under
+write load has not been measured. Criterion 7 is partly discharged: the transport exists, the
+write paths and the multi-day soak do not.
+
+**The next piece of work** is either leader election (§12.2, needs attached mode) or the C1–C3
+measurements. Neither is started.
+
+### Two decisions a newcomer would otherwise re-litigate
+
+**`Hydrated` was deliberately left alone.** ADR-0013 lists it as a fourth choke point; that was
+written from reading the code. Measured, readers against a concurrent writer came in at a ratio
+of **0.81** to readers alone --- no contention, because `put` runs on a cache *miss* after a
+hydration that dwarfs it. Striping it would make its capacity approximate for no gain.
+
+**Managed PostgreSQL does not unblock leader election.** `REQUIREMENTS.md` records managed mode
+as single-node; multi-node uses *attached* mode, and leader election runs against that. The
+supervisor was still worth building first, but it is not on that critical path.
+
+### §12.1e — a harness that provokes a race, and the floor it cannot reach
+
+`sankhya-testkit`: `Hammer` releases workers on a barrier, oversubscribes the machine four
+times so the scheduler preempts *inside* short windows, and joins every worker before returning
+results --- the hang designed out rather than remembered. `Until` sets its stop flag on drop, so
+a panic releases workers instead of stranding them. `Jitter` is seeded, which is the point:
+"we could not reproduce it" is what turns a concurrency bug into a permanent resident.
+
+It is held to its own standard. `the_harness_finds_a_lost_update` runs a racy counter and
+**fails if nothing is lost**; its pair runs the same contention against an atomic and asserts
+nothing is lost, so the first cannot be satisfied by a harness that merely breaks things.
+
+**And the floor is measured.** It does not catch the defect whose window is two instructions ---
+taking an epoch before counting a reader in `leases::pin`. Four times oversubscription does not
+help, because `drained` scans hundreds of slots and cannot complete inside a window that narrow
+however often the reader is descheduled. So the mutation catalogue carries **no entry** for it:
+an entry whose mutation survives is a claim of coverage that does not exist. Reaching that class
+needs a scheduler somebody controls --- `loom`, which substitutes its own atomics under a `cfg`
+so nothing ships with a hook. **Adopting `loom` is the recorded next step for that class.**
+
 ### §12.1 — the version claim is atomic, and four writers publish all at once
 
 `sankhya-atomicfs` is a new layer-0 crate with no dependencies and two functions. `publish`
