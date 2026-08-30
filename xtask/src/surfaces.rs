@@ -113,7 +113,7 @@ const UNREACHED: &[(&str, &str)] = &[
     ("sankhya-datagen", "generates the synthetic data the soak and the OLAP benchmarks load. Reached only from dev-dependencies, which this traversal deliberately ignores --- a *surface* reachable only from a test is the defect; a generator of test data is not one"),
     ("sankhya-objectstore", "M8 §12.1 --- where ADR-0013's version claim lands on an object store, as a conditional put"),
     ("sankhya-oltp-pg", "the PostgreSQL supervisor is built and tested against the vendored 17.11, and nothing wires it into the server yet: `Settings` has no OLTP configuration. Wiring it is M8 §12.2, beside leader election, which is what will need a running store"),
-    ("sankhya-testkit", "M8 §12.1e --- deterministic fault injection, which is why the concurrency defects went unseen"),
+    ("sankhya-testkit", "the concurrency harness. Reached only from dev-dependencies, which this traversal deliberately ignores --- and rightly, since a testkit that a *product* crate depended on would be shipping test scaffolding to customers"),
     ("sankhya-tiering", "M9, and explicitly gated on the drills in IMPLEMENTATION_PLAN.md §13"),
     ("sankhya-mv", "undecided by ADR-0014, and listed rather than deleted because the design question is open"),
     ("sankhya-alloc", "a counting global allocator that nothing installs. Wiring it is M8 §12.1f and returns allocation figures the soak currently cannot see"),

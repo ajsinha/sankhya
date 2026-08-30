@@ -3539,6 +3539,9 @@ dependencies = [
 [[package]]
 name = "sankhya-leases"
 version = "0.1.0"
+dependencies = [
+ "sankhya-testkit",
+]
 
 [[package]]
 name = "sankhya-maintenance"

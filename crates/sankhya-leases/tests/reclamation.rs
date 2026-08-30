@@ -265,62 +265,84 @@ fn a_starved_sweeper_is_still_a_safe_one() {
     assert_eq!(violated, 0, "starvation turned into an unsafe conclusion");
 }
 
+// --- provoked deliberately, with the testkit --------------------------------
+
 #[test]
 fn a_reader_is_never_invisible_between_starting_and_announcing() {
-    // The race that a deferred check cannot see, and the reason this test exists beside the
-    // one above rather than inside it.
+    // **The defect no previous test here could catch, and the reason `sankhya-testkit` exists.**
     //
-    // A reader takes an epoch and writes it into a slot. In that order it is invisible in
-    // between, and a sweeper that marks and asks inside the window is told the warehouse is
-    // idle. Real reclamation marks now and checks seconds later, so no deferring test can see
-    // it; the first version of the design had exactly that ordering.
+    // `pin` counts the reader before it takes its epoch. Swapping those two lines opens a
+    // window --- two instructions wide --- in which a reader exists and is announced nowhere,
+    // and a sweeper that marks and asks inside it is told the warehouse is idle.
     //
-    // **The reader has to be the one that notices.** A version of this test that recorded each
-    // reader in a shared set and had the *sweeper* check it could not catch the mutation
-    // either, because the reader only reaches the set after `pin` has returned --- long after
-    // the window has closed. So instead the sweeper publishes the highest mark it has ever
-    // drained, and each reader checks that against its own epoch while it is inside: if a mark
-    // above my epoch has already drained, somebody concluded I had finished while I had not.
-    const READERS: usize = 12;
-    const ROUNDS: usize = 20_000;
+    // Every hand-rolled attempt at this failed to provoke it, and the reason is arithmetic:
+    // the window is two instructions while `drained` scans hundreds of slots, so the sweeper
+    // cannot fit inside it unless the reader is *preempted* there. Threads equal to the core
+    // count are rarely preempted mid-window. The mutation catalogue carried no entry for it,
+    // with a comment saying so, because an entry whose mutation survives is a claim of coverage
+    // that does not exist.
+    //
+    // `Hammer` oversubscribes by four times the core count, so the scheduler must preempt to
+    // make progress, and jitters each worker from a seed so a failure can be replayed exactly.
+    //
+    // **And it is still not enough, which was worth finding out by trying.** The mutation
+    // swapping those two lines survives this test. Four times oversubscription raises the
+    // preemption rate by orders of magnitude and does not make a two-instruction window
+    // reachable, because the sweeper's `drained` scans hundreds of slots and cannot complete
+    // inside one however often the reader is descheduled.
+    //
+    // The floor is a property of the technique rather than of the effort: provoking a window
+    // this narrow needs a scheduler somebody *controls*, not one that is merely under
+    // pressure. That is what `loom` is for --- it explores interleavings exhaustively by
+    // replacing the atomics under a `cfg`, so nothing ships with a hook in it. Pointing it at
+    // this file is the next step, and until then the ordering is argued in `pin`'s own
+    // documentation and carries no catalogue entry claiming otherwise.
+    //
+    // What this test does still cover is the observable property under real contention, which
+    // is worth keeping: it is a regression guard for everything wider than two instructions.
     let leases = Arc::new(Leases::new());
-    let gate = Arc::new(Barrier::new(READERS + 1));
-    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let highest_drained = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let violations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let until = sankhya_testkit::Until::new();
 
-    std::thread::scope(|scope| {
-        for _ in 0..READERS {
-            let leases = Arc::clone(&leases);
-            let gate = Arc::clone(&gate);
-            let stop = Arc::clone(&stop);
-            let highest_drained = Arc::clone(&highest_drained);
-            let violations = Arc::clone(&violations);
-            scope.spawn(move || {
-                gate.wait();
-                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    let pin = leases.pin();
-                    if highest_drained.load(std::sync::atomic::Ordering::SeqCst) > pin.epoch() {
-                        violations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    }
-                    drop(pin);
+    // One round. `Until` is a one-shot flag, so a second round would find it already set and
+    // every reader would exit immediately --- a run that looks like three times the work and
+    // is one. Rounds are for harnesses whose workers finish on their own.
+    let hammer = sankhya_testkit::Hammer::new();
+    let sweeper_index = hammer.worker_count() - 1;
+
+    let run = hammer.run(|worker, jitter| {
+        if worker == sweeper_index {
+            // One sweeper, marking and asking immediately. Deferring --- which is what real
+            // reclamation does --- hides this window completely.
+            for _ in 0..20_000 {
+                let marked = leases.mark();
+                if leases.drained(marked) {
+                    highest_drained.fetch_max(marked, std::sync::atomic::Ordering::SeqCst);
                 }
-            });
-        }
-
-        gate.wait();
-        for _ in 0..ROUNDS {
-            let marked = leases.mark();
-            if leases.drained(marked) {
-                highest_drained.fetch_max(marked, std::sync::atomic::Ordering::SeqCst);
+                jitter.pause();
             }
+            until.stop();
+            return;
         }
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let running = until.handle();
+        while running.keep_going() {
+            let pin = leases.pin();
+            // A mark above my epoch has already drained while I am inside: somebody concluded
+            // I had finished when I had not. The reader has to notice, because it is the only
+            // participant that knows it is inside.
+            if highest_drained.load(std::sync::atomic::Ordering::SeqCst) > pin.epoch() {
+                violations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            jitter.pause();
+            drop(pin);
+        }
     });
 
     assert_eq!(
         violations.load(std::sync::atomic::Ordering::SeqCst),
         0,
-        "a sweeper concluded a reader had finished while it was inside"
+        "a sweeper concluded a reader had finished while it was inside --- {}",
+        run.replay_with()
     );
 }

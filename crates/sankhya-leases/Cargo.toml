@@ -16,3 +16,4 @@ workspace = true
 [dependencies]
 
 [dev-dependencies]
+sankhya-testkit = { path = "../sankhya-testkit" }
