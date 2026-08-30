@@ -1025,11 +1025,13 @@ work, above.
 **A second machine.** Stated as a dependency rather than assumed, because it is the sole reason
 §12.2 is here rather than finished.
 
-**Cube DDL** — `CREATE CUBE` is not a statement yet, and this run needs cubes created and
-dropped from SQL by a client rather than declared into a warehouse directory. That gap is
-recorded in [`GUIDE.md`](GUIDE.md) and becomes blocking here. **It is not blocked on hardware**,
-so unlike everything else in this milestone it can be built at any point before the run, and
-should be scheduled deliberately rather than discovered on the morning of it.
+~~**Cube DDL** — `CREATE CUBE` is not a statement yet, and this run needs cubes created and
+dropped from SQL by a client rather than declared into a warehouse directory.~~ — **built
+2026-08-30**, ahead of the rest of this milestone precisely because it was the one dependency
+here that hardware did not block. `CREATE CUBE` and `DROP CUBE` are statements, recognised
+before the engine is asked, and a drop reclaims the cuboids its cube materialised — which
+nothing else ever would, because the ordinary sweep deliberately retains a cuboid whose cube it
+cannot find a current version for. See [`GUIDE.md`](GUIDE.md).
 
 ### Exit
 

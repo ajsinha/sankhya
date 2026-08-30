@@ -885,6 +885,36 @@ CATALOGUE = [
     # the property at the API rather than at the container: whoever makes that swap for a
     # reason that seems good at the time gets told what it costs.
 
+    ("cube ddl: accept whatever follows a statement instead of refusing it",
+     "crates/sankhya-cube-sql/src/ddl.rs",
+     "        if self.peek().is_some() {",
+     "        if false {",
+     "sankhya-cube-sql"),
+
+    ("cube ddl: check the fact table and let the dimension tables through",
+     "crates/sankhya-server/src/wiring.rs",
+     "        tables.extend(definition.dimensions.iter().map(|d| d.table.clone()));",
+     "        let _ = &definition.dimensions;",
+     "sankhya-server"),
+
+    ("cube ddl: let a name already taken be created a second time",
+     "crates/sankhya-server/src/wiring.rs",
+     "        if self.cubes().iter().any(|cube| cube.name() == name) {",
+     "        if false {",
+     "sankhya-server"),
+
+    ("cube ddl: drop a cube and leave its cuboids behind",
+     "crates/sankhya-server/src/wiring.rs",
+     "        let swept = sankhya_maintenance::cuboid::retire_cube(&self.settings.warehouse, name);",
+     "        let swept = sankhya_maintenance::cuboid::Swept::default();",
+     "sankhya-server"),
+
+    ("cuboid: retire a cube's cuboids by prefix rather than by parsing the name",
+     "crates/sankhya-maintenance/src/cuboid.rs",
+     "        if owner != cube {",
+     "        if !name.contains(cube) {",
+     "sankhya-maintenance"),
+
     ("brake: report a warning when the machine is about to be killed",
      "crates/sankhya-governor/src/memory.rs",
      "    if in_use >= limits.shed_bytes {",

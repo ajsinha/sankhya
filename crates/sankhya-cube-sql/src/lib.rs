@@ -42,13 +42,15 @@
 #![doc(html_root_url = "https://docs.rs/sankhya-cube-sql")]
 
 mod args;
-pub mod describe;
-pub mod hydrated;
 pub mod catalog;
+pub mod ddl;
+pub mod describe;
 pub mod functions;
+pub mod hydrated;
 pub mod publish;
 mod result;
 
 pub use catalog::{CubeCatalog, Published, Unresolved};
+pub use ddl::{parse as parse_ddl, DdlError, Statement};
 pub use functions::register;
 pub use publish::{publish_cells, publish_from_fact_table};

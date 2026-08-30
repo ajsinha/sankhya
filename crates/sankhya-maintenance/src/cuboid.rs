@@ -288,6 +288,74 @@ pub fn retire_superseded(
     swept
 }
 
+/// Remove every cuboid belonging to a cube that no longer exists.
+///
+/// # Why `retire_superseded` cannot do this
+///
+/// It refuses to, deliberately. Its rule is that a cuboid whose cube has no known current
+/// version is **retained with a reason** — *"deleting on a guess is how a cache becomes a data
+/// loss"* — and a dropped cube is exactly a cube with no known current version. So every
+/// cuboid a dropped cube materialised would be kept by the sweep, forever, and kept *on
+/// purpose*: the one mechanism that could reclaim them is the one that has decided not to.
+///
+/// That is a permanent leak of published storage, and it is invisible in the ordinary way —
+/// nothing errors, no query fails, the directory simply never goes away. `DROP CUBE` is the
+/// only moment at which the answer is knowable, because it is the only moment at which
+/// something knows the cube is gone rather than merely unrecognised.
+///
+/// # What it will and will not delete
+///
+/// Only directories that parse as a cuboid *of this cube*. The name is length-prefixed
+/// precisely so it can be read back, and `materialise::parse` is the same reader
+/// `retire_superseded` uses — so a directory this code did not write is retained here for the
+/// same reason it is retained there. Dropping a cube is not a licence to delete by prefix: a
+/// cube named `sales` must not take `sales_archive`'s cuboids with it, and length-prefixed
+/// parsing is what makes that a property rather than a hope.
+///
+/// # Ordering against a reader
+///
+/// Called after the definition is removed, so no new query can resolve this cube and reach
+/// these files. A scan already running still holds its files open, and on every platform this
+/// system supports an open file survives the unlink of its directory entry — which is the same
+/// guarantee reclamation relies on everywhere else, rather than a new one asked for here.
+pub fn retire_cube(warehouse: &Path, cube: &str) -> Swept {
+    let mut swept = Swept::default();
+    let store = warehouse.join(CUBOIDS);
+    let Ok(entries) = std::fs::read_dir(&store) else {
+        return swept;
+    };
+
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|entry| entry.metadata().is_ok_and(|meta| meta.is_dir()))
+        .filter_map(|entry| entry.file_name().to_str().map(ToString::to_string))
+        .collect();
+    names.sort();
+
+    for name in names {
+        let Some((owner, _)) = sankhya_cube::materialise::parse(&name) else {
+            // Not retained with a complaint, unlike the superseded sweep. That sweep is
+            // examining every directory in the store and an unreadable one is worth
+            // reporting; this one is looking for a named cube's cuboids, and every other
+            // cube's directory would be reported as a problem it is not.
+            continue;
+        };
+        if owner != cube {
+            continue;
+        }
+        let path = store.join(&name);
+        let bytes = tree_bytes(&path);
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {
+                swept.bytes_reclaimed = swept.bytes_reclaimed.saturating_add(bytes);
+                swept.removed.push(name);
+            }
+            Err(error) => swept.retained.push((name, error.to_string())),
+        }
+    }
+    swept
+}
+
 /// How many bytes a directory holds.
 fn tree_bytes(at: &Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(at) else {
