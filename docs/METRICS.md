@@ -83,6 +83,30 @@ Files a table currently consists of. A scan pays per file — opening it, readin
 | Consequence | query latency on the affected table roughly doubles as the file count passes a thousand, and keeps climbing |
 | Lead time | days, at ordinary write rates — which is why the diagnostic reports a date rather than a value |
 
+## `sankhya_memory_in_use_bytes`
+
+Bytes allocated and not yet freed, counted at the global allocator. Everything the process allocates passes through it, including what the query engine's own accounting cannot see.
+
+| | |
+|---|---|
+| Type | gauge |
+| Unit | bytes |
+| Group | resource pressure |
+| Labels | none |
+| Pages | no |
+
+## `sankhya_memory_peak_bytes`
+
+The highest the allocated total has been since this process started. A limit is set against a peak, never against an average.
+
+| | |
+|---|---|
+| Type | gauge |
+| Unit | bytes |
+| Group | resource pressure |
+| Labels | none |
+| Pages | no |
+
 ## `sankhya_metrics_rejected_total`
 
 Recordings the registry refused. Non-zero means a call site disagrees with the catalogue, or a label has outgrown its cap and the metric is now incomplete.

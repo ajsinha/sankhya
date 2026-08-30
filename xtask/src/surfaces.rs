@@ -116,11 +116,10 @@ const UNREACHED: &[(&str, &str)] = &[
     ("sankhya-testkit", "the concurrency harness. Reached only from dev-dependencies, which this traversal deliberately ignores --- and rightly, since a testkit that a *product* crate depended on would be shipping test scaffolding to customers"),
     ("sankhya-tiering", "M9, and explicitly gated on the drills in IMPLEMENTATION_PLAN.md §13"),
     ("sankhya-mv", "undecided by ADR-0014, and listed rather than deleted because the design question is open"),
-    ("sankhya-alloc", "a counting global allocator that nothing installs. Wiring it is M8 §12.1f and returns allocation figures the soak currently cannot see"),
-    ("sankhya-api-rest", "a REST surface no server depends on. Wire or delete is an M8 §12.1f decision"),
-    ("sankhya-cdc-pg", "a capture source no server depends on. Wire or delete is an M8 §12.1f decision"),
-    ("sankhya-ports", "trait definitions nothing implements, including a `Clock` the crate claims is injected everywhere and enforced by lint --- neither is true. M8 §12.1f"),
-    ("sankhya-pack", "the declarative pack tier: a parser, bundles, validation and hot reload that no server loads, so a bundle cannot be used. M8 §12.1f"),
+    ("sankhya-api-rest", "M8 §12.2, with soak criterion 7. The route table and the size decision are built and tested; serving them needs an HTTP listener, HTTP authentication and a *pre-materialisation* row estimate to decide inline-versus-ticket --- `deliver` refuses to be given a count taken after the rows exist, which is the whole point of it. That is a feature, not hygiene, and it is sized where the rest of criterion 7 lives"),
+    ("sankhya-cdc-pg", "M2's carried remainder, not an M8 decision. The slot lifecycle, the lag thresholds and the source-safety ladder are built and tested; what is missing is the *driver* that runs them on a timer, which is exactly what STATUS records as outstanding for M2 --- `the slot lifecycle driver and the snapshot reader`"),
+    ("sankhya-ports", "decided in M8 §12.1f: **delete**. Nothing implements a single trait in it, and its own header claims `Clock` and `IdGen` are injected everywhere and enforced by lint, neither of which is true --- a crate whose documentation asserts a property the workspace does not have is worse than an empty one. Listed rather than gone only because the deletion needs an owner's hand on it"),
+    ("sankhya-pack", "M4 §8.6's carried remainder, not an M8 decision. The declarative tier is a *planned* tier --- ARCHITECTURE names it and expects it to express the substantial majority of a real pack --- so deleting it would discard a milestone's work, and the loader that reads a bundle directory into a running server is the piece that was never built"),
 ];
 
 /// Every crate is reachable from a binary, or listed with a reason and a milestone.

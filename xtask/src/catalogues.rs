@@ -170,6 +170,28 @@ pub fn platforms_markdown() -> String {
         let _ = writeln!(out, "## {}\n", target.called);
         let _ = writeln!(out, "{}\n", target.note);
     }
+    // Not per-target, and generated rather than written beside the table.
+    //
+    // This section existed as a hand edit to `PLATFORMS.md` --- a file whose own header says
+    // DO NOT EDIT --- so `check-catalogues` had been failing, and the next `write-catalogues`
+    // would have deleted an owner decision without anybody noticing which. The lesson is the
+    // one the generator exists for: prose that has to survive belongs in the source.
+    out.push_str("## What the warehouse requires of a filesystem\n\n");
+    out.push_str("**Hard links.** A commit claims its version with `link(2)`, which fails ");
+    out.push_str("when the name is taken --- that refusal is the whole of the protocol's ");
+    out.push_str("concurrency control, and `rename` cannot provide it because it replaces ");
+    out.push_str("its destination silently. ext4, xfs, btrfs, zfs, APFS and NTFS all support ");
+    out.push_str("hard links. **FAT and exFAT do not, and are not supported.** Owner ");
+    out.push_str("decision, 2026-08-29.\n\n");
+    out.push_str("Some network filesystems implement `link` unreliably. The failure there is ");
+    out.push_str("at least loud: `link` returns an error and the commit reports it, rather ");
+    out.push_str("than a lost update that nobody is told about. A warehouse on such a mount ");
+    out.push_str("will refuse to commit rather than silently lose one.\n\n");
+    out.push_str("Object stores are a separate story with the same requirement: the ");
+    out.push_str("equivalent primitive is a conditional put --- `If-None-Match: *` on S3 and ");
+    out.push_str("Azure, `ifGenerationMatch=0` on GCS --- and a store that does not offer ");
+    out.push_str("one cannot host a warehouse safely. See ");
+    out.push_str("[ADR-0013](adr/0013-concurrency-and-data-safety.md).\n\n");
     out.push_str("---\n\n## How an old baseline is met\n\n");
     out.push_str("A binary built on a current distribution silently acquires that ");
     out.push_str("distribution's symbol versions. The symbols are present locally, so it ");

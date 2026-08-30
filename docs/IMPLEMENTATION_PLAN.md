@@ -674,18 +674,27 @@ is fresh and expensive once it is not:
 Fifty-five crates became fifty-two. An empty crate now says when it stops being empty, or why
 that cannot be decided yet.
 
-**The remaining work.**
+**Done 2026-08-29.**
 
-1. **Widen `check-surfaces` to reachability.** Every crate must be reachable from a binary, or
-   listed with a reason and a milestone. That one change catches all five stranded crates and
-   forces a decision on all ten empty ones, instead of leaving both to be rediscovered.
-2. **Wire or delete**, one decision per stranded crate, recorded. Wiring `sankhya-alloc` is
-   near-free and returns allocation figures the soak currently cannot see.
-3. **Adopt or delete the empty crates.** A crate with no code and no milestone is a claim the
-   repository makes about itself and does not keep — and it inflates a "55 crates" figure that
-   should describe what exists.
-4. **Resolve the name collisions** — `telemetry`/`metrics`, `oltp-pg`/`api-pg` — by deleting or
-   renaming, so a reader does not have to open both to learn which is real.
+1. **`check-surfaces` widened to reachability.** Every crate must be reachable from a binary,
+   or listed with a reason **and a milestone**. It runs from every root that ships — the
+   server, the CLI and each pack — because counting only the server would report the published
+   extension API as dead code.
+2. **Wired or decided, one per stranded crate, recorded.** `sankhya-alloc` is now the server's
+   global allocator and emits `sankhya_memory_in_use_bytes` and `sankhya_memory_peak_bytes`.
+   `sankhya-ports` is decided: **delete** — nothing implements a trait in it and its header
+   asserts a property the workspace does not have. The other three are not M8's work and say
+   so: `sankhya-pack` is **M4 §8.6's** loader, `sankhya-cdc-pg` is **M2's** slot-lifecycle
+   driver, and `sankhya-api-rest` is **M8 §12.2** beside the rest of criterion 7.
+3. **The empty crates were adopted or deleted**, above.
+4. **The name collisions are resolved** — `telemetry` deleted in favour of `metrics`;
+   `oltp-pg` and `api-pg` each say in their header which of the two Postgres concerns they are.
+
+**What a decision costs when it is deferred**, recorded because two of the five turned out to
+belong to *earlier* milestones. `sankhya-pack` is M4's declarative tier and `sankhya-cdc-pg` is
+M2's slot lifecycle: both are built, tested and unreachable, and both were about to be
+re-decided as M8 hygiene by somebody who did not know that. A crate with no owner drifts to
+whoever notices it last.
 
 **Not consolidation for its own sake.** The three-way splits — `cube`/`cube-algo`/`cube-sql` and
 `graph`/`graph-algo`/`graph-sql` — are load-bearing and stay: the zero-dependency algebra crates
@@ -706,9 +715,19 @@ Attached mode as the production configuration. Leader election through the trans
 3. Reclamation running against continuous scans **never** deletes a file a reader holds — demonstrated under load, not argued from a grace period.
 
 **Concurrency.**
-4. Writers to different tables do not contend: throughput scales with writer count, and no global serialization point exists.
-5. Read latency is flat under write load — readers are never blocked by writers.
-6. Contention on a single table degrades by rebase-and-retry, bounded, so a runaway committer is a diagnosable failure rather than a hang.
+4. Writers to different tables do not contend: throughput scales with writer count, and no global serialization point exists. — **met 2026-08-29.** Commits to eight tables run at 4.8× one table's rate; the same commits behind one warehouse lock run at 0.91×, measured in the same run.
+5. Read latency is flat under write load — readers are never blocked by writers. — **met 2026-08-29.** A reader holds 0.59–0.80 of its idle rate under four writers with a p99 of 227 µs; sharing a lock with those writers it holds 0.00–0.07 and waits seconds.
+6. Contention on a single table degrades by rebase-and-retry, bounded, so a runaway committer is a diagnosable failure rather than a hang. — **met 2026-08-29.** Sixteen writers on one contested version all commit, worst rebase count eleven; eight writers sustained on one table hold 24–51% of the uncontended rate and beat a single writer.
+
+> **Each of the three is measured against a control taken in the same run** — the same work
+> serialized through one mutex — because every safety criterion above them is satisfied by
+> exactly that design. A threshold without the control is taste, and this repository has twice
+> shipped a contention test whose threshold sat below the contended figure.
+>
+> Criterion 6 was the one that found something. Measuring degradation rather than asserting it
+> exposed a write path that was **quadratic in a table's own history**: `next_version` walked
+> from version zero on every append and every rebase. It was invisible to every test because
+> every test had a short log.
 
 **Scale-out.**
 7. Multi-node deployment with executor scale-out demonstrated; failover tested under load; recovery objectives measured and published rather than estimated.

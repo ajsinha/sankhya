@@ -147,6 +147,19 @@ So the properties are stated together, and the second is measured rather than as
 | C2 | Readers are never blocked by writers | Read latency under write load is flat |
 | C3 | Contention on **one** table degrades gracefully | Rebase-and-retry, bounded; a failure is diagnosable, not a hang |
 
+> **Measured 2026-08-29, each against a control taken in the same run.** C1: commits to eight
+> tables run at **4.82×** one table's rate, where the same commits behind one warehouse lock
+> run at **0.91×**. C2: a reader holds **0.59–0.80** of its idle rate under four writers with a
+> p99 of 227 µs, where a reader sharing a lock with those writers holds **0.00–0.07** and waits
+> seconds for a turn. C3: sixteen writers on one contested version all commit, worst rebase
+> count **eleven**.
+>
+> The control is the part worth keeping. Every S-property above is satisfied by one lock over
+> the warehouse, so a C-measurement without a serialized arm beside it cannot distinguish the
+> design from the one it forbids — and a threshold chosen without both states is taste. C1 is
+> measured twice for the same reason: end to end through a publish, a lock over **only** the
+> commit still scales 1.87×, because encoding Parquet is untouched and is most of a publish.
+
 C1 is why [`ARCHITECTURE.md`'s standing note](../ARCHITECTURE.md) — *"keep the commit path
 per-table, never globally serialized"* — stops being a design seam and becomes an exit
 criterion. The cheapest way to fix everything in this document is one lock over the warehouse,

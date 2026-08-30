@@ -32,25 +32,17 @@ The artifact that *downloads* database binaries rather than bundling them. Stati
 
 Development and evaluation. The warehouse layout is portable to a case-insensitive filesystem because every path segment is already case-folded — see `sankhya-schema`'s naming rules — so a warehouse written on Linux opens here.
 
-## What the warehouse requires of a filesystem
-
-**Hard links.** A commit claims its version with `link(2)`, which fails when the name is taken
---- that refusal is the whole of the protocol's concurrency control, and `rename` cannot provide
-it because it replaces its destination silently. ext4, xfs, btrfs, zfs, APFS and NTFS all
-support hard links. **FAT and exFAT do not, and are not supported.** Owner decision, 2026-08-29.
-
-Some network filesystems implement `link` unreliably. The failure there is at least loud: `link`
-returns an error and the commit reports it, rather than a lost update that nobody is told about.
-A warehouse on such a mount will refuse to commit rather than silently lose one.
-
-Object stores are a separate story with the same requirement: the equivalent primitive is a
-conditional put --- `If-None-Match: *` on S3 and Azure, `ifGenerationMatch=0` on GCS --- and a
-store that does not offer one cannot host a warehouse safely. See
-[ADR-0013](adr/0013-concurrency-and-data-safety.md).
-
 ## Windows
 
 Any PostgreSQL driver connects to a SANKHYA server from Windows today — that is the wire protocol, and it is the thing most Windows users actually need. The *server* is not built for Windows, and the reason is the vendored PostgreSQL build and service integration rather than the storage layer: path segments are already restricted to lower-case ASCII, digits and underscores, and the platform device names (`aux`, `con`, `nul`, `com1`…) are already reserved, so a warehouse is already Windows-path-safe. Run the server under WSL2 or a container until this is built.
+
+## What the warehouse requires of a filesystem
+
+**Hard links.** A commit claims its version with `link(2)`, which fails when the name is taken --- that refusal is the whole of the protocol's concurrency control, and `rename` cannot provide it because it replaces its destination silently. ext4, xfs, btrfs, zfs, APFS and NTFS all support hard links. **FAT and exFAT do not, and are not supported.** Owner decision, 2026-08-29.
+
+Some network filesystems implement `link` unreliably. The failure there is at least loud: `link` returns an error and the commit reports it, rather than a lost update that nobody is told about. A warehouse on such a mount will refuse to commit rather than silently lose one.
+
+Object stores are a separate story with the same requirement: the equivalent primitive is a conditional put --- `If-None-Match: *` on S3 and Azure, `ifGenerationMatch=0` on GCS --- and a store that does not offer one cannot host a warehouse safely. See [ADR-0013](adr/0013-concurrency-and-data-safety.md).
 
 ---
 

@@ -868,6 +868,23 @@ CATALOGUE = [
      "        let mut seen = self.peak.load(Ordering::Relaxed);\n        while now != seen {",
      "sankhya-alloc"),
 
+    ("alloc: report zero rather than nothing when no allocator was announced",
+     "crates/sankhya-alloc/src/lib.rs",
+     "    INSTALLED.get().map(|allocator| allocator.in_use())",
+     "    Some(INSTALLED.get().map_or(0, |allocator| allocator.in_use()))",
+     "sankhya-alloc"),
+
+    # Deliberately absent: "let a second announcement replace the installed allocator".
+    #
+    # There is no one-line edit that produces it. `OnceLock` has no method that
+    # overwrites, so the defect requires swapping the container for a mutable one and
+    # rewriting both readers -- which the audit would report as a failure to compile
+    # rather than as a surviving defect, and which is a redesign, not a slip.
+    #
+    # `a_second_announcement_does_not_replace_the_first` is kept anyway, because it pins
+    # the property at the API rather than at the container: whoever makes that swap for a
+    # reason that seems good at the time gets told what it costs.
+
     ("brake: report a warning when the machine is about to be killed",
      "crates/sankhya-governor/src/memory.rs",
      "    if in_use >= limits.shed_bytes {",
@@ -2570,7 +2587,7 @@ CATALOGUE = [
 
     ("publish: take the next version from the live set, missing an empty table's commits",
      "crates/sankhya-publish/src/publish.rs",
-     "        sankhya_table_delta::newest_after(&self.root, None)\n            .map_or(0, |version| version.saturating_add(1))",
+     "        self.newest().map_or(0, |version| version.saturating_add(1))",
      "        sankhya_table_delta::live_files(&self.root).ok().and_then(|s| s.version).map_or(0, |v| v.saturating_add(1))",
      "sankhya-publish"),
 
@@ -2742,6 +2759,8 @@ CATALOGUE = [
      "xtask/src/main.rs",
      "            if !root.join(&named).exists() {",
      "            if false {",
+     "xtask"),
+
     ("docs: name a check in INVARIANTS.md that does not run",
      "xtask/src/main.rs",
      "        if !KNOWN_CHECKS.contains(&check.as_str()) {",
@@ -2754,7 +2773,19 @@ CATALOGUE = [
      "        if false {",
      "xtask"),
 
-     "xtask"),
+    # --- M8 §12.1: the concurrency criteria, which a global lock would satisfy ------
+
+    ("table-delta: serialize every commit in the warehouse behind one lock",
+     "crates/sankhya-table-delta/src/log.rs",
+     "    std::fs::create_dir_all(log_dir(table_root))\n        .map_err(|e| CommitError::Io(format!(\"creating the log directory: {e}\")))?;",
+     "    static ONE_LOCK_FOR_THE_WAREHOUSE: std::sync::Mutex<()> = std::sync::Mutex::new(());\n    let _serialized = ONE_LOCK_FOR_THE_WAREHOUSE\n        .lock()\n        .unwrap_or_else(std::sync::PoisonError::into_inner);\n    std::fs::create_dir_all(log_dir(table_root))\n        .map_err(|e| CommitError::Io(format!(\"creating the log directory: {e}\")))?;",
+     "sankhya-table-delta"),
+
+    ("publish: probe for the newest version from zero on every append, not from the last seen",
+     "crates/sankhya-publish/src/publish.rs",
+     "        let floor = self.seen.load(Ordering::Relaxed).checked_sub(1);",
+     "        let floor: Option<u64> = None;",
+     "sankhya-publish"),
 
 ]
 
@@ -2854,6 +2885,22 @@ def check_only():
     committed. Neither shows up in a diff anyone reads. This costs milliseconds and no
     compilation, so it can gate every build rather than only a full audit.
     """
+    # A missing comma between two entries is not a syntax error. Python reads the second
+    # tuple as an element of the first, and the catalogue then holds one malformed entry
+    # where three should be: the outer one runs `cargo test -p <tuple>`, and the two it
+    # swallowed never run at all. That happened here and survived because every check in
+    # this file only ever looked at the first three fields, which are strings either way.
+    malformed = [
+        entry
+        for entry in CATALOGUE
+        if len(entry) not in (5, 6) or not all(isinstance(field, str) for field in entry[:5])
+    ]
+    for entry in malformed:
+        print(f"{'MALFORMED':10} {entry[0]}\n{'':10} an entry of {len(entry)} field(s); a "
+              f"missing comma has swallowed the entries that follow it")
+    if malformed:
+        return 1
+
     absent = []
     for entry in CATALOGUE:
         label, relpath, find = entry[0], entry[1], entry[2]

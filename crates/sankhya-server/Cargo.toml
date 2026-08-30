@@ -21,6 +21,7 @@ sankhya-leases = { path = "../sankhya-leases" }
 sankhya-atomicfs = { path = "../sankhya-atomicfs" }
 sankhya-backup = { path = "../sankhya-backup" }
 sankhya-metrics = { path = "../sankhya-metrics" }
+sankhya-alloc   = { path = "../sankhya-alloc" }
 sankhya-config     = { path = "../sankhya-config" }
 sankhya-diagnostic = { path = "../sankhya-diagnostic" }
 sankhya-api-pg   = { path = "../sankhya-api-pg" }

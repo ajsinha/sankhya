@@ -193,3 +193,41 @@ fn allocations_from_several_threads_are_all_counted() {
         ALLOC.peak().saturating_sub(before)
     );
 }
+
+#[test]
+fn an_announced_allocator_can_be_read_by_code_that_cannot_name_it() {
+    let _guard = measuring();
+    // Announcing the one this binary actually installed, so the free functions are being
+    // asked about a real global allocator rather than a spare instance that counts nothing.
+    sankhya_alloc::announce(&ALLOC);
+
+    let before = sankhya_alloc::in_use().expect("announced, so there is a figure");
+    let block = vec![0u8; CHUNK];
+    let during = sankhya_alloc::in_use().expect("announced, so there is a figure");
+    drop(block);
+
+    assert!(
+        during + NOISE >= before + CHUNK,
+        "the free function reads the installed allocator: {before} -> {during}, expected a \
+         rise of at least {CHUNK}"
+    );
+    assert!(
+        sankhya_alloc::peak().is_some_and(|peak| peak + NOISE >= before + CHUNK),
+        "and so does the peak"
+    );
+}
+
+#[test]
+fn a_second_announcement_does_not_replace_the_first() {
+    // A program has one global allocator. A second announcement means a second instance,
+    // which is not the one every allocation is going through, so the first is kept.
+    static SPARE: Counting<System> = Counting::new(System);
+    sankhya_alloc::announce(&ALLOC);
+    sankhya_alloc::announce(&SPARE);
+
+    assert_eq!(SPARE.in_use(), 0, "nothing allocates through the spare");
+    assert!(
+        sankhya_alloc::in_use().is_some_and(|bytes| bytes > 0),
+        "so a reader that got the spare would see zero; it must still see the installed one"
+    );
+}

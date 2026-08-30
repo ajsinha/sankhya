@@ -22,6 +22,23 @@
 // print to its own console is not much of a binary.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+/// The allocator, installed here because a binary is the only place that may choose one.
+///
+/// # Why the process counts its own allocations
+///
+/// The query engine tracks what its operators reserve, and that is most of what a query
+/// uses rather than all of it: decode buffers, network buffers, graph arenas and every
+/// third-party allocation sit outside the pool. A query can stay within its reservation and
+/// still exhaust the machine, and until this was installed there was nowhere to see it ---
+/// `sankhya-alloc` was built, tested, and reachable from nothing, so every figure it exists
+/// to provide was unavailable.
+///
+/// It is a composition-root decision by construction: a library that installed an allocator
+/// would take the choice away from every program that linked it.
+#[global_allocator]
+static ALLOCATOR: sankhya_alloc::Counting<std::alloc::System> =
+    sankhya_alloc::Counting::new(std::alloc::System);
+
 mod backup;
 mod doctor;
 mod execute;
@@ -229,6 +246,11 @@ fn now_micros() -> i64 {
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
+    // Installing the allocator is a `#[global_allocator]` attribute and reaches nothing;
+    // announcing it is what lets the metrics endpoint read the counters without naming a
+    // static that only this binary has. Done first, before anything can be scraped.
+    sankhya_alloc::announce(&ALLOCATOR);
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
