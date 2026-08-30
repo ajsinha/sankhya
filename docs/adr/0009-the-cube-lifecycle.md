@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # ADR-0009 — The cube lifecycle: three lifetimes, one model
 
 **Status:** Proposed · **Date:** 2026-08-28 · **Milestone:** M7

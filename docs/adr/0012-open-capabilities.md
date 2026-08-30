@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # ADR-0012 — Open capabilities: what a standing artefact must declare
 
 **Status:** Proposed · **Date:** 2026-08-28 · **Milestone:** M7 and beyond

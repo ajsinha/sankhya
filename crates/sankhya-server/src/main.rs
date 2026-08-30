@@ -22,9 +22,27 @@
 // print to its own console is not much of a binary.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+/// The allocator, installed here because a binary is the only place that may choose one.
+///
+/// # Why the process counts its own allocations
+///
+/// The query engine tracks what its operators reserve, and that is most of what a query
+/// uses rather than all of it: decode buffers, network buffers, graph arenas and every
+/// third-party allocation sit outside the pool. A query can stay within its reservation and
+/// still exhaust the machine, and until this was installed there was nowhere to see it ---
+/// `sankhya-alloc` was built, tested, and reachable from nothing, so every figure it exists
+/// to provide was unavailable.
+///
+/// It is a composition-root decision by construction: a library that installed an allocator
+/// would take the choice away from every program that linked it.
+#[global_allocator]
+static ALLOCATOR: sankhya_alloc::Counting<std::alloc::System> =
+    sankhya_alloc::Counting::new(std::alloc::System);
+
 mod backup;
 mod doctor;
 mod execute;
+mod flight;
 mod scrape;
 mod warehouse;
 mod wiring;
@@ -62,6 +80,16 @@ fn settings() -> Result<Settings, String> {
     .map_err(|error| error.to_string())?;
 
     let listen = config.get_or("server.listen", "127.0.0.1:5433").to_string();
+    // Arrow Flight SQL, the bulk plane. `None` turns it off.
+    //
+    // On by default and on its own port: it is a different protocol from the wire front door,
+    // spoken by different clients, and an operator who wants only one of them should not have
+    // to reason about which requests reach which handler on a shared port.
+    let flight_listen = Some(
+        config
+            .get_or("server.flight_listen", "127.0.0.1:5434")
+            .to_string(),
+    );
     let metrics_listen = Some(
         config
             .get_or("server.metrics_listen", "127.0.0.1:9464")
@@ -100,6 +128,7 @@ fn settings() -> Result<Settings, String> {
         read_as_of,
         tenant,
         require_password,
+        flight_listen,
         metrics_listen,
     })
 }
@@ -217,6 +246,11 @@ fn now_micros() -> i64 {
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
+    // Installing the allocator is a `#[global_allocator]` attribute and reaches nothing;
+    // announcing it is what lets the metrics endpoint read the counters without naming a
+    // static that only this binary has. Done first, before anything can be scraped.
+    sankhya_alloc::announce(&ALLOCATOR);
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -235,6 +269,7 @@ async fn main() -> std::io::Result<()> {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, why));
         }
     };
+    let settings_flight = settings.flight_listen.clone();
     let settings_metrics = settings.metrics_listen.clone();
     let settings_listen = settings.listen.clone();
 
@@ -272,8 +307,47 @@ async fn main() -> std::io::Result<()> {
             policy.compact_every,
             policy.orphan_sweep_every
         );
-        std::sync::Arc::new(sankhya_maintenance::spawn_maintenance(tables, policy))
+        // The *same* registry the query path pins. Building a second one here would leave the
+        // sweeper watching a registry nobody announces into.
+        std::sync::Arc::new(sankhya_maintenance::spawn_maintenance_watching(
+            tables,
+            policy,
+            Some(server.leases()),
+        ))
     });
+
+    // Arrow Flight SQL, served on its own listener.
+    //
+    // The protocol has been complete and tested since M6 and **nothing served it** ---
+    // `GUIDE.md` §7a documented a bulk plane with nowhere to send a `GetFlightInfo`. This is
+    // the line that made the difference, and it is worth how little it is: the surface was
+    // built, the transport was not, and no test could tell because every test of the protocol
+    // constructed the service directly.
+    if let Some(address) = settings_flight {
+        match address.parse::<std::net::SocketAddr>() {
+            Ok(socket) => {
+                let flying = flight::Flying::new(Arc::clone(&server));
+                println!("  Arrow Flight SQL on {socket}");
+                tokio::spawn(async move {
+                    let transport = sankhya_api_grpc::Transport::new(socket);
+                    let service = sankhya_api_flight::SankhyaFlight::new(std::sync::Arc::new(
+                        flying,
+                    ));
+                    // Served until the process ends. A bulk plane that stopped on its own
+                    // would be indistinguishable, to a client, from one that was never there.
+                    if let Err(error) = transport
+                        .serve_until(service, std::future::pending::<()>())
+                        .await
+                    {
+                        eprintln!("  Arrow Flight SQL stopped: {error}");
+                    }
+                });
+            }
+            Err(error) => {
+                eprintln!("  server.flight_listen is not an address: {address}: {error}");
+            }
+        }
+    }
 
     // Maintained cubes, built on the same cadence and for the same reason.
     //

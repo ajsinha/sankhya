@@ -5,12 +5,14 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # SANKHYA — Roadmap
 
 **Document ID:** SNK-RM-001
 **Version:** 0.1.0
-**Status:** Implementation — M0–M7 complete, M8 next
-**Date:** 2026-08-26
+**Status:** Implementation — M0–M7 complete; M8 complete on six of eight, its scale-out half moved to M12 for want of a second machine; M9 next
+**Date:** 2026-08-30
 **Companions:** `REQUIREMENTS.md`, `ARCHITECTURE.md`, `IMPLEMENTATION_PLAN.md`
 
 ---
@@ -131,9 +133,23 @@ See [`adr/0007-the-cube-model.md`](adr/0007-the-cube-model.md).
 ### 1.0 — *Production*
 **Theme: the first release intended to be depended upon.**
 
-**Available:** multi-node deployment with stateless executor scale-out · leader election · high availability and failover · cross-region recovery with measured objectives · metering.
+**Available:** end-to-end concurrency and data safety · multi-node deployment with stateless executor scale-out · leader election · high availability and failover · cross-region recovery with measured objectives · metering.
+
+**Concurrency comes first, and is a stated property rather than an implementation detail.** A
+commit is never lost, no reader ever sees a partial file, and no file is deleted while it is
+being read. Writers to different tables do not contend, readers are never blocked by writers, and
+contention on one table degrades by retry rather than by waiting. Those are measured, not
+asserted — see [ADR-0013](adr/0013-concurrency-and-data-safety.md).
 
 **What 1.0 means here:** the extension API carries a stability commitment. Everything else may still evolve, but a pack written against 1.0 keeps working.
+
+**And 1.0 is earned by one run, not by a checklist.** The project's exit criteria is a
+twelve-hour, two-machine acceptance test: 100 GB through 50 concurrent readers and 20
+concurrent writers against a single instance, building cuboids, querying them and dropping them
+while saved data is queried and updated — all at once, because every defect this project has
+found lived in an interaction rather than in a component. Not one lost commit, not one query
+failed for a file deleted underneath it, and every materialised answer bit-identical to the same
+answer computed from base data. See `IMPLEMENTATION_PLAN.md` §13c.
 
 ---
 

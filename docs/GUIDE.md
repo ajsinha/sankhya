@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # SANKHYA — a guide, by example
 
 **Status:** Implementation — M0–M7 complete, M8 next
@@ -591,6 +593,18 @@ against a warehouse rather than written in SQL: `CREATE CUBE` is not a statement
 ---
 
 ## 7a. Arrow Flight SQL — the bulk plane
+
+> **Served since 2026-08-29**, on its own port. `server.flight_listen` defaults to
+> `127.0.0.1:5434`; set it to nothing to turn the bulk plane off.
+>
+> It is worth recording that this section described a working, tested protocol that **nothing
+> served** for the whole of M6 and M7 --- a client had nowhere to send a `GetFlightInfo`. It
+> went unnoticed because `check-surfaces` looked for crates registering *SQL functions*, which
+> Flight does not; widening that check to plain reachability found it in a minute.
+>
+> Identify yourself with the **sankhya-user** metadata key. A request that does not is refused
+> rather than defaulted, for the same reason the wire protocol refuses a connection with no
+> user: an unattributable request cannot be audited.
 
 The wire protocol is a **row** protocol: the last step of every query takes columnar batches
 apart one value at a time. For an interactive query that costs nothing worth measuring; for

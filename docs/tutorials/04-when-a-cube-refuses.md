@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # Tutorial 4 — When a cube refuses, and why that is the feature
 
 **Time:** about ten minutes · **Before this:** [Tutorial 1](01-your-first-cube.md)

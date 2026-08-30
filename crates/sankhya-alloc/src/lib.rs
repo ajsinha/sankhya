@@ -163,3 +163,59 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Counting<A> {
         new_ptr
     }
 }
+
+/// What the reporting side of a program needs from an allocator.
+///
+/// # Why this exists rather than a direct reference to the static
+///
+/// The static that holds the allocator lives in the binary, and code that reports the
+/// figures does not: the metrics endpoint is a module the binary owns and the test binaries
+/// also compile, and a module that names `crate::ALLOCATOR` compiles in exactly one of
+/// those. Naming a trait object registered at startup instead means the endpoint reads the
+/// process's real counters when a program installed one and says nothing when no program
+/// did --- which is the truth in a test binary running on the system allocator.
+pub trait Reporting: Sync {
+    /// Bytes currently allocated.
+    fn in_use(&self) -> usize;
+    /// The highest the total has ever been.
+    fn peak(&self) -> usize;
+}
+
+impl<A: Sync> Reporting for Counting<A> {
+    fn in_use(&self) -> usize {
+        Counting::in_use(self)
+    }
+
+    fn peak(&self) -> usize {
+        Counting::peak(self)
+    }
+}
+
+/// The allocator this process installed, if it said so.
+///
+/// A `OnceLock` rather than a mutable static: the registration happens once at startup and
+/// every read after it is a load, so there is nothing to synchronise beyond publication.
+static INSTALLED: std::sync::OnceLock<&'static (dyn Reporting + Send + Sync)> =
+    std::sync::OnceLock::new();
+
+/// Announce the process's allocator, so code that cannot name it can still read it.
+///
+/// Call once, from the binary that installed it, before anything scrapes. A second call is
+/// ignored rather than refused: two registrations mean two allocators, only one of which is
+/// the global one, and there is no answer to give the second caller that is better than
+/// keeping the first.
+pub fn announce(allocator: &'static (dyn Reporting + Send + Sync)) {
+    let _ = INSTALLED.set(allocator);
+}
+
+/// Bytes currently allocated, or `None` when no program announced an allocator.
+#[must_use]
+pub fn in_use() -> Option<usize> {
+    INSTALLED.get().map(|allocator| allocator.in_use())
+}
+
+/// The highest the total has ever been, or `None` when no program announced an allocator.
+#[must_use]
+pub fn peak() -> Option<usize> {
+    INSTALLED.get().map(|allocator| allocator.peak())
+}

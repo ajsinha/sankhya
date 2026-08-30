@@ -5,6 +5,8 @@
   <img src="docs/assets/wordmark-dice.png" alt="SANKHYA — सांख्य" width="440">
 </picture>
 
+*To count is to make completely known.*
+
 **One binary. Three engines. One reckoning.**
 
 *A general-purpose unified OLTP + OLAP + Graph data server — one binary, written entirely in Rust.*

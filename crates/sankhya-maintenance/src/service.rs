@@ -39,6 +39,7 @@ use crate::execute::RetentionPolicy;
 use crate::orphans::{plan_orphan_cleanup, sweep as sweep_orphans, FileOnDisk, OrphanPolicy};
 use crate::schedule::SystemState;
 use sankhya_error::{Error, Result};
+use sankhya_leases::Leases;
 use sankhya_table::{CompactionOutcome, WriterConfig};
 use sankhya_table_delta::live_files;
 use sankhya_types::Lsn;
@@ -115,9 +116,16 @@ impl Default for MaintenancePolicy {
 #[derive(Debug)]
 pub struct Maintainer {
     policy: MaintenancePolicy,
-    /// Merges whose inputs are still on disk, with the tick they were merged at.
-    pending: Vec<(CompactionOutcome, u64)>,
+    /// Merges whose inputs are still on disk, with the tick they were merged at and the lease
+    /// epoch at which they stopped being referenced.
+    pending: Vec<(CompactionOutcome, u64, u64)>,
     tick: u64,
+    /// Readers currently inside the warehouse, when anything is telling us.
+    ///
+    /// `None` means nobody is publishing lease information --- a maintainer running against a
+    /// warehouse no server is serving --- and then the grace period is the only protection, as
+    /// it was for every tick before leases existed.
+    leases: Option<Arc<Leases>>,
 }
 
 impl Maintainer {
@@ -128,7 +136,20 @@ impl Maintainer {
             policy,
             pending: Vec::new(),
             tick: 0,
+            leases: None,
         }
+    }
+
+    /// The same, told which readers are inside.
+    ///
+    /// With this, a merge's inputs are retired when **every reader that could still name them
+    /// has finished** --- not when a number of ticks has gone by. The grace period stays and
+    /// becomes a backstop against a leaked announcement rather than the protection itself,
+    /// which is the job it is actually good at.
+    #[must_use]
+    pub fn watching(mut self, leases: Arc<Leases>) -> Self {
+        self.leases = Some(leases);
+        self
     }
 
     /// Take a new policy without losing what is already in flight.
@@ -191,8 +212,13 @@ impl Maintainer {
 
         // Queued rather than retired here. See the module documentation: retiring in the pass
         // that merged deletes files out from under readers that listed before the merge.
+        //
+        // The epoch is taken **now**, at the moment the commit stopped referencing these
+        // inputs, and not when retirement is later considered. Taking it later would mark
+        // against a clock that has already moved past the readers who are the reason to wait.
+        let marked = self.leases.as_ref().map_or(0, |leases| leases.mark());
         for outcome in &report.merged {
-            self.pending.push((outcome.clone(), tick));
+            self.pending.push((outcome.clone(), tick, marked));
         }
 
         let retired = self.retire_due(tick)?;
@@ -263,22 +289,32 @@ impl Maintainer {
         sweep_orphans(&plan, table_root)
     }
 
-    /// Retire the inputs of merges that have served their grace period.
+    /// Retire the inputs of merges that no reader can still name.
+    ///
+    /// **Two conditions, and they protect against different things.** The lease check asks
+    /// whether every reader that existed when these inputs stopped being referenced has
+    /// finished --- that is the real question, and it is exact. The grace period remains as a
+    /// backstop for the case where a lease is leaked and never released, because a registry
+    /// with a leak and no backstop reclaims nothing for ever, which is the failure this
+    /// warehouse has already met from the other direction.
     fn retire_due(&mut self, tick: u64) -> Result<TickReport> {
-        // Nothing here pins an older snapshot. When session leases are wired into
-        // maintenance this becomes the set of versions they hold; until then the empty set is
-        // the honest value, and it is the *conservative* direction only because the grace
-        // period is doing the protecting.
+        // Versions an *arrival buffer* still pins, which is a separate mechanism from reader
+        // leases and still empty here.
         let referenced: BTreeSet<Lsn> = BTreeSet::new();
 
         let mut due = Vec::new();
         let mut waiting = Vec::new();
-        for (outcome, merged_at) in self.pending.drain(..) {
+        for (outcome, merged_at, marked) in self.pending.drain(..) {
             let age = tick.saturating_sub(merged_at);
-            if age >= self.policy.retention.grace_ticks {
+            let old_enough = age >= self.policy.retention.grace_ticks;
+            let unreachable = self
+                .leases
+                .as_ref()
+                .is_none_or(|leases| leases.drained(marked));
+            if old_enough && unreachable {
                 due.push((outcome, age));
             } else {
-                waiting.push((outcome, merged_at));
+                waiting.push((outcome, merged_at, marked));
             }
         }
         self.pending = waiting;
@@ -478,6 +514,20 @@ impl Drop for MaintenanceHandle {
 /// wrong and filled a disk.
 #[must_use]
 pub fn spawn(tables: Vec<PathBuf>, policy: MaintenancePolicy) -> MaintenanceHandle {
+    spawn_watching(tables, policy, None)
+}
+
+/// The same, told which readers are inside the warehouse.
+///
+/// A server passes the registry its query path pins against, and retirement then waits for
+/// readers instead of for a count of ticks. `None` is the honest value for a maintainer with
+/// no server beside it, and leaves the grace period doing the protecting as it always did.
+#[must_use]
+pub fn spawn_watching(
+    tables: Vec<PathBuf>,
+    policy: MaintenancePolicy,
+    leases: Option<Arc<Leases>>,
+) -> MaintenanceHandle {
     let stop = Arc::new(AtomicBool::new(false));
     let ticks = Arc::new(AtomicU64::new(0));
     let reclaimed = Arc::new(AtomicU64::new(0));
@@ -493,7 +543,14 @@ pub fn spawn(tables: Vec<PathBuf>, policy: MaintenancePolicy) -> MaintenanceHand
             .spawn(move || {
                 let mut maintainers: BTreeMap<PathBuf, Maintainer> = tables
                     .iter()
-                    .map(|table| (table.clone(), Maintainer::new(policy.clone())))
+                    .map(|table| {
+                        let maintainer = Maintainer::new(policy.clone());
+                        let maintainer = match leases.as_ref() {
+                            Some(leases) => maintainer.watching(Arc::clone(leases)),
+                            None => maintainer,
+                        };
+                        (table.clone(), maintainer)
+                    })
                     .collect();
                 while !stop.load(Ordering::Relaxed) {
                     // Read once per cycle, not once at startup. This is the whole of live

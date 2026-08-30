@@ -64,6 +64,12 @@ pub struct Settings {
     /// doing it. Two maintainers on one warehouse are two committers racing for the same
     /// version.
     pub maintenance: Option<sankhya_maintenance::MaintenancePolicy>,
+    /// Where Arrow Flight SQL listens, or `None` not to serve it.
+    ///
+    /// Its own port rather than a path on the wire-protocol one: Flight is a different
+    /// protocol spoken by different clients, and an operator who wants one and not the other
+    /// should not have to reason about which requests reach which handler.
+    pub flight_listen: Option<String>,
     /// The rows greedy selection may spend on materialised cuboids, per cube.
     ///
     /// The **configuration** level of §11.6's three controls, and the operator's. It is an
@@ -102,7 +108,24 @@ pub struct Server {
     /// Separate from `tables` because the two answer different questions: one is what a
     /// schema browser is told, the other is what a query reads. Keeping them together would
     /// invite a table that is described but not readable, or readable but not described.
-    servable: parking_lot::RwLock<Vec<ServableTable>>,
+    /// The tables that can be served, as a whole list replaced at once.
+    ///
+    /// **An `Arc` the readers clone, not a `Vec` they borrow.** Every statement used to take
+    /// this lock for *writing* and call `warehouse::refresh` inside it --- one filesystem probe
+    /// per table --- so every statement serialized against every other, and a write lock
+    /// excludes readers as well as writers.
+    ///
+    /// The probing now happens outside the lock and against a snapshot; the lock is taken only
+    /// to publish a replacement list, and only when something actually moved. A reader holds it
+    /// for the length of an `Arc::clone`.
+    servable: parking_lot::RwLock<Arc<Vec<ServableTable>>>,
+    /// Which readers are inside the warehouse right now.
+    ///
+    /// Shared with the maintenance thread, which is the entire point: a registry the sweeper
+    /// cannot see protects nothing. A statement pins it for as long as it runs, so a file that
+    /// stops being referenced while a query is in flight is not deleted until that query has
+    /// finished --- rather than after a number of ticks chosen to be probably long enough.
+    leases: Arc<sankhya_leases::Leases>,
     /// The log cache the refresh above reads through.
     ///
     /// Shared with nothing else deliberately: it exists so that checking whether a table has
@@ -387,7 +410,8 @@ impl Server {
             quotas,
             audit: parking_lot::Mutex::new(Chain::new()),
             tables,
-            servable: parking_lot::RwLock::new(servable),
+            servable: parking_lot::RwLock::new(Arc::new(servable)),
+            leases: Arc::new(sankhya_leases::Leases::new()),
             log_cache: sankhya_table_delta::LogCache::new(),
             cubes: Vec::new(),
             hydrated: Arc::new(sankhya_cube_sql::hydrated::Hydrated::default()),
@@ -1245,6 +1269,87 @@ impl Server {
         })
     }
 
+    /// The tenant this server serves.
+    #[must_use]
+    pub const fn tenant(&self) -> sankhya_authz::principal::TenantId {
+        self.settings.tenant
+    }
+
+    /// The policy every session is built against.
+    #[must_use]
+    pub const fn policy_set(&self) -> &PolicySet {
+        &self.policy
+    }
+
+    /// The tables that can be served right now, refreshed if their logs have moved.
+    ///
+    /// Refreshed here rather than read stale, for the reason the statement path refreshes:
+    /// providers resolved once at boot name files that maintenance later retires, and a
+    /// reader holding them fails on a path the caller never mentioned.
+    #[must_use]
+    pub fn servable_now(&self) -> Arc<Vec<ServableTable>> {
+        self.refreshed_servable()
+    }
+
+    /// The servable tables, with any whose log has moved re-resolved.
+    ///
+    /// The filesystem work happens **outside** the lock, against a snapshot taken under it.
+    /// Two statements refreshing at once may both do the probing and one of their lists wins;
+    /// that costs a duplicated probe and never a wrong answer, because both are resolving the
+    /// same logs at the same target. Serializing every statement to avoid it --- which is what
+    /// holding the write lock across the probes did --- is the more expensive mistake.
+    fn refreshed_servable(&self) -> Arc<Vec<ServableTable>> {
+        let current = Arc::clone(&self.servable.read());
+        let mut candidate = (*current).clone();
+        let moved =
+            crate::warehouse::refresh(&mut candidate, self.settings.read_as_of, &self.log_cache);
+        if moved == 0 {
+            // The ordinary case: nothing has committed since the last statement, so there is
+            // nothing to publish and no reason to take the write lock at all.
+            return current;
+        }
+        let replacement = Arc::new(candidate);
+        *self.servable.write() = Arc::clone(&replacement);
+        replacement
+    }
+
+    /// The principal a Flight request acts as.
+    ///
+    /// Tenant-scoped, because a ticket carries a tenant and not a subject. Every user of a
+    /// tenant currently receives the same roles, so this is exactly the principal any of them
+    /// would get --- and when that stops being true the subject has to travel in the ticket.
+    #[must_use]
+    pub fn flight_principal(&self) -> Option<Principal> {
+        self.principal("flight")
+    }
+
+    /// The newest version any servable table stands at.
+    ///
+    /// What a Flight ticket records as the snapshot it was planned against. The newest across
+    /// tables rather than one table's, because a statement may name several and the ticket has
+    /// one field --- and taking the newest is the value that cannot be *older* than what the
+    /// plan saw.
+    #[must_use]
+    pub fn newest_snapshot(&self) -> u64 {
+        self.servable
+            .read()
+            .iter()
+            .filter_map(|servable| sankhya_table_delta::live_files(&servable.root).ok())
+            .filter_map(|live| live.version)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The registry this server's statements pin, for the maintenance thread to consult.
+    ///
+    /// Handed out rather than rebuilt, because two registries would be worse than none: the
+    /// sweeper would consult one that no reader ever announces into, conclude the warehouse is
+    /// idle, and delete files under live queries --- while every test of either half passed.
+    #[must_use]
+    pub fn leases(&self) -> Arc<sankhya_leases::Leases> {
+        Arc::clone(&self.leases)
+    }
+
     /// The version a table's log stands at, for a test that must name the same one.
     #[must_use]
     pub fn snapshot_for_test(&self, table: &str) -> u64 {
@@ -1289,6 +1394,15 @@ impl Server {
     /// duration histogram fed only by the successful path describes a system that never
     /// fails, and the tail an operator goes looking for is made of failures.
     fn run_statement(&self, sql: &str) -> Result<QueryResult, QueryFailure> {
+        // Announced for as long as this statement runs.
+        //
+        // Taken here rather than around the scan, because the window that matters opens when
+        // the statement resolves a table into a set of file paths and closes when the last of
+        // them has been read. Pinning any later would leave the resolve unprotected, which is
+        // exactly the gap: the paths are chosen from a log, and the files behind them can be
+        // retired between the choosing and the opening.
+        let _reading = self.leases.pin();
+
         // Admission first. A statement refused for quota must not reach anything else, and
         // must be distinguishable from one refused for permission — the client's correct
         // response differs.
@@ -1322,11 +1436,7 @@ impl Server {
         // fails on a path nobody asked about.
         //
         // Checked per statement, through the log cache, so an unmoved table costs a stat.
-        {
-            let mut servable = self.servable.write();
-            crate::warehouse::refresh(&mut servable, self.settings.read_as_of, &self.log_cache);
-        }
-        let servable = self.servable.read().clone();
+        let servable = self.refreshed_servable();
         let (context, registered) = session_for(&principal, &self.policy, &servable)?;
         if registered == 0 && !servable.is_empty() {
             return Err(refusal(

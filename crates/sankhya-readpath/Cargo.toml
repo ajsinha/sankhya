@@ -30,6 +30,7 @@ arrow-schema         = { workspace = true }
 sankhya-publish   = { path = "../sankhya-publish" }
 sankhya-schema    = { path = "../sankhya-schema" }
 sankhya-cdc-model = { path = "../sankhya-cdc-model" }
+sankhya-testkit   = { path = "../sankhya-testkit" }
 arrow         = { workspace = true }
 sankhya-table = { path = "../sankhya-table" }
 tokio         = { workspace = true }

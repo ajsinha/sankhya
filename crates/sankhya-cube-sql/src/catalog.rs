@@ -127,17 +127,34 @@ impl CubeCatalog {
     /// # Errors
     /// [`Unresolved`], distinguishing an unknown name from a cube awaiting its first load.
     pub fn resolve(&self, name: &str, measure: &str) -> Result<Published, Unresolved> {
-        let cubes = self.cubes.read();
-        if let Some(published) = cubes.get(&(name.to_string(), measure.to_string())) {
-            return Ok(published.clone());
+        // Each lock is taken, used and released before the next. Holding `cubes` across a
+        // `declared` acquisition --- which this did until 2026-08-29 --- established an order
+        // between two locks that otherwise have none, and an order that exists only by accident
+        // is one a later change reverses without noticing.
+        //
+        // Nothing took them the other way round, so there was no cycle. That is the point:
+        // deadlocks are not introduced by the code that holds two locks, they are introduced by
+        // the code written afterwards that holds them the other way.
+        let hit = self
+            .cubes
+            .read()
+            .get(&(name.to_string(), measure.to_string()))
+            .cloned();
+        if let Some(published) = hit {
+            return Ok(published);
         }
-        if !self.declared.read().contains(name) {
+
+        let declared: Vec<String> = self.declared.read().iter().cloned().collect();
+        if !declared.iter().any(|known| known == name) {
             return Err(Unresolved::NoSuchCube {
                 name: name.to_string(),
-                known: self.declared.read().iter().cloned().collect(),
+                known: declared,
             });
         }
-        let published: Vec<String> = cubes
+
+        let published: Vec<String> = self
+            .cubes
+            .read()
             .keys()
             .filter(|(cube, _)| cube == name)
             .map(|(_, measure)| measure.clone())

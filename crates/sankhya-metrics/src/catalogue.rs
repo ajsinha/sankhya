@@ -109,6 +109,39 @@ pub static TABLE_LIVE_FILES: Metric = Metric {
     }),
 };
 
+/// Bytes the process has allocated and not yet freed.
+///
+/// Counted at the allocator, which is the only place that sees all of it. The query
+/// engine's own pool tracks what its operators reserve, and decode buffers, network
+/// buffers, graph arenas and every third-party allocation sit outside that pool --- so a
+/// query can stay inside its reservation and still exhaust the machine.
+pub static MEMORY_IN_USE_BYTES: Metric = Metric {
+    name: "sankhya_memory_in_use_bytes",
+    kind: Kind::Gauge,
+    unit: Unit::Bytes,
+    labels: &[],
+    group: Group::Resource,
+    help: "Bytes allocated and not yet freed, counted at the global allocator. Everything \
+           the process allocates passes through it, including what the query engine's own \
+           accounting cannot see.",
+    alert: None,
+};
+
+/// The highest the allocated total has been since the process started.
+///
+/// What a memory limit has to be set against. An average says nothing about whether a
+/// workload fits, because the moment it does not fit is a peak.
+pub static MEMORY_PEAK_BYTES: Metric = Metric {
+    name: "sankhya_memory_peak_bytes",
+    kind: Kind::Gauge,
+    unit: Unit::Bytes,
+    labels: &[],
+    group: Group::Resource,
+    help: "The highest the allocated total has been since this process started. A limit is \
+           set against a peak, never against an average.",
+    alert: None,
+};
+
 /// Recordings the registry refused.
 pub static METRICS_REJECTED_TOTAL: Metric = Metric {
     name: "sankhya_metrics_rejected_total",
@@ -137,6 +170,8 @@ pub static ALL: &[&Metric] = &[
     &CONNECTIONS_ACTIVE,
     &AUDIT_RECORDS_TOTAL,
     &TABLE_LIVE_FILES,
+    &MEMORY_IN_USE_BYTES,
+    &MEMORY_PEAK_BYTES,
     &METRICS_REJECTED_TOTAL,
 ];
 

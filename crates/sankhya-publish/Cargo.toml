@@ -30,5 +30,6 @@ parquet             = { workspace = true }
 serde_json          = { workspace = true }
 
 [dev-dependencies]
+sankhya-testkit = { path = "../sankhya-testkit" }
 parquet = { workspace = true }
 tempfile = { workspace = true }

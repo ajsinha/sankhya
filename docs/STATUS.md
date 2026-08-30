@@ -5,9 +5,11 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # SANKHYA — Build Status
 
-**Updated:** 2026-08-26 · Tracks what is *actually built* against
+**Updated:** 2026-08-29 · Tracks what is *actually built* against
 [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).
 
 This document exists because a plan describes intent and a roadmap describes ambition;
@@ -27,7 +29,11 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M5** Tenancy, security and API surfaces | 22–28 ew | **Closed.** Four of five exit criteria met; the fifth needs a second server version to exist. Two of four API surfaces built — the wire protocol and Flight SQL. The control plane and its gateway are **deferred to M6**, because what they expose is built there |
 | **M6** Operability, packaging and hardening | 2026-08-28 | **Complete.** Six of seven exit criteria met. Criterion 4 accepted on a forty-five-minute judged run by owner decision — `PASS` over 44 minutes with all seven measures steady, on the first soak to exercise a cube. **Criterion 7 carried into M8**: §10.8's size decision and route table are built and tested; the gRPC transport and every write path are not. See [SOAK.md](SOAK.md) |
 | **M7** Multidimensional analysis — cubes, slice/dice, roll-up, consolidation | 2026-08-28 | **Complete.** All eight exit criteria pass against a cube hydrated from a published table. Declared complete once before, on 2026-08-27, and retracted the same day: the hydration path did not exist and every criterion passed on cells its own fixture supplied. Both that gap and the write-only materialisation found on 2026-08-28 are closed. See below, and [ADR-0007](adr/0007-the-cube-model.md) |
-| **M8**–**M9** Scale-out, then tiering | — | Next. Renumbered from M7–M8 when M7 was inserted. Carries soak criterion 7 — the gRPC transport and write paths — and the scheduled multi-day run |
+| **M8** **Concurrency and data safety** | 2026-08-30 | **Complete on six of eight**, and the other two moved rather than met. S1–S3 and C1–C3 are proven, each concurrency criterion measured against a control taken in the same run. **§12.2 and criteria 7–8 moved whole to M12 on 2026-08-30** by owner decision: both need a second machine, and a recovery objective measured on one host excludes the failures the criterion exists to price. The one item in §12.2 that could not be safely parked — the shard-set seam — was designed first and turned out to be mislabelled; see [ADR-0015](adr/0015-the-shard-set-seam.md). **Rescoped 2026-08-28** by owner directive after an end-to-end audit found a version claim that could lose a commit silently, four files published non-atomically, and three reclamation paths guarding against a proxy rather than against readers. See [ADR-0013](adr/0013-concurrency-and-data-safety.md) |
+| **M9** Tiering | 12–16 ew | **Next**, started 2026-08-30. **Gated** on the drills in [`IMPLEMENTATION_PLAN.md` §13](IMPLEMENTATION_PLAN.md): the restore drill exists from M6 §10.3, the archive attestation drill does not. Gate criterion 1 moved to M11 on 2026-08-28, and **destructive purge stays disabled until M11 clears it** — building the purge path and arming it are two decisions |
+| **M10** Zero-copy cloning | 10–14 ew | After M9. **Design-gated: no code before an accepted ADR**, covering shared-file lifetime, the maintenance interaction, and what a clone means for backup, tiering, audit and time travel |
+| **M11** Production reconciliation | — | **Not schedulable by development.** Needs a production deployment that does not exist. Holds M9's gate criterion 1 and the arming decision for destructive purge |
+| **M12** Scale-out, HA and disaster recovery, then production-like acceptance | 20–26 ew | **Needs a second machine**, which is why it holds M8 §12.2 and criteria 7–8 as of 2026-08-30. The project's exit criteria: 12 h, two machines, 100 GB, 50 readers, 20 writers. `CREATE CUBE` is a blocking dependency here and is **not** hardware-blocked, so it can be built at any point before the run |
 
 ---
 
@@ -106,6 +112,462 @@ Not started. Sized here rather than begun, because the CDC commit path carries c
 crash-safety reasoning — sequence-derived names, commit-strictly-after-write, rebasing on
 version conflict — and a partitioning change touches all three.
 
+
+## M8, complete on six of eight
+
+### Where it stands, as of 2026-08-30
+
+The rest of this section is *why*. This is *what*, for somebody picking the work up cold.
+
+| §12.1 Concurrency and data safety | |
+|---|---|
+| `sankhya-atomicfs`, atomic version claim, `check-atomic-writes` | done |
+| `sankhya-leases`, wired through maintenance and the query path | done |
+| `check-lock-order` and the two nested-lock sites it found | done |
+| Lock striping: `LogCache`, `QueryLog`, `servable` | done — `Hydrated` **deliberately not**, see below |
+| `sankhya-testkit` | done, with a measured floor |
+| C1–C3, the three measurement criteria | done — measured against a control in the same run |
+| Crate hygiene | 55 crates → 52; `alloc` **wired**, `ports` **decided: delete**, and `api-rest`, `cdc-pg`, `pack` each carry a dated milestone |
+
+| §12.2 Scale-out — **moved to M12 on 2026-08-30** | |
+|---|---|
+| gRPC transport, Arrow Flight SQL served | done here — M6's carried criterion 7, partly |
+| `sankhya-oltp-pg` supervisor | done here, tested against vendored PostgreSQL 17.11 |
+| The shard-set seam | **decided, not moved** — [ADR-0015](adr/0015-the-shard-set-seam.md); no code change was required |
+| Leader election, attached mode, executor scale-out, replication, key management, metering | **moved to M12** |
+| The REST gateway's transport, and the multi-day soak | **moved to M12** — criterion 8 |
+
+**Exit criteria: six of eight proven.** S1–S3 (no lost commit, no partial read, nothing
+deleted while read) have tests and mutations. **C1–C3 are now measured**, each against a
+control measured in the same run on the same machine: writers on different tables scale
+**4.8×** where the same commits behind one warehouse lock scale **0.91×**; a reader under
+write load holds **0.59–0.80** of its idle rate where a reader sharing a lock with the
+writers holds **0.00–0.07**; and sixteen writers contending for one table all commit, with a
+worst rebase count of eleven.
+
+**The two that are not proven left the milestone on 2026-08-30**, by owner decision, and went
+whole to M12 along with §12.2. The reason is a machine, not an estimate.
+
+Most of §12.2 is in fact buildable on one host — leader election, fencing and a lost lease are
+proven by contending *processes*, and a partition can be induced with `SIGSTOP` or a firewall
+rule. What cannot be produced here is the evidence criterion 7 asks for. It requires *"recovery
+objectives measured and published rather than estimated"*, and an objective measured on one box
+silently excludes network detection, machine loss and clock skew — publishing it would be the
+same species of claim as **a contention threshold set below the contended figure**, which this
+repository has shipped twice and which §12.1 exists to have stopped doing. Cross-region
+replication is not measurable here by definition.
+
+**M12 was chosen over a new milestone** because M12 already declared the dependency — *"M8 for
+the concurrency properties, attached mode and multi-node operation"* — already requires two
+machines, and had no work breakdown precisely because it expected §12.2 to supply one. One
+blocker, one milestone.
+
+**The seam was the one thing that could not simply be parked**, and it is the reason the move
+took a day rather than an edit. Both `IMPLEMENTATION_PLAN.md` and `DEC-14` recorded *"allowing a
+table reference to resolve to a shard set"* as near-free now and an expensive retrofit later.
+Read against the code, it was **mislabelled**: `plan_splice` already resolves one reference to
+several sources and proves exact coverage, and `AddFile.partition` already records every file's
+partition values, so the resolution layer was never single-valued. The expensive reading —
+shards as independently committed logs — costs a cross-shard commit protocol and lands on exit
+criterion 1, not on resolution. It is refused rather than deferred, and **no code change was
+required**, which is the finding rather than the convenient answer. [ADR-0015](adr/0015-the-shard-set-seam.md).
+
+**The next piece of work is M9**, not attached mode. When M12 is picked up, attached mode is
+still the entry point, because leader election runs against it and everything else runs against
+leader election.
+
+### Two decisions a newcomer would otherwise re-litigate
+
+**`Hydrated` was deliberately left alone.** ADR-0013 lists it as a fourth choke point; that was
+written from reading the code. Measured, readers against a concurrent writer came in at a ratio
+of **0.81** to readers alone --- no contention, because `put` runs on a cache *miss* after a
+hydration that dwarfs it. Striping it would make its capacity approximate for no gain.
+
+**Managed PostgreSQL does not unblock leader election.** `REQUIREMENTS.md` records managed mode
+as single-node; multi-node uses *attached* mode, and leader election runs against that. The
+supervisor was still worth building first, but it is not on that critical path.
+
+### C1 to C3 — the three criteria a global lock would pass, and the control that catches it
+
+S1 to S3 are safety, and one lock over the warehouse satisfies every one of them. That is
+the whole reason ADR-0013 states three more beside them, and states them as **measurements**:
+*writers to different tables do not contend*, *readers are never blocked by writers*,
+*contention on one table degrades gracefully*. A test that asserts the code is correct cannot
+tell those apart from the design they forbid.
+
+So each measurement is taken twice in the same run on the same machine --- once as the code
+stands, once with the same work serialized through one mutex --- and the assertion is on the
+distance between them. The control is not a fake of anything: it is a global serialization
+point applied to the real function, which is exactly the shape the criteria forbid. **A test
+whose threshold cannot separate the two states is the failure this repository has already
+shipped twice**, most recently a contention assertion set *below* the contended figure, which
+passed with the defect restored.
+
+| | Measured | Behind one warehouse lock |
+|---|---|---|
+| **C1**, commits to eight tables against one | **36,972 → 178,259 commits/s (4.82×)** | 37,456 → 33,940 (**0.91×**) |
+| **C1**, the same end to end through `Publication` | 4.4× to 5.9× | 0.9× to 1.2× |
+| **C2**, a reader's rate under four writers | **0.59 to 0.80** of idle, p99 165 µs → 227 µs | **0.00 to 0.07**, p99 measured in *seconds* |
+| **C3**, sixteen writers on one contested version | all sixteen commit, worst rebase count **11** | — |
+
+**C1 is measured twice, and the second one is why.** The end-to-end publish measurement is
+what a writer experiences, and it is too blunt to be the only one: with a lock over **just the
+commit** --- the narrower defect, and by far the likelier one --- an eight-writer publish still
+scales **1.87×**, because encoding Parquet is untouched and is most of a publish. A threshold
+of two would have passed that. The claim is about the commit path, so the commit path gets its
+own measurement in `sankhya-table-delta`, where the encoding cannot mask it, and the mutation
+that puts one lock around every commit in the warehouse is caught there.
+
+**C2 is not 1.00, and saying so is the point.** Four writers encoding Parquet on the same
+filesystem cost a reader something real --- page cache, directory metadata, memory bandwidth
+--- and a criterion phrased as *flat* invites a test that either lies or is set so loose it
+proves nothing. What is ruled out is a reader **waiting** for a writer, and the control arm is
+what separates those: 0.7 of idle with a p99 of a fifth of a millisecond, against a reader that
+shares a lock with the writers and waits seconds for a turn.
+
+There is a second half to C2 that the ratio cannot state. A reader of the table **being
+written** must do more work as commits arrive --- it has a longer log to replay --- so its rate
+is not expected to be flat at all. What must hold there is that it is never refused, never
+blocked, and never shown a state older than one it has already seen, and that is asserted
+directly against `declared_rows` rather than inferred from a rate.
+
+### The write path was quadratic in a table's own history
+
+C3 found a defect that had nothing to do with contention, by being a measurement rather than
+an assertion. Eight writers on one table ran at **11%** of the rate the same eight reached
+across eight tables --- and, worse, at **less than half the rate of a single writer**. Rebasing
+was costing more than the parallelism it was buying.
+
+`Publication::next_version` asked `newest_after(root, None)`, which walks from version zero
+with one `exists()` probe per version. A table at version *v* costs *v* system calls, a
+publisher asks once per append **and once per rebase**, and so a single table's write path was
+quadratic in its own history. At sixteen hundred commits that is eight hundred stat calls
+before each commit, against a commit that costs about twenty microseconds.
+
+Nothing was wrong with the answer, which is why it survived: `next_version` returned the right
+version every time, every test passed, and the cost was invisible to all of them because
+**every test had a short log**. The same shape as the lock that was never unsafe --- correct
+answers, and the question that finds it is not *"can this corrupt?"*.
+
+The fix is a floor rather than a counter, and the distinction is load-bearing. A counter held
+beside the log is a counter that can be wrong about somebody else's commit. A **floor** is a
+place to start probing from, and every step of the probe is still a filesystem check --- so a
+floor that is stale costs a longer walk, and a floor that is *ahead* of the log, which a
+restore from backup would produce, makes the walk answer nothing and is discarded rather than
+believed. The contended figure went from 11% to **24–51%** of the uncontended rate, and from
+below a single writer to consistently above one.
+
+### The retry budget was set at the p95, and a backoff made the tail worse
+
+With the walk gone, contention got fast enough to expose the next thing: writers being refused
+after exhausting their rebase budget while nothing was wrong.
+
+Measured over sixteen hundred real commits with eight writers on one table, the rebase count
+is **heavy-tailed** --- a mean of five, a median of three, a p95 of fourteen, a p99 of
+twenty-five and a longest run of fifty-three. `append_all_rebasing` was passing **sixteen**,
+which sits at the p95: about one append in twenty would have been refused as contention with
+nothing contended about it beyond ordinary luck. It is now `REBASE_BUDGET`, two hundred and
+fifty-six, which is four times the longest measured run and still bounds a writer that is
+genuinely being outpaced.
+
+**A backoff was tried and is not there.** Spinning and yielding before each retry, perturbed
+per writer so that losers would not resume in step, moved the mean from 5.0 to 4.5 and moved
+the p99 from 25 to 35 --- it made the tail *worse*. The tail is not writers colliding in
+lockstep; it is the scheduler, and no amount of politeness in that loop changes it. Recording
+the negative result is worth more than the code would have been.
+
+### Three catalogue entries that had not run since a comma went missing
+
+The mutation catalogue is a Python list of tuples. A missing comma between two entries is not
+a syntax error --- Python reads the second tuple as an *element* of the first --- so one entry
+had swallowed the two that followed it. The outer entry ran `cargo test -p <tuple>`, and the
+two it had eaten never ran at all.
+
+It survived because every check in that file only ever looked at the first three fields, which
+are strings either way. `--check` reported *all 421 catalogue entries match the source* while
+three of them were incapable of proving anything. The check now validates the **shape** of
+every entry before it validates its text, and the count is 426: the two that were swallowed,
+plus three new ones, less nothing.
+
+### The allocator is installed, and the stranded crates got their decisions
+
+`sankhya-alloc` was the plan's own example of near-free: a counting `GlobalAlloc`, built and
+tested, that **nothing installed**, so every allocation figure it exists to provide was
+unavailable. It is now the server's global allocator, and `sankhya_memory_in_use_bytes` and
+`sankhya_memory_peak_bytes` are sampled at the moment of a scrape --- two atomic loads, which
+is cheaper than any timer that would report the previous era.
+
+The first version of that read `crate::ALLOCATOR` directly from the scrape module, and it
+broke the build in a way worth recording, because the shape recurs. `scrape.rs` is compiled
+twice: once into the server binary, and once into `tests/observability.rs`, which
+`#[path]`-includes it in order to drive the real endpoint rather than a copy of it. A
+`#[global_allocator]` static exists only in the first of those, so a module that names it
+compiles in the binary and fails in the test that proves the binary works. The reference now
+goes through `sankhya_alloc::in_use()` and `peak()`, which return `Option`: the binary calls
+`announce(&ALLOCATOR)` as its first statement and gets figures, and a test binary running on
+the system allocator announces nothing and leaves the two gauges unset --- which is the truth
+about a test binary, and better than a zero that reads like a measurement.
+
+The other four are decisions rather than code, and the distinction matters: two of them are
+**not M8's work**, and recording them as M8 decisions is how they would have stayed lost.
+
+- **`sankhya-ports` --- delete.** Nothing implements a single trait in it, and its own header
+  claims `Clock` and `IdGen` are injected everywhere and enforced by lint, neither of which is
+  true. A crate whose documentation asserts a property the workspace does not have is worse
+  than an empty one.
+- **`sankhya-pack` --- M4 §8.6.** The declarative tier is a *planned* tier, and `ARCHITECTURE`
+  expects it to express the substantial majority of a real pack. It is built; the loader that
+  reads a bundle directory into a running server is what was never finished. That is M4's
+  remainder, not an M8 hygiene decision, and deleting it would discard a milestone's work.
+- **`sankhya-cdc-pg` --- M2's remainder.** The slot lifecycle, the lag thresholds and the
+  source-safety ladder are built and tested. What is missing is the driver that runs them on a
+  timer, which is precisely what M2 already records as outstanding.
+- **`sankhya-api-rest` --- M8 §12.2, with criterion 8.** Serving the route table needs an HTTP
+  listener, HTTP authentication and a row estimate taken **before** anything is materialised
+  --- `deliver` refuses a count taken afterwards, because materialising a result to measure it
+  is the cost the cap exists to avoid. That is a feature, and it belongs beside the rest of
+  criterion 7.
+
+### A generated document somebody had edited by hand
+
+`check-catalogues` was **failing on `develop`**, and had been. `PLATFORMS.md` carries a header
+saying it is generated and must not be edited, and an owner decision from 2026-08-29 --- which
+filesystems a warehouse may live on, and that FAT and exFAT may not --- had been written into
+it directly.
+
+Two failures at once, and the second is the dangerous one. The gate was red, so nobody could
+tell what else was red. And the next `write-catalogues` would have **deleted an owner
+decision** silently, leaving no trace of which paragraph went missing. The section now lives in
+the generator that produces the file, which is where prose that has to survive belongs.
+
+### §12.1e — a harness that provokes a race, and the floor it cannot reach
+
+`sankhya-testkit`: `Hammer` releases workers on a barrier, oversubscribes the machine four
+times so the scheduler preempts *inside* short windows, and joins every worker before returning
+results --- the hang designed out rather than remembered. `Until` sets its stop flag on drop, so
+a panic releases workers instead of stranding them. `Jitter` is seeded, which is the point:
+"we could not reproduce it" is what turns a concurrency bug into a permanent resident.
+
+It is held to its own standard. `the_harness_finds_a_lost_update` runs a racy counter and
+**fails if nothing is lost**; its pair runs the same contention against an atomic and asserts
+nothing is lost, so the first cannot be satisfied by a harness that merely breaks things.
+
+**And the floor is measured.** It does not catch the defect whose window is two instructions ---
+taking an epoch before counting a reader in `leases::pin`. Four times oversubscription does not
+help, because `drained` scans hundreds of slots and cannot complete inside a window that narrow
+however often the reader is descheduled. So the mutation catalogue carries **no entry** for it:
+an entry whose mutation survives is a claim of coverage that does not exist. Reaching that class
+needs a scheduler somebody controls --- `loom`, which substitutes its own atomics under a `cfg`
+so nothing ships with a hook. **Adopting `loom` is the recorded next step for that class.**
+
+### §12.1 — the version claim is atomic, and four writers publish all at once
+
+`sankhya-atomicfs` is a new layer-0 crate with no dependencies and two functions. `publish`
+makes a file visible all at once; `claim` does that **and fails if the name is taken**. The
+distinction is the whole of the protocol's concurrency control, and using the first where the
+second was meant loses the loser's work in silence --- which is what `commit` was doing.
+
+`commit` now claims through `link(2)`, which returns `EEXIST`, so a loser is told `VersionTaken`
+and the rebase loop that has existed since M5 finally runs. The cube catalogue, the
+`_last_checkpoint` pointer and the backup manifest are published rather than written onto their
+live paths. `check-atomic-writes` refuses the two shapes anywhere else, and `INVARIANTS.md`
+carries the rule --- `check-invariants` refused the build until it did.
+
+**The one case the gate found that was already right.** `write_parquet` creates its file and
+streams into it, and that is safe for a reason the gate cannot see: no log names the path until
+the file is closed, so no reader can ask for it, and a partial file left by a crash is
+unreferenced and collected by the orphan sweep. Safety there comes from **ordering**, not from
+atomicity. It is excused with that reasoning rather than changed, and routing it through
+`publish` would have meant buffering a whole Parquet file in memory.
+
+### The read path stopped serializing on one lock
+
+`LogCache` held a single `Mutex<HashMap<PathBuf, Replay>>` over **every** table --- and held it
+**across the filesystem work**: the probe for a newer version and the replay of whatever it
+found. Every query on every table took that lock, so a cold replay of a large log blocked
+queries against unrelated tables for its whole duration.
+
+Nothing about it was unsafe, which is exactly why it survived: it returned correct answers and
+no correctness test could tell. The audit that found the commit defect walked straight past it,
+because that audit asked *"can this corrupt?"* and the answer was no. The question that finds
+these is *"does this serialize?"*.
+
+Two changes, and the first matters more. The lock is **no longer held across I/O** --- the map
+is locked only long enough to find a table's entry, and the reading happens under that table's
+own lock. And the map is **striped** across 64 shards. Striping alone would have been the lesser
+fix: it reduces how many threads wait, while taking the I/O out of the critical section changes
+what they wait for. Two queries on the *same* table still serialize, and must, because they are
+advancing one replay.
+
+Measured: while a 400-commit table replays continuously, a second table manages **46,570**
+lookups. With one lock put back it manages **618** --- a factor of seventy-five.
+
+**The first version of that test asserted `> 100`**, which is *below* the blocked figure, so it
+passed with the global lock restored: a test of contention that could not detect contention.
+The threshold is now three thousand, chosen from both measurements rather than from taste.
+
+### PostgreSQL is supervised, and "embedded" means what the requirements say it means
+
+`sankhya-oltp-pg` was one line of source. It now creates, starts, proves ready and stops a
+PostgreSQL cluster, and its six tests run against the vendored **17.11** rather than a stub ---
+because there is no way to fake a database lifecycle usefully. The failures worth catching are
+`initdb` refusing a non-empty directory, a postmaster that has started and is not yet accepting
+connections, and a shutdown that leaves a lock file behind, and a stub producing any of those
+would be asserting what its author already believed. When the vendored build is absent the
+tests **skip loudly and by name** rather than passing quietly.
+
+`REQUIREMENTS.md` DEC-02 settled the claim this implements: PostgreSQL is not linked into the
+binary and does not run in-process. It is a child whose whole lifecycle SANKHYA owns, so an
+operator sees one process tree and no DBA action. That is defensible; the literal reading of
+"embedded" is not.
+
+Four properties are load-bearing and each has a mutation proving its test:
+
+- **`initdb` is never run over an existing cluster.** Re-initialising a live data directory
+  destroys the system of record, and a restart is the ordinary case rather than the exception.
+- **`listen_addresses = ''`.** The postmaster is reachable only through a Unix socket inside the
+  data directory, which is what lets a managed cluster hold the system of record without an
+  operator reasoning about firewalls. Asserted by finding the socket, because a setting nobody
+  checks is one somebody tidies away.
+- **Readiness is asked of the cluster, never remembered.** A supervised child can die without
+  telling its parent, and a supervisor that trusts its own bookkeeping reports a database as
+  healthy while it is gone.
+- **A supervisor that goes away takes its child with it.** Otherwise a panic leaves a postmaster
+  owning a data directory nothing owns, and the next start finds the lock held by a process that
+  is not its child.
+
+**No new dependency.** Everything drives the vendored programs --- `initdb`, `pg_ctl`,
+`pg_isready` --- which are the same ones an operator would run, so the supervisor cannot drift
+from what doing it by hand produces. Pooling and migrations need a client library, and that is
+an open decision rather than one made by reaching for a crate.
+
+**Managed mode is single-node, deliberately.** `REQUIREMENTS.md` records it as a product
+boundary: multi-node uses *attached* mode against an externally managed cluster, and M8's leader
+election runs against that. Building the supervisor first is still right --- it is what makes a
+single-binary evaluation real, and it needs nothing this workspace does not already have.
+
+### Deadlock is a different problem from a race, and needed a different answer
+
+A race appears under load: run it enough times and the bad interleaving happens, which is why
+hammer tests found four of them this milestone. A **deadlock** needs two threads taking two
+locks in opposite orders at the same moment --- and while only one call path holds both, there
+is no order to reverse and no amount of hammering finds anything.
+
+That is what makes it dangerous rather than merely hard. **The code that holds two locks is not
+the bug. The code written six months later that holds them the other way round is**, and by
+then the first ordering is one function among thousands and nothing announces it.
+
+So `check-lock-order` does not look for deadlocks. It looks for the precondition --- a place
+where two locks are held at once --- and requires each one to be declared with its order. Two
+existed, both introduced within hours of the check that found them:
+
+**`QueryLog::record` held the map's read lock across the ring's lock, under a comment saying it
+did not.** In edition 2021 a temporary in an `if let` scrutinee lives to the end of the whole
+`if let`, so `if let Some(ring) = self.asks.read()...` holds the guard through `ring.lock()`.
+Binding it to a `let` first is not a style preference; it is the difference between the comment
+being true and being false.
+
+**`CubeCatalog::resolve` held `cubes` across two `declared` acquisitions.** Nothing took them
+the other way round, so there was no cycle --- which is exactly the state in which an ordering
+gets established by accident and reversed by somebody who never knew it existed.
+
+The check is syntactic and single-function, and says so: it cannot see a lock taken inside a
+function called while a guard is held, because that needs a call graph, and a lint that is half
+a call graph reports confidently about the half it has. What it catches is the shape that
+appeared here twice in one day.
+
+### The cube query path stopped serializing too
+
+`QueryLog::record` runs on **every** cube query and took a write lock over the whole map to
+push one entry, so every cube's navigation serialized against every other cube's. Each cube's
+ring is now behind its own small lock; recording takes a read lock to find it, releases that,
+and holds the ring's lock for the length of a push.
+
+Measured as a ratio on one machine in one run, which is what makes it a measurement of the code
+rather than of the hardware: recording to eight **different** cubes against recording to
+**one**. With per-cube locks the ratio is **3.19** --- different cubes genuinely do not meet.
+With the map's write lock put back it is **1.06**, because then the map lock is the only lock
+that matters and eight cubes are as slow as one.
+
+### §12.1c — reclamation waits for readers
+
+`sankhya-leases`, layer 0, no dependencies. Readers do not register *what* they hold --- that
+would be a shared set behind a mutex on the read path, which is a GIL with a filesystem accent.
+They announce *when they started*, into a slot nobody else writes, with one atomic store. A
+sweeper reads the slots and takes the oldest.
+
+That is enough because a reader pins **before** it resolves: a file that stopped being
+referenced at epoch *e* is unreachable once every reader that started before *e* has finished,
+and a reader that starts later resolves a log that does not name it. Nothing needs to know which
+files which reader holds.
+
+The path is wired end to end. `Maintainer::watching` takes the registry, the epoch is marked at
+the moment a commit stops referencing a merge's inputs, and `retire_due` waits for it to drain.
+`Server::run_statement` pins for the life of a statement, and `main` hands the maintenance
+thread **the same registry** --- two would be worse than none, because the sweeper would watch
+one nobody announces into, conclude the warehouse idle, and delete files under live queries
+while every test of either half passed.
+
+`grace_ticks`, `min_age_ticks` and `CUBOID_DRIFT_TOLERATED` all remain, demoted from the
+protection to a **backstop against a leaked announcement**, which is the job they are actually
+good at. A registry with a leak and no backstop reclaims nothing for ever, which is the failure
+this warehouse has met from the other direction.
+
+### Four defects in the crate built to prevent defects
+
+`slot_for` took its modulus from the constant rather than the actual slot count, so every
+registry built at another size indexed past its own array.
+
+**A reader whose slot was already taken was announced nowhere.** When the older pin holding that
+slot was released first, every slot read free and a sweeper concluded the warehouse was idle
+--- while that reader was inside. That is precisely the failure the crate exists to prevent,
+inside the crate written to prevent it.
+
+The epoch was taken *before* the reader was counted, leaving a window in which a reader existed
+and was invisible; a hammer test found it in twenty rounds out of four hundred.
+
+And a test that **hung rather than failed**: an assertion inside `thread::scope` left twelve
+reader threads spinning on a stop flag nobody would ever set.
+
+### Tests that passed against the behaviour they were named for
+
+Four, now, and they are the most useful thing in this milestone.
+
+**Asking the registry twice observes two different instants.** `drained` and then
+`oldest_active` are not one observation, and a reader in its pending window makes the second
+answer conservatively. Counting that as a violation made two tests fail two runs in five, and
+the flakiness was entirely mine. The property has to be checked against what the readers
+themselves record.
+
+**A test that marks and asks in the same instant essentially never drains** while readers churn
+--- which is correct behaviour and proves nothing. Real reclamation marks when a file stops
+being referenced and deletes on a later tick, so the test has to defer too.
+
+**A test that pins by hand tests the registry, not the server.** The first version of
+`a_statement_pins_the_warehouse_for_as_long_as_it_runs` called `leases.pin()` itself and passed
+with the pin removed from `run_statement` altogether --- the entire behaviour it was named for.
+It now runs real statements in another thread and watches from outside.
+
+**A lease test with a zero grace period has no window to observe.** Retirement then happens in
+the same tick as the merge, so there is no moment in which a reader can arrive.
+
+### Two tests that passed against the defect they were named for
+
+Both were caught by mutation testing, and both are the same lesson at different sizes.
+
+**The staging-name test.** A shared staging name lets two writers publish each other's bytes.
+The first test asserted the file held *some* writer's body --- which it does, because a small
+`fs::write` lands atomically, so the winner still gets a well-formed body belonging to somebody
+who was told they lost. The property is that the winner's **own** bytes are on disk, and
+showing it needs 256 KB bodies so two interleaved writes cannot both land whole.
+
+**The half-written-read test.** It asserted every read was homogeneous --- all `a` or all `b`.
+Writing onto a live path truncates first, so a reader catches a **short** file far more often
+than a mixed one, and `all()` on an empty slice is `true`. The test passed against precisely
+the defect it was written for until it asserted the **length**.
+
+Neither would have been found by reading the tests. Both were found by mutating the code and
+noticing the suite did not care.
 
 ## M7, complete
 
@@ -388,7 +850,23 @@ the orphan sweep finds unreferenced files *within* a table, and this is a whole 
 mentions. The same shape as the defect that filled a disk in the soak, reintroduced by adding
 cuboids and closed the same afternoon.
 
-### The cube path under sustained load
+### The cube path under sustained load, with materialisation actually reachable
+
+`PASS` over 59 judged minutes against a two-hour horizon, all seven measures steady, on
+2026-08-29 --- **the first soak in which a cube was served from storage.** Until M7 closed the
+day before, `materialised` was dead code and every cube query went to the fact table however
+many cuboids the refresher had built.
+
+196 rounds, 1,960 publications, **37.2 GB read across 3.01 billion rows**, the cube answered 49
+times, and maintenance reclaimed 11.66 GB over 1,651 ticks while holding the warehouse at 9 GB
+and 90 live files throughout.
+
+Resident memory closed at **2.0 GB against the 2.2 GB of the previous run** --- more work, a
+longer run, and less memory. That is the direction materialisation was supposed to move it and
+the first measurement rather than the first assertion: a cuboid read replaces a fact-table
+hydration rather than adding to it. See [SOAK.md §7b](SOAK.md).
+
+### The earlier cube run
 
 `PASS` over 44 judged minutes with all seven measures steady, on the first soak to exercise a
 cube — 157 rounds, 2.41 billion rows scanned, the cube answered 39 times, maintenance
@@ -1565,7 +2043,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 408 specific defects applied one at a time; all 357 fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 426 specific defects applied one at a time, each required to fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -2081,9 +2559,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,762 tests, none of which needs a database
+cargo test --workspace           # 1,815 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 408 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 426 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

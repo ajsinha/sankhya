@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # SANKHYA — System Architecture
 
 **Document ID:** SNK-AD-001
@@ -1096,6 +1098,15 @@ The published tier accordingly names its files individually rather than pointing
 
 The table log is emitted by SANKHYA directly — a few hundred lines covering `protocol`, `metaData`, `add` and `remove`, one JSON object per line, staged and renamed so a reader never observes a partial commit. Concurrency control is the protocol's own: a writer picks the next version and fails if someone took it, and the loser rebases because its decisions were made against a state that no longer exists.
 
+> **Correction, 2026-08-28.** *"Fails if someone took it"* is the property the design requires
+> and, until M8, not the one the code delivers. `commit` claimed a version by checking the file
+> was absent and then renaming a staging file over it, and `rename(2)` replaces its destination
+> silently — so two committers could both see the version free, and the second would overwrite
+> the first with no error to either. The rebase loop never ran, because the `VersionTaken` it
+> waits for was never returned. It went unseen because every test had a single writer per
+> version. The claim becomes atomic in M8 §12.1b; see
+> [ADR-0013](adr/0013-concurrency-and-data-safety.md).
+
 The kernel is a **dev-dependency**, used as an independent oracle: it reads the log SANKHYA wrote and must agree about the schema, the version and the live set. This arrangement is what DEC-06's metadata-only coupling actually asks for — the storage library supplies a definition of correctness, not an I/O layer — and it keeps eighty-four packages and a duplicated HTTP client out of the shipped binary. That the dependency stays test-only is checked mechanically rather than left to review.
 
 **The oracle earned its place on its first run.** The log this system wrote was invalid: the `add` action's `partitionValues` field is non-nullable and had been omitted. It round-tripped through SANKHYA's own reader perfectly, because a reader ignores a field it never writes. Two implementations agreeing is worth nothing when the same author wrote both sides.
@@ -1867,7 +1878,7 @@ One test, enormous coverage: it detects hash iteration order leaking into result
 Executors scale out over shared storage, so scan throughput is not the first wall. In order:
 
 1. **Metadata and planning.** Cost grows with file count. Mitigated by compaction, which reduces it *quadratically* — fewer files makes each checkpoint smaller and permits checkpointing less often — and by commit cadence scaled to volume.
-2. **The single-writer commit path.** One applier commits one version at a time per table. Absorbed by lengthening the commit interval, which the arrival buffer makes safe. Beyond that, partition the applier by table.
+2. **The single-writer commit path.** One applier commits one version at a time per table. Absorbed by lengthening the commit interval, which the arrival buffer makes safe. Beyond that, partition the applier by table. **This was also what kept the non-atomic version claim latent** — one writer per table cannot race itself — which is why [ADR-0013](adr/0013-concurrency-and-data-safety.md) treats an assumption that is load-bearing for correctness as something to remove rather than to document.
 3. **Maintenance throughput.** Compaction of a very large warehouse may exceed one coordinator's duty cycle, forcing a maintenance-worker role. This is the most likely place the architecture must change first.
 4. **Local cache capacity** relative to the working set.
 5. **Single-node query capacity** for queries that cannot be pruned.
@@ -1875,10 +1886,10 @@ Executors scale out over shared storage, so scan throughput is not the first wal
 
 ### 19.2 Seams to design now, build later
 
-Two are near-zero cost today and expensive retrofits:
+Two were recorded as near-zero cost today and expensive retrofits. **Neither is a seam any longer, and they stopped being one for opposite reasons** — one was promoted to a criterion, the other turned out not to be a seam at all.
 
-- **Keep the commit path per-table**, never globally serialized, so the applier can be partitioned without restructuring.
-- **Allow a table reference to resolve to a shard set**, so a hot table can be split behind one logical name.
+- **Keep the commit path per-table**, never globally serialized, so the applier can be partitioned without restructuring. **Promoted from a seam to an M8 exit criterion** by [ADR-0013](adr/0013-concurrency-and-data-safety.md): the cheapest way to satisfy every safety requirement is one lock over the warehouse, and this is the criterion that forbids it. Met 2026-08-29.
+- **Allow a table reference to resolve to a shard set**, so a hot table can be split behind one logical name. **Mislabelled**, and [ADR-0015](adr/0015-the-shard-set-seam.md) says why. Resolution has never been single-valued: `plan_splice` resolves one reference to several sources and proves they cover the span exactly once, and `AddFile.partition` records every file's partition values, so shards as file groups beneath one log are built. Shards as *independently committed logs* is the expensive reading; its cost is a cross-shard commit protocol rather than anything in the resolution layer, and it is **refused rather than deferred** because §19.3's preferred distribution path partitions execution over file groups and never asks the catalog for N logs. **No code change was required to keep the option open**, because no code was holding it open.
 
 Three are legitimate future work and are named so they are not promised prematurely: replicating the arrival buffer to executors, distributed query execution, and a distributed graph with cross-shard traversal — the last being the hardest and the most likely to require a redesign rather than an extension.
 

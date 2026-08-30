@@ -642,13 +642,13 @@ CATALOGUE = [
 
     ("cache: trust the cached version instead of asking the log",
      "crates/sankhya-table-delta/src/cache.rs",
-     "        let newest = newest_after(table_root, cached.flatten());",
-     "        let newest = cached.flatten();",
+     "        let newest = newest_after(table_root, cached);",
+     "        let newest = cached;",
      "sankhya-table-delta"),
 
     ("cache: resume from a stale base after the table was rebuilt",
      "crates/sankhya-table-delta/src/cache.rs",
-     "        if rebuilt {\n            entries.remove(table_root);\n        }",
+     "        if rebuilt {\n            *replay = Replay::default();\n        }",
      "",
      "sankhya-table-delta"),
 
@@ -867,6 +867,23 @@ CATALOGUE = [
      "        let mut seen = self.peak.load(Ordering::Relaxed);\n        while now > seen {",
      "        let mut seen = self.peak.load(Ordering::Relaxed);\n        while now != seen {",
      "sankhya-alloc"),
+
+    ("alloc: report zero rather than nothing when no allocator was announced",
+     "crates/sankhya-alloc/src/lib.rs",
+     "    INSTALLED.get().map(|allocator| allocator.in_use())",
+     "    Some(INSTALLED.get().map_or(0, |allocator| allocator.in_use()))",
+     "sankhya-alloc"),
+
+    # Deliberately absent: "let a second announcement replace the installed allocator".
+    #
+    # There is no one-line edit that produces it. `OnceLock` has no method that
+    # overwrites, so the defect requires swapping the container for a mutable one and
+    # rewriting both readers -- which the audit would report as a failure to compile
+    # rather than as a surviving defect, and which is a redesign, not a slip.
+    #
+    # `a_second_announcement_does_not_replace_the_first` is kept anyway, because it pins
+    # the property at the API rather than at the container: whoever makes that swap for a
+    # reason that seems good at the time gets told what it costs.
 
     ("brake: report a warning when the machine is about to be killed",
      "crates/sankhya-governor/src/memory.rs",
@@ -1852,8 +1869,8 @@ CATALOGUE = [
 
     ("cube: let one cube's asks crowd out another's",
      "crates/sankhya-cube/src/querylog.rs",
-     "            .entry(cube.to_string())",
-     "            .entry(String::new())",
+     "                asks.entry(cube.to_string())",
+     "                asks.entry(String::new())",
      "sankhya-cube"),
 
     ("server: answer from any materialised cuboid, ignoring whether it can express the query",
@@ -1903,6 +1920,96 @@ CATALOGUE = [
      "                if self.withholds_nothing(principal, cube.fact_table()) {\n                    scopes.push(sankhya_cube::materialise::Key::UNRESTRICTED);\n                }",
      "                scopes.push(sankhya_cube::materialise::Key::UNRESTRICTED);",
      "sankhya-server"),
+
+    ("table-delta: claim a commit version by renaming, losing one of two racing commits",
+     "crates/sankhya-table-delta/src/log.rs",
+     "    match sankhya_atomicfs::claim(&path, body.as_bytes()) {",
+     "    match sankhya_atomicfs::publish(&path, body.as_bytes()) {",
+     "sankhya-table-delta"),
+
+    ("server: run a statement without announcing it, so a sweeper sees an idle warehouse",
+     "crates/sankhya-server/src/wiring.rs",
+     "        let _reading = self.leases.pin();",
+     "",
+     "sankhya-server"),
+
+    ("oltp-pg: re-run initdb over an existing cluster, destroying the system of record",
+     "crates/sankhya-oltp-pg/src/lib.rs",
+     "        if !self.exists() {\n            self.initialise()?;\n        }",
+     "        self.initialise()?;",
+     "sankhya-oltp-pg"),
+
+    ("oltp-pg: let the postmaster listen on the network instead of a private socket",
+     "crates/sankhya-oltp-pg/src/lib.rs",
+     "            \"-c listen_addresses='' -c unix_socket_directories='{}'\",",
+     "            \"-c unix_socket_directories='{}'\",",
+     "sankhya-oltp-pg"),
+
+    ("oltp-pg: report readiness from bookkeeping rather than asking the cluster",
+     "crates/sankhya-oltp-pg/src/lib.rs",
+     "        Command::new(self.binaries.program(\"pg_isready\"))\n            .args([\"-h\", &self.socket_directory().to_string_lossy()])\n            .output()\n            .is_ok_and(|out| out.status.success())",
+     "        self.running",
+     "sankhya-oltp-pg"),
+
+    ("oltp-pg: leave the child running when its supervisor goes away",
+     "crates/sankhya-oltp-pg/src/lib.rs",
+     "    fn drop(&mut self) {\n        let _ = self.stop();\n    }",
+     "    fn drop(&mut self) {}",
+     "sankhya-oltp-pg"),
+
+    ("oltp-pg: accept a directory that holds only some of the programs",
+     "crates/sankhya-oltp-pg/src/lib.rs",
+     "        let complete = [\"initdb\", \"pg_ctl\", \"pg_isready\", \"postgres\"]\n            .iter()\n            .all(|program| directory.join(program).is_file());\n        complete.then_some(Self(directory))",
+     "        Some(Self(directory))",
+     "sankhya-oltp-pg"),
+
+    ("cube: take the map's write lock on every recorded ask, serializing every cube",
+     "crates/sankhya-cube/src/querylog.rs",
+     "        let existing = self.asks.read().get(cube).map(Arc::clone);\n        if let Some(ring) = existing {\n            ring.lock().record(cuboid, self.capacity);\n            return;\n        }",
+     "",
+     "sankhya-cube"),
+
+    ("table-delta: put back one lock over every table, held across the log probe and the replay",
+     "crates/sankhya-table-delta/src/cache.rs",
+     "        let entry = {\n            let mut shard = shard\n                .lock()\n                .unwrap_or_else(std::sync::PoisonError::into_inner);\n            Arc::clone(\n                shard\n                    .entry(table_root.to_path_buf())\n                    .or_insert_with(|| Arc::new(Mutex::new(Replay::default()))),\n            )\n        };",
+     "        let _ = shard;\n        let mut one_lock_for_everything = self\n            .shards\n            .first()\n            .map(|shard| shard.lock().unwrap_or_else(std::sync::PoisonError::into_inner))\n            .expect(\"a shard\");\n        let entry = Arc::clone(\n            one_lock_for_everything\n                .entry(table_root.to_path_buf())\n                .or_insert_with(|| Arc::new(Mutex::new(Replay::default()))),\n        );",
+     "sankhya-table-delta"),
+
+    ("maintenance: retire a merge's inputs on the grace period alone, ignoring readers",
+     "crates/sankhya-maintenance/src/service.rs",
+     "            let unreachable = self\n                .leases\n                .as_ref()\n                .is_none_or(|leases| leases.drained(marked));",
+     "            let unreachable = true;",
+     "sankhya-maintenance"),
+
+    ("maintenance: mark the epoch when retirement is considered rather than when it merged",
+     "crates/sankhya-maintenance/src/service.rs",
+     "        let marked = self.leases.as_ref().map_or(0, |leases| leases.mark());",
+     "        let marked = 0;",
+     "sankhya-maintenance"),
+
+    ("leases: let a reader that could not announce go untracked, so a sweeper thinks it idle",
+     "crates/sankhya-leases/src/lib.rs",
+     "        if self.unannounced.load(Ordering::SeqCst) > 0 {\n            return Some(0);\n        }",
+     "",
+     "sankhya-leases"),
+
+    ("atomicfs: claim a name by renaming, which replaces the winner instead of failing",
+     "crates/sankhya-atomicfs/src/lib.rs",
+     "    let claimed = std::fs::hard_link(&staging, final_path);",
+     "    let claimed = std::fs::rename(&staging, final_path);",
+     "sankhya-atomicfs"),
+
+    ("atomicfs: share one staging name, so a writer can publish another's bytes",
+     "crates/sankhya-atomicfs/src/lib.rs",
+     "    let unique = NEXT.fetch_add(1, Ordering::Relaxed);",
+     "    let unique = 0;",
+     "sankhya-atomicfs"),
+
+    ("atomicfs: publish by writing onto the live path, so a reader sees it half-written",
+     "crates/sankhya-atomicfs/src/lib.rs",
+     "pub fn publish(final_path: &Path, bytes: &[u8]) -> io::Result<()> {\n    let staging = staging_for(final_path);",
+     "pub fn publish(final_path: &Path, bytes: &[u8]) -> io::Result<()> {\n    let staging = final_path.to_path_buf();",
+     "sankhya-atomicfs"),
 
     ("server: never read a materialised cuboid, leaving materialisation write-only",
      "crates/sankhya-server/src/wiring.rs",
@@ -2300,7 +2407,7 @@ CATALOGUE = [
 
     ("cube-sql: refuse an unknown cube without naming the ones that exist",
      "crates/sankhya-cube-sql/src/catalog.rs",
-     "                known: self.declared.read().iter().cloned().collect(),",
+     "                known: declared,",
      "                known: Vec::new(),",
      "sankhya-cube-sql"),
 
@@ -2480,7 +2587,7 @@ CATALOGUE = [
 
     ("publish: take the next version from the live set, missing an empty table's commits",
      "crates/sankhya-publish/src/publish.rs",
-     "        sankhya_table_delta::newest_after(&self.root, None)\n            .map_or(0, |version| version.saturating_add(1))",
+     "        self.newest().map_or(0, |version| version.saturating_add(1))",
      "        sankhya_table_delta::live_files(&self.root).ok().and_then(|s| s.version).map_or(0, |v| v.saturating_add(1))",
      "sankhya-publish"),
 
@@ -2652,6 +2759,8 @@ CATALOGUE = [
      "xtask/src/main.rs",
      "            if !root.join(&named).exists() {",
      "            if false {",
+     "xtask"),
+
     ("docs: name a check in INVARIANTS.md that does not run",
      "xtask/src/main.rs",
      "        if !KNOWN_CHECKS.contains(&check.as_str()) {",
@@ -2664,7 +2773,19 @@ CATALOGUE = [
      "        if false {",
      "xtask"),
 
-     "xtask"),
+    # --- M8 §12.1: the concurrency criteria, which a global lock would satisfy ------
+
+    ("table-delta: serialize every commit in the warehouse behind one lock",
+     "crates/sankhya-table-delta/src/log.rs",
+     "    std::fs::create_dir_all(log_dir(table_root))\n        .map_err(|e| CommitError::Io(format!(\"creating the log directory: {e}\")))?;",
+     "    static ONE_LOCK_FOR_THE_WAREHOUSE: std::sync::Mutex<()> = std::sync::Mutex::new(());\n    let _serialized = ONE_LOCK_FOR_THE_WAREHOUSE\n        .lock()\n        .unwrap_or_else(std::sync::PoisonError::into_inner);\n    std::fs::create_dir_all(log_dir(table_root))\n        .map_err(|e| CommitError::Io(format!(\"creating the log directory: {e}\")))?;",
+     "sankhya-table-delta"),
+
+    ("publish: probe for the newest version from zero on every append, not from the last seen",
+     "crates/sankhya-publish/src/publish.rs",
+     "        let floor = self.seen.load(Ordering::Relaxed).checked_sub(1);",
+     "        let floor: Option<u64> = None;",
+     "sankhya-publish"),
 
 ]
 
@@ -2764,6 +2885,22 @@ def check_only():
     committed. Neither shows up in a diff anyone reads. This costs milliseconds and no
     compilation, so it can gate every build rather than only a full audit.
     """
+    # A missing comma between two entries is not a syntax error. Python reads the second
+    # tuple as an element of the first, and the catalogue then holds one malformed entry
+    # where three should be: the outer one runs `cargo test -p <tuple>`, and the two it
+    # swallowed never run at all. That happened here and survived because every check in
+    # this file only ever looked at the first three fields, which are strings either way.
+    malformed = [
+        entry
+        for entry in CATALOGUE
+        if len(entry) not in (5, 6) or not all(isinstance(field, str) for field in entry[:5])
+    ]
+    for entry in malformed:
+        print(f"{'MALFORMED':10} {entry[0]}\n{'':10} an entry of {len(entry)} field(s); a "
+              f"missing comma has swallowed the entries that follow it")
+    if malformed:
+        return 1
+
     absent = []
     for entry in CATALOGUE:
         label, relpath, find = entry[0], entry[1], entry[2]

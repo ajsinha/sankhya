@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # SANKHYA — Implementation Plan
 
 **Document ID:** SNK-IP-001
@@ -52,8 +54,10 @@ This plan therefore front-loads three things that are nearly free at the start a
 | **M5** | Tenancy, security and API surfaces | 22–28 | weeks 18–25 |
 | **M6** | Operability, packaging and hardening | 18–22 | weeks 24–30 |
 | **M7** | Multidimensional analysis — cubes, hierarchies, consolidation | 14–18 | weeks 28–34 |
-| **M8** | Scale-out, high availability, disaster recovery | 16–20 | weeks 32–38 |
-| **M9** | Tiering *(gated — see §13)* | 12–16 | after M8 plus the reconciliation gate |
+| **M8** | **Concurrency and data safety**, crate hygiene | 9–12 | weeks 32–37 |
+| **M9** | Tiering *(gated — see §13)* | 12–16 | after M8; criteria 2 and 3 of the gate |
+| **M11** | Production reconciliation *(not schedulable by development)* | — | after a production deployment exists |
+| **M12** | **Scale-out, HA and disaster recovery**, then production-like acceptance — 12 h, two machines, 100 GB, 50 readers, 20 writers | 20–26 | the project's exit criteria; **needs a second machine** |
 | | **Total to a hardened first release** | **~150–190 ew** | **~7–8 months** |
 
 **Team shape:** six engineers. Suggested specialisation — two on ingest and storage, two on query and graph, one on platform and operability, one on security and tenancy — with the extension API owned by whoever owns architecture.
@@ -582,18 +586,201 @@ views rather than a store, and why MDX is deliberately not planned.
 
 ---
 
-## 12. M8 — Scale-out, availability and recovery
+## 12. M8 — Concurrency and data safety
 
-**Weeks 32–38 · 16–20 ew**
+**Weeks 32–37 · 9–12 ew**
 
-### Work
+> **Scope reduced 2026-08-30 by owner decision**, from 25–32 ew: §12.2 and exit criteria 7–8
+> move whole to [M12](#13c-m12--scale-out-and-production-like-acceptance-the-twelve-hour-two-machine-run),
+> because both criteria need a second machine. The title loses *"then scale-out"* with them.
 
-Attached mode as the production configuration. Leader election through the transactional store. Stateless executor scale-out and query routing with cache affinity. Graph node partitioning with published rebuild times. Cross-region replication and recovery objectives per tier. Key management integration. Metering and chargeback.
+> **Rescoped 2026-08-28 by owner directive**, from 16–20 ew: *"look at the whole platform and
+> make it concurrency safe end to end. This whole system needs very high level of concurrency
+> and data safety."* The estimate increase was accepted explicitly rather than absorbed. The
+> audit behind it and the properties it must deliver are
+> [ADR-0013](adr/0013-concurrency-and-data-safety.md).
 
-**Two seams are *designed* here and built later**, both near-free now and expensive retrofits: keeping the commit path per-table rather than globally serialized, and allowing a table reference to resolve to a shard set.
+### 12.1 Concurrency and data safety (8–10 ew)
+
+**This runs first, and the ordering is a decision.** Leader election is how a system *avoids
+needing* concurrency safety, so it is tempting to do it first and declare the problem handled.
+But M8's shape is multi-node with cache-affinity routing: many readers on other nodes, racing
+with a leader's compaction and retirement, holding the paths it is deleting. Safety must exist
+before the topology that stresses it, or the first failure arrives looking like a networking
+fault and is debugged as one.
+
+**12.1a One publishing helper (1 ew).** `publish` makes a file visible all at once; `claim`
+does that *and* fails when the name is taken. The audit found the technique implemented
+correctly three times and wrongly four, which is what a three-line technique does when it is
+retyped instead of reused.
+
+**12.1b The version claim (1 ew).** `commit` claims through `claim`, so a loser is told and
+the rebase loop that already exists finally runs. The object-store equivalent — conditional
+put — is specified alongside it so the two implementations stay honest against each other.
+
+**12.1c Reclamation that waits for readers (3–4 ew).** A reader registers what it resolved;
+reclamation skips what is registered. The elapsed-tick and version-space guards are **kept and
+demoted to backstops** against a leaked registration, which is the job they are actually good
+at. The pattern already exists here: the CDC ring's epoch-based reclamation, where readers
+never block and are never blocked.
+
+**12.1d `check-atomic-writes` (0.5 ew).** `fs::write` and `File::create` onto a live path, and
+`exists()`-then-`rename`, refused outside the helper. A convention held in three places and
+lapsed in four; this is why it becomes a gate.
+
+**12.1e The concurrency suite (2–3 ew).** Every defect above was invisible to seventeen hundred
+tests for one reason: **every test had a single writer.** Each fix gets its failing test first,
+and the throughput properties are measured rather than asserted.
+
+### 12.1f Crate hygiene: reachability as a gate (1–2 ew)
+
+*Added 2026-08-28 after an owner-requested review of all 55 crates.*
+
+The review found the M7 pattern again — **built, tested, unreachable** — this time at crate
+scale rather than function scale, and one gate away from being impossible.
+
+**About 2,600 lines nothing can reach:**
+
+| Crate | Lines | What is stranded |
+|---|---|---|
+| `sankhya-pack` | 1,438 | The whole declarative pack tier: TOML bundles, an expression parser, validation, hot reload. No server depends on it, so a bundle cannot be loaded. The reference packs use `sankhya-ext`, the *compiled* API — the two are not duplicates, and only one is wired |
+| `sankhya-api-rest` | 416 | A REST surface nothing depends on |
+| `sankhya-cdc-pg` | 368 | A PostgreSQL capture source nothing depends on |
+| `sankhya-ports` | 222 | Port traits nothing implements or calls |
+| `sankhya-alloc` | 165 | A counting `GlobalAlloc` **never installed** — no `#[global_allocator]` anywhere, so every allocation figure it exists to provide is unavailable |
+
+**Ten crates hold one line of source each** — a doc comment and nothing else:
+`api-grpc`, `api-http`, `mv`, `objectstore`, `oltp-pg`, `rules`, `telemetry`, `testkit`,
+`tiering`, and `cli` with an empty `main`. **None of the ten is named anywhere in this plan or
+in `ARCHITECTURE.md`.** They are not roadmap placeholders; they are scaffolding from an early
+layout that the documents then grew past.
+
+Some have a real home even though nothing says so — `api-grpc` is M6's carried criterion 7,
+`objectstore` and `tiering` belong to M9, `cli` is the maintenance CLI the owner has asked for.
+Others duplicate something that exists: **`telemetry` overlaps `sankhya-metrics`** (789 lines,
+built and used), and `oltp-pg` sits beside `api-pg` with a name that invites confusion between
+a Postgres *lifecycle* and the Postgres *wire protocol*.
+
+**Why this went unseen.** `check-surfaces` was built in M7 for exactly this failure, and its
+scope is narrower than its purpose: it checks crates that **register SQL functions**. A REST
+surface, a capture source, an allocator, a pack loader and a set of port traits all fall
+straight through it.
+
+**Done 2026-08-28, before M8 opened**, because a decision per crate is cheap while the review
+is fresh and expensive once it is not:
+
+| Disposition | Crates |
+|---|---|
+| **Deleted** — no code, no milestone, duplicated something that exists | `api-http` (a second HTTP surface beside the unreachable `api-rest`), `rules` (the declarative pack tier already is a rule engine), `telemetry` (`sankhya-metrics` is 789 lines and used) |
+| **Adopted with a dated milestone**, stated in the crate's own header | `api-grpc` (M8 §12.2 — M6's carried criterion 7), `objectstore` (M8 §12.1 — conditional put is where ADR-0013's claim lands remotely), `oltp-pg` (M8 §12.2 — leader election runs *through* a store nothing supervises today), `testkit` (M8 §12.1e — no fault injection exists, which is why every concurrency defect went unseen), `cli` (M8), `tiering` (M9, gated) |
+| **Listed with a reason, undecided** | `mv` — the machinery exists in `sankhya-cube` and a view is not a cube with a query for a fact table; see [ADR-0014](adr/0014-materialized-views-and-the-cube-lifetime.md) |
+
+Fifty-five crates became fifty-two. An empty crate now says when it stops being empty, or why
+that cannot be decided yet.
+
+**Done 2026-08-29.**
+
+1. **`check-surfaces` widened to reachability.** Every crate must be reachable from a binary,
+   or listed with a reason **and a milestone**. It runs from every root that ships — the
+   server, the CLI and each pack — because counting only the server would report the published
+   extension API as dead code.
+2. **Wired or decided, one per stranded crate, recorded.** `sankhya-alloc` is now the server's
+   global allocator and emits `sankhya_memory_in_use_bytes` and `sankhya_memory_peak_bytes`.
+   `sankhya-ports` is decided: **delete** — nothing implements a trait in it and its header
+   asserts a property the workspace does not have. The other three are not M8's work and say
+   so: `sankhya-pack` is **M4 §8.6's** loader, `sankhya-cdc-pg` is **M2's** slot-lifecycle
+   driver, and `sankhya-api-rest` is **M8 §12.2** beside the rest of criterion 7.
+3. **The empty crates were adopted or deleted**, above.
+4. **The name collisions are resolved** — `telemetry` deleted in favour of `metrics`;
+   `oltp-pg` and `api-pg` each say in their header which of the two Postgres concerns they are.
+
+**What a decision costs when it is deferred**, recorded because two of the five turned out to
+belong to *earlier* milestones. `sankhya-pack` is M4's declarative tier and `sankhya-cdc-pg` is
+M2's slot lifecycle: both are built, tested and unreachable, and both were about to be
+re-decided as M8 hygiene by somebody who did not know that. A crate with no owner drifts to
+whoever notices it last.
+
+**Not consolidation for its own sake.** The three-way splits — `cube`/`cube-algo`/`cube-sql` and
+`graph`/`graph-algo`/`graph-sql` — are load-bearing and stay: the zero-dependency algebra crates
+are what make their property tests fast enough to exhaust rather than sample. The finding is
+about crates that are *unreachable* or *empty*, not about crates that are small.
+
+### 12.2 Scale-out, availability and recovery — moved to M12 on 2026-08-30
+
+> **Moved in its entirety to
+> [M12](#13c-m12--scale-out-and-production-like-acceptance-the-twelve-hour-two-machine-run) by
+> owner decision, 2026-08-30.** Attached mode, leader election,
+> executor scale-out and routing, graph node partitioning, cross-region replication, key
+> management, metering and chargeback, the REST gateway's transport and the multi-day run.
+> Exit criteria 7 and 8 move with it.
+>
+> **Why, and it is not effort.** Criteria 7 and 8 both require a second machine, and the
+> project has one. Most of the *work* is buildable on a single host — leader election, fencing
+> and a lost lease are proven by contending processes, not by contending hosts — but criterion
+> 7 asks for *"recovery objectives measured and published rather than estimated"*, and a
+> recovery objective measured on one box excludes network detection, machine loss and clock
+> skew. Publishing it would be the same species of claim as a contention threshold set below
+> the contended figure, which this repository has shipped twice. Cross-region replication is
+> not measurable here at all, by definition.
+>
+> **M12 is where it goes** rather than a milestone of its own, because M12 already declares
+> the dependency — *"**M8** for the concurrency properties, attached mode and multi-node
+> operation"* — already requires two machines, and had no work breakdown precisely because it
+> assumed this section would deliver one. Both are now blocked on the identical missing
+> resource, and splitting them across two milestones would have made that one fact look like
+> two.
+>
+> **What stays here:** §12.1, which is complete, and exit criteria 1–6, which are met.
+
+**The seam is decided rather than moved.** §12.2 carried one item that could not be safely
+deferred: *"allowing a table reference to resolve to a shard set"*, described in this plan and
+in `DEC-14` as near-free now and an expensive retrofit later. Parking an undesigned seam is
+exactly what that sentence warns against, so it was designed before the parking and is
+[ADR-0015](adr/0015-the-shard-set-seam.md).
+
+Its conclusion is that the seam was **mislabelled**. Resolution is already multi-valued —
+`plan_splice` resolves one reference to several sources and proves they cover the span exactly
+once, and `AddFile.partition` already records every file's partition values — so shards as file
+groups beneath one log are built. Shards as *independently committed logs* are the expensive
+reading, and their cost is a cross-shard commit protocol rather than anything in the resolution
+layer. That reading is refused, not deferred: `DEC-14`'s own preferred v2 path distributes
+execution through exchange operators over file groups and never asks the catalog for N logs.
+**No code change was required**, which is the finding rather than the convenient answer.
+
+The sibling seam — keeping the commit path per-table rather than globally serialized — is no longer a seam. It is exit criterion 4 below, because the cheapest way to satisfy every safety criterion is one lock over the warehouse, and that is the outcome criterion 4 exists to forbid.
 
 ### Exit
-Multi-node deployment with executor scale-out demonstrated; failover tested under load; recovery objectives measured and published rather than estimated.
+
+**Safety.**
+1. N writers racing for one commit version: exactly one wins and every loser is **told**, with no lost commit under sustained contention.
+2. A reader never observes a partial file, for every file this system publishes, under a writer republishing continuously.
+3. Reclamation running against continuous scans **never** deletes a file a reader holds — demonstrated under load, not argued from a grace period.
+
+**Concurrency.**
+4. Writers to different tables do not contend: throughput scales with writer count, and no global serialization point exists. — **met 2026-08-29.** Commits to eight tables run at 4.8× one table's rate; the same commits behind one warehouse lock run at 0.91×, measured in the same run.
+5. Read latency is flat under write load — readers are never blocked by writers. — **met 2026-08-29.** A reader holds 0.59–0.80 of its idle rate under four writers with a p99 of 227 µs; sharing a lock with those writers it holds 0.00–0.07 and waits seconds.
+6. Contention on a single table degrades by rebase-and-retry, bounded, so a runaway committer is a diagnosable failure rather than a hang. — **met 2026-08-29.** Sixteen writers on one contested version all commit, worst rebase count eleven; eight writers sustained on one table hold 24–51% of the uncontended rate and beat a single writer.
+
+> **Each of the three is measured against a control taken in the same run** — the same work
+> serialized through one mutex — because every safety criterion above them is satisfied by
+> exactly that design. A threshold without the control is taste, and this repository has twice
+> shipped a contention test whose threshold sat below the contended figure.
+>
+> Criterion 6 was the one that found something. Measuring degradation rather than asserting it
+> exposed a write path that was **quadratic in a table's own history**: `next_version` walked
+> from version zero on every append and every rebase. It was invisible to every test because
+> every test had a short log.
+
+**Scale-out. — both moved to [M12](#13c-m12--scale-out-and-production-like-acceptance-the-twelve-hour-two-machine-run) on 2026-08-30, with §12.2. Neither is met, and neither is reachable on a single machine.**
+
+7. ~~Multi-node deployment with executor scale-out demonstrated; failover tested under load; recovery objectives measured and published rather than estimated.~~ — **moved.** Needs a second machine. A one-host measurement would exclude the failures the criterion exists to price.
+8. ~~Soak criterion 7 carried from M6: the gRPC transport and every write path, plus the scheduled multi-day run.~~ — **moved.** Carried once already, from M6 to M8; carried a second time rather than quietly reinterpreted. The gRPC transport and Arrow Flight SQL *are* served, which is the part that was reachable here.
+
+> **M8 completes on six of eight**, and says so rather than renumbering to eight of eight. The
+> two that moved are moved because the hardware to judge them does not exist, which is the same
+> reason M9's gate criterion 1 moved to M11 on 2026-08-28. A criterion that leaves a milestone
+> for want of a machine is a schedule fact; a criterion that leaves it for want of an argument
+> is how gates rot.
 
 ---
 
@@ -605,11 +792,22 @@ Multi-node deployment with executor scale-out demonstrated; failover tested unde
 
 Tiering may not ship until **all** of the following hold:
 
-1. Continuous reconciliation has run clean in production across every table class for a sustained period.
+1. Continuous reconciliation has run clean in production across every table class for a sustained period. — **moved to M11**, see below.
 2. The restore drill has passed repeatedly.
 3. An archive attestation drill has passed on a non-production archive.
 
 **The gate is explicit so that schedule pressure cannot quietly make this decision.** Purging the system of record before the copy is provably correct is indefensible, and no amount of care in the tiering code substitutes for demonstrated reconciliation.
+
+> **Amended 2026-08-28 by owner decision.** Criterion 1 cannot be met by development at all: it
+> requires a production deployment, and there is not one. Holding M9 behind it would not make
+> the system safer, only unfinished. So criterion 1 moves to **[M11](#13b-m11--production-reconciliation)**,
+> a milestone of its own at the end of the plan, and M9 proceeds against criteria 2 and 3.
+>
+> **What does not move.** M9 builds, tests and drills the whole purge path — the state machine,
+> the verification, the quarantine, the anomaly guard, the kill switches — and **destructive
+> purge against a system of record stays disabled until M11 clears criterion 1.** Building it
+> and arming it are two decisions, and only the first belongs to development. Recording the
+> split here is what stops "M9 is done" from later being read as "purge is safe to enable".
 
 ### Work
 
@@ -694,6 +892,163 @@ A clone demonstrated at constant cost against a large table; divergent writes on
 verified independent; **maintenance run to completion on the origin with the clone proven to
 read every row it could read before**; the same for orphan collection specifically; and every
 refused clone path shown to fail closed.
+
+---
+
+## 13b. M11 — Production reconciliation
+
+**After a production deployment exists. Not schedulable by development.**
+
+### Why this is a milestone and not a checklist item
+
+M9's gate criterion 1 — *continuous reconciliation has run clean in production across every
+table class for a sustained period* — is the one requirement in this plan that **no amount of
+engineering can satisfy**. It is not hard; it is not slow; it is impossible, because it asks for
+evidence from a system that is running for real, and evidence cannot be written.
+
+Leaving it inside M9's gate had a predictable failure mode: M9 would be finished in every
+respect that development controls, the gate would still read unmet, and the pressure to
+reinterpret the words would grow every week. That is precisely the pressure the gate was written
+to resist, so the gate is better served by moving the criterion somewhere it can be honestly
+tracked than by leaving it somewhere it can only be quietly redefined.
+
+### Work
+
+**Continuous reconciliation in production.** Every table class, sustained, with the results
+recorded rather than summarised. The reconciler itself is M9's; what M11 adds is the running of
+it, on real data, for long enough to mean something.
+
+**The arming decision.** Destructive purge, disabled throughout M9, is enabled here or not at
+all. It is an owner decision informed by the reconciliation record, and it is the only place in
+this plan where a milestone completes by somebody choosing rather than by a test passing.
+
+**A substitute is not a pass.** A sustained soak with reconciliation running clean is the
+closest development can get, and it is worth doing — but it is evidence about a soak, not about
+production, and this milestone is not met by it. Saying so here is the point of writing it down.
+
+### Exit
+
+Reconciliation has run clean in production across every table class for a sustained period, the
+record of it is published rather than asserted, and the owner has made the arming decision with
+that record in front of them.
+
+---
+
+## 13c. M12 — Scale-out and production-like acceptance: the twelve-hour, two-machine run
+
+**The project's exit criteria.** Added 2026-08-29 by owner directive. **Absorbed M8 §12.2 —
+scale-out, availability and recovery — on 2026-08-30**, taking its exit criteria 7 and 8 with
+it; see [§12.2](#122-scale-out-availability-and-recovery--moved-to-m12-on-2026-08-30).
+
+### What it is
+
+Two machines drive one SANKHYA instance for **twelve hours**, together pushing **100 GB**
+through **50 concurrent readers and 20 concurrent writers**, while cuboids are built, queried
+and dropped underneath them and saved data is queried and updated.
+
+Every number here is load-bearing and none is a round figure chosen for looking serious:
+
+| | | Why this number |
+|---|---|---|
+| **2 machines** | driving one instance | A single process cannot produce true client concurrency: its clients share a runtime, a page cache and a clock. Two machines is the smallest count that makes the network real and the interleaving genuinely uncoordinated |
+| **50 readers** | concurrent | Enough that the read path's shared structures are contended rather than merely used. §12.1's `LogCache`, `QueryLog` and `Hydrated` choke points are invisible at four readers and obvious at fifty |
+| **20 writers** | concurrent | The commit path is table-scoped by protocol, so twenty writers guarantee sustained version contention — the exact condition under which the pre-M8 claim lost commits silently |
+| **100 GB** | total | Beyond any page cache on either machine, so a read is a read |
+| **12 hours** | duration | Long enough for `report::supported_horizon` to speak about days rather than hours, and long enough for reclamation, compaction and cuboid retirement to run thousands of cycles against live readers |
+
+### Why the workload is mixed rather than clean
+
+The run must do all of it **at once** — build cuboids, query them, drop them, query base data,
+and update saved data — because every defect this project has found lived in an interaction,
+not in a component:
+
+- A cuboid **deleted while a query held it** is the failure `CUBOID_DRIFT_TOLERATED` guards
+  against with a version-space heuristic. Fifty readers against continuous retirement is what
+  turns that heuristic into a measurement.
+- **Two writers claiming one version** is what the pre-M8 commit path lost silently. Twenty
+  writers for twelve hours is the strongest available statement that it no longer can.
+- **Compaction racing a reader** is the case `FR-STORE-23`'s typed conflict exists for, and it
+  only arises when maintenance and ingest are both busy on a table somebody is reading.
+
+A clean workload — readers alone, then writers alone — would pass while every one of those
+remained broken. **The mixing is the test.**
+
+### What it proves that nothing else does
+
+M8 §12.1 states six properties and demonstrates each in isolation, with fault injection and
+sixteen threads inside one process. That is the right way to *prove a mechanism* and it is not
+evidence about a system. This run is the evidence: the same properties, on real hardware,
+across a network, for half a day, with nothing rigged.
+
+It is also the first thing in this plan that can fail for reasons no test suite can produce —
+socket exhaustion, a clock stepping, one machine swapping, a network partition of a few
+seconds. Those are the failures that matter in production and none of them can be unit-tested.
+
+### Work — scale-out, availability and recovery (16–20 ew)
+
+**Moved here whole from M8 §12.2 on 2026-08-30 by owner decision.** This milestone originally
+had no work breakdown because it assumed M8 would deliver one. M8 could not: every criterion
+below needs the second machine that this run also needs, so the build and the run that judges
+it are now one milestone blocked on one thing.
+
+Attached mode as the production configuration. Leader election through the transactional store.
+Stateless executor scale-out and query routing with cache affinity. Graph node partitioning with
+published rebuild times. Cross-region replication and recovery objectives per tier. Key
+management integration. Metering and chargeback. The REST gateway's HTTP transport.
+
+**What was already delivered under M8** and is not repeated here: the gRPC transport with Arrow
+Flight SQL served, and the `sankhya-oltp-pg` supervisor tested against vendored PostgreSQL
+17.11. Both were prerequisites for this work; neither closed a criterion.
+
+**Not a seam.** ADR-0015 settled the one item in §12.2 that could not be deferred — see §12.2
+for what it found and why nothing had to be built to keep it safe.
+
+**Scaling is bounded by `DEC-14` and that is not revisited here.** Each query executes entirely
+on one node; scale-out adds throughput, not per-query capacity. A workload that exceeds one
+node's memory and cores is the *measured* trigger `DEC-14` names for adopting
+`datafusion-distributed`, and it is a decision for whoever has that measurement.
+
+### Exit, for the work above
+
+7. Multi-node deployment with executor scale-out demonstrated; failover tested under load;
+   recovery objectives measured and published rather than estimated. — *carried from M8.*
+8. Soak criterion 7, carried from M6 to M8 to here: the gRPC transport and every write path,
+   plus the scheduled multi-day run. — *the transport is served; the write paths and the run
+   are not.*
+
+### Depends on
+
+**M8** for the concurrency properties — criteria 1–6, met and measured against controls. Attached
+mode and multi-node operation are no longer inherited from M8; they are this milestone's own
+work, above.
+
+**A second machine.** Stated as a dependency rather than assumed, because it is the sole reason
+§12.2 is here rather than finished.
+
+**Cube DDL** — `CREATE CUBE` is not a statement yet, and this run needs cubes created and
+dropped from SQL by a client rather than declared into a warehouse directory. That gap is
+recorded in [`GUIDE.md`](GUIDE.md) and becomes blocking here. **It is not blocked on hardware**,
+so unlike everything else in this milestone it can be built at any point before the run, and
+should be scheduled deliberately rather than discovered on the morning of it.
+
+### Exit
+
+1. Twelve hours at 100 GB with 50 readers and 20 writers across two machines, **`PASS` on every
+   declared measure**, judged against a horizon the run's own duration supports.
+2. **Not one lost commit.** Every write that reported success is present in the log at exactly
+   one version, verified by reconciliation after the run rather than by absence of complaint.
+3. **Not one query failed for a file that was deleted underneath it.** Reclamation ran
+   throughout; readers never saw it.
+4. Every answer that came from a cuboid is **bit-identical** to the same answer computed from
+   base data, sampled throughout the run and checked at the end — exit criterion 3a, at scale
+   and under contention.
+5. Read latency and write throughput are **reported as distributions, not means**, and the
+   tail is explained rather than excluded.
+6. The evidence pack is durable: the report, the reconciliation, and the failure of any
+   measure, retained rather than summarised into a sentence.
+
+**This is the project's exit criteria.** Everything before it is a milestone; this is the run
+that says the system does what the documents claim.
 
 ---
 

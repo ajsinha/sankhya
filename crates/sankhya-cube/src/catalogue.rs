@@ -316,7 +316,10 @@ pub fn save(warehouse: &Path, definition: &Definition) -> Result<(), CatalogueEr
             detail: error.to_string(),
         }
     })?;
-    std::fs::write(&at, json).map_err(|error| CatalogueError::Write {
+    // Published, not written. A definition written straight onto its live path is truncated
+    // and then rewritten, so a reader loading it mid-save gets a partial file --- and the
+    // server adopts cubes at startup while maintenance reads them on every tick.
+    sankhya_atomicfs::publish(&at, json.as_bytes()).map_err(|error| CatalogueError::Write {
         name: definition.name.clone(),
         detail: error.to_string(),
     })

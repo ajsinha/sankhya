@@ -138,3 +138,146 @@ fn the_log_records_a_shape_and_has_nowhere_to_put_anything_else() {
         "dimension names, and nothing else"
     );
 }
+
+// --- contention: one cube's recording must not pace another's ------------------
+
+#[test]
+fn two_cubes_record_without_meeting() {
+    // `record` runs on every cube query. Holding a write lock over the whole map to push one
+    // entry made every cube's navigation serialize against every other cube's.
+    //
+    // Not a safety test --- the answers were always right. This asks the other question: does
+    // it serialize? A correctness suite cannot tell, which is why the choke point survived
+    // being read several times.
+    use std::sync::{Arc, Barrier};
+
+    const RECORDERS: usize = 8;
+    const EACH: usize = 20_000;
+
+    let log = Arc::new(QueryLog::with_capacity(64));
+    let gate = Arc::new(Barrier::new(RECORDERS));
+
+    // Every cube seen once up front, so the write-lock path is out of the measured section.
+    // It runs once per cube in a real process, and including it here would measure the
+    // insertion rather than the recording.
+    for who in 0..RECORDERS {
+        log.record(&format!("cube{who}"), cuboid(&["seed"]));
+    }
+
+    std::thread::scope(|scope| {
+        for who in 0..RECORDERS {
+            let log = Arc::clone(&log);
+            let gate = Arc::clone(&gate);
+            scope.spawn(move || {
+                let name = format!("cube{who}");
+                gate.wait();
+                for _ in 0..EACH {
+                    log.record(&name, cuboid(&["region"]));
+                }
+            });
+        }
+    });
+
+    // Every recorder's work landed in its own cube, and none was lost to another's ring.
+    for who in 0..RECORDERS {
+        assert_eq!(
+            log.len(&format!("cube{who}")),
+            64,
+            "cube{who} filled its own ring"
+        );
+    }
+}
+
+#[test]
+fn concurrent_records_of_one_cube_lose_nothing() {
+    // Two queries against one cube contend for that cube's own lock, and must. What they must
+    // not do is drop an ask: the repetition *is* the weighting selection reads, so a lost
+    // record is a shape that looks less popular than it is.
+    use std::sync::{Arc, Barrier};
+
+    const RECORDERS: usize = 8;
+    const EACH: usize = 500;
+
+    let log = Arc::new(QueryLog::with_capacity(RECORDERS * EACH));
+    let gate = Arc::new(Barrier::new(RECORDERS));
+
+    std::thread::scope(|scope| {
+        for _ in 0..RECORDERS {
+            let log = Arc::clone(&log);
+            let gate = Arc::clone(&gate);
+            scope.spawn(move || {
+                gate.wait();
+                for _ in 0..EACH {
+                    log.record("sales", cuboid(&["region"]));
+                }
+            });
+        }
+    });
+
+    assert_eq!(
+        log.len("sales"),
+        RECORDERS * EACH,
+        "every ask was recorded exactly once"
+    );
+}
+#[test]
+fn recording_against_different_cubes_does_not_contend() {
+    // The choke point this replaces: `record` runs on every cube query and took a write lock
+    // over the whole map, so every cube's navigation serialized against every other cube's.
+    //
+    // **Measured as a ratio against this same machine, in this same run.** An absolute
+    // threshold measures the hardware; what matters is whether recording to *different* cubes
+    // is meaningfully cheaper than recording to *one*. With per-cube locks it is --- eight
+    // threads on eight cubes never meet. With one lock over the map they are equally slow,
+    // because the map lock is the only lock that matters.
+    //
+    // Measured here: **3.19** with per-cube locks, **1.06** with the map's write lock put back.
+    // The threshold sits between them with room on both sides.
+    use std::sync::{Arc, Barrier};
+    use std::time::Instant;
+
+    const RECORDERS: usize = 8;
+    const EACH: usize = 40_000;
+
+    let elapsed = |distinct: bool| -> u128 {
+        let log = Arc::new(QueryLog::with_capacity(64));
+        // Every cube seen once first, so the write-lock insertion path --- which runs once per
+        // cube in a real process --- is outside the measured section.
+        for who in 0..RECORDERS {
+            log.record(&format!("cube{who}"), cuboid(&["seed"]));
+        }
+        log.record("shared", cuboid(&["seed"]));
+
+        let gate = Arc::new(Barrier::new(RECORDERS));
+        let started = Instant::now();
+        std::thread::scope(|scope| {
+            for who in 0..RECORDERS {
+                let log = Arc::clone(&log);
+                let gate = Arc::clone(&gate);
+                scope.spawn(move || {
+                    let name = if distinct {
+                        format!("cube{who}")
+                    } else {
+                        "shared".to_string()
+                    };
+                    gate.wait();
+                    for _ in 0..EACH {
+                        log.record(&name, cuboid(&["region"]));
+                    }
+                });
+            }
+        });
+        started.elapsed().as_micros().max(1)
+    };
+
+    let distinct = elapsed(true);
+    let shared = elapsed(false);
+    let ratio = shared as f64 / distinct as f64;
+
+    assert!(
+        ratio > 1.8,
+        "recording to eight different cubes took {distinct}us and to one took {shared}us, a \
+         ratio of {ratio:.2} --- so the cubes are contending with each other rather than only \
+         with themselves"
+    );
+}

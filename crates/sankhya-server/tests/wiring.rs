@@ -116,6 +116,7 @@ fn settings(require_password: bool, warehouse: &std::path::Path) -> Settings {
         read_as_of: Lsn::new(u64::MAX),
         tenant: tenant(),
         cuboid_budget_rows: wiring::CUBOID_ROW_BUDGET,
+        flight_listen: None,
         maintenance: None,
         require_password,
         metrics_listen: None,

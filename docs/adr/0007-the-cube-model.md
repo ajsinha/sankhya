@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # ADR-0007 — Cubes are declared views, not a second store
 
 **Status:** Accepted · **Date:** 2026-08-27 · **Milestone:** M7

@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # ADR-0010 — External aggregations: a measure may bring its own rule, if it can merge
 
 **Status:** Proposed · **Date:** 2026-08-28 · **Milestone:** M7 or later

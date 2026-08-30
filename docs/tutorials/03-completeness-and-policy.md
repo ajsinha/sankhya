@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # Tutorial 3 — Completeness, and why two people get two different totals
 
 **Time:** about ten minutes · **Before this:** [Tutorial 1](01-your-first-cube.md)

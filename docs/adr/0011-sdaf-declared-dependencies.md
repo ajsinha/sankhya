@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # ADR-0011 — SDAF: an extension declares what it needs, and is given it
 
 **Status:** Proposed · **Date:** 2026-08-28 · **Milestone:** M7 or later

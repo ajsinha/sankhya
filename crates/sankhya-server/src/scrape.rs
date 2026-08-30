@@ -22,7 +22,7 @@
 //! here to disclose beyond the shape of the deployment.
 
 use crate::wiring::Server;
-use sankhya_metrics::catalogue::ALL;
+use sankhya_metrics::catalogue::{ALL, MEMORY_IN_USE_BYTES, MEMORY_PEAK_BYTES};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -90,6 +90,23 @@ async fn respond(mut stream: TcpStream, server: &Server) -> std::io::Result<()> 
     // Refreshed at the moment of the scrape rather than on a timer, so a gauge is never
     // reporting a number from the previous era.
     server.refresh_table_gauges();
+    // Read from the allocator itself. There is no cheaper moment to sample it and no more
+    // accurate one: the counter is two atomic loads, and a value sampled on a timer would
+    // report the previous era exactly as a table gauge would.
+    //
+    // Asked of the crate rather than of a static this module could name, because this module
+    // is compiled into the server binary and into every integration test that drives the
+    // real endpoint, and only one of those installs a counting allocator. A test binary gets
+    // `None` and the two gauges go unset, which is what is true of it.
+    let metrics = server.metrics();
+    #[allow(clippy::cast_precision_loss)]
+    if let Some(bytes) = sankhya_alloc::in_use() {
+        metrics.set(&MEMORY_IN_USE_BYTES, &[], bytes as f64);
+    }
+    #[allow(clippy::cast_precision_loss)]
+    if let Some(bytes) = sankhya_alloc::peak() {
+        metrics.set(&MEMORY_PEAK_BYTES, &[], bytes as f64);
+    }
     let body = server.metrics().render(ALL);
     stream
         .write_all(&response(200, "text/plain; version=0.0.4", &body))

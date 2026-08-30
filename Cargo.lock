@@ -3247,10 +3247,14 @@ dependencies = [
 [[package]]
 name = "sankhya-api-grpc"
 version = "0.1.0"
-
-[[package]]
-name = "sankhya-api-http"
-version = "0.1.0"
+dependencies = [
+ "arrow-flight",
+ "sankhya-api-flight",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tracing",
+]
 
 [[package]]
 name = "sankhya-api-pg"
@@ -3274,6 +3278,13 @@ dependencies = [
  "sankhya-error",
  "sankhya-types",
  "uuid",
+]
+
+[[package]]
+name = "sankhya-atomicfs"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
 ]
 
 [[package]]
@@ -3381,6 +3392,7 @@ dependencies = [
  "arrow-schema",
  "parking_lot",
  "proptest",
+ "sankhya-atomicfs",
  "sankhya-cube-algo",
  "sankhya-error",
  "sankhya-graph-algo",
@@ -3525,6 +3537,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sankhya-leases"
+version = "0.1.0"
+dependencies = [
+ "sankhya-testkit",
+]
+
+[[package]]
 name = "sankhya-maintenance"
 version = "0.1.0"
 dependencies = [
@@ -3539,6 +3558,7 @@ dependencies = [
  "sankhya-cube",
  "sankhya-error",
  "sankhya-ingest",
+ "sankhya-leases",
  "sankhya-plan",
  "sankhya-publish",
  "sankhya-readpath",
@@ -3601,6 +3621,9 @@ dependencies = [
 [[package]]
 name = "sankhya-oltp-pg"
 version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
 
 [[package]]
 name = "sankhya-pack"
@@ -3642,6 +3665,7 @@ dependencies = [
  "sankhya-stats",
  "sankhya-table",
  "sankhya-table-delta",
+ "sankhya-testkit",
  "sankhya-types",
  "serde_json",
  "tempfile",
@@ -3666,14 +3690,11 @@ dependencies = [
  "sankhya-table",
  "sankhya-table-delta",
  "sankhya-table-memory",
+ "sankhya-testkit",
  "sankhya-types",
  "tempfile",
  "tokio",
 ]
-
-[[package]]
-name = "sankhya-rules"
-version = "0.1.0"
 
 [[package]]
 name = "sankhya-schema"
@@ -3695,7 +3716,11 @@ dependencies = [
  "datafusion",
  "parking_lot",
  "parquet",
+ "sankhya-alloc",
+ "sankhya-api-flight",
+ "sankhya-api-grpc",
  "sankhya-api-pg",
+ "sankhya-atomicfs",
  "sankhya-audit",
  "sankhya-authz",
  "sankhya-backup",
@@ -3709,6 +3734,7 @@ dependencies = [
  "sankhya-governor",
  "sankhya-graph",
  "sankhya-graph-sql",
+ "sankhya-leases",
  "sankhya-maintenance",
  "sankhya-metrics",
  "sankhya-olap",
@@ -3721,6 +3747,7 @@ dependencies = [
  "sankhya-types",
  "tempfile",
  "tokio",
+ "tonic",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -3773,6 +3800,7 @@ dependencies = [
  "delta_kernel",
  "delta_kernel_default_engine",
  "parquet",
+ "sankhya-atomicfs",
  "sankhya-error",
  "sankhya-stats",
  "sankhya-types",
@@ -3794,10 +3822,6 @@ dependencies = [
  "sankhya-plan",
  "sankhya-types",
 ]
-
-[[package]]
-name = "sankhya-telemetry"
-version = "0.1.0"
 
 [[package]]
 name = "sankhya-testkit"

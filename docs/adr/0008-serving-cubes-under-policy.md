@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # ADR-0008 — Serving cubes under policy: the scope is part of the key
 
 **Status:** Proposed · **Date:** 2026-08-28 · **Milestone:** M7

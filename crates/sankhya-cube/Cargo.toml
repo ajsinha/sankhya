@@ -14,6 +14,7 @@ layer = 3
 workspace = true
 
 [dependencies]
+sankhya-atomicfs = { path = "../sankhya-atomicfs" }
 sankhya-cube-algo = { path = "../sankhya-cube-algo" }
 sankhya-error     = { path = "../sankhya-error" }
 sankhya-graph-algo = { path = "../sankhya-graph-algo" }

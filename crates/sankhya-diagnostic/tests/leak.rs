@@ -14,7 +14,7 @@
 )]
 
 use sankhya_diagnostic::soak::judge::{peaks_of, ratio, Verdict};
-use sankhya_diagnostic::soak::measure::watched;
+use sankhya_diagnostic::soak::measure::{watched, Bound};
 use sankhya_diagnostic::soak::sample::Samples;
 use sankhya_diagnostic::soak::Report;
 
@@ -317,7 +317,7 @@ fn a_ratio_is_formed_only_at_instants_both_measures_share() {
 fn every_watched_measure_says_what_a_breach_means() {
     // A soak report naming a measure and a slope is a puzzle. One saying what the slope
     // implies is a finding.
-    for measure in sankhya_diagnostic::soak::WATCHED {
+    for measure in sankhya_diagnostic::soak::WATCHED.iter() {
         assert!(
             measure.means.len() > 60,
             "{} does not say what a breach means",
@@ -434,15 +434,28 @@ fn a_sawtooth_is_judged_from_its_peaks_even_when_it_ends_in_a_trough() {
     // The first version of this test failed both ways and proved nothing: the amplitude has
     // to be large relative to the remaining headroom, or a trough and a peak give the same
     // answer.
+    //
+    // So the fixture is stated as fractions of the declared limit rather than as figures that
+    // happen to sit under it. The limit is arithmetic on the run's scale --- it was a flat
+    // thousand until the scale doubled and stranded it --- and a fixture carrying its own copy
+    // would pass at one scale and prove nothing at another. This one asks what the limit is.
+    let limit = match watched("live_files").map(|m| m.bound) {
+        Some(Bound::Sawtooth { limit }) => limit,
+        other => panic!("live_files is declared as a sawtooth with a limit, not {other:?}"),
+    };
     let minutes = 481_i64;
-    let amplitude = 500.0;
-    let per_minute = 0.2;
+    // Half the limit of swing per cycle, on a floor of three tenths of it, climbing a fifth of
+    // a percent of the limit each minute: the peaks reach the limit inside the horizon and the
+    // troughs do not come close, which is the only shape that distinguishes the two readings.
+    let amplitude = limit * 0.5;
+    let per_minute = limit * 0.0002;
+    let floor = limit * 0.3;
     let mut samples = Samples::new();
     for m in 0..minutes {
         let cycle = m % 40;
         // Ramps from the floor to the floor plus the amplitude across each cycle, so cycle 0
         // is a trough and cycle 39 a peak.
-        let value = 300.0 + (m as f64) * per_minute + (cycle as f64 / 39.0) * amplitude;
+        let value = floor + (m as f64) * per_minute + (cycle as f64 / 39.0) * amplitude;
         samples.record("live_files", m * MINUTE, Some(value));
     }
     assert_eq!(
@@ -471,7 +484,7 @@ fn a_sawtooth_is_judged_from_its_peaks_even_when_it_ends_in_a_trough() {
         .expect("samples")
         .value;
     #[allow(clippy::cast_possible_truncation)]
-    let from_the_trough = ((1000.0 - trough) / per_minute * 60.0) as i64;
+    let from_the_trough = ((limit - trough) / per_minute * 60.0) as i64;
     assert!(
         from_the_trough > horizon(minutes),
         "the fixture does not distinguish: from the trough it is {from_the_trough}s away and \
@@ -496,7 +509,7 @@ fn the_baseline_supplies_every_watched_measure() {
     let samples = steady_run(30);
     let measured: std::collections::BTreeSet<&str> = samples.measured().collect();
     let mut missing = Vec::new();
-    for declared in sankhya_diagnostic::soak::measure::WATCHED {
+    for declared in sankhya_diagnostic::soak::measure::WATCHED.iter() {
         if !measured.contains(declared.name) {
             missing.push(declared.name);
         }

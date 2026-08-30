@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # SANKHYA — Requirements Specification
 
 **Document ID:** SNK-RD-001
@@ -464,7 +466,11 @@ Three requirements in the original brief are stated in a single clause each, and
 
 **Trade-off, stated plainly.** Scale-up gives lower latency (no shuffle, no serialization), far simpler failure semantics, simpler memory accounting and simpler security. It costs the ability to run one query larger than one node. Scale-out inverts every one of those.
 
-**Two seams to design now and build later**, both near-zero cost today and expensive retrofits: keep the applier's commit path per-table rather than globally serialized, and allow a table reference to resolve to a shard set.
+**Two seams were recorded here to design now and build later**, both described as near-zero cost today and expensive retrofits. **Neither is a seam any longer**, and they stopped being one for opposite reasons.
+
+**Keep the applier's commit path per-table rather than globally serialized.** [ADR-0013](adr/0013-concurrency-and-data-safety.md) makes it an M8 exit criterion, because a single warehouse-wide lock would satisfy every concurrency *safety* requirement while destroying concurrency itself. Met 2026-08-29, measured against a control taken in the same run.
+
+**Allow a table reference to resolve to a shard set.** [ADR-0015](adr/0015-the-shard-set-seam.md) found it **mislabelled**. Resolution is already multi-valued — `plan_splice` resolves one reference to several sources and proves they cover the span exactly once, and `AddFile.partition` already records every file's partition values — so shards as file groups beneath one log are built and cost nothing. Shards as *independently committed logs* is the expensive reading, its cost is a cross-shard commit protocol rather than anything in the resolution layer, and it is **refused rather than deferred**: the v2 path this decision prefers distributes execution through exchange operators over file groups and never asks the catalog for N logs. No code change was required to keep the option open, because the option was never held open by code.
 
 ---
 

@@ -102,20 +102,119 @@ pub fn check(root: &Path) -> bool {
     if ok {
         println!("   {checked} SQL surface(s) registered, and every one is reachable");
     }
+    ok && every_crate_is_reachable_or_owned(root, &served)
+}
+
+/// A crate that nothing reaches, with the reason it is allowed to exist anyway.
+///
+/// Every entry needs a **milestone**, not just a sentence. "We will get to it" is how ten
+/// crates came to hold one line of source each while being named nowhere in the plan.
+const UNREACHED: &[(&str, &str)] = &[
+    ("sankhya-datagen", "generates the synthetic data the soak and the OLAP benchmarks load. Reached only from dev-dependencies, which this traversal deliberately ignores --- a *surface* reachable only from a test is the defect; a generator of test data is not one"),
+    ("sankhya-objectstore", "M8 §12.1 --- where ADR-0013's version claim lands on an object store, as a conditional put"),
+    ("sankhya-oltp-pg", "the PostgreSQL supervisor is built and tested against the vendored 17.11, and nothing wires it into the server yet: `Settings` has no OLTP configuration. Wiring it is M8 §12.2, beside leader election, which is what will need a running store"),
+    ("sankhya-testkit", "the concurrency harness. Reached only from dev-dependencies, which this traversal deliberately ignores --- and rightly, since a testkit that a *product* crate depended on would be shipping test scaffolding to customers"),
+    ("sankhya-tiering", "M9, and explicitly gated on the drills in IMPLEMENTATION_PLAN.md §13"),
+    ("sankhya-mv", "undecided by ADR-0014, and listed rather than deleted because the design question is open"),
+    ("sankhya-api-rest", "M8 §12.2, with soak criterion 7. The route table and the size decision are built and tested; serving them needs an HTTP listener, HTTP authentication and a *pre-materialisation* row estimate to decide inline-versus-ticket --- `deliver` refuses to be given a count taken after the rows exist, which is the whole point of it. That is a feature, not hygiene, and it is sized where the rest of criterion 7 lives"),
+    ("sankhya-cdc-pg", "M2's carried remainder, not an M8 decision. The slot lifecycle, the lag thresholds and the source-safety ladder are built and tested; what is missing is the *driver* that runs them on a timer, which is exactly what STATUS records as outstanding for M2 --- `the slot lifecycle driver and the snapshot reader`"),
+    ("sankhya-ports", "decided in M8 §12.1f: **delete**. Nothing implements a single trait in it, and its own header claims `Clock` and `IdGen` are injected everywhere and enforced by lint, neither of which is true --- a crate whose documentation asserts a property the workspace does not have is worse than an empty one. Listed rather than gone only because the deletion needs an owner's hand on it"),
+    ("sankhya-pack", "M4 §8.6's carried remainder, not an M8 decision. The declarative tier is a *planned* tier --- ARCHITECTURE names it and expects it to express the substantial majority of a real pack --- so deleting it would discard a milestone's work, and the loader that reads a bundle directory into a running server is the piece that was never built"),
+];
+
+/// Every crate is reachable from a binary, or listed with a reason and a milestone.
+///
+/// # Why the SQL check above was not enough
+///
+/// It looks for crates that register SQL functions, which is narrower than its purpose. A REST
+/// surface, a capture source, a global allocator, a set of port traits and an entire declarative
+/// pack tier --- about 2,600 lines --- all fell straight through it and were found by reading
+/// manifests by hand.
+///
+/// A crate is a claim the repository makes about itself. This is what makes the claim checkable.
+fn every_crate_is_reachable_or_owned(root: &Path, served: &BTreeSet<String>) -> bool {
+    // Reachability from **every** root that ships, not only from the server. A pack is a
+    // deliverable and `sankhya-ext` is the API it is written against; counting only the server
+    // would report the published extension API as dead code.
+    let mut reached = served.clone();
+    let mut roots = vec!["sankhya-cli".to_string()];
+    if let Ok(packs) = std::fs::read_dir(root.join("packs")) {
+        for pack in packs.flatten() {
+            if let Some(name) = pack.file_name().to_str() {
+                roots.push(name.to_string());
+            }
+        }
+    }
+    for start in roots {
+        reached.extend(reachable_from(root, &start));
+    }
+    let served = &reached;
+    let Ok(entries) = std::fs::read_dir(root.join("crates")) else {
+        return true;
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|entry| entry.path().join("Cargo.toml").is_file())
+        .filter_map(|entry| entry.file_name().to_str().map(ToString::to_string))
+        .collect();
+    names.sort();
+
+    let mut ok = true;
+    let mut listed = BTreeSet::new();
+    for name in &names {
+        if served.contains(name) {
+            continue;
+        }
+        match UNREACHED.iter().find(|(crate_name, _)| crate_name == name) {
+            Some((_, why)) => {
+                assert!(why.len() > 30, "`{name}` is excused without a usable reason");
+                listed.insert(name.clone());
+            }
+            None => {
+                eprintln!(
+                    "  UNREACHED      `{name}` is in the workspace and no binary depends on                      it. Wire it, delete it, or list it in `UNREACHED` with the milestone that                      will. A crate nothing reaches is a claim the repository does not keep"
+                );
+                ok = false;
+            }
+        }
+    }
+    // An excuse for a crate that is now reachable, or gone, must go too --- or the list only
+    // grows and stops describing anything.
+    for (name, _) in UNREACHED {
+        if !listed.contains(*name) {
+            eprintln!(
+                "  STALE EXCUSE   `{name}` is listed as unreached and is either reachable now                  or no longer exists"
+            );
+            ok = false;
+        }
+    }
+    if ok {
+        println!("   {} crate(s) reachable, {} listed with a milestone", served.len(), listed.len());
+    }
     ok
 }
 
 
 /// Every crate the server depends on, transitively, within this workspace.
 pub(crate) fn reachable_from_server(root: &Path) -> BTreeSet<String> {
+    reachable_from(root, "sankhya-server")
+}
+
+/// Every crate `start` depends on, transitively, within this workspace.
+pub(crate) fn reachable_from(root: &Path, start: &str) -> BTreeSet<String> {
     let mut reached = BTreeSet::new();
-    let mut queue = vec!["sankhya-server".to_string()];
+    let mut queue = vec![start.to_string()];
     while let Some(name) = queue.pop() {
         if !reached.insert(name.clone()) {
             continue;
         }
-        let Ok(manifest) = std::fs::read_to_string(root.join("crates").join(&name).join("Cargo.toml"))
-        else {
+        let in_crates = root.join("crates").join(&name).join("Cargo.toml");
+        let manifest_path = if in_crates.is_file() {
+            in_crates
+        } else {
+            root.join("packs").join(&name).join("Cargo.toml")
+        };
+        let Ok(manifest) = std::fs::read_to_string(&manifest_path) else {
             continue;
         };
         // Only the real dependencies. A dev-dependency is what a test reaches for, and a

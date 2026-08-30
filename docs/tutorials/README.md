@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # Tutorials
 
 Hands-on, in order, each one about ten to fifteen minutes. They assume a running server —

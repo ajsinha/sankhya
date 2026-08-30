@@ -1,6 +1,6 @@
 [package]
-name         = "sankhya-rules"
-description  = "General rule and detector engine over columnar batches."
+name         = "sankhya-atomicfs"
+description  = "Publishing a file all at once, and claiming a name exclusively. No dependencies."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -8,9 +8,12 @@ license-file.workspace      = true
 repository.workspace   = true
 
 [package.metadata.sankhya]
-layer = 1
+layer = 0
 
 [lints]
 workspace = true
 
 [dependencies]
+
+[dev-dependencies]
+tempfile = { workspace = true }

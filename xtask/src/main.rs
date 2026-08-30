@@ -7,6 +7,8 @@
 
 mod catalogues;
 mod logging;
+mod atomicwrites;
+mod lockorder;
 mod buildtree;
 mod docnumbers;
 mod surfaces;
@@ -147,6 +149,13 @@ fn main() -> ExitCode {
     if run_all || task == "check-surfaces" {
         failed |= !surfaces::check(&root);
     }
+    if run_all || task == "check-atomic-writes" {
+        failed |= !atomicwrites::check(&root);
+    }
+    if run_all || task == "check-lock-order" {
+        println!("== check-lock-order ==");
+        failed |= !lockorder::check(&root);
+    }
     if run_all || task == "check-writers" {
         failed |= !check_writers(&root);
     }
@@ -240,6 +249,8 @@ fn main() -> ExitCode {
                 | "check-package"
                 | "check-build-tree"
                 | "check-surfaces"
+                | "check-atomic-writes"
+                | "check-lock-order"
                 | "sweep"
                 | "sync-doc-numbers"
                 | "sweep-dry-run"
@@ -252,7 +263,7 @@ fn main() -> ExitCode {
             "usage: cargo xtask \
              [check-all|check-tests|check-invariants|check-writers|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
              |check-features|check-lints|check-mutations|check-doc-numbers\
-             |check-catalogues|write-catalogues|check-logging|check-package|check-build-tree|check-surfaces|sweep|sweep-dry-run|sync-doc-numbers|check-performance]"
+             |check-catalogues|write-catalogues|check-logging|check-package|check-build-tree|check-surfaces|check-atomic-writes|check-lock-order|sweep|sweep-dry-run|sync-doc-numbers|check-performance]"
         );
         return ExitCode::from(2);
     }
@@ -740,7 +751,51 @@ fn check_docs(root: &Path) -> bool {
 
     ok &= check_named_sources(root, &docs);
     ok &= check_status_agreement(root, &docs);
+    ok &= check_the_motto(root, &docs);
 
+    ok
+}
+
+/// The motto every document carries, and where.
+///
+/// *"To count is to make completely known."* --- the reading of **सम् + √ख्या** that the
+/// README's opening paragraph draws out: to enumerate a thing, in Sanskrit, is to make it
+/// completely known.
+const MOTTO: &str = "To count is to make completely known.";
+
+/// Every document carrying the wordmark carries the motto beneath it.
+///
+/// # Why this is checked rather than remembered
+///
+/// A convention applied to twenty-one documents by hand is a convention that holds until the
+/// twenty-second is written, and the twenty-second is always written by somebody who has not
+/// read the other twenty-one. Then the set is *mostly* consistent, which reads as carelessness
+/// rather than as a rule.
+///
+/// Only documents that already carry the wordmark are held to it: the wordmark is what marks a
+/// page as one of this project's own, and a README inside a fixture directory is not.
+fn check_the_motto(root: &Path, docs: &[PathBuf]) -> bool {
+    let mut ok = true;
+    let mut carried = 0usize;
+    for doc in docs {
+        let Ok(text) = std::fs::read_to_string(doc) else {
+            continue;
+        };
+        if !text.contains("wordmark-dice") {
+            continue;
+        }
+        let rel = doc.strip_prefix(root).unwrap_or(doc).display().to_string();
+        // Near the top, which is the whole point of a motto. Measured in lines rather than
+        // bytes so a wide header does not push it out of range.
+        let head: String = text.lines().take(20).collect::<Vec<&str>>().join("\n");
+        if head.contains(MOTTO) {
+            carried += 1;
+        } else {
+            eprintln!("  NO MOTTO     {rel}: the first 20 lines do not carry \"{MOTTO}\"");
+            ok = false;
+        }
+    }
+    println!("   {carried} document(s) carry the motto beneath the wordmark");
     ok
 }
 
@@ -1800,6 +1855,8 @@ const KNOWN_CHECKS: &[&str] = &[
     "check-package",
     "check-doc-numbers",
     "check-surfaces",
+    "check-atomic-writes",
+    "check-lock-order",
     "check-build-tree",
     "check-tests",
 ];

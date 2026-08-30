@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # SANKHYA — The soak: method, results, and what four attempts taught
 
 **Status:** Implementation — M0–M7 complete, M8 next
@@ -298,12 +300,128 @@ averaged away.
 
 The counter that used to be called `queries` is now `planned`, because that is what it counts.
 
+## 7b. The sixty-minute run of 2026-08-29, with materialisation load-bearing
+
+`PASS` over 59 judged minutes against a **two-hour** horizon, first ten samples discarded as
+warm-up, and all seven measures steady:
+
+| | | | |
+|---|---|---|---|
+| `resident_bytes` | steady | `open_files` | steady |
+| `metric_series` | steady | `history_bytes` | steady |
+| `audit_records` | steady | `warehouse_bytes` | steady |
+| `live_files` | steady | | |
+
+| | |
+|---|---|
+| Rounds | 196 — 1,960 writes published, 1,960 queries planned |
+| Read | **37.2 GB across 3.01 billion rows** |
+| Cube | answered 49 times |
+| Maintenance | 1,651 ticks, reclaiming **11.66 GB** |
+| Resident memory | 2,017 MB at close |
+| Warehouse | 9 GB throughout, 90 live files throughout |
+
+### Why this run is not a repeat of the last one
+
+The 44-minute run of 2026-08-28 exercised a cube. This one is the first to exercise a cube
+**served from storage**, because until M7 closed, `materialised` was dead code: the refresher
+built cuboids on a timer and every query still went to the fact table. The cuboid read path,
+the completeness columns and the scope match all ran here for the first time under load.
+
+Two numbers are worth putting side by side, because the expectation would be the opposite:
+
+| | 2026-08-28 | 2026-08-29 |
+|---|---|---|
+| Resident memory | 2.2 GB | **2.0 GB** |
+| Judged minutes | 44 | 59 |
+| Rows read | 2.41 bn | 3.01 bn |
+
+**More work, longer run, less memory.** The cuboid path replaces fact-table hydration rather
+than adding to it, so serving from a cuboid reads less than the query it replaces. That was the
+argument for materialising in the first place, and this is the first measurement of it rather
+than the first assertion.
+
+`warehouse_bytes` steady at 9 GB across 1,960 publications is the other number to keep:
+reclamation is keeping pace exactly, and the 11.66 GB reclaimed is more than the warehouse
+holds. Superseded cuboids are part of what it collected --- a path that did not exist a day ago.
+
 ## 8. What has not been done
 
-**The multi-day run at the ten-gigabyte scale, with the reading workload.** That is `M6` exit
+**The multi-day run at the acceptance scale, with the reading workload.** That is `M6` exit
 criterion 4. The four-hour run of 2026-08-26 exercised the append, log-replay and compaction
-paths at that scale and passed; it did not read the data, so it discharges the criterion only
-for the paths it touched. Nothing here claims otherwise.
+paths at ten gigabytes and passed; it did not read the data, so it discharges the criterion
+only for the paths it touched. Nothing here claims otherwise.
+
+**The scale itself doubled on 2026-08-29**, by owner decision: `SANKHYA_SOAK_GB` now defaults
+to **twenty**, not ten. The reason is that the figure means something different than it did
+when it was chosen. Ten gigabytes was picked when the soak did not read its data at all --- it
+was a number about how much got written. Now that a run reads 3.01 billion rows, the dataset
+is a working set, and the property that matters is that it does not fit in page cache. A
+bigger one is a harder test of the same machinery.
+
+The cost is linear and lands almost entirely in the fill: roughly forty-five seconds per
+gigabyte, so the preamble moves from about seven minutes to about fifteen. The judged window
+is unaffected, because it is counted from when measurement starts rather than from launch.
+
+### The doubling landed in one line, and three thresholds stayed where they were
+
+**Found 2026-08-30, when the first run at the new scale aborted inside ten minutes.** The
+verdict read *"the warehouse holds 33.2 GB against a budget of 32.0 GB"*, and the report called
+it a reclamation failure. It was not one. `measure.rs` said so in its own comment: *"Thirty-two
+gigabytes against a **ten**-gigabyte target."* The budget was a flat constant sized at 3.2× the
+old figure, the doubling moved only the harness's default, and headroom fell from 22 GB to 12 GB
+without anything recording that it had.
+
+Two more were stranded the same way, and one of them was already breaching in silence:
+
+| | Was | Why it was that | Now |
+|---|---|---|---|
+| `warehouse_bytes` | 32 GB flat | 3.2× a ten-gigabyte target | `3.2 × scale.gb` |
+| `live_files` | 1,000 flat | a two-GB-per-table run measured 1,080 in its worst table | `1,000 × per-table GB` |
+| `USAGE` text | "default 10" | restated the harness's own default | deleted — it could only go stale again |
+
+**The fix is structural rather than three new numbers.** A `Scale` type now lives in the library
+beside the measures, the harness reads the target *from* it instead of parsing its own copy, and
+both limits are arithmetic on it. A scale change now moves everything that follows from it,
+which is the property that was missing — the numbers were only the symptom.
+
+**It made a passing unit test scale-dependent, which is worth recording because it nearly
+shipped.** `a_sawtooth_is_judged_from_its_peaks_even_when_it_ends_in_a_trough` built its fixture
+from values tuned to sit under a flat 1,000. Once the limit derived from the scale, the fixture
+was measuring the environment. It now asks the declaration what the limit is and states the
+fixture as fractions of it, so it proves the same thing at any scale.
+
+### The run of 2026-08-30 — the first `PASS` at twenty gigabytes
+
+The prior green run was at ten, so **nothing had ever judged this scale**. Forty-five judged
+minutes, every measure `PASS`.
+
+| | 2026-08-28, 10 GB | 2026-08-30, 20 GB |
+|---|---|---|
+| Judged minutes | 44 | 45 |
+| Rounds | 157 | 77 |
+| Files published | 1,570 | 770 of 770 planned |
+| Scanned | 29.7 GB / 2.41 bn rows | 14.5 GB / 1.16 bn rows |
+| Resident memory | 2,246 MB steady | **2,271 MB** |
+| Reclaimed | 11.66 GB | **21.50 GB** over 816 maintenance ticks |
+| `warehouse_bytes` peak | 9 GB | **41.58 GB** |
+
+**Both stranded thresholds were exercised, which is what makes the fix evidence rather than
+argument.** The warehouse peaked at 41.58 GB — over the old flat budget by more than nine
+gigabytes, and comfortably inside the derived one. `live_files` went **1,080 → 90** across a
+reclamation cycle, a sawtooth doing exactly what `Bound::Sawtooth` exists to permit and exactly
+what the flat limit of 1,000 would have called a breach. Neither of those is a number that
+needed changing; both are the same machinery working, judged against a scale it was told about.
+
+**Fewer rounds at more data is expected and is not a regression.** A round publishes to every
+table, and each table now holds twice as much, so a round costs proportionally more. The rows
+scanned per second is the comparable figure and it is unchanged.
+
+**Resident memory is the one worth watching.** It rose across the run — 1,223 MB at t+478s to
+2,458 MB at t+2671s, settling at 2,271 MB — and passed its bound throughout. That it lands
+within 25 MB of the ten-gigabyte run's steady figure, at double the data, is the statement
+worth keeping: the working set is bounded by the machinery rather than by the dataset. A future
+run that ends materially above this is a finding.
 
 What exists is the harness, driven against the real server on every build, proven to detect
 each shape of failure it claims to detect. **The scheduled run is a change of duration and

@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+<p align="center"><em>To count is to make completely known.</em></p>
+
 # SANKHYA — The invariants, and what each one cost to learn
 
 **Status:** Implementation — M0–M7 complete, M8 next
@@ -77,7 +79,10 @@ Every rule here exists because a document said something untrue and nothing noti
 |---|---|---|
 | No log statement records what a caller supplied | A log line carrying tenant data is a disclosure that survives in backups, and `#[instrument]` without `skip_all` records every argument | `check-logging` |
 | A release binary starts on the oldest platform it claims to support | The build machine's glibc is not the deployment target's, and it cannot tell you that — see [`PLATFORMS.md`](PLATFORMS.md) | `check-package` |
+| No lock is taken while another is held, unless the pair is declared with its order | A deadlock is not found by testing. A race appears under load --- run it enough and the bad interleaving happens --- but a deadlock needs two threads taking two locks in opposite orders at the same moment, and while only one path holds both there is no order to reverse and no amount of hammering finds anything. **The code that holds two locks is not the bug; the code written six months later that holds them the other way round is**, and by then the first ordering is invisible. Two such places existed on 2026-08-29: `QueryLog::record` held the map's read lock across the ring's, under a comment claiming it did not, because in edition 2021 a temporary in an `if let` scrutinee lives to the end of the block; and `CubeCatalog::resolve` held `cubes` across `declared` | `check-lock-order` |
+| Every crate is reachable from something that ships, or listed with a **milestone** | The narrower version of this rule --- only crates registering SQL functions --- let about 2,600 lines through: a REST surface, a capture source, a counting allocator nothing installs, a set of port traits, and an entire declarative pack tier. Widening it to plain reachability immediately found Arrow Flight SQL, which `GUIDE.md` §7a documents and no binary can reach. A crate is a claim the repository makes about itself, and a milestone is what makes the claim keepable | `check-surfaces` |
 | Every SQL surface is reachable from the server | Four crates registering SQL functions turned out, in one day, to be unreachable from the thing that serves SQL — each found by accident. A capability nothing reaches is indistinguishable from one that was never built | `check-surfaces` |
+| No writer makes a file visible by writing to the path a reader will open, and no writer claims a name by first checking it is free | The technique was already implemented correctly three times here and wrongly four, because a three-line technique gets retyped rather than reused. The wrong half of it cost a commit: `commit` checked that a version was absent and then renamed onto it, and `rename(2)` replaces its destination silently — so two committers both saw the version free and the second overwrote the first, with no error to either. Seventeen hundred tests could not see it, because every one had a single writer | `check-atomic-writes`, `sankhya-atomicfs` tests |
 | The build tree is not allowed to consume the machine | Cargo names artefacts by input hash and never removes the ones a rebuild supersedes. Three days of ordinary work grew `target/` to 482 GB and took the disk to 95%, which is how a forty-five-minute soak died at t+2833s and wrote a zero-byte report explaining why | `check-build-tree`, swept by `sweep` |
 
 ## 4b. Configuration
