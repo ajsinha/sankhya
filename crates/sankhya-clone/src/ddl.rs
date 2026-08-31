@@ -35,7 +35,24 @@ use std::fmt;
 
 /// A clone-DDL statement.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Statement {
+pub enum Statement {
+    /// Create a clone.
+    Create(Create),
+    /// Drop a table, which is only this module's business if the table turns out to be a clone.
+    Drop {
+        /// The table named.
+        table: String,
+        /// Whether the statement said `IF EXISTS`.
+        ///
+        /// Carried rather than resolved, because whether the table exists is a question about a
+        /// warehouse and this module has never seen one.
+        if_exists: bool,
+    },
+}
+
+/// What a `CREATE TABLE ... CLONE` asked for.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Create {
     /// The table to create.
     pub table: String,
     /// The table to clone.
@@ -95,8 +112,12 @@ impl fmt::Display for DdlError {
 #[must_use]
 pub fn parse(sql: &str) -> Option<Result<Statement, DdlError>> {
     let words = words(sql);
-    let mut at = 0usize;
 
+    if matches_word(words.first(), "DROP") && matches_word(words.get(1), "TABLE") {
+        return Some(read_drop(&words));
+    }
+
+    let mut at = 0usize;
     // Three words decide whether this is ours: CREATE, TABLE, and a CLONE somewhere after the
     // name. Anything else — including `CREATE TABLE orders (id BIGINT)` — is the engine's.
     if !matches_word(words.get(at), "CREATE") {
@@ -113,10 +134,27 @@ pub fn parse(sql: &str) -> Option<Result<Statement, DdlError>> {
         return None;
     }
 
-    Some(read(&words, at))
+    Some(read(&words, at).map(Statement::Create))
 }
 
-fn read(words: &[String], mut at: usize) -> Result<Statement, DdlError> {
+/// Read `DROP TABLE [IF EXISTS] name`.
+fn read_drop(words: &[String]) -> Result<Statement, DdlError> {
+    let mut at = 2usize;
+    let if_exists = matches_word(words.get(at), "IF") && matches_word(words.get(at + 1), "EXISTS");
+    if if_exists {
+        at += 2;
+    }
+
+    let table = identifier(words.get(at), "a table name")?;
+    at += 1;
+
+    if let Some(found) = words.get(at) {
+        return Err(DdlError::Trailing { found: found.clone() });
+    }
+    Ok(Statement::Drop { table, if_exists })
+}
+
+fn read(words: &[String], mut at: usize) -> Result<Create, DdlError> {
     let table = identifier(words.get(at), "a table name")?;
     at += 1;
 
@@ -157,7 +195,7 @@ fn read(words: &[String], mut at: usize) -> Result<Statement, DdlError> {
         return Err(DdlError::Trailing { found: found.clone() });
     }
 
-    Ok(Statement { table, origin, version })
+    Ok(Create { table, origin, version })
 }
 
 fn matches_word(word: Option<&String>, keyword: &str) -> bool {

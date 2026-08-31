@@ -1041,7 +1041,14 @@ exists. The requested version is checked file by file, because the log's cheap b
 the dangerous direction: a commit can survive its data. Nine tests, one of which proves ordinary
 SQL still reaches the engine untouched.
 
-The drop surface's refusal. Backup, restore and tiering made clone-aware. A soak that clones
+~~The drop surface's refusal.~~ — **built 2026-08-31**. `DROP TABLE` is read by the clone parser
+and answered **only when the table is a clone**; anything else is handed back and the server's
+standing "this is a read path" refusal answers it, unchanged. A clone must be droppable because
+it is creatable, and the drop is where `may_drop` --- which had existed with nothing calling it
+--- now refuses removing a table other clones still read. Writing those tests found two defects
+in the clone statement committed an hour earlier: a clone could be created and then not acted on,
+because authorization checked its own name rather than what it references; and a name in use was
+asked of the policy rather than the warehouse, so a second clone could be created over the first. Backup, restore and tiering made clone-aware. A soak that clones
 under load, writes to both sides, runs full maintenance, and verifies both still read
 correctly afterwards.
 
