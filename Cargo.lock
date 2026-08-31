@@ -3690,6 +3690,7 @@ dependencies = [
  "datafusion",
  "futures",
  "sankhya-cdc-model",
+ "sankhya-clone",
  "sankhya-governor",
  "sankhya-plan",
  "sankhya-publish",

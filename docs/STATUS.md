@@ -1966,6 +1966,57 @@ which is here.
 
 Six tests and 4 mutations.
 
+### Step 8 — the read path, and an omission in my own ADR amendment
+
+**A clone read as empty.** Its log names no files --- correct, and Decision 1a --- and nothing
+spliced in the origin's live set at the cloned version. Present, readable, containing nothing:
+precisely the shape the backup check refuses, permitted by the live behaviour.
+
+`M10`'s work list never named a clone read path, and the reason is the amendment rather than the
+plan. **Under `ADR-0016` as originally written a clone's log would have named the origin's files
+by absolute URI, and the existing read path would have served it unchanged.** Decision 1a traded
+that for portability and for a simpler lifetime question --- both of which it wins --- and its
+cost is a splice this engine has to grow. The amendment recorded the cost to the open-storage
+claim and did not record this one. A decision whose costs are listed incompletely is one somebody
+re-reads and mis-weighs, so the ADR now says it, and the plan gained the item.
+
+It was found while planning the soak that would have exercised it.
+
+### What the splice does
+
+`resolve_clone_cached` reads two logs: the origin's live set **at the cloned version**, then the
+clone's own. A second entry point rather than a parameter on `resolve_cached`, because several
+callers will never see a clone and widening the signature would make each of them pass `None` to
+say so --- and a caller that does not know a table is a clone cannot accidentally get clone
+behaviour.
+
+Four properties, each its own test: unspliced it reads nothing and spliced it reads everything;
+the origin moving on does not move the clone; the clone's own writes are read beside what it
+inherited, and the origin never sees them.
+
+### A clone whose origin is gone
+
+The fifth test failed on its first run, and the failure was the interesting one. A clone's own
+log resolves perfectly well without its origin --- it holds the clone's own writes --- so the
+splice answered with those and nothing else: **a short answer wearing the shape of a whole one.**
+
+`live_files_at` on a directory that is not a table returns an empty set, which is
+indistinguishable from version zero of a real table --- and version zero is *legitimately* empty,
+so emptiness cannot be the signal. The presence of a log is. `ReadError::OriginGone` now names
+the clone and the origin it needed.
+
+### A mutation that proved the tests were counting the wrong thing
+
+*"Resolve an inherited file against the clone's own root"* survived. The tests asserted **row
+counts**, and a row count comes from the log --- so a file resolved to a path that does not exist
+still reports the right number, and every test passed against a plan that could not open
+anything.
+
+`SankhyaTable::published_files` now exposes what a plan resolved to, and the tests assert every
+planned path is there. The count says how many rows; the path check says they are reachable.
+
+Five tests and 4 mutations.
+
 ## M7, complete
 
 Added 2026-08-27 by owner directive and placed before scale-out: cubes are a stated
@@ -3440,7 +3491,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 555 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 559 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -3956,9 +4007,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 2,128 tests, none of which needs a database
+cargo test --workspace           # 2,133 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 555 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 559 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

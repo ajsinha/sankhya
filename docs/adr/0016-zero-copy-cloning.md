@@ -149,6 +149,18 @@ A foreign Delta reader pointed at a clone's directory sees only the files the cl
 the rows it inherited. **The clone is not independently readable by the kernel**, and the
 open-storage claim holds for ordinary tables and not for clones.
 
+**And it costs a read path, which this section failed to say when it was written.** If a clone's
+log named the origin's files, the existing read path would have served a clone with no changes at
+all. Deciding that it names none of them means *this* engine must splice too --- the origin's
+live set at the cloned version, unioned with the clone's own log --- and until that exists a
+clone is a table that reads as **empty**.
+
+That omission is worth recording rather than quietly fixing. The decision was argued on
+portability and on the lifetime question, both of which it wins; the cost it did not name is a
+piece of work, and a decision whose costs are listed incompletely is one somebody re-reads and
+mis-weighs. `M10`'s work list gained the item when the gap was found, which was while planning
+the soak that would have exercised it.
+
 That is a real cost and it is the right one. The alternative buys kernel-readable clones with
 absolute paths that break the moment a warehouse is restored somewhere else — trading a
 correctness property for an interoperability one. A clone that must be readable elsewhere is

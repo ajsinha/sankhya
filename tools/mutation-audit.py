@@ -1659,6 +1659,30 @@ CATALOGUE = [
      "            cloned_from: { let _ = (origin.into(), origin_version); None },",
      "sankhya-backup"),
 
+    ("readpath: read a clone without the rows it inherited",
+     "crates/sankhya-readpath/src/provider.rs",
+     "                    resolved.extend(\n                        at.files\n                            .into_iter()\n                            .map(|file| (inherited.origin_root.clone(), file)),\n                    );",
+     "                    let _uninherited = at.files;",
+     "sankhya-readpath"),
+
+    ("readpath: read a clone against the origin as it stands rather than the cloned version",
+     "crates/sankhya-readpath/src/provider.rs",
+     "                    let at = sankhya_table_delta::live_files_at(\n                        &inherited.origin_root,\n                        inherited.version,\n                    )?;",
+     "                    let at = sankhya_table_delta::live_files(&inherited.origin_root)?;",
+     "sankhya-readpath"),
+
+    ("readpath: serve a clone whose origin has gone",
+     "crates/sankhya-readpath/src/provider.rs",
+     "                    if !is_a_table {",
+     "                    if is_a_table && false {",
+     "sankhya-readpath"),
+
+    ("readpath: resolve an inherited file against the clone's own root",
+     "crates/sankhya-readpath/src/provider.rs",
+     "                            root.join(&file.path).to_string_lossy().into_owned(),",
+     "                            table_root.join(&file.path).to_string_lossy().into_owned(),",
+     "sankhya-readpath"),
+
     ("brake: report a warning when the machine is about to be killed",
      "crates/sankhya-governor/src/memory.rs",
      "    if in_use >= limits.shed_bytes {",
