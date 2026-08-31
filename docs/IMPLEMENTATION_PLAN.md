@@ -1048,7 +1048,15 @@ it is creatable, and the drop is where `may_drop` --- which had existed with not
 --- now refuses removing a table other clones still read. Writing those tests found two defects
 in the clone statement committed an hour earlier: a clone could be created and then not acted on,
 because authorization checked its own name rather than what it references; and a name in use was
-asked of the policy rather than the warehouse, so a second clone could be created over the first. Backup, restore and tiering made clone-aware. A soak that clones
+asked of the policy rather than the warehouse, so a second clone could be created over the first. ~~Backup and restore made clone-aware.~~ — **built 2026-08-31**. A manifest records what each
+table is a clone of, and `Manifest::bind` refuses a backup containing a clone whose origin it does
+not contain --- at bind time, where a backup that cannot be restored is refused rather than
+counted. Restoring a clone without its origin would produce a table that is present, readable and
+empty, which is the failure Decision 1a implies and nothing else would catch.
+
+**Tiering's half is a refusal with no reachable path yet.** `may_purge` is written and tested, and
+`M9`'s destructive purge stays disabled until `M11` clears its gate --- so there is nothing to
+wire it into. Recorded rather than quietly skipped. A soak that clones
 under load, writes to both sides, runs full maintenance, and verifies both still read
 correctly afterwards.
 
