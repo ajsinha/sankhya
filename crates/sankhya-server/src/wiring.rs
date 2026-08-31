@@ -1417,6 +1417,178 @@ impl Server {
             .map(|guard| guard.scope_digest())
     }
 
+    /// Run a `CREATE TABLE ... CLONE`.
+    ///
+    /// # Why the origin is authorized as a read
+    ///
+    /// A clone *is* a read: `ADR-0016` makes it a reference to the origin's files rather than a
+    /// copy of them, so somebody who may clone a table they cannot read has read it. The check
+    /// is [`Self::scope_for`] --- the same authorization the query path uses --- and its failure
+    /// is the same sentence the query path gives, because saying *"you may not read `payroll`"*
+    /// would confirm that `payroll` exists.
+    fn run_clone_ddl(
+        &self,
+        statement: Result<sankhya_clone::ddl::Statement, sankhya_clone::DdlError>,
+        principal: &Principal,
+    ) -> Result<QueryResult, QueryFailure> {
+        use sankhya_error::protocol::sqlstate;
+
+        let statement = statement
+            .map_err(|error| refusal(sqlstate::SYNTAX_ERROR.as_str(), &error.to_string()))?;
+
+        if self.scope_for(principal, &statement.origin).is_none() {
+            return Err(refusal(
+                sqlstate::DATA_EXCEPTION.as_str(),
+                &format!("there is no table `{}` to clone", statement.origin),
+            ));
+        }
+        if self.scope_for(principal, &statement.table).is_some() {
+            return Err(refusal(
+                sqlstate::DATA_EXCEPTION.as_str(),
+                &format!(
+                    "the table `{}` already exists. A clone is created, never replaced: \
+                     replacing one would drop a table somebody may be the only reader of",
+                    statement.table
+                ),
+            ));
+        }
+
+        let origin_root = self.settings.warehouse.join(&statement.origin);
+        let facts = self.origin_facts(&origin_root, statement.version)?;
+        let version = statement.version.unwrap_or(facts.latest_version);
+
+        let request = sankhya_clone::refuse::Request {
+            table: statement.table.clone(),
+            // One tenant per warehouse today, so these agree by construction. Passed through
+            // rather than skipped, so the refusal exists and is tested before the day they
+            // stop agreeing --- which is when nobody will think to add it.
+            tenant: self.settings.tenant.to_string(),
+            origin: statement.origin.clone(),
+            origin_tenant: self.settings.tenant.to_string(),
+            version,
+        };
+        sankhya_clone::refuse::may_clone(&request, &facts).map_err(|refused| {
+            refusal(sqlstate::DATA_EXCEPTION.as_str(), &refused.to_string())
+        })?;
+
+        self.write_clone(&statement.table, &statement.origin, version, &origin_root)?;
+        self.record(
+            principal,
+            TableRef::new("", &statement.origin),
+            Action::Read,
+            true,
+        );
+        Ok(acknowledged("CREATE TABLE"))
+    }
+
+    /// What the origin's log says, as `may_clone` needs it.
+    ///
+    /// # What `earliest_retained_version` means here, exactly
+    ///
+    /// **The oldest version the log still contains**, which is a bound rather than a promise:
+    /// a version's commit can be present while the data files it names have been retired. So
+    /// the requested version is *also* checked file by file, and the log bound is what the
+    /// refusal quotes when that check fails.
+    ///
+    /// Computing the true oldest resolvable version would mean replaying to every version in
+    /// turn, which is quadratic in the log. The bound is cheap, the file check is exact, and
+    /// together they refuse correctly and explain approximately --- which is the right way
+    /// round.
+    fn origin_facts(
+        &self,
+        origin_root: &std::path::Path,
+        wanted: Option<u64>,
+    ) -> Result<sankhya_clone::refuse::Origin, QueryFailure> {
+        use sankhya_error::protocol::sqlstate;
+
+        let live = sankhya_table_delta::live_files(origin_root).map_err(|error| {
+            refusal(
+                sqlstate::DATA_EXCEPTION.as_str(),
+                &format!("the table to clone could not be read: {error}"),
+            )
+        })?;
+        let latest_version = live.version.unwrap_or_default();
+        let oldest_in_log = sankhya_table_delta::commits(origin_root)
+            .ok()
+            .and_then(|commits| commits.first().map(|(version, _)| *version))
+            .unwrap_or_default();
+
+        // The exact half. A version whose commit survives and whose files do not is the case
+        // the log bound cannot see, and it is the one that produces an empty table wearing the
+        // name of a full one.
+        let resolvable = match wanted {
+            None => true,
+            Some(version) if version > latest_version => true,
+            Some(version) => sankhya_table_delta::live_files_at(origin_root, version)
+                .map(|at| at.files.iter().all(|file| origin_root.join(&file.path).exists()))
+                .unwrap_or(false),
+        };
+
+        Ok(sankhya_clone::refuse::Origin {
+            latest_version,
+            earliest_retained_version: if resolvable {
+                oldest_in_log
+            } else {
+                wanted.unwrap_or_default().saturating_add(1).max(oldest_in_log)
+            },
+            // Nothing plans a purge yet --- `M9`'s destructive path stays disabled until
+            // `M11` --- so this is false by construction rather than by omission. The refusal
+            // is built and tested against the day it is not.
+            purge_in_flight: false,
+            // Schema evolution is not an operation this server has, so likewise.
+            schema_evolving: false,
+        })
+    }
+
+    /// Commit the clone's table: lineage properties, and no files.
+    fn write_clone(
+        &self,
+        table: &str,
+        origin: &str,
+        version: u64,
+        origin_root: &std::path::Path,
+    ) -> Result<(), QueryFailure> {
+        use sankhya_error::protocol::sqlstate;
+
+        let schema = sankhya_table_delta::read_actions(origin_root)
+            .ok()
+            .and_then(|actions| {
+                actions.into_iter().rev().find_map(|(_, action)| match action {
+                    sankhya_table_delta::Action::Metadata(metadata) => {
+                        Some(metadata.schema_string)
+                    }
+                    _ => None,
+                })
+            })
+            .ok_or_else(|| {
+                refusal(
+                    sqlstate::DATA_EXCEPTION.as_str(),
+                    "the table to clone declares no schema",
+                )
+            })?;
+
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|since| i64::try_from(since.as_micros()).ok())
+            .unwrap_or(0);
+        let lineage = sankhya_clone::Lineage::new(origin, version, at);
+
+        // Through the one official writer, not from here. `check-writers` caught the first
+        // draft of this committing directly and it was right to: the point of that rule is
+        // that table state has one write path, and a clone's creating commit is table state.
+        // Widening the allowlist would have been the easy answer and the wrong one.
+        let root = self.settings.warehouse.join(table);
+        sankhya_publish::Publication::external(&root, table)
+            .create_clone(&schema, &lineage.to_properties())
+            .map_err(|error| {
+                refusal(
+                    sqlstate::DATA_EXCEPTION.as_str(),
+                    &format!("the clone could not be committed: {error}"),
+                )
+            })
+    }
+
     /// Run a `CREATE CUBE` or `DROP CUBE`.
     ///
     /// # Why the same failure is reported for "no such table" and "you may not read it"
@@ -1633,6 +1805,13 @@ impl Server {
         // of what `session_for` builds is any use to a statement that reads no data.
         if let Some(statement) = sankhya_cube_sql::parse_ddl(sql) {
             return self.run_cube_ddl(statement, &principal);
+        }
+
+        // Clone DDL, for the same reason and at the same point. `CREATE TABLE x CLONE y` is
+        // not SQL either, and `parse_ddl` returns `None` for every statement that is not one
+        // --- including every ordinary `CREATE TABLE`, which must reach the engine untouched.
+        if let Some(statement) = sankhya_clone::parse_ddl(sql) {
+            return self.run_clone_ddl(statement, &principal);
         }
 
         // Only the tables this principal may read are registered, so a query naming one

@@ -1034,7 +1034,14 @@ plus a tangled lineage, each a pure predicate taking the facts as arguments — 
 to open a log to decide could not be tested against the case it exists for. Tenancy is checked
 first because it is the only one that never becomes true by waiting.
 
-Clone and drop surfaces. Backup, restore and tiering made clone-aware. A soak that clones
+~~Clone surfaces.~~ — **built 2026-08-31**, `sankhya-server`'s statement path. Intercepted
+beside the cube DDL, authorized through `scope_for` because a clone is a reference and therefore
+a read, and refused with the query path's own sentence so that a refusal cannot confirm a table
+exists. The requested version is checked file by file, because the log's cheap bound is wrong in
+the dangerous direction: a commit can survive its data. Nine tests, one of which proves ordinary
+SQL still reaches the engine untouched.
+
+The drop surface's refusal. Backup, restore and tiering made clone-aware. A soak that clones
 under load, writes to both sides, runs full maintenance, and verifies both still read
 correctly afterwards.
 

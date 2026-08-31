@@ -33,6 +33,11 @@ sankhya-table-delta = { path = "../sankhya-table-delta" }
 sankhya-maintenance = { path = "../sankhya-maintenance" }
 sankhya-cube        = { path = "../sankhya-cube" }
 sankhya-cube-sql    = { path = "../sankhya-cube-sql" }
+sankhya-clone       = { path = "../sankhya-clone" }
+# A runtime dependency as of M10: `CREATE TABLE ... CLONE` creates a table, and table state
+# has one write path. It was a dev-dependency until then because the server had never written
+# to a warehouse --- which is why `check-writers` noticed the moment it started.
+sankhya-publish     = { path = "../sankhya-publish" }
 sankhya-olap        = { path = "../sankhya-olap" }
 sankhya-graph-sql   = { path = "../sankhya-graph-sql" }
 sankhya-plan     = { path = "../sankhya-plan" }
