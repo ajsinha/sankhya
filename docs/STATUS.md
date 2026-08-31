@@ -1180,6 +1180,62 @@ re-attachment is *simple* and after the files are gone that promise could only b
 
 Eleven tests and 6 mutations.
 
+### Step 9 — rehydration, and the failure with no moment
+
+`FR-TIER-20` names four properties together: a rehydration loads into a schema **excluded from
+every publication**, is **never attached to the live parent**, is **read-only**, and carries a
+**mandatory expiry**. Each is the sort of property a review confirms on the day and nothing
+enforces afterwards, so each is a type rather than a check.
+
+| Property | How |
+|---|---|
+| Excluded from every publication | `Target::loading_into` refuses a schema not asserted excluded |
+| Never attached to the live parent | the same constructor refuses the parent's own schema, and nothing here takes a parent |
+| Read-only | `Rehydration` has no method that writes and no mode that is not `ReadOnly` |
+| Mandatory expiry | `Expiry` cannot be zero and `Rehydration` has no constructor without one |
+
+`ReadOnly` is a unit type rather than an enum with one variant used today, because an enum
+invites a second variant and the second variant is the writable copy the requirement forbids.
+And the two schema assertions are checked separately: excluding the live schema from every
+publication does not make it a sensible place to load a copy of the parent.
+
+### Why the expiry is the load-bearing one
+
+`RSK-35` is *"rehydrated copies accumulate into a shadow system of record"*, and that failure
+**has no moment**. Nobody rehydrates a shadow system of record; they rehydrate one range for one
+investigation, and then another, over a multi-year horizon, and each one is individually
+reasonable. There is no day on which somebody could have decided otherwise --- which is exactly
+why it cannot be a decision made per rehydration.
+
+So an expiry of zero is unrepresentable, and one longer than ninety days is refused as well.
+That second limit is not a safety property --- a person can rehydrate again --- but a bound on
+how far a single decision reaches. A copy granted for years is the multi-year risk taken in one
+step.
+
+### Two reapers that look alike and are opposites
+
+The quarantine reaper weighs age against whether the registry still claims the range, because a
+quarantined partition may be the only copy there is. The rehydration reaper weighs nothing: a
+rehydrated copy is a copy of an archive that still exists, so dropping it loses nothing and
+**keeping** it is the risk. Accumulation is reported as count *and* age of the oldest, because
+one copy held for a year and fifty held for a day are different problems and neither is visible
+in the other's number.
+
+### A correction is a reversal, not an erasure
+
+`FR-TIER-19` defaults corrections to a compensating entry in the hot tier referencing the
+original, which is how record-keeping already works: a posted entry is reversed, not erased. It
+preserves the audit trail completely and is available whatever the archive's immutability
+controls say, because it touches nothing archived.
+
+Controlled rewrite exists for the cases that need it and cannot be constructed without the two
+things that make it survivable. A rewrite that retains no prior version is indistinguishable
+from the archive having always said the new thing --- which is the property archives exist to
+have --- and one that records no amendment link is a corrected archive that does not say it was
+corrected.
+
+Fourteen tests and 8 mutations.
+
 ## M7, complete
 
 Added 2026-08-27 by owner directive and placed before scale-out: cubes are a stated
@@ -2654,7 +2710,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 483 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 491 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -3170,9 +3226,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,975 tests, none of which needs a database
+cargo test --workspace           # 1,989 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 483 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 491 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

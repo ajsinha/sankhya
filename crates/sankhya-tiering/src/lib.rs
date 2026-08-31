@@ -53,6 +53,7 @@ pub mod machine;
 pub mod policy;
 pub mod quarantine;
 pub mod registry;
+pub mod rehydrate;
 pub mod unify;
 pub mod verify;
 
@@ -62,5 +63,6 @@ pub use policy::{Eligibility, Ineligible, Policy, Retention};
 pub use defence::{Extents, Verdict};
 pub use registry::{Entry as ArchiveEntry, Range, Registry};
 pub use quarantine::{Grace, Quarantine};
+pub use rehydrate::{Correction, Rehydration};
 pub use unify::{Plan, Unservable};
 pub use verify::{Fingerprint, Proof, Scan, Verification};

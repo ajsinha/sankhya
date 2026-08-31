@@ -884,7 +884,16 @@ refusal, because a grace of nothing is the requirement unimplemented rather than
 `reattach` withdraws the archival entry in the same call, so neither half can happen without the
 other.
 
-Rehydration with mandatory expiry. Whole-table migration. Command and schedule surfaces with plan digests, blast-radius limits, the anomaly guard and kill switches. Segregated authorization and the evidence pack.
+~~Rehydration with mandatory expiry.~~ — **built 2026-08-31**, `sankhya-tiering::rehydrate`.
+All four of `FR-TIER-20`'s properties are types rather than checks: a target schema that refuses
+to be capturable or to be the live parent's, a `ReadOnly` unit type with no second variant to
+invite, and an `Expiry` that cannot be zero and cannot exceed ninety days. The expiry is the
+load-bearing one, because `RSK-35` is a failure with no moment --- each rehydration is
+individually reasonable and the accumulation is the problem. `FR-TIER-19`'s compensating entry
+is the default correction, and a controlled rewrite cannot be constructed without retaining the
+prior version and recording an amendment link.
+
+Whole-table migration. Command and schedule surfaces with plan digests, blast-radius limits, the anomaly guard and kill switches. Segregated authorization and the evidence pack.
 
 ### Exit
 Purge demonstrated end to end with verification, quarantine and rollback; the anomaly guard demonstrated halting an intentionally-defective policy; every rejected purge path shown to fail closed.
