@@ -2017,6 +2017,60 @@ planned path is there. The count says how many rows; the path check says they ar
 
 Five tests and 4 mutations.
 
+### Step 9 — the soak, and the control that makes it mean something
+
+`M10`'s soak asks a different question from `soak_run`'s. That one asks *"does any bounded
+measure grow without bound?"* over forty-five minutes. This asks a correctness question a long
+run is not needed to answer and a **hostile** one is: after the origin has been compacted,
+retired and swept, can the clone still read every row it could read before?
+
+The failure it guards against has no symptom at the time. From the origin's point of view a file
+only the clone still names is on disk, absent from the live set and past its threshold ---
+indistinguishable from debris by every measure the sweeper has. Nothing errors. The clone is
+simply missing rows the next time somebody reads that range of it.
+
+### It runs every time, and the maintenance is deliberately hostile
+
+`soak_run` is `#[ignore]`d because forty-five minutes is not something a suite can spend. This is
+seconds, and **a correctness property that runs only when somebody remembers is a correctness
+property nobody is checking.**
+
+The policy is zeroed rather than defaulted: compaction every tick, orphan sweep every tick, a
+retention grace of nothing. The shipping defaults sweep every hundred and twenty ticks and keep
+an input for a week, which on a test's timescale means retirement and orphan collection never
+happen and the soak would prove nothing about either.
+
+### The control, and what it reports
+
+The same soak runs twice, differing only in whether the maintainer is **told about the clone**.
+
+| | Inherited rows readable before | After |
+|---|---|---|
+| Told | 120 | **120** |
+| Not told | 120 | **0** |
+
+Not told, the plan afterwards names a file that is not there. That is the whole design in two
+lines: the protection is doing the protecting, rather than the policy being too gentle to
+reclaim anything. A soak that only ever ran the protected case could not tell those apart --- and
+this repository has shipped exactly that mistake before, in a contention test whose threshold sat
+below the contended figure.
+
+A third test asserts the hostile policy is hostile against a table with **no** clones at all,
+because "the clone still reads everything" is trivially true when nothing was ever reclaimed.
+
+### What it demonstrates, and what it does not
+
+It reads **values back out of the files**, not row counts out of the log. A count comes from the
+log, so a plan naming files that are gone reports the right number --- which is the failure being
+looked for, and it would pass a count. That lesson arrived one step earlier, from a mutation.
+
+Orphan collection is covered by the same run rather than by a case of its own: a file in the
+origin's pinned version that compaction has superseded is exactly what the sweeper sees as
+debris, and the `reachable` set is what keeps it. Retirement covers the same files by a different
+route, so the soak shows both together and the unit tests show each alone.
+
+Three tests.
+
 ## M7, complete
 
 Added 2026-08-27 by owner directive and placed before scale-out: cubes are a stated
@@ -4007,7 +4061,7 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 2,133 tests, none of which needs a database
+cargo test --workspace           # 2,136 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
 python3 tools/mutation-audit.py  # 559 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database

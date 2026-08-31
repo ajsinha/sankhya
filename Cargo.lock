@@ -3448,6 +3448,8 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "datafusion",
+ "parquet",
+ "sankhya-clone",
  "sankhya-cube",
  "sankhya-cube-sql",
  "sankhya-error",
