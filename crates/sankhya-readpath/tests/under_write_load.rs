@@ -191,6 +191,7 @@ fn arm() -> tempfile::TempDir {
 }
 
 #[test]
+#[ignore = "a throughput measurement: run alone by `check-concurrency`, because a measurement taken while `cargo test --workspace` saturates the machine describes the machine"]
 fn read_latency_is_flat_under_write_load() {
     let _measuring = MEASURING.lock().unwrap_or_else(PoisonError::into_inner);
     // Skipped loudly and by name, on two counts. With fewer cores than participants the reader

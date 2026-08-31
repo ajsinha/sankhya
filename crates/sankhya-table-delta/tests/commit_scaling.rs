@@ -107,6 +107,7 @@ fn arm() -> tempfile::TempDir {
 }
 
 #[test]
+#[ignore = "a throughput measurement: run alone by `check-concurrency`, because a measurement taken while `cargo test --workspace` saturates the machine describes the machine"]
 fn commits_to_different_tables_do_not_contend() {
     let _measuring = MEASURING.lock().unwrap_or_else(PoisonError::into_inner);
     // Skipped loudly and by name. Three cores cannot distinguish a commit path that scales

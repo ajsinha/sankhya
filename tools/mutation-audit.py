@@ -868,6 +868,12 @@ CATALOGUE = [
      "        let mut seen = self.peak.load(Ordering::Relaxed);\n        while now != seen {",
      "sankhya-alloc"),
 
+    ("alloc: discard the current total when the peak is reset",
+     "crates/sankhya-alloc/src/lib.rs",
+     "        self.peak.store(self.in_use(), Ordering::Relaxed);",
+     "        self.peak.store(0, Ordering::Relaxed);",
+     "sankhya-alloc"),
+
     ("alloc: report zero rather than nothing when no allocator was announced",
      "crates/sankhya-alloc/src/lib.rs",
      "    INSTALLED.get().map(|allocator| allocator.in_use())",
@@ -1441,6 +1447,12 @@ CATALOGUE = [
      "crates/sankhya-tiering/src/evidence.rs",
      "    let mut inner_pad = [0x36u8; BLOCK];",
      "    let mut inner_pad = [0x5cu8; BLOCK];",
+     "sankhya-tiering"),
+
+    ("tiering: let a purge reach a destructive phase by skipping to it",
+     "crates/sankhya-tiering/src/machine.rs",
+     "        if next.requires() != Some(self.phase()) {",
+     "        if next.requires() < Some(self.phase()) {",
      "sankhya-tiering"),
 
     ("brake: report a warning when the machine is about to be killed",
