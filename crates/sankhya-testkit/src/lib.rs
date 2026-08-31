@@ -316,10 +316,60 @@ impl Running {
 /// defect as a threshold with no control: the number stops meaning anything and nobody notices
 /// when it starts being wrong.
 pub mod capacity {
+    /// A measurement window, opened before the arms run and checked again after them.
+    ///
+    /// # Why the check has to bracket the measurement rather than precede it
+    ///
+    /// [`can_measure`] samples free capacity at one instant. That is enough to refuse a machine
+    /// which is *already* busy and not enough to notice one that **becomes** busy: under
+    /// `cargo test --workspace` other test binaries start and finish continuously, so a
+    /// measurement can begin on an idle machine and finish on a saturated one. C3 failed
+    /// exactly that way on 2026-08-31 after the opening check had been added --- the guard was
+    /// necessary and not sufficient.
+    ///
+    /// A measurement taken on a machine that became busy during it is not a measurement, so the
+    /// window is closed by asking again and the result is discarded rather than asserted on.
+    #[derive(Debug)]
+    pub struct Window {
+        test: String,
+        cores: usize,
+    }
+
+    impl Window {
+        /// Open a window, or announce the skip and return `None`.
+        #[must_use]
+        pub fn open(test: &str, cores: usize) -> Option<Self> {
+            can_measure(test, cores)
+                .then(|| Self { test: test.to_string(), cores })
+        }
+
+        /// Whether the machine stayed quiet enough for the measurement to mean anything.
+        ///
+        /// Announces the skip and returns `false` when it did not, so the caller returns
+        /// without asserting on a number it cannot stand behind.
+        #[must_use]
+        pub fn held(&self) -> bool {
+            let idle = idle_cores();
+            if enough(idle, self.cores) {
+                return true;
+            }
+            skipped(&format!(
+                "{}: the machine had {:.1} idle cores when the measurement finished and it \
+                 needs {}. It became busy while the arms were running, so the numbers describe \
+                 the machine rather than the code",
+                self.test,
+                idle.unwrap_or_default(),
+                self.cores
+            ));
+            false
+        }
+    }
+
     /// Whether a measurement needing `cores` cores' worth of free capacity can be taken here.
     ///
     /// Announces the skip and returns `false` when it cannot, so a caller is one `if` away from
-    /// doing the right thing and the reason reaches whoever ran the suite.
+    /// doing the right thing and the reason reaches whoever ran the suite. Prefer [`Window`],
+    /// which also checks that the machine stayed quiet.
     #[must_use]
     pub fn can_measure(test: &str, cores: usize) -> bool {
         let present =
@@ -331,17 +381,35 @@ pub mod capacity {
         // `None` is not a reason to skip. A machine that cannot be asked is one where the
         // measurement is left to speak for itself, which is the behaviour every platform had
         // before this check existed.
-        if let Some(idle) = idle_cores() {
-            #[allow(clippy::cast_precision_loss)]
-            if idle < cores as f64 {
-                skipped(&format!(
-                    "{test}: needs {cores} idle cores and this machine has {idle:.1}. A run \
-                     here could not tell a serialized path from a busy machine"
-                ));
-                return false;
-            }
+        let idle = idle_cores();
+        if !enough(idle, cores) {
+            skipped(&format!(
+                "{test}: needs {cores} idle cores and this machine has {:.1}. A run here could \
+                 not tell a serialized path from a busy machine",
+                idle.unwrap_or_default()
+            ));
+            return false;
         }
         true
+    }
+
+    /// Whether `idle` cores' worth of capacity is enough for a measurement needing `cores`.
+    ///
+    /// Split out from the sampling so the decision can be asserted directly. The sampling is
+    /// one syscall's worth of arithmetic that cannot be driven from a test without the test
+    /// becoming the load it is measuring --- which is the problem this whole mechanism exists
+    /// to solve --- so it is verified once by hand under an oversubscribed machine, and the
+    /// part with a rule in it is verified here.
+    ///
+    /// `None` means the platform does not publish free capacity, and that is **not** a reason
+    /// to skip: a machine that cannot be asked is one where the measurement speaks for itself,
+    /// which is how every platform behaved before this existed.
+    #[must_use]
+    pub fn enough(idle: Option<f64>, cores: usize) -> bool {
+        let Some(idle) = idle else { return true };
+        #[allow(clippy::cast_precision_loss)]
+        let wanted = cores as f64;
+        idle >= wanted
     }
 
     /// Cores' worth of idle capacity, measured over a short window.

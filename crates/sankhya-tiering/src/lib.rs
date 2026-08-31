@@ -47,10 +47,12 @@
 #![doc(html_root_url = "https://docs.rs/sankhya-tiering")]
 
 pub mod authorize;
+pub mod command;
 pub mod defence;
 pub mod encode;
 pub mod machine;
 pub mod migrate;
+pub mod permission;
 pub mod policy;
 pub mod quarantine;
 pub mod registry;
@@ -65,6 +67,8 @@ pub use defence::{Extents, Verdict};
 pub use registry::{Entry as ArchiveEntry, Range, Registry};
 pub use quarantine::{Grace, Quarantine};
 pub use migrate::Cold;
+pub use command::{Cleared, Proposal};
+pub use permission::Permission;
 pub use rehydrate::{Correction, Rehydration};
 pub use unify::{Plan, Unservable};
 pub use verify::{Fingerprint, Proof, Scan, Verification};

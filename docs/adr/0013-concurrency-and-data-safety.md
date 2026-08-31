@@ -172,6 +172,11 @@ So the properties are stated together, and the second is measured rather than as
 > `check-tests` printed only a count. **A criterion that quietly stops being measured is worse
 > than one that fails**, so the skip now writes past the capture and the gate lists what was
 > skipped beneath its total.
+>
+> **Amended again the same day.** Sampling free capacity *before* the arms was still not enough:
+> C3 failed with that fix in place, having begun on an idle machine and finished on a saturated
+> one. The check now brackets the measurement — a window opened before and closed after — and a
+> measurement whose window did not hold is discarded rather than asserted on.
 
 C1 is why [`ARCHITECTURE.md`'s standing note](../ARCHITECTURE.md) — *"keep the commit path
 per-table, never globally serialized"* — stops being a design seam and becomes an exit

@@ -33,7 +33,7 @@
     clippy::cast_precision_loss
 )]
 
-use sankhya_testkit::capacity::can_measure;
+use sankhya_testkit::capacity::Window;
 use sankhya_table_delta::{commit, create, Action, AddFile, Metadata};
 use std::path::Path;
 use std::sync::{Barrier, Mutex, PoisonError};
@@ -113,13 +113,10 @@ fn commits_to_different_tables_do_not_contend() {
     // from one that does not, and neither can four cores somebody else is already using --- a
     // pass or a failure there would describe the machine.
     let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-    if !can_measure("commits_to_different_tables_do_not_contend", 4) {
+    let writers = cores.min(8).max(4);
+    let Some(window) = Window::open("commits_to_different_tables_do_not_contend", writers) else {
         return;
-    }
-    let writers = cores.min(8);
-    if !can_measure("commits_to_different_tables_do_not_contend", writers) {
-        return;
-    }
+    };
 
     // Warm up, so the first arm does not pay for a cold page cache.
     let warm = arm();
@@ -142,6 +139,10 @@ fn commits_to_different_tables_do_not_contend() {
         "C1: {writers} tables --- free {one:.0} -> {many:.0} commits/s ({scales:.2}x); \
          behind one warehouse lock {one_locked:.0} -> {many_locked:.0} ({serialized:.2}x)"
     );
+
+    if !window.held() {
+        return;
+    }
 
     assert!(
         scales >= 3.0,
