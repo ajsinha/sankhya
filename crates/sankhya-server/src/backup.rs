@@ -175,3 +175,93 @@ pub(crate) fn run_drill(warehouse: &Path, data_dir: &Path, now: i64) -> i32 {
 pub(crate) fn last_proven(data_dir: &Path) -> Option<i64> {
     last_pass(data_dir)
 }
+
+/// `sankhya-server attest <archive>` --- prove a write-once store still refuses writes.
+///
+/// # Why this is a command and not a startup check
+///
+/// The same reason the restore drill is. `RSK-28`'s detection signal is *"attestation check
+/// failing"*, which needs something a monitor can watch on a schedule --- and an attestation
+/// is not free or safe to run continuously, because it works by attempting the violations it
+/// is checking for.
+///
+/// # Exit status
+///
+/// `0` attested, `1` the store allowed something it must refuse, `2` nothing was attempted.
+/// The third is separate for the reason it is separate everywhere else here: a monitor that
+/// treats *"I could not look"* as *"nothing wrong"* reports a control as proven when nothing
+/// tested it.
+pub(crate) fn run_attestation(archive: Option<&str>, data_dir: &Path, now: i64) -> i32 {
+    use sankhya_backup::attest::{attest, record, Directory, NON_PRODUCTION_MARKER};
+
+    println!("SANKHYA archive attestation {}", env!("CARGO_PKG_VERSION"));
+
+    let Some(archive) = archive else {
+        eprintln!(
+            "  usage: sankhya-server attest <archive-path>\n\n\
+             The archive must contain a `{NON_PRODUCTION_MARKER}` file. An attestation \
+             attempts the violations it is checking for, so against a real archive a missing \
+             control means this command inflicts the loss the control existed to prevent."
+        );
+        return COULD_NOT_RUN;
+    };
+
+    let store = Directory::at(Path::new(archive));
+    let attestation = attest(&store, now);
+    if let Err(error) = record(data_dir, &attestation) {
+        eprintln!("  {error}");
+        return COULD_NOT_RUN;
+    }
+
+    println!("  {}", attestation.store);
+    for (violation, outcome) in &attestation.attempts {
+        println!("  {violation}: {outcome}");
+    }
+    println!();
+
+    if attestation.passed() {
+        println!(
+            "Attested. Every forbidden operation was refused and the object is unchanged."
+        );
+        return PROVEN;
+    }
+    if let Some(why) = &attestation.could_not_attempt {
+        eprintln!("NOT ATTEMPTED. {why}");
+        return COULD_NOT_RUN;
+    }
+    let allowed = attestation.allowed();
+    if !allowed.is_empty() {
+        eprintln!(
+            "NOT ATTESTED. This store allowed {} — the immutability control is not in force, \
+             and anything relying on it is unprotected now rather than at some future point.",
+            allowed
+                .iter()
+                .copied()
+                .map(sankhya_backup::attest::Forbidden::name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if attestation.bytes_intact == Some(false) {
+        eprintln!("  The probe object was modified. This store does not hold what it is given.");
+    }
+    NOT_PROVEN
+}
+
+/// Whether this deployment archives anything, and therefore has an immutability control that
+/// could be lost.
+///
+/// # Why this is `false` today and is not a stub
+///
+/// Tiering is `M9` and is gated; `sankhya-tiering` is empty on purpose. Nothing in this system
+/// writes an archive yet, so nothing depends on a write-once control yet, so there is nothing
+/// for an attestation to be overdue about. Returning `false` is the true answer rather than a
+/// placeholder for one.
+///
+/// It is a function rather than a literal `false` at the call site so that the day tiering
+/// starts writing archives, the check that has to start firing is turned on **here**, in one
+/// place, next to this explanation --- rather than discovered missing later by somebody
+/// wondering why the attestation check never fired on a system full of archives.
+pub(crate) fn has_archive(_store: &sankhya_backup::attest::Directory) -> bool {
+    false
+}

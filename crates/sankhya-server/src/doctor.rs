@@ -69,6 +69,22 @@ pub(crate) fn doctor(warehouse: &Path, data_dir: &Path, now: i64) -> i32 {
     } else {
         report.clean("restore-drill");
     }
+
+    // And whether the write-once controls anything archived depends on are still in force.
+    // Silent when nothing is archived: a deployment with no archive has no such control to
+    // lose, and a check that fired anyway would be Critical on every install from the day it
+    // shipped, which is how a check stops being read.
+    let archived = crate::backup::has_archive(&sankhya_backup::attest::Directory::at(data_dir));
+    if let Some(finding) = sankhya_diagnostic::check::archive_attestation(
+        sankhya_backup::attest::last_pass(data_dir),
+        archived,
+        sankhya_diagnostic::check::ATTESTATION_OBJECTIVE_MICROS,
+        now,
+    ) {
+        report.found(finding);
+    } else if archived {
+        report.clean("archive-attestation");
+    }
     for (path, why) in &refused {
         report.skipped("table-discovery", format!("{}: {why}", path.display()));
     }

@@ -85,7 +85,7 @@ pub struct Leases {
     ///
     /// So an unannounced reader is counted, and while the count is non-zero nothing drains at
     /// all. That is maximally conservative --- one unlucky reader stalls all reclamation until
-    /// it finishes --- and it is the right trade: with the default slot count a collision needs
+    /// it finishes --- and it is the right bargain: with the default slot count a collision needs
     /// hundreds of concurrent queries, and the cost of being wrong the other way is a query
     /// failing on a file that vanished.
     unannounced: AtomicUsize,

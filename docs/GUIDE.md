@@ -9,17 +9,18 @@
 
 # SANKHYA — a guide, by example
 
-**Status:** Implementation — M0–M8 complete; M8 on six of eight, its scale-out half moved to M12; M9 next
+**Status:** Implementation — M0–M8 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress
 
 Every example here is **executed or accounted for by a test**.
-`crates/sankhya-server/tests/guide.rs` extracts the SQL from this page — this page, not a
-copy of it — starts the real server and runs what can run: ten statements at the last count.
-The rest query tables you would bring yourself, and each is listed in that test with the
-reason it cannot run here. A block that is neither executed nor listed fails the build, so an
-example cannot quietly become neither.
+`crates/sankhya-server/tests/guide.rs` extracts the SQL from this page — this page, not a copy
+of it — starts the real server and runs what can run. The rest query tables you would bring
+yourself, and each is listed in that test with the reason it cannot run here. A block that is
+neither executed nor listed fails the build, so an example cannot quietly become neither.
 
-That sentence used to claim all of them ran, and the file it named did not exist. It does
-now, and it counts.
+Two things this sentence has already got wrong, kept here because they are the argument for
+the test. It once claimed every example ran, and the file it named did not exist. It then
+quoted how many did run, and that number went stale the next time an example was added —
+nothing checks a figure in prose, so no figure is quoted now.
 
 The [quickstart](QUICKSTART.md) gets a server running. This shows what to do with it.
 
@@ -1162,6 +1163,52 @@ that is a separate drill against your database backup tooling.
 
 Full detail in [`runbooks/restore-drill.md`](runbooks/restore-drill.md).
 
+### Proving an archive is still immutable
+
+A backup drill proves you can read data back. An **attestation** proves a write-once store
+still refuses to change what it holds — which is a different claim, and one that decays
+without anything touching your system. A retention policy is replaced, a lifecycle rule is
+added, a bucket is recreated by a template, and the control is gone while every configuration
+readout still says it is there.
+
+```bash
+sankhya-server attest /path/to/archive-copy
+```
+
+**It works by trying to break the archive.** It writes a probe object, then attempts to
+overwrite it, delete it and truncate it, and requires every one to be refused. Reading a
+configuration flag instead would pass in exactly the case this exists to catch — a policy that
+still reports `enabled` and no longer applies.
+
+Which is why it refuses to run without a `_non_production` file in the archive:
+
+```console
+$ sankhya-server attest /archives/2019
+  usage: sankhya-server attest <archive-path>
+
+  The archive must contain a `_non_production` file. An attestation attempts the
+  violations it is checking for, so against a real archive a missing control means
+  this command inflicts the loss the control existed to prevent.
+```
+
+The marker lives in the archive rather than on the command line on purpose. A `--non-production`
+flag survives in a runbook that gets copied, and the copy eventually runs somewhere it should
+not; a file inside an archive is a statement about *that* archive.
+
+| Exit | Meaning |
+|---|---|
+| `0` | Attested — every violation refused, object unchanged |
+| `1` | The store allowed something it must refuse |
+| `2` | Nothing was attempted |
+
+**`2` is not a pass.** A write that failed because the path was wrong or credentials were
+missing has demonstrated nothing about immutability, and recording it as a refusal would let a
+broken drill certify a store it never touched.
+
+Recorded in `<data-dir>/attestations.log`, and `doctor` reports the last pass — but only for a
+deployment that actually archives something. A system with no archive has no immutability
+control to lose.
+
 ---
 
 ## 13. What is not built
@@ -1174,13 +1221,15 @@ admits less. [`STATUS.md`](STATUS.md) is the authoritative version.
 | **The gRPC transport, and every write path on the control plane** | Not built. The gateway's route table and the size decision `FR-API-06` turns on both exist and are tested; wiring them to tonic and to an audited write path is the remainder. Jobs and archive operations are absent on purpose — with no scheduler, a jobs endpoint would list nothing forever and a client could not tell that from a system with nothing to list |
 | **Backing up the transactional store** | Not built, and deliberately not planned as this system's job. The manifest binds to a PostgreSQL backup taken by your own tooling |
 | **Distributed tracing** | Not built. Metrics and the error catalogue exist; spans do not |
-| **A multi-day soak** | Not run. The harness exists, is proven to detect a leak, and runs short on every build — see [`SOAK.md`](SOAK.md). The scheduled run is a change of duration and scale |
+| **A multi-day soak** | Not run. The harness exists, is proven to detect a leak, and runs short on every build — a forty-five-minute run at twenty gigabytes passes with resident memory flat; see [`SOAK.md`](SOAK.md). The scheduled run is a change of duration and scale, and it moved to M12 with the rest of the scale-out work |
 | **Container images and signing** | Not built. The platform baseline and the manifests' termination grace are checked; the artifacts a release pipeline produces are not |
 | **Ingest on a timer** | Not built. Capture, apply and publication all work and none of them is driven by a running process, so everything the server serves is already published |
 | **Graph hydration on a timer** | Not built. An epoch is built when something builds it |
 | **The pack loader in the server** | Not built. Packs load into a registry; nothing in the running process does that |
 | **Partitioning, bloom filters, the result cache** | Not built. The date axis and its declaration exist; nothing yet writes partitioned directories |
-| **Most of `FR-OPS-16`'s checks** | Not built. `doctor` covers compaction debt end to end; storage headroom and replication lag exist as checks with nothing feeding them |
+| **Most of `FR-OPS-16`'s checks** | Not built. `doctor` covers compaction debt end to end, reports how long a backup has been unproven, and — for a deployment that archives anything — how long its write-once controls have gone unattested; storage headroom and replication lag exist as checks with nothing feeding them |
+| **Lifecycle tiering, and purge from the source** | Not built, and **gated**. `sankhya-tiering` is deliberately empty; M9 is in progress and its first piece — an attestation drill that proves a write-once store still refuses writes — exists. **Destructive purge stays disabled until reconciliation has run clean in production**, which is a separate milestone. Building the purge path and arming it are two decisions |
+| **Multi-node: leader election, executor scale-out, failover, replication** | Not built, and not reachable here. All of it moved to M12 on 2026-08-30, because proving it needs a second machine and a recovery objective measured on one host would exclude the failures the criterion exists to price |
 | **QR, SVD, eigendecomposition** | Deliberately absent. They are where an in-house implementation is worse than none — a subtly wrong SVD produces plausible singular values |
 
 ---

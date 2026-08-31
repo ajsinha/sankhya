@@ -18,6 +18,7 @@
 
 #![doc(html_root_url = "https://docs.rs/sankhya-backup")]
 
+pub mod attest;
 pub mod drill;
 pub mod manifest;
 pub mod protect;

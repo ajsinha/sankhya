@@ -22,6 +22,15 @@ const MAY_WRITE_DIRECTLY: &[(&str, &str)] = &[
          also mean buffering a whole Parquet file in memory, since `ArrowWriter` streams into \
          a handle rather than producing bytes",
     ),
+    (
+        "crates/sankhya-backup/src/attest.rs",
+        "the attestation drill, whose whole job is to attempt the writes a write-once store \
+         must refuse. Routing them through `publish` would test the wrong thing entirely: \
+         `publish` stages and renames, and a store that refuses an in-place overwrite may \
+         well permit a rename --- so an attestation built on it could report a control in \
+         force that is not. The probe object is named `_attestation_probe` and no reader \
+         names it",
+    ),
 ];
 
 /// The shapes that are refused, and what to do instead.

@@ -409,6 +409,93 @@ pub fn restore_drill(last_pass: Option<i64>, objective_micros: i64, now: i64) ->
     })
 }
 
+/// How long an immutability control may go unverified.
+///
+/// Ninety days. Longer than the restore objective deliberately: an attestation is a
+/// *deliberate attempt at corruption* against a non-production copy, so running one is a
+/// scheduled exercise rather than something to do weekly. The risk it covers --- `RSK-28`,
+/// a storage policy replaced underneath a control somebody is relying on --- moves at the
+/// speed of infrastructure change, not at the speed of data.
+pub const ATTESTATION_OBJECTIVE_MICROS: i64 = 90 * 24 * 3_600 * 1_000_000;
+
+/// Whether the write-once controls have been proven to still refuse writes.
+///
+/// # Why this is silent when nothing is archived
+///
+/// `RSK-28` is about *"immutability controls silently removed by a later storage policy
+/// change"*, and a deployment that archives nothing has no such control to lose. A check that
+/// fired anyway would be `Critical` on every install from the day it shipped, which is how a
+/// check stops being read --- and it would be loudest on exactly the deployments where it
+/// means least.
+///
+/// So `archived` gates it. The cost of that choice is that a deployment which *starts*
+/// archiving inherits a check that has never passed, which is the correct state to be in and
+/// is reported as such.
+#[must_use]
+pub fn archive_attestation(
+    last_pass: Option<i64>,
+    archived: bool,
+    objective_micros: i64,
+    now: i64,
+) -> Option<Finding> {
+    if !archived {
+        return None;
+    }
+    let remediation = "Run an attestation against a non-production copy of the archive: \
+                       `sankhya-server attest <archive>`. If it reports ALLOWED, the \
+                       immutability control is not in force and everything relying on it is \
+                       unprotected now — not at some future point."
+        .to_string();
+    let Some(last) = last_pass else {
+        return Some(Finding {
+            check: "archive-attestation",
+            subject: "archive".to_string(),
+            severity: Severity::Critical,
+            // The same distinction the restore drill draws, for the same reason: never having
+            // proven a control and having proven it long ago are different situations, and
+            // only one of them is evidence the drill works at all.
+            observed: "data is archived and no attestation has ever passed".to_string(),
+            projection: Projection::Already,
+            remediation,
+        });
+    };
+
+    let elapsed = now.saturating_sub(last);
+    if elapsed >= objective_micros {
+        return Some(Finding {
+            check: "archive-attestation",
+            subject: "archive".to_string(),
+            severity: Severity::Critical,
+            observed: format!(
+                "the last passing attestation was {} ago",
+                crate::projection::human_duration(elapsed / 1_000_000)
+            ),
+            projection: Projection::Already,
+            remediation,
+        });
+    }
+
+    let remaining = objective_micros.saturating_sub(elapsed);
+    if remaining > objective_micros / 4 {
+        return None;
+    }
+    Some(Finding {
+        check: "archive-attestation",
+        subject: "archive".to_string(),
+        severity: Severity::Warning,
+        observed: format!(
+            "the last passing attestation was {} ago",
+            crate::projection::human_duration(elapsed / 1_000_000)
+        ),
+        projection: Projection::Crossing {
+            seconds: remaining / 1_000_000,
+            confidence: Confidence::Firm,
+            fit: 1.0,
+        },
+        remediation,
+    })
+}
+
 /// A byte count in the units an operator reads.
 #[must_use]
 pub fn human_bytes(bytes: f64) -> String {

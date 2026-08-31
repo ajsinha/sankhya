@@ -140,9 +140,50 @@ being planned**. Not after a plausible number has been produced and put on a sli
 This is the trade named at the top. You told the system how the measure combines, so it can
 tell you when a question does not have an answer — instead of answering anyway.
 
+## Step 5 — Declare one of your own
+
+Everything so far used a cube somebody else declared. Making one is a statement:
+
+```sql
+CREATE CUBE quarterly FROM orders
+  DIMENSION region FROM orders ON region (LEVEL area = region)
+  DIMENSION period FROM orders ON period (LEVEL quarter = period)
+  MEASURE amount (SUM ALONG region, SUM ALONG period);
+```
+
+Read it as: the facts are in `orders`; `region` takes its members from `orders` itself, joined
+on the fact table's `region` column; and `amount` adds along both dimensions.
+
+**The `MEASURE` line is the contract from the top of this page, written down.** Every measure
+needs a rule for every dimension and there is no default — leave one out and the cube is
+refused when you declare it, naming the measure and the dimension. That refusal is the whole
+point: an implicit `SUM` is exactly how a system hands you a wrong number without noticing.
+
+It is available immediately, to this connection and every other:
+
+```sql
+SELECT cube FROM cubes();
+```
+
+And it goes away when you say so:
+
+```sql
+DROP CUBE quarterly;
+```
+
+**A drop also reclaims anything the cube materialised**, which nothing else would: the
+background sweep deliberately keeps cuboids belonging to a cube it cannot find, because
+deleting on a guess is how a cache becomes a data loss. The drop is the only moment anything
+knows the cube is *gone* rather than merely unrecognised.
+
+There is no `CREATE OR REPLACE CUBE`. Replacing a cube retires everything it materialised, and
+that should not happen because you re-ran a script — so drop it and create it, and the
+expensive half is written down.
+
 ## What you have learned
 
 - A cube is a declared view over a published table: no build step, no second store.
+- `CREATE CUBE` declares one and `DROP CUBE` removes it, along with anything it materialised.
 - `cube_dimensions` and `cube_measures` let a client discover the model instead of hardcoding it.
 - Roll up rolls a dimension *away*; slice *removes* an axis rather than filtering it.
 - Every answer states its snapshot, its completeness and where it came from.

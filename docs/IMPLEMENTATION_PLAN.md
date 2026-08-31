@@ -11,7 +11,7 @@
 
 **Document ID:** SNK-IP-001
 **Version:** 0.1.0 (draft for review)
-**Status:** Implementation — M0–M7 complete, M8 next
+**Status:** Implementation — M0–M8 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress
 **Date:** 2026-08-26
 **Companions:** `REQUIREMENTS.md` (SNK-RD-001), `ARCHITECTURE.md` (SNK-AD-001), `ROADMAP.md`
 
@@ -794,7 +794,16 @@ Tiering may not ship until **all** of the following hold:
 
 1. Continuous reconciliation has run clean in production across every table class for a sustained period. — **moved to M11**, see below.
 2. The restore drill has passed repeatedly.
-3. An archive attestation drill has passed on a non-production archive.
+3. An archive attestation drill has passed on a non-production archive. — **the drill is
+   built, 2026-08-30**: `sankhya-backup::attest`, `sankhya-server attest <archive>`, and an
+   `archive-attestation` check in `doctor`. It works by *attempting* the violations —
+   overwrite, delete, truncate — and requires every one to be refused, because the failure
+   `RSK-28` describes is a configuration that still reports the right thing and no longer does
+   it. Reading the flag would pass in exactly the case the criterion exists to catch.
+
+   **A run against a real archive is still required to clear this**, and cannot be faked from
+   development: the drill refuses any store without a `_non_production` marker, since a missing
+   control means the drill itself inflicts the loss.
 
 **The gate is explicit so that schedule pressure cannot quietly make this decision.** Purging the system of record before the copy is provably correct is indefensible, and no amount of care in the tiering code substitutes for demonstrated reconciliation.
 

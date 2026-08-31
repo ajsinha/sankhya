@@ -9,7 +9,7 @@
 
 # SANKHYA — The soak: method, results, and what four attempts taught
 
-**Status:** Implementation — M0–M7 complete, M8 next
+**Status:** Implementation — M0–M8 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress
 **Milestone:** M6 §10.7 · **Exit criterion 4**
 
 ---

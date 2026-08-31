@@ -12,7 +12,7 @@
 *A general-purpose unified OLTP + OLAP + Graph data server — one binary, written entirely in Rust.*
 
 [![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-M6%20closing%2C%20M7%20in%20progress-yellow.svg)](docs/STATUS.md)
+[![Status](https://img.shields.io/badge/status-M0--M8%20complete%2C%20M9%20in%20progress-yellow.svg)](docs/STATUS.md)
 [![Rust](https://img.shields.io/badge/rust-1.97%2B-b7410e.svg)](https://www.rust-lang.org)
 [![JVM](https://img.shields.io/badge/JVM-none-success.svg)](#design-principles)
 
@@ -154,9 +154,11 @@ Spark, Trino, DuckDB, Snowflake and Athena read these tables **directly**, with 
 
 ## Status
 
-**Early implementation — M0 through M5 complete, M6 closing, M7 in progress.** The architecture and
-requirements were reviewed and amended by a panel covering systems architecture, database
-internals, analytical query engines and Rust engineering practice.
+**Implementation — M0 through M8 complete, M9 in progress.** M8 closed on six of its eight
+exit criteria; the two that need a second machine, and the scale-out work behind them, moved
+to M12. The architecture and requirements were reviewed and amended by a panel covering
+systems architecture, database internals, analytical query engines and Rust engineering
+practice.
 
 What works today, all of it exercised by tests rather than by a running process: a
 `pgoutput` wire decoder validated against a real PostgreSQL 17.11 stream, an apply path
@@ -209,7 +211,26 @@ its digest, because a file-presence check passes on every failure that actually 
 an undeclared metric is unrepresentable and no label can carry tenant data. Every error a
 client sees carries a permanent code and the catalogue's own remediation.
 
-What does not exist: the streaming transport, the gRPC control plane and the REST gateway. Also unbuilt inside work already counted: bloom filters, table
+**Cubes are a declared model rather than a `GROUP BY` convention.** A cube knows which
+columns are dimensions, which are measures, and — the part that decides whether an answer is
+correct — **how each measure may be combined along each dimension**. Summing a closing balance
+across twelve months gives a number of the right magnitude, the right sign and no meaning; a
+cube refuses it. Slice, dice, roll-up and drill-down are SQL table functions with no cube-build
+step preceding the query, every row carries the completeness it was computed under, and
+`CREATE CUBE` / `DROP CUBE` are statements a client can send.
+
+**Concurrency is measured against a control rather than asserted.** Every concurrency claim is
+taken twice in the same run on the same machine — once as the code stands, once with the same
+work forced through one mutex — because a single lock over the warehouse satisfies every
+*safety* property while destroying concurrency itself. Commits to eight tables run at 4.8×
+one table's rate where the serialized control runs at 0.91×; a reader under four writers holds
+0.59–0.80 of its idle rate with a p99 of 227 µs, where the control holds 0.00–0.07 and waits
+seconds. A forty-five-minute soak at twenty gigabytes passes with resident memory flat.
+
+What does not exist: the streaming transport, the gRPC control plane and the REST gateway.
+**Tiering is M9 and gated** — `sankhya-tiering` is deliberately empty, and destructive purge
+stays disabled until reconciliation has run clean in production. Also unbuilt inside work
+already counted: bloom filters, table
 partitioning, the result cache, leader election, a timer that drives graph hydration, and
 a measured graph benchmark — the graph primitives are correct against brute force and
 bounded by construction, but they have not been timed at scale, and that M4 criterion is
