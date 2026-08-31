@@ -901,7 +901,18 @@ and answers four years of questions without mentioning the fifth --- so a migrat
 unless the registry covers the whole declared key domain, reusing `Registry::coverage` so the
 definition of *covered* cannot drift.
 
-Command and schedule surfaces with plan digests, blast-radius limits, the anomaly guard and kill switches. Segregated authorization and the evidence pack.
+~~Command and schedule surfaces with plan digests, blast-radius limits, the anomaly guard and
+kill switches. Segregated authorization and the evidence pack.~~ — **built 2026-08-31**,
+`sankhya-tiering::{command, permission, schedule, evidence}`. Planning is always a dry run
+because a `Proposal` has no method that acts; the digest is taken over the cluster, the policy
+and every range in order, so an approval names what it approved and expires because a plan is a
+statement about a table's contents at a moment. A schedule is disabled, unapproved and stopping
+at `Archive` by default, since the safe configuration should be what somebody gets by not
+deciding. The anomaly guard compares against the trailing **median** rather than the mean,
+because the mean is moved by the very outlier being looked for. Blast radius stops cleanly at the
+limit and names which one bound. The evidence pack is a projection of the write-once marker and
+nothing else, sealed with `HMAC-SHA256` pinned by `RFC 4231`'s published vectors rather than by
+inspection.
 
 ### Exit
 Purge demonstrated end to end with verification, quarantine and rollback; the anomaly guard demonstrated halting an intentionally-defective policy; every rejected purge path shown to fail closed.

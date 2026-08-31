@@ -1345,6 +1345,81 @@ arguments would be a rule somebody has to apply correctly at each call site.
 
 Seventeen tests and 10 mutations.
 
+### Step 11b — the schedule, the anomaly guard, and the evidence pack
+
+`FR-TIER-31` states the recommended production configuration, and it sounds like a compromise
+and is not: **continuous automatic archive and verification, with purge performed deliberately by
+a human.** That is the valuable half --- continuous machine proof that the published copy is
+complete and correct --- at none of the risk. A deployment that never advances past `Archive`
+still gets most of the benefit.
+
+| Gate | Effect | Reversible |
+|---|---|---|
+| **Archive** | copy, verify, tag; nothing is removed | fully --- a no-op on the source |
+| **Purge** | detach; data leaves the live table and stays on disk | trivially --- re-attach |
+| **Drop** | remove from quarantine | **never** |
+
+So a new schedule is disabled, unapproved, and stops at `Archive`. Each of those is a default
+because **the safe configuration should be what somebody gets by not deciding.**
+
+### What the anomaly guard is looking for, and why the median
+
+`FR-TIER-29` names three failures --- a clock error, a timezone defect, a mis-edited policy ---
+and they share a shape. **Nothing is broken.** The code is correct, the policy is valid, the
+schedule fires on time, and the number of rows in scope is wrong by orders of magnitude because a
+boundary moved. No correctness check can see that; only the size can.
+
+The comparison is against the **trailing median, not the mean**, because the mean is moved by the
+very outlier being looked for: one enormous run drags the average up and makes the next enormous
+run look ordinary. A test pins that with a history whose mean is 102 and median is 2.
+
+Two cases that a naive guard gets wrong, both tested. **A schedule's first live run has no
+history**, and halting it would mean no schedule could ever have a second run --- the approval of
+the plan digest stands in for the comparison there. And **a history of empty runs** gives a median
+of zero, which times any factor is zero, so a naive comparison halts on the first range a
+schedule moves after a quiet week.
+
+### Blast radius stops cleanly rather than refusing
+
+`FR-TIER-30` applies limits per run **and** cumulatively per day: per-run alone is defeated by a
+schedule that fires hourly, and per-day alone lets one run take the whole allowance in a single
+mistake. On reaching one the run stops *at* the limit and reports which one --- a schedule that
+refuses outright when it is one range over makes no progress at all, and an operator who has to
+raise a limit to get any work done raises it too far. The report names the limit that actually
+bound, because an operator raising the wrong number learns nothing.
+
+### The evidence pack, and every word of "alone"
+
+`FR-TIER-35`: a signed evidence pack per archive, **generatable years later from the write-once
+manifest alone**. Not from the registry, which lives in a database that may not exist; not from
+this software, which may not build; not from a key server or a runbook. The question is *"here is
+an archive and a marker --- what is this, where did it come from, who authorised it, and is it
+intact?"*, asked by somebody who was not there about a system nobody still runs.
+
+That forced a change to the marker from step 5. It was one line, argued as being for a person
+rather than a parser --- and a pack generatable from it alone has to be machine-readable too. It
+is now `key=value`, one per line: a value containing spaces (a retention basis is a sentence)
+needs no escaping, the first `=` is the separator so a value containing one needs none either,
+and **an unknown key is ignored rather than rejected**, which is the only way a reader written
+today survives a marker written in 2031.
+
+### The seal, and why it is written out
+
+The workspace has no signing dependency, and adding one unreviewed at this hour is a larger
+decision than it looks. `HMAC-SHA256` over a hash already carrying the audit chain and the Merkle
+tree is a standard construction rather than an invention --- and the way to make an
+implementation of one trustworthy is not care but **published test vectors**. `RFC 4231`'s cases
+are asserted directly, including case 6, where the key is longer than the block and must be
+hashed rather than truncated, which is the branch implementations get wrong.
+
+A keyed seal rather than a public-key signature is the honest fit for what this proves: the
+reader is the organisation that made the archive, checking its own record has not been altered.
+The seal is taken over the pack's content sorted by key, so a marker re-emitted with its lines
+rearranged is the same evidence and seals identically --- otherwise re-writing a manifest would
+invalidate its own seal.
+
+Twenty-eight tests and 14 mutations.
+
 ## M7, complete
 
 Added 2026-08-27 by owner directive and placed before scale-out: cubes are a stated
@@ -2819,7 +2894,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 505 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 519 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -3335,9 +3410,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 2,018 tests, none of which needs a database
+cargo test --workspace           # 2,046 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 505 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 519 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 
