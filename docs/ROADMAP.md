@@ -11,7 +11,7 @@
 
 **Document ID:** SNK-RM-001
 **Version:** 0.1.0
-**Status:** Implementation — M0–M7 complete; M8 complete on six of eight, its scale-out half moved to M12 for want of a second machine; M9 next
+**Status:** Implementation — M0–M8 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress
 **Date:** 2026-08-30
 **Companions:** `REQUIREMENTS.md`, `ARCHITECTURE.md`, `IMPLEMENTATION_PLAN.md`
 

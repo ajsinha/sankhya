@@ -30,7 +30,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M6** Operability, packaging and hardening | 2026-08-28 | **Complete.** Six of seven exit criteria met. Criterion 4 accepted on a forty-five-minute judged run by owner decision — `PASS` over 44 minutes with all seven measures steady, on the first soak to exercise a cube. **Criterion 7 carried into M8**: §10.8's size decision and route table are built and tested; the gRPC transport and every write path are not. See [SOAK.md](SOAK.md) |
 | **M7** Multidimensional analysis — cubes, slice/dice, roll-up, consolidation | 2026-08-28 | **Complete.** All eight exit criteria pass against a cube hydrated from a published table. Declared complete once before, on 2026-08-27, and retracted the same day: the hydration path did not exist and every criterion passed on cells its own fixture supplied. Both that gap and the write-only materialisation found on 2026-08-28 are closed. See below, and [ADR-0007](adr/0007-the-cube-model.md) |
 | **M8** **Concurrency and data safety** | 2026-08-30 | **Complete on six of eight**, and the other two moved rather than met. S1–S3 and C1–C3 are proven, each concurrency criterion measured against a control taken in the same run. **§12.2 and criteria 7–8 moved whole to M12 on 2026-08-30** by owner decision: both need a second machine, and a recovery objective measured on one host excludes the failures the criterion exists to price. The one item in §12.2 that could not be safely parked — the shard-set seam — was designed first and turned out to be mislabelled; see [ADR-0015](adr/0015-the-shard-set-seam.md). **Rescoped 2026-08-28** by owner directive after an end-to-end audit found a version claim that could lose a commit silently, four files published non-atomically, and three reclamation paths guarding against a proxy rather than against readers. See [ADR-0013](adr/0013-concurrency-and-data-safety.md) |
-| **M9** Tiering | 12–16 ew | **Next**, started 2026-08-30. **Gated** on the drills in [`IMPLEMENTATION_PLAN.md` §13](IMPLEMENTATION_PLAN.md): the restore drill exists from M6 §10.3, the archive attestation drill does not. Gate criterion 1 moved to M11 on 2026-08-28, and **destructive purge stays disabled until M11 clears it** — building the purge path and arming it are two decisions |
+| **M9** Tiering | 12–16 ew | **In progress**, started 2026-08-30. **Gated** on the drills in [`IMPLEMENTATION_PLAN.md` §13](IMPLEMENTATION_PLAN.md): the restore drill exists from M6 §10.3, the archive attestation drill does not. Gate criterion 1 moved to M11 on 2026-08-28, and **destructive purge stays disabled until M11 clears it** — building the purge path and arming it are two decisions |
 | **M10** Zero-copy cloning | 10–14 ew | After M9. **Design-gated: no code before an accepted ADR**, covering shared-file lifetime, the maintenance interaction, and what a clone means for backup, tiering, audit and time travel |
 | **M11** Production reconciliation | — | **Not schedulable by development.** Needs a production deployment that does not exist. Holds M9's gate criterion 1 and the arming decision for destructive purge |
 | **M12** Scale-out, HA and disaster recovery, then production-like acceptance | 20–26 ew | **Needs a second machine**, which is why it holds M8 §12.2 and criteria 7–8 as of 2026-08-30. The project's exit criteria: 12 h, two machines, 100 GB, 50 readers, 20 writers. `CREATE CUBE` is a blocking dependency here and is **not** hardware-blocked, so it can be built at any point before the run |
@@ -127,7 +127,7 @@ The rest of this section is *why*. This is *what*, for somebody picking the work
 | Lock striping: `LogCache`, `QueryLog`, `servable` | done — `Hydrated` **deliberately not**, see below |
 | `sankhya-testkit` | done, with a measured floor |
 | C1–C3, the three measurement criteria | done — measured against a control in the same run |
-| Crate hygiene | 55 crates → 52; `alloc` **wired**, `ports` **decided: delete**, and `api-rest`, `cdc-pg`, `pack` each carry a dated milestone |
+| Crate hygiene | 55 crates → **51**; `alloc` **wired**, and `api-rest`, `cdc-pg`, `pack` each carry a dated milestone. `ports` is **decided: delete and still present** — the removal was blocked and the disposition is recorded in `xtask/src/surfaces.rs` rather than acted on |
 
 | §12.2 Scale-out — **moved to M12 on 2026-08-30** | |
 |---|---|
@@ -286,8 +286,8 @@ two it had eaten never ran at all.
 It survived because every check in that file only ever looked at the first three fields, which
 are strings either way. `--check` reported *all 421 catalogue entries match the source* while
 three of them were incapable of proving anything. The check now validates the **shape** of
-every entry before it validates its text, and the count is 426: the two that were swallowed,
-plus three new ones, less nothing.
+every entry before it validates its text, and the count is 436: the two that were swallowed,
+plus three new ones, then five for cube DDL and five for the attestation drill.
 
 ### The allocator is installed, and the stranded crates got their decisions
 
@@ -631,7 +631,76 @@ drop it, so **nothing is held across a hydration**. Writers are DDL and rare; re
 statement, which is why it is an `RwLock` rather than a `Mutex` and why the `Arc` is inside it
 rather than the `Vec` being cloned per statement.
 
-50 tests — 21 on the grammar, 11 through a running server, 18 on retirement — and 5 mutations.
+Fifty new tests — 21 on the grammar, 11 through a running server, 18 on retirement — and 5 new mutations.
+
+## M9, started 2026-08-30 — the gate first
+
+### The archive attestation drill
+
+M9's gate has three criteria. Criterion 1 moved to M11 on 2026-08-28 because it needs a
+production deployment. Criterion 2 — the restore drill — was built in M6 §10.3. **Criterion 3,
+an archive attestation drill on a non-production archive, did not exist**, and is built now,
+before any tiering code.
+
+That ordering is the point rather than a preference. `sankhya-tiering/src/lib.rs` argues it in
+its only eleven lines — *"This crate staying empty until then is the gate working, not the gate
+being ignored"* — and writing the purge state machine while the gate meant to hold it is
+unbuilt would have made that sentence false.
+
+### It attempts the violation rather than reading the configuration
+
+`RSK-28` is *"immutability controls silently removed by a later storage policy change"*, and its
+stated detection signal is *"attestation check failing"* — which needs a check that can fail.
+
+An object-lock flag read back as `enabled` is **exactly what a silently-replaced bucket policy
+still reports**. Attestation from configuration would pass in precisely the scenario it exists
+to catch, which makes it worse than nothing: it turns an unknown into a false assurance. So the
+drill writes a probe object and then attempts to overwrite, delete and truncate it, requiring
+every one to be refused.
+
+This is the argument [`drill`](../crates/sankhya-backup/src/drill.rs) already settled for
+backups, applied to a different claim. A backup is proven restorable by reading it back, not by
+checking that a manifest claims a row count.
+
+### Three properties that are easy to get wrong
+
+**An attempt that could not be made is not a pass.** A write that failed because the path was
+wrong or credentials were missing has demonstrated nothing, and recording it as a refusal would
+let a broken drill certify a store it never touched. Same distinction `Evidence::could_not_start`
+draws, and `passed()` requires every violation to have been *attempted*.
+
+**Three violations, asked separately.** Object-lock retention routinely stops an overwrite while
+a lifecycle rule expires the object; POSIX does the same thing, since unlink is a property of the
+directory rather than the file. A drill that asked "is it immutable" and stopped at the first
+refusal would call that protected.
+
+**It refuses to run against production**, and that is a safety property rather than a policy. The
+drill is a controlled attempt at corruption: if the control holds nothing happens, and **if the
+control is gone the attempt succeeds** — which against real data is the loss the control existed
+to prevent, inflicted by the check for it. The assertion is a `_non_production` file inside the
+archive, not a command-line flag, because a flag survives in a copied runbook and the copy
+eventually runs somewhere it should not.
+
+### Reachable, not merely built
+
+`sankhya-server attest <archive>`, exit `0`/`1`/`2` with "could not attempt" distinct from
+"allowed"; evidence appended to `<data-dir>/attestations.log`; and an `archive-attestation`
+check in `doctor` at a ninety-day objective — longer than the restore drill's thirty on purpose,
+since this is a scheduled exercise and the risk moves at the speed of infrastructure change.
+
+That check is **silent when nothing is archived**, which is every deployment today. `has_archive`
+returns `false` and says why in its own doc comment, so the day tiering starts writing archives
+the check is turned on in one place rather than discovered missing by somebody wondering why it
+never fired.
+
+**What this does not do is clear the gate.** The drill exists; a run against a real
+non-production archive is still required, and cannot be produced from development.
+
+Twenty-two new tests and 5 new mutations. One of those mutations survived its first run: the count check in
+`passed()` is unreachable through `attest`, which always attempts all three, so no test had
+ever built an `Attestation` any other way --- and a short list is exactly what a partial run
+or a truncated record produces. `passed()` is a property of a public type rather than of its
+one current constructor, and the audit is what said so.
 
 ## M7, complete
 
@@ -2107,7 +2176,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 426 specific defects applied one at a time, each required to fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 436 specific defects applied one at a time, each required to fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -2623,9 +2692,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,815 tests, none of which needs a database
+cargo test --workspace           # 1,867 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 426 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 436 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

@@ -1,2 +1,20 @@
 [alias]
 xtask = "run --quiet --package xtask --"
+
+# Half the cores, deliberately, and it is not a throughput decision.
+#
+# Cargo defaults to one job per core --- twenty-four here --- and a job building a
+# DataFusion-scale crate holds gigabytes at its peak. A full `check-all` was observed running
+# eighty-five concurrent `rustc` processes on a machine with 62 GB of RAM, 51 GB of which was
+# already page cache for a target/ directory well over a hundred gigabytes. The result was
+# sustained swapping, and the process the kernel starved was not always the compiler: several
+# long-running sessions died mid-build on 2026-08-30.
+#
+# Twelve jobs bounds the peak to something this machine actually has. It is also not slower in
+# wall-clock terms, because a build that swaps is not using twenty-four cores --- it is waiting
+# on disk with twenty-four processes queued behind it.
+#
+# Raise this only on a machine with more memory per core, and lower it if a build ever swaps
+# again: `free -g` during a build is the measurement, not the core count.
+[build]
+jobs = 12

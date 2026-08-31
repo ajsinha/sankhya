@@ -408,3 +408,83 @@ fn a_stale_drill_sorts_above_a_distant_compaction_problem() {
     assert_eq!(report.findings()[0].check, "restore-drill");
     assert!(report.has_critical());
 }
+
+// --- the write-once controls, attested rather than assumed --------------------
+
+use sankhya_diagnostic::check::{archive_attestation, ATTESTATION_OBJECTIVE_MICROS};
+
+#[test]
+fn a_deployment_that_archives_nothing_is_not_nagged_about_attestation() {
+    // `RSK-28` is about an immutability control being silently removed. A deployment with no
+    // archive has no such control, so there is nothing to have lost. A check that fired anyway
+    // would be Critical on every install from the day it shipped — loudest exactly where it
+    // means least, which is how a check stops being read.
+    assert_eq!(
+        archive_attestation(None, false, ATTESTATION_OBJECTIVE_MICROS, 5_000 * DAY_MICROS),
+        None
+    );
+}
+
+#[test]
+fn archived_data_with_no_attestation_ever_is_already_the_problem() {
+    let finding = archive_attestation(None, true, ATTESTATION_OBJECTIVE_MICROS, 500 * DAY_MICROS)
+        .expect("a finding");
+
+    assert_eq!(finding.check, "archive-attestation");
+    assert_eq!(finding.severity, Severity::Critical);
+    assert!(
+        finding.observed.contains("no attestation has ever passed"),
+        "never having proven a control and having proven it long ago are different \
+         situations, and only one is evidence the drill works at all: {}",
+        finding.observed
+    );
+    assert!(
+        !finding.observed.contains("ago"),
+        "and it must not be phrased as an elapsed time, which would read as though an \
+         attestation had once passed: {}",
+        finding.observed
+    );
+    assert!(
+        finding.remediation.contains("attest"),
+        "the remediation names the command: {}",
+        finding.remediation
+    );
+}
+
+#[test]
+fn a_recent_attestation_is_silent() {
+    assert_eq!(
+        archive_attestation(Some(0), true, ATTESTATION_OBJECTIVE_MICROS, DAY_MICROS),
+        None
+    );
+}
+
+#[test]
+fn an_attestation_approaching_its_objective_warns_before_it_is_breached() {
+    // An attestation is a scheduled exercise against a non-production copy, so warning only
+    // once it is already overdue leaves no time to arrange one.
+    let now = 80 * DAY_MICROS;
+    let finding =
+        archive_attestation(Some(0), true, ATTESTATION_OBJECTIVE_MICROS, now).expect("a finding");
+    assert_eq!(finding.severity, Severity::Warning);
+}
+
+#[test]
+fn an_attestation_past_its_objective_is_critical_and_already_over_the_line() {
+    let finding = archive_attestation(Some(0), true, ATTESTATION_OBJECTIVE_MICROS, 120 * DAY_MICROS)
+        .expect("a finding");
+    assert_eq!(finding.severity, Severity::Critical);
+    assert!(matches!(finding.projection, sankhya_diagnostic::Projection::Already));
+}
+
+#[test]
+fn the_attestation_objective_is_longer_than_the_restore_objective_and_that_is_deliberate() {
+    // Stated as a test because the numbers look like an inconsistency otherwise. A restore
+    // drill reads a backup; an attestation *attempts corruption*, so it is a scheduled
+    // exercise rather than a weekly job, and the risk it covers moves at the speed of
+    // infrastructure change rather than the speed of data.
+    assert!(
+        ATTESTATION_OBJECTIVE_MICROS > DRILL_OBJECTIVE_MICROS,
+        "attestation {ATTESTATION_OBJECTIVE_MICROS} should exceed drill {DRILL_OBJECTIVE_MICROS}"
+    );
+}

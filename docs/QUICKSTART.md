@@ -9,7 +9,7 @@
 
 # SANKHYA — Quickstart
 
-**Status:** Implementation — M0–M7 complete, M8 next
+**Status:** Implementation — M0–M8 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress
 
 This guide reflects what works **today**, and says plainly what does not yet. Anything
 not listed here is not built.
@@ -88,7 +88,7 @@ availability event.
 ## 3. Run the tests
 
 ```bash
-cargo test --workspace          # 1,815 tests, none of which needs a database
+cargo test --workspace          # 1,867 tests, none of which needs a database
 ```
 
 Everything here runs without a database, in well under a minute. Nothing is mocked: the
@@ -144,7 +144,7 @@ Three gates catch things a test suite structurally cannot. All three fail the bu
 
 ```bash
 cargo xtask check-all            # every repository invariant — see below
-python3 tools/mutation-audit.py  # 426 deliberate defects, applied one at a time
+python3 tools/mutation-audit.py  # 436 deliberate defects, applied one at a time
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
 SANKHYA_RELEASE=1 cargo xtask check-package   # the release artifact's platform baseline
 ```
@@ -160,11 +160,11 @@ document claims — test counts, catalogue sizes — still matches what the repo
 merely to pass.
 
 **The mutation audit** is the answer to "the tests pass, but do they test anything?" It
-applies 426 specific defects one at a time and requires the suite to fail on each. Twenty-nine
+applies 436 specific defects one at a time and requires the suite to fail on each. Twenty-nine
 did not, the first time each was run — the most recent three were written for the
 diagnostic, and one of those turned out to be pointing at the wrong copy of a duplicated
 guard, which is precisely the silent-pass this tool exists to catch. Expect it to take a
-while — it is 426 sequential `cargo test` runs, and it edits your source files as it goes,
+while — it is 436 sequential `cargo test` runs, and it edits your source files as it goes,
 restoring each one after. Run it on a clean tree.
 
 **`check-performance`** is deliberately outside `check-all`: it generates a
@@ -598,16 +598,19 @@ that admits less.
 | Streaming transport | **Not built.** Changes are drained through a SQL function rather than a replication connection. Neither mainstream Rust PostgreSQL client supports the replication protocol, so this is real work rather than wiring |
 | Automatic table onboarding | **Working across many tables.** Schema, write strategy and path are derived from the replication stream alone; several tables capture independently from one interleaved stream and each reconciles against the source. Nothing drives it on a timer |
 | Storage and the table log | **Working.** Each table gets its own Delta log; capture commits every file it publishes, and a restart recovers its position from that log rather than from memory. The Delta kernel reads these tables, which is what makes the open-storage claim testable rather than aspirational |
-| Compaction and maintenance | **Working as a loop, not as a daemon.** Fragmented partitions are planned, merged, committed and converged, with retirement refusing to remove anything a reader might still hold. Nothing calls the loop on a timer |
+| Compaction and maintenance | **Working, and running in the server.** Fragmented partitions are planned, merged, committed and converged, with retirement refusing to remove anything a reader might still hold. Since M8 the server maintains its own warehouse on its own thread when a maintenance policy is configured — so the warehouse moves whether or not anybody is writing to it, and the read path re-resolves a table whose log has advanced |
 | Analytical queries | **Working, and measured.** A table provider plans from the table log alone — no directory listing, no footer reads — prunes files by recorded statistics, feeds bounds and cardinalities to the optimizer, and resolves updated and deleted rows to one current version each. One SQL statement is answered from memory and Parquet at once, spliced so no position is counted twice or missed, and refused outright when the tiers do not cover the query's span. TPC-H at scale factor 1 meets its three performance objectives under a build gate. No result cache, no bloom filters, no partitioning |
 | Mathematics | **Working.** Vectors and matrices as columns, and the kernels over them: elementwise, dot, norms, distances, statistics, calculus, and linear algebra through LU. Every reduction is bit-deterministic. Callable from SQL as `vec_*` and `mat_*`, with constructors that let a matrix be built and operated on without being stored. No QR, SVD or eigendecomposition |
 | Publishing and repair | **Working.** A library and command-line tool for writing an external table, and a verifier that does not assume it was used. Repair fixes only what can be derived from evidence and refuses anything needing a guess |
 | Query governance | **Working.** Deadlines and cancellation bounded at one batch per partition; admission control that refuses an aggregation too large to run rather than letting it take the process down, and says whether retrying could ever help |
 | Backup and restore | **Working for the analytical half.** A manifest binds table versions and a key generation to a consistent point and refuses to record an inconsistency; a drill reads the data back and digests it; the evidence is append-only. Backing up the transactional store is your own tooling's job — the manifest binds to it and does not take it |
-| Soak testing | **The harness works and is proven to detect a leak; the multi-day run at the ten-gigabyte scale is not done.** A short run against the real server, under concurrent writes, queries and maintenance, runs on every build. See [`SOAK.md`](SOAK.md) |
+| Soak testing | **The harness works, is proven to detect a leak, and a forty-five-minute run at twenty gigabytes passes** — 1.16 billion rows scanned, resident memory flat, 21.5 GB reclaimed. The multi-day run is not done and moved to M12 with the rest of the scale-out work. A short run against the real server, under concurrent writes, queries and maintenance, runs on every build. See [`SOAK.md`](SOAK.md) |
+| Cubes | **Working, and declarable from SQL.** A cube is a declared model over a published table — dimensions, levels, hierarchies, and how each measure may combine along each dimension — answered on demand with no build step. Slice, dice, roll-up and drill-down are table functions; every row carries its snapshot, its completeness and whether it came from a cuboid. `CREATE CUBE` and `DROP CUBE` are statements, and a drop reclaims what the cube materialised. No MDX, deliberately |
+| Concurrency and data safety | **Working, and measured against a control.** Commits are per-table and atomic, files are published atomically, and reclamation never removes a file a reader holds. Each concurrency claim is measured twice in the same run — once as the code stands, once forced through one mutex — because a single warehouse lock satisfies every safety property while destroying concurrency. Leader election, executor scale-out and failover are **not built**: they need a second machine and moved to M12 |
+| Lifecycle tiering | **Not built, and gated.** `sankhya-tiering` is deliberately empty. M9 is in progress and its first piece exists — an attestation drill that proves a write-once store still refuses writes by attempting to overwrite, delete and truncate it. **Destructive purge stays disabled until reconciliation has run clean in production**; building the purge path and arming it are two decisions |
 | Packaging | **Checks, not artifacts.** The platform baseline is declared and the built binary is measured against it; every deployment manifest's termination grace is compared with the server's drain deadline. Container images and signing are not built |
 | Upgrade and rollback | **Tested as far as one release allows.** Every on-disk format carries a version, an artefact from a newer release is refused by name rather than failing as a parse error, and a corpus of earlier-release artefacts is read on every build. Running the *previous binary* needs a previous binary |
-| The diagnostic | **Working for three checks.** `doctor` walks the warehouse, records what it sees, and projects a date for compaction debt once it has two runs to compare, and reports how long the backup has been unproven. Storage headroom and replication lag are built as checks with nothing feeding them observations. The rest of `FR-OPS-16` — conformance, replica identity, archival consistency — is not built |
+| The diagnostic | **Working for four checks.** `doctor` walks the warehouse, records what it sees, and projects a date for compaction debt once it has two runs to compare, and reports how long the backup has been unproven — and, for a deployment that archives anything, how long the write-once controls have gone unattested. Storage headroom and replication lag are built as checks with nothing feeding them observations. The rest of `FR-OPS-16` — conformance, replica identity, archival consistency — is not built |
 | Graph engine | **Working.** A typed, time-aware adjacency hydrated from published tables — no second store, no graph write path, an edge exists because a row exists. Traversal, weighted and k-shortest loopless paths, simple cycles, components, centrality, communities and multiplicative influence, each bounded and each reporting its own truncation. Five SQL table functions make them joinable against ordinary tables. Nothing drives hydration on a timer |
 | The extension mechanism | **Working.** SANKHYA's own function traits rather than the engine's, so a pack survives the engine changing underneath it. Two reference packs from unrelated industries and one deliberately hostile pack whose every attempt is refused with a named error. A declarative tier expresses a pack as a file rather than a crate. **The loader is not wired into the server**: a running process exists, and nothing in it loads a bundle |
 | API surfaces | **Two of four.** Real `psql` connects, authenticates, runs catalogue queries and recovers from errors. **Arrow Flight SQL** streams results as Arrow batches over gRPC, with authorization at planning and a ticket bound to the tenant it was issued to. The gRPC control plane and the REST gateway are not built |

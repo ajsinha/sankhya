@@ -287,6 +287,11 @@ async fn main() -> std::io::Result<()> {
         Some("drill") => {
             std::process::exit(backup::run_drill(&settings.warehouse, &data, now_micros()))
         }
+        Some("attest") => std::process::exit(backup::run_attestation(
+            std::env::args().nth(2).as_deref(),
+            &data,
+            now_micros(),
+        )),
         _ => {}
     }
 

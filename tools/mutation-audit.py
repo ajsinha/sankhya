@@ -915,6 +915,36 @@ CATALOGUE = [
      "        if !name.contains(cube) {",
      "sankhya-maintenance"),
 
+    ("attest: run against a store that never said it was non-production",
+     "crates/sankhya-backup/src/attest.rs",
+     "    if !store.is_non_production() {",
+     "    if false {",
+     "sankhya-backup"),
+
+    ("attest: trust the reported refusals and skip reading the object back",
+     "crates/sankhya-backup/src/attest.rs",
+     "        Err(_) => Some(false),",
+     "        Err(_) => Some(true),",
+     "sankhya-backup"),
+
+    ("attest: stop at the first violation instead of attempting every one",
+     "crates/sankhya-backup/src/attest.rs",
+     "    let attempts: Vec<(Forbidden, Outcome)> = Forbidden::ALL\n        .iter()",
+     "    let attempts: Vec<(Forbidden, Outcome)> = Forbidden::ALL\n        .iter()\n        .take(1)",
+     "sankhya-backup"),
+
+    ("attest: an attestation with an untested violation still passes",
+     "crates/sankhya-backup/src/attest.rs",
+     "            && self.attempts.len() == Forbidden::ALL.len()",
+     "            && !self.attempts.is_empty()",
+     "sankhya-backup"),
+
+    ("doctor: nag about attestation on a deployment that archives nothing",
+     "crates/sankhya-diagnostic/src/check.rs",
+     "    if !archived {",
+     "    if false {",
+     "sankhya-diagnostic"),
+
     ("brake: report a warning when the machine is about to be killed",
      "crates/sankhya-governor/src/memory.rs",
      "    if in_use >= limits.shed_bytes {",

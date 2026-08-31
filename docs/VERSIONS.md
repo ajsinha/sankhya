@@ -23,6 +23,7 @@ Four things version independently, and every artefact this system writes says wh
 |---|---|---|---|---|
 | backup manifest | `<data-dir>/backup-manifest.json` | 1 | 1 | **safe** — the previous release reads it unchanged |
 | restore-drill evidence | `<data-dir>/restore-drills.jsonl` | 1 | 1 | **safe** — the previous release reads it unchanged |
+| attestation evidence | `<data-dir>/attestations.log` | 1 | 1 | **safe** — the previous release reads it unchanged |
 | diagnostic history | `<data-dir>/diagnostic-history.tsv` | 1 | 1 | tolerated — a build with no version header treats the file as format 1, which it is --- the header was added after the format, and its absence means the original |
 
 ## What a reader does with an artefact it did not write

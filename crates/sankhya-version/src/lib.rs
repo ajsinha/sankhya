@@ -234,6 +234,20 @@ pub static DIAGNOSTIC_HISTORY: Format = Format {
     },
 };
 
+/// The attestation record's format.
+///
+/// One tab-separated line per attestation: the timestamp, the store, and the verdict. Chosen
+/// so that a build which knows nothing about the format still shows a reader the verdict ---
+/// this file is read years later, by somebody assembling the evidence pack `FR-TIER-35`
+/// requires from the write-once manifest alone.
+pub static ATTESTATION_EVIDENCE: Format = Format {
+    name: "attestation evidence",
+    path: "<data-dir>/attestations.log",
+    current: 1,
+    oldest_readable: 1,
+    rollback: Rollback::Safe,
+};
+
 /// Every on-disk format, and what rolling back does to it.
 ///
 /// Declared in one place so that adding a format without stating its rollback consequence is
@@ -246,7 +260,8 @@ pub static DIAGNOSTIC_HISTORY: Format = Format {
 /// workspace's lints correctly refuse. Passing the declaration is the same rule the metric
 /// catalogue follows, for the same reason: an undeclared format becomes unrepresentable
 /// rather than merely refused.
-pub static FORMATS: &[&Format] = &[&BACKUP_MANIFEST, &DRILL_EVIDENCE, &DIAGNOSTIC_HISTORY];
+pub static FORMATS: &[&Format] =
+    &[&BACKUP_MANIFEST, &DRILL_EVIDENCE, &ATTESTATION_EVIDENCE, &DIAGNOSTIC_HISTORY];
 
 /// The format by that name, if this build knows one.
 ///
