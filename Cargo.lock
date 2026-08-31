@@ -3733,6 +3733,7 @@ dependencies = [
  "sankhya-authz",
  "sankhya-backup",
  "sankhya-catalog",
+ "sankhya-clone",
  "sankhya-config",
  "sankhya-cube",
  "sankhya-cube-algo",

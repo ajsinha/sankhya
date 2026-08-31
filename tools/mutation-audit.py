@@ -1593,6 +1593,30 @@ CATALOGUE = [
      "    let table = identifier(words.get(at), \"a table name\").map(|name| name.to_ascii_lowercase())?;",
      "sankhya-clone"),
 
+    ("server: leave CREATE TABLE ... CLONE unreachable from a client",
+     "crates/sankhya-server/src/wiring.rs",
+     "        if let Some(statement) = sankhya_clone::parse_ddl(sql) {",
+     "        if let Some(statement) = None.map(|()| unreachable!()).or(sankhya_clone::parse_ddl(sql)).filter(|_| false) {",
+     "sankhya-server"),
+
+    ("server: clone a table the principal may not read",
+     "crates/sankhya-server/src/wiring.rs",
+     "        if self.scope_for(principal, &statement.origin).is_none() {",
+     "        if self.scope_for(principal, &statement.origin).is_some() && false {",
+     "sankhya-server"),
+
+    ("server: clone over a table that already exists",
+     "crates/sankhya-server/src/wiring.rs",
+     "        if self.scope_for(principal, &statement.table).is_some() {",
+     "        if self.scope_for(principal, &statement.table).is_none() && false {",
+     "sankhya-server"),
+
+    ("server: clone a version whose data files have been retired",
+     "crates/sankhya-server/src/wiring.rs",
+     "            Some(version) => sankhya_table_delta::live_files_at(origin_root, version)\n                .map(|at| at.files.iter().all(|file| origin_root.join(&file.path).exists()))\n                .unwrap_or(false),",
+     "            Some(_version) => true,",
+     "sankhya-server"),
+
     ("brake: report a warning when the machine is about to be killed",
      "crates/sankhya-governor/src/memory.rs",
      "    if in_use >= limits.shed_bytes {",

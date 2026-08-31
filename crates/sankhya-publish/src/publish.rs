@@ -251,6 +251,57 @@ impl Publication {
         Ok(())
     }
 
+    /// Create a clone: version zero of a log carrying the origin's schema **verbatim** and the
+    /// properties that record where it came from.
+    ///
+    /// # Why the schema is a string rather than a `Schema`
+    ///
+    /// [`Self::create`] derives the stored schema --- it appends the date column, checks the
+    /// axis, refuses reserved names. A clone must not re-derive anything: it has to reproduce
+    /// its origin's schema *exactly*, and a schema that came out differently by a column
+    /// ordering or an added field would be a clone that is not one. So the string is taken as
+    /// it was read from the origin's log and written back unchanged.
+    ///
+    /// # Why this is here rather than in the server
+    ///
+    /// `check-writers` refuses a second writer to a warehouse, and it caught the first draft of
+    /// the clone statement committing from `sankhya-server`. Widening that list would have been
+    /// the easy answer and the wrong one: the point of the rule is that table state has **one**
+    /// write path, and a clone's creating commit is table state. So the official writer gains
+    /// the entry point instead.
+    ///
+    /// No `Add` actions, ever. `ADR-0016`'s Decision 1a is that a clone's log names none of the
+    /// origin's files, which is what makes it constant-space and what makes the origin's
+    /// reclamation question answerable.
+    ///
+    /// # Errors
+    ///
+    /// [`PublishError::Io`] if the directory cannot be made, and [`PublishError::Commit`] if
+    /// version zero cannot be written --- including because the table already exists, which is
+    /// the commit refusing to overwrite a log rather than this deciding it should not.
+    pub fn create_clone(
+        &self,
+        schema_string: &str,
+        properties: &BTreeMap<String, String>,
+    ) -> Result<(), PublishError> {
+        std::fs::create_dir_all(&self.root).map_err(|error| PublishError::Io {
+            detail: error.to_string(),
+        })?;
+
+        let mut metadata = Metadata::new(self.name.clone(), schema_string.to_string(), 0);
+        metadata.configuration = properties.clone();
+        // Partitioned as the origin is, because the clone reads the origin's files and a
+        // disagreement about partitioning is a disagreement about where those files are.
+        metadata.partition_columns = vec![DATA_DATE_COLUMN.to_string()];
+
+        commit(&self.root, 0, &create(metadata))
+            .map(|_| ())
+            .map_err(|error| PublishError::Commit {
+                version: 0,
+                detail: error.to_string(),
+            })
+    }
+
     /// Check the date axis against the schema.
     ///
     /// At creation, where the person who declared it is still present. Discovering at query
