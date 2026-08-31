@@ -1430,19 +1430,189 @@ impl Server {
         &self,
         statement: Result<sankhya_clone::ddl::Statement, sankhya_clone::DdlError>,
         principal: &Principal,
+    ) -> Option<Result<QueryResult, QueryFailure>> {
+        use sankhya_error::protocol::sqlstate;
+
+        let statement = match statement {
+            Ok(statement) => statement,
+            Err(error) => {
+                return Some(Err(refusal(
+                    sqlstate::SYNTAX_ERROR.as_str(),
+                    &error.to_string(),
+                )))
+            }
+        };
+
+        match statement {
+            sankhya_clone::Statement::Create(create) => {
+                Some(self.create_clone_table(&create, principal))
+            }
+            sankhya_clone::Statement::Drop { table, if_exists } => {
+                self.drop_clone(&table, if_exists, principal)
+            }
+        }
+    }
+
+    /// Whether this principal may read a table, resolving a clone to what it references.
+    ///
+    /// # Why a clone's authority comes from its root
+    ///
+    /// `ADR-0016` makes a clone a reference to its origin's files rather than a copy, so the
+    /// right to read it *is* the right to read what it references. Checking the clone's own name
+    /// does not work, and the way it fails is instructive: a clone created a moment ago has no
+    /// policy rule of its own, so the principal who created it could neither read it, clone it,
+    /// nor drop it --- a table you can make and cannot touch.
+    ///
+    /// Resolved to the **root** rather than one step, because a clone of a clone references the
+    /// root's files just as surely. `ancestors` refuses a lineage cycle, and a table whose
+    /// ancestry cannot be resolved is refused rather than granted.
+    fn readable(
+        &self,
+        principal: &Principal,
+        table: &str,
+        lineages: &sankhya_clone::Lineages,
+    ) -> bool {
+        let Ok(chain) = lineages.ancestors(table) else {
+            return false;
+        };
+        let root = chain.last().map_or(table, String::as_str);
+        if root.is_empty() {
+            return false;
+        }
+        self.scope_for(principal, root).is_some()
+    }
+
+    /// Drop a clone, or hand the statement back because the table is not one.
+    ///
+    /// # Why a clone must be droppable at all
+    ///
+    /// Because it is now creatable. A thing a statement can make and no statement can remove
+    /// accumulates, and accumulation with nobody responsible is the shape `RSK-35` describes for
+    /// rehydrated copies --- each one individually reasonable, and no day on which anybody could
+    /// have decided otherwise.
+    ///
+    /// # Why only a clone
+    ///
+    /// This server refuses data definition wholesale, and that refusal is right: it is a read
+    /// path over a published warehouse, and writes arrive through capture or the publishing
+    /// tool. Cloning is the exception the milestone introduced, so dropping a clone is the
+    /// exception it owes. Everything else is handed back untouched.
+    fn drop_clone(
+        &self,
+        table: &str,
+        if_exists: bool,
+        principal: &Principal,
+    ) -> Option<Result<QueryResult, QueryFailure>> {
+        use sankhya_error::protocol::sqlstate;
+
+        let root = self.settings.warehouse.join(table);
+        let lineages = self.lineages();
+        if lineages.of(table).is_none() {
+            if if_exists && !root.exists() {
+                // Nothing by that name and the statement said it might not be there. Answering
+                // here rather than passing it on, because the engine would refuse a statement
+                // that asked for nothing.
+                return Some(Ok(acknowledged("DROP TABLE")));
+            }
+            // Not a clone. Not ours.
+            return None;
+        }
+
+        // Authorized against the **origin**, not against the clone.
+        //
+        // A clone is a reference to its origin's files, so the right to act on it derives from
+        // the right to read what it references. Checking the clone itself does not work and the
+        // way it fails is instructive: a clone created a moment ago has no policy rule of its
+        // own, so the principal who made it could not drop it --- a table you can create and
+        // cannot remove, which is the accumulation this drop exists to prevent.
+        //
+        // A clone whose lineage cannot be read names no origin, so this refuses it. That is the
+        // conservative answer and the right one: a clone nobody can resolve is not one anybody
+        // should be removing on the strength of a guess.
+        if !self.readable(principal, table, &lineages) {
+            return Some(Err(refusal(
+                sqlstate::DATA_EXCEPTION.as_str(),
+                &format!("there is no table `{table}` to drop"),
+            )));
+        }
+
+        // The refusal `ADR-0016` exists for, at the one door it can arrive through.
+        if let Err(refused) = sankhya_clone::refuse::may_drop(table, &lineages) {
+            return Some(Err(refusal(
+                sqlstate::DATA_EXCEPTION.as_str(),
+                &refused.to_string(),
+            )));
+        }
+
+        if let Err(error) = std::fs::remove_dir_all(&root) {
+            return Some(Err(refusal(
+                sqlstate::DATA_EXCEPTION.as_str(),
+                &format!("the clone could not be removed: {error}"),
+            )));
+        }
+        self.record(principal, TableRef::new("", table), Action::Delete, true);
+        Some(Ok(acknowledged("DROP TABLE")))
+    }
+
+    /// Which of the warehouse's tables are clones, read from their logs.
+    ///
+    /// Rebuilt per statement rather than cached. A clone created by another connection a moment
+    /// ago must be visible to this one, and a cache that lagged would let a drop proceed against
+    /// an origin whose newest clone it had not heard of --- which is the deletion this is all
+    /// gated on, arriving through a stale read.
+    fn lineages(&self) -> sankhya_clone::Lineages {
+        let mut lineages = sankhya_clone::Lineages::new();
+        let Ok(entries) = std::fs::read_dir(&self.settings.warehouse) else {
+            return lineages;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let found = sankhya_table_delta::read_actions(&path).ok().and_then(|actions| {
+                let actions: Vec<sankhya_table_delta::Action> =
+                    actions.into_iter().map(|(_, action)| action).collect();
+                sankhya_clone::lineage_of(&actions)
+            });
+            // A lineage that cannot be *read* is not a table that is not a clone. It is
+            // reported by the crate as an error precisely so it cannot be mistaken for one, and
+            // treating it as an ordinary table here would undo that --- so it is recorded as a
+            // clone of nothing resolvable, which keeps every reclamation decision about it
+            // conservative.
+            match found {
+                Some(Ok(lineage)) => lineages.record(name, lineage),
+                Some(Err(_)) => {
+                    lineages.record(name, sankhya_clone::Lineage::new(String::new(), 0, 0));
+                }
+                None => {}
+            }
+        }
+        lineages
+    }
+
+    /// Create a clone.
+    fn create_clone_table(
+        &self,
+        statement: &sankhya_clone::ddl::Create,
+        principal: &Principal,
     ) -> Result<QueryResult, QueryFailure> {
         use sankhya_error::protocol::sqlstate;
 
-        let statement = statement
-            .map_err(|error| refusal(sqlstate::SYNTAX_ERROR.as_str(), &error.to_string()))?;
-
-        if self.scope_for(principal, &statement.origin).is_none() {
+        let lineages = self.lineages();
+        if !self.readable(principal, &statement.origin, &lineages) {
             return Err(refusal(
                 sqlstate::DATA_EXCEPTION.as_str(),
                 &format!("there is no table `{}` to clone", statement.origin),
             ));
         }
-        if self.scope_for(principal, &statement.table).is_some() {
+        // A name in use is asked of the **warehouse**, not of the policy. A clone has no policy
+        // rule of its own, so asking the policy would report every clone as absent and let a
+        // second one be created over it --- discovered only when the commit refused.
+        if self.settings.warehouse.join(&statement.table).exists() {
             return Err(refusal(
                 sqlstate::DATA_EXCEPTION.as_str(),
                 &format!(
@@ -1811,7 +1981,14 @@ impl Server {
         // not SQL either, and `parse_ddl` returns `None` for every statement that is not one
         // --- including every ordinary `CREATE TABLE`, which must reach the engine untouched.
         if let Some(statement) = sankhya_clone::parse_ddl(sql) {
-            return self.run_clone_ddl(statement, &principal);
+            // `None` means the statement turned out not to be this server's business after all
+            // --- a `DROP TABLE` of something that is not a clone --- and it goes on to the
+            // engine, whose "this is a read path" refusal answers it in its own words. A
+            // pre-filter that answered it here would have replaced a good refusal with a
+            // reimplementation of one.
+            if let Some(answer) = self.run_clone_ddl(statement, &principal) {
+                return answer;
+            }
         }
 
         // Only the tables this principal may read are registered, so a query naming one

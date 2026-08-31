@@ -17,17 +17,17 @@
     clippy::indexing_slicing
 )]
 
-use sankhya_clone::ddl::{parse, DdlError, Statement};
+use sankhya_clone::ddl::{parse, Create, DdlError, Statement};
 
 #[test]
 fn a_clone_at_a_version_is_read() {
     assert_eq!(
         parse("CREATE TABLE staging CLONE entries AT VERSION 40"),
-        Some(Ok(Statement {
+        Some(Ok(Statement::Create(Create {
             table: "staging".to_string(),
             origin: "entries".to_string(),
             version: Some(40)
-        }))
+        })))
     );
 }
 
@@ -37,11 +37,11 @@ fn a_clone_with_no_version_carries_none_rather_than_a_guess() {
     // it at parse time — a different moment from the one the clone is made at.
     assert_eq!(
         parse("CREATE TABLE staging CLONE entries"),
-        Some(Ok(Statement {
+        Some(Ok(Statement::Create(Create {
             table: "staging".to_string(),
             origin: "entries".to_string(),
             version: None
-        }))
+        })))
     );
 }
 
@@ -63,7 +63,6 @@ fn an_ordinary_create_table_is_not_ours() {
 fn nothing_that_is_not_a_create_table_is_ours() {
     for sql in [
         "SELECT * FROM entries",
-        "DROP TABLE staging",
         "CREATE CUBE sales FROM entries",
         "CREATE VIEW v AS SELECT 1",
         "INSERT INTO entries VALUES (1)",
@@ -102,7 +101,9 @@ fn the_keywords_are_case_insensitive() {
         "create table staging clone entries at version 40",
         "CrEaTe TaBlE staging ClOnE entries At VeRsIoN 40",
     ] {
-        let parsed = parse(sql).expect("ours").expect("read");
+        let Statement::Create(parsed) = parse(sql).expect("ours").expect("read") else {
+            panic!("a create")
+        };
         assert_eq!(parsed.version, Some(40));
         assert_eq!(parsed.origin, "entries");
     }
@@ -112,30 +113,48 @@ fn the_keywords_are_case_insensitive() {
 fn a_table_called_clone_is_a_table_somebody_may_already_have() {
     // Keywords are not reserved. Refusing this would be the parser deciding what names a
     // warehouse may use, which is not a decision it is entitled to make.
-    let parsed = parse("CREATE TABLE clone CLONE entries").expect("ours").expect("read");
+    let Statement::Create(parsed) = parse("CREATE TABLE clone CLONE entries")
+        .expect("ours")
+        .expect("read")
+    else {
+        panic!("a create")
+    };
     assert_eq!(parsed.table, "clone");
     assert_eq!(parsed.origin, "entries");
 }
 
 #[test]
 fn a_quoted_identifier_keeps_its_case_and_loses_its_quotes() {
-    let parsed = parse(r#"CREATE TABLE "Staging" CLONE "Entries" AT VERSION 1"#)
+    let Statement::Create(parsed) = parse(r#"CREATE TABLE "Staging" CLONE "Entries" AT VERSION 1"#)
         .expect("ours")
-        .expect("read");
+        .expect("read")
+    else {
+        panic!("a create")
+    };
     assert_eq!(parsed.table, "Staging");
     assert_eq!(parsed.origin, "Entries");
 }
 
 #[test]
 fn a_qualified_name_survives() {
-    let parsed = parse("CREATE TABLE dev.staging CLONE prod.entries").expect("ours").expect("read");
+    let Statement::Create(parsed) = parse("CREATE TABLE dev.staging CLONE prod.entries")
+        .expect("ours")
+        .expect("read")
+    else {
+        panic!("a create")
+    };
     assert_eq!(parsed.table, "dev.staging");
     assert_eq!(parsed.origin, "prod.entries");
 }
 
 #[test]
 fn a_trailing_semicolon_is_not_part_of_the_name() {
-    let parsed = parse("CREATE TABLE staging CLONE entries;").expect("ours").expect("read");
+    let Statement::Create(parsed) = parse("CREATE TABLE staging CLONE entries;")
+        .expect("ours")
+        .expect("read")
+    else {
+        panic!("a create")
+    };
     assert_eq!(parsed.origin, "entries");
 }
 
@@ -179,4 +198,47 @@ fn an_error_names_a_position_rather_than_a_rule() {
         .to_string();
     assert!(said.contains("expected a table name"), "{said}");
     assert!(said.contains('('), "{said}");
+}
+
+#[test]
+fn a_drop_table_is_read_but_not_decided() {
+    // Read here, answered elsewhere. Whether `staging` is a clone is a question about a
+    // warehouse this module has never seen, so the statement is handed back for somebody who
+    // can answer it — and handed *back untouched* if the table turns out not to be a clone,
+    // where the server's existing "this is a read path" refusal answers it in its own words.
+    assert_eq!(
+        parse("DROP TABLE staging"),
+        Some(Ok(Statement::Drop { table: "staging".to_string(), if_exists: false }))
+    );
+    assert_eq!(
+        parse("DROP TABLE IF EXISTS staging"),
+        Some(Ok(Statement::Drop { table: "staging".to_string(), if_exists: true }))
+    );
+}
+
+#[test]
+fn a_dropped_name_keeps_its_quoting_and_qualification() {
+    assert_eq!(
+        parse(r#"DROP TABLE "Staging";"#),
+        Some(Ok(Statement::Drop { table: "Staging".to_string(), if_exists: false }))
+    );
+    assert_eq!(
+        parse("drop table dev.staging"),
+        Some(Ok(Statement::Drop { table: "dev.staging".to_string(), if_exists: false }))
+    );
+}
+
+#[test]
+fn a_drop_of_something_that_is_not_a_table_is_not_ours() {
+    for sql in ["DROP CUBE sales", "DROP VIEW v", "DROP SCHEMA dev", "DROP"] {
+        assert_eq!(parse(sql), None, "claimed `{sql}`");
+    }
+}
+
+#[test]
+fn a_drop_with_a_clause_this_does_not_understand_is_refused() {
+    assert_eq!(
+        parse("DROP TABLE staging CASCADE"),
+        Some(Err(DdlError::Trailing { found: "CASCADE".to_string() }))
+    );
 }

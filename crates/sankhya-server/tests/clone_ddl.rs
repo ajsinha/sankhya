@@ -255,3 +255,88 @@ async fn an_ordinary_statement_still_reaches_the_engine() {
     let said = format!("{refused:?}");
     assert!(!said.contains("CLONE"), "the pre-filter answered for the engine: {said}");
 }
+
+
+#[tokio::test]
+async fn a_clone_is_dropped_and_its_directory_goes_with_it() {
+    // A clone must be droppable because it is creatable. A thing a statement can make and no
+    // statement can remove accumulates, and accumulation with nobody responsible is exactly the
+    // shape `RSK-35` describes for rehydrated copies.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    warehouse_with_entries(dir.path());
+    let server = server_over(dir.path());
+    server.query("CREATE TABLE staging CLONE entries").expect("cloning");
+    assert!(dir.path().join("staging/_delta_log").exists());
+
+    let result = server.query("DROP TABLE staging").expect("dropping it");
+    assert_eq!(result.tag, "DROP TABLE");
+    assert!(!dir.path().join("staging").exists(), "and it is gone from disk");
+}
+
+// Multi-threaded because one of its statements is handed back to the engine, and `query` uses
+// `block_in_place`. Needing the attribute is itself the proof that the hand-back happened.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dropping_an_origin_a_clone_still_reads_is_refused() {
+    // The deletion ADR-0016 exists to prevent, at the one door it can arrive through. Before
+    // this the predicate existed and nothing called it.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    warehouse_with_entries(dir.path());
+    let server = server_over(dir.path());
+    server.query("CREATE TABLE staging CLONE entries").expect("cloning");
+
+    // `entries` is not itself a clone, so the statement is handed back and the server's
+    // standing refusal answers it — which is also a refusal, and for a reason that would still
+    // hold if cloning did not exist.
+    let refused = server.query("DROP TABLE entries").expect_err("refused either way");
+    assert!(dir.path().join("entries/_delta_log").exists(), "and it is still there");
+    let _ = refused;
+
+    // A clone of a clone is the case where the refusal is this one rather than that one.
+    server
+        .query("CREATE TABLE scratch CLONE staging")
+        .expect("cloning the clone");
+    let refused = server
+        .query("DROP TABLE staging")
+        .expect_err("scratch still reads it");
+    let said = format!("{refused:?}");
+    assert!(said.contains("scratch"), "the refusal names what would break: {said}");
+    assert!(said.contains("materialise"), "{said}");
+    assert!(
+        dir.path().join("staging/_delta_log").exists(),
+        "and nothing was removed"
+    );
+}
+
+#[tokio::test]
+async fn dropping_the_leaf_first_then_its_origin_works() {
+    // The way out that the refusal points at. Without this the message would be naming an
+    // action that does not work.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    warehouse_with_entries(dir.path());
+    let server = server_over(dir.path());
+    server.query("CREATE TABLE staging CLONE entries").expect("cloning");
+    server.query("CREATE TABLE scratch CLONE staging").expect("cloning again");
+
+    server.query("DROP TABLE scratch").expect("the leaf drops");
+    server.query("DROP TABLE staging").expect("and then its origin does");
+    assert!(!dir.path().join("staging").exists());
+    assert!(dir.path().join("entries/_delta_log").exists(), "the real table is untouched");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dropping_a_table_that_is_not_a_clone_is_answered_by_the_server_it_always_was() {
+    // The statement is handed back untouched, and the standing refusal answers it. A pre-filter
+    // that answered here would have replaced a good refusal with a reimplementation of one.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    warehouse_with_entries(dir.path());
+
+    let refused = server_over(dir.path())
+        .query("DROP TABLE entries")
+        .expect_err("data definition is not served");
+    let said = format!("{refused:?}");
+    assert!(said.contains("read path over a published warehouse"), "{said}");
+    assert!(
+        said.contains("sankhya-publish"),
+        "and it still names the supported route: {said}"
+    );
+}

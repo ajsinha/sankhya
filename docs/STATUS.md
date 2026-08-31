@@ -1881,6 +1881,52 @@ path's bug is testing less than it looks like it is"*. It now builds `entries` t
 Nine tests and 4 mutations, one of which makes the statement unreachable from a client --- the
 exact failure `check-surfaces` was written for, now caught by a test rather than by accident.
 
+### Step 6 — the drop refusal, and two defects the tests found in step 5
+
+`may_drop` had existed since step 3 with **nothing calling it**, so a table a clone was the only
+reader of could still be dropped. That is the deletion `ADR-0016` exists to prevent, and it was
+reachable.
+
+### Why the drop surface is exactly one statement wide
+
+This server refuses data definition wholesale --- *"a read path over a published warehouse"* ---
+and that refusal is right. But **a clone must be droppable because it is creatable**: a thing a
+statement can make and no statement can remove accumulates, which is the shape `RSK-35` describes
+for rehydrated copies.
+
+So `DROP TABLE` is read by the clone parser and **answered only when the table is a clone**.
+Anything else is handed back untouched and the standing refusal answers it in its own words. A
+pre-filter that answered here would have replaced a good refusal with a reimplementation of one,
+and a test asserts the original message still arrives --- including the part naming the supported
+route.
+
+### Two defects the new tests found in step 5's code
+
+**A clone could be created and then not touched.** Authorization checked the clone's own name,
+and a clone created a moment ago has no policy rule of its own --- so its creator could neither
+clone it again nor drop it. A clone is a *reference* to its origin, so the right to act on it
+derives from the right to read what it references, resolved to the **root** rather than one step
+because a clone of a clone references the root's files just as surely. A lineage cycle refuses
+rather than grants.
+
+**"Is this name taken?" was asked of the policy rather than the warehouse.** Since a clone has no
+policy rule, the answer was always *"free"*, and a second clone could be created over an existing
+one --- discovered only when the commit refused. It asks the warehouse now.
+
+Both were live in the code committed an hour earlier, and both were found by writing the drop
+tests rather than by reading the create code again.
+
+### And the mutation catalogue caught the refactor behind it
+
+Both fixes moved lines that step 5's catalogue entries were anchored on, and `check-mutations`
+reported `UNMATCHED` rather than passing. That is the check's whole purpose: **a mutation that no
+longer applies passes silently**, which is indistinguishable from a mutation that was caught. One
+entry was re-anchored on the shared helper; the other was deleted, because asking the warehouse
+whether a name is taken is already covered by an entry written for this step, and two entries
+applying the same defect is one more than can fail.
+
+Seven tests and 4 mutations.
+
 ## M7, complete
 
 Added 2026-08-27 by owner directive and placed before scale-out: cubes are a stated
@@ -3355,7 +3401,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 548 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 551 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -3871,9 +3917,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 2,114 tests, none of which needs a database
+cargo test --workspace           # 2,122 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 548 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 551 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

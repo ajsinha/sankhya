@@ -1601,20 +1601,38 @@ CATALOGUE = [
 
     ("server: clone a table the principal may not read",
      "crates/sankhya-server/src/wiring.rs",
-     "        if self.scope_for(principal, &statement.origin).is_none() {",
-     "        if self.scope_for(principal, &statement.origin).is_some() && false {",
-     "sankhya-server"),
-
-    ("server: clone over a table that already exists",
-     "crates/sankhya-server/src/wiring.rs",
-     "        if self.scope_for(principal, &statement.table).is_some() {",
-     "        if self.scope_for(principal, &statement.table).is_none() && false {",
+     "        if !self.readable(principal, &statement.origin, &lineages) {",
+     "        if self.readable(principal, &statement.origin, &lineages) && false {",
      "sankhya-server"),
 
     ("server: clone a version whose data files have been retired",
      "crates/sankhya-server/src/wiring.rs",
      "            Some(version) => sankhya_table_delta::live_files_at(origin_root, version)\n                .map(|at| at.files.iter().all(|file| origin_root.join(&file.path).exists()))\n                .unwrap_or(false),",
      "            Some(_version) => true,",
+     "sankhya-server"),
+
+    ("server: drop an origin its clones still read",
+     "crates/sankhya-server/src/wiring.rs",
+     "        if let Err(refused) = sankhya_clone::refuse::may_drop(table, &lineages) {",
+     "        if let Err(refused) = sankhya_clone::refuse::may_drop(table, &Default::default()) {",
+     "sankhya-server"),
+
+    ("server: answer a DROP TABLE that is not a clone's",
+     "crates/sankhya-server/src/wiring.rs",
+     "            // Not a clone. Not ours.\n            return None;",
+     "            return Some(Ok(acknowledged(\"DROP TABLE\")));",
+     "sankhya-server"),
+
+    ("server: give a clone no authority from what it references",
+     "crates/sankhya-server/src/wiring.rs",
+     "        let root = chain.last().map_or(table, String::as_str);",
+     "        let root = table;",
+     "sankhya-server"),
+
+    ("server: clone over a name the warehouse already holds",
+     "crates/sankhya-server/src/wiring.rs",
+     "        if self.settings.warehouse.join(&statement.table).exists() {",
+     "        if !self.settings.warehouse.join(&statement.table).exists() && false {",
      "sankhya-server"),
 
     ("brake: report a warning when the machine is about to be killed",
