@@ -163,8 +163,8 @@ fn no_phase_of_a_purge_deletes_a_row() {
         assert!(!name.contains("delete"), "`{name}` is a phase that removes rows");
         assert!(!name.contains("truncate"), "`{name}` is a phase that removes rows");
     }
-    assert!(Phase::ALL.iter().any(|phase| *phase == Phase::Detached));
-    assert!(Phase::ALL.iter().any(|phase| *phase == Phase::Dropped));
+    assert!(Phase::ALL.contains(&Phase::Detached));
+    assert!(Phase::ALL.contains(&Phase::Dropped));
 }
 
 #[test]
