@@ -35,6 +35,7 @@ use arrow_schema::{DataType, Field, Schema};
 use sankhya_publish::Publication;
 use sankhya_readpath::resolve_cached;
 use sankhya_table_delta::LogCache;
+use sankhya_testkit::capacity::can_measure;
 use sankhya_testkit::Until;
 use sankhya_types::{Lsn, LsnRange};
 use std::sync::{Arc, Barrier, Mutex, PoisonError};
@@ -192,14 +193,11 @@ fn arm() -> tempfile::TempDir {
 #[test]
 fn read_latency_is_flat_under_write_load() {
     let _measuring = MEASURING.lock().unwrap_or_else(PoisonError::into_inner);
-    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-    if cores < WRITERS + 2 {
-        // Skipped loudly and by name. With fewer cores than participants the reader loses
-        // throughput to the scheduler rather than to a lock, and this would measure that.
-        eprintln!(
-            "SKIPPED read_latency_is_flat_under_write_load: needs {} cores, found {cores}",
-            WRITERS + 2
-        );
+    // Skipped loudly and by name, on two counts. With fewer cores than participants the reader
+    // loses throughput to the scheduler rather than to a lock, and this would measure that;
+    // with the cores present but already busy --- a full `cargo test --workspace` --- it would
+    // measure the same thing while appearing to have enough. This test has failed that way.
+    if !can_measure("read_latency_is_flat_under_write_load", WRITERS + 2) {
         return;
     }
 

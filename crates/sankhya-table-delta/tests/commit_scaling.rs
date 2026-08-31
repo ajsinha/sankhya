@@ -33,6 +33,7 @@
     clippy::cast_precision_loss
 )]
 
+use sankhya_testkit::capacity::can_measure;
 use sankhya_table_delta::{commit, create, Action, AddFile, Metadata};
 use std::path::Path;
 use std::sync::{Barrier, Mutex, PoisonError};
@@ -108,14 +109,17 @@ fn arm() -> tempfile::TempDir {
 #[test]
 fn commits_to_different_tables_do_not_contend() {
     let _measuring = MEASURING.lock().unwrap_or_else(PoisonError::into_inner);
+    // Skipped loudly and by name. Three cores cannot distinguish a commit path that scales
+    // from one that does not, and neither can four cores somebody else is already using --- a
+    // pass or a failure there would describe the machine.
     let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-    if cores < 4 {
-        // Skipped loudly and by name. Three cores cannot distinguish a commit path that
-        // scales from one that does not, and a pass there would describe the machine.
-        eprintln!("SKIPPED commits_to_different_tables_do_not_contend: needs 4 cores, found {cores}");
+    if !can_measure("commits_to_different_tables_do_not_contend", 4) {
         return;
     }
     let writers = cores.min(8);
+    if !can_measure("commits_to_different_tables_do_not_contend", writers) {
+        return;
+    }
 
     // Warm up, so the first arm does not pay for a cold page cache.
     let warm = arm();

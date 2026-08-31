@@ -31,6 +31,7 @@ use arrow_array::{Date32Array, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use sankhya_publish::Publication;
 use sankhya_table_delta::live_files;
+use sankhya_testkit::capacity::can_measure;
 use sankhya_testkit::Hammer;
 use sankhya_types::Lsn;
 use std::collections::BTreeSet;
@@ -174,6 +175,13 @@ fn contended_commits_per_second(root: &Path, writers: usize) -> f64 {
 }
 
 /// One arm's temporary directory, so no arm inherits another's page cache or file count.
+/// The scaling this file asks the write path to demonstrate.
+///
+/// One constant, used both by the assertion and by the check that the machine could have
+/// satisfied it. Two numbers would drift, and the drift would be invisible: a skip threshold
+/// below the assertion produces a test that runs precisely when it cannot pass.
+const FLOOR: f64 = 3.0;
+
 fn arm() -> tempfile::TempDir {
     tempfile::tempdir().expect("a temporary directory")
 }
@@ -183,17 +191,18 @@ fn writers_to_different_tables_scale_with_their_count() {
     // Exit criterion 4, and ADR-0013's C1. The property is not "commits succeed" --- they
     // succeed under a global lock too. It is that adding writers adds throughput.
     let _measuring = MEASURING.lock().unwrap_or_else(PoisonError::into_inner);
+    // A machine with three cores cannot distinguish a scaling write path from a serialized
+    // one, and one whose cores are already spoken for cannot either --- under a full
+    // `cargo test --workspace` a free arm that fails to outrun one writer says nothing about
+    // the write path. Both are asked here, and either one skips loudly and by name.
     let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-    if cores < 4 {
-        // Skipped loudly and by name. A machine with three cores cannot distinguish a
-        // scaling write path from a serialized one, and a test that passes there would be
-        // reporting on the machine rather than on the code.
-        eprintln!(
-            "SKIPPED writers_to_different_tables_scale_with_their_count: needs 4 cores, found {cores}"
-        );
+    if !can_measure("writers_to_different_tables_scale_with_their_count", 4) {
         return;
     }
     let writers = cores.min(8);
+    if !can_measure("writers_to_different_tables_scale_with_their_count", writers) {
+        return;
+    }
 
     // Warm up. The first arm otherwise pays for cold page cache and lazily built Parquet
     // machinery, and would report the write path as slower than it is.
@@ -225,7 +234,7 @@ fn writers_to_different_tables_scale_with_their_count() {
     // most of a publish. A floor of two would have passed that. The commit path has its own
     // measurement in `sankhya-table-delta`, where the encoding does not mask it.
     assert!(
-        scales >= 3.0,
+        scales >= FLOOR,
         "{writers} writers on {writers} tables managed {scales:.2}x the throughput of one \
          writer ({one:.0} -> {many:.0} commits/s). Throughput that does not grow with writers \
          is a global serialization point, whatever the code looks like"
@@ -389,13 +398,13 @@ fn contention_on_one_table_degrades_rather_than_collapsing() {
     // *degradation* from a queue with extra steps.
     let _measuring = MEASURING.lock().unwrap_or_else(PoisonError::into_inner);
     let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-    if cores < 4 {
-        eprintln!(
-            "SKIPPED contention_on_one_table_degrades_rather_than_collapsing: needs 4 cores, found {cores}"
-        );
+    if !can_measure("contention_on_one_table_degrades_rather_than_collapsing", 4) {
         return;
     }
     let writers = cores.min(8);
+    if !can_measure("contention_on_one_table_degrades_rather_than_collapsing", writers) {
+        return;
+    }
 
     let warm = arm();
     let _ = commits_per_second(warm.path(), 2, None);

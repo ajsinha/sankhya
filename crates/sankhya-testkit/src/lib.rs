@@ -300,3 +300,104 @@ impl Running {
         !self.stop.load(Ordering::Relaxed)
     }
 }
+
+/// Whether the machine can host a throughput measurement, and saying so where it is seen.
+///
+/// # The failure this exists to prevent
+///
+/// `ADR-0013`'s three concurrency criteria are measurements rather than assertions, and each is
+/// taken against a control serialized through one mutex in the same run. That control answers
+/// *"is this path serialized?"*. It cannot answer *"could anything have scaled here?"* --- and
+/// `check-all` runs `cargo test --workspace`, which is dozens of test binaries holding every
+/// core. C1's end-to-end measurement failed exactly there on 2026-08-31, at a load average of
+/// 36 on a 24-core machine, with nothing wrong with the code.
+///
+/// A gate that fails at random is a gate that gets re-run until it passes, which is the same
+/// defect as a threshold with no control: the number stops meaning anything and nobody notices
+/// when it starts being wrong.
+pub mod capacity {
+    /// Whether a measurement needing `cores` cores' worth of free capacity can be taken here.
+    ///
+    /// Announces the skip and returns `false` when it cannot, so a caller is one `if` away from
+    /// doing the right thing and the reason reaches whoever ran the suite.
+    #[must_use]
+    pub fn can_measure(test: &str, cores: usize) -> bool {
+        let present =
+            std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+        if present < cores {
+            skipped(&format!("{test}: needs {cores} cores, found {present}"));
+            return false;
+        }
+        // `None` is not a reason to skip. A machine that cannot be asked is one where the
+        // measurement is left to speak for itself, which is the behaviour every platform had
+        // before this check existed.
+        if let Some(idle) = idle_cores() {
+            #[allow(clippy::cast_precision_loss)]
+            if idle < cores as f64 {
+                skipped(&format!(
+                    "{test}: needs {cores} idle cores and this machine has {idle:.1}. A run \
+                     here could not tell a serialized path from a busy machine"
+                ));
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Cores' worth of idle capacity, measured over a short window.
+    ///
+    /// # Why this is measured rather than inferred from a ratio
+    ///
+    /// The obvious control is a workload that shares nothing: run it on one thread and on `n`,
+    /// and see whether the machine scales it. That control was written first and it does not
+    /// work. Under fair scheduling every runnable thread receives an equal share, so `n`
+    /// threads collect `n` times what one thread collects **however oversubscribed the machine
+    /// is** --- it reported near-linear scaling at load 36, in the same run where the real
+    /// write path managed 2.5x. A proxy that cannot go wrong in the way being tested for is not
+    /// a control, so free capacity is read directly instead.
+    ///
+    /// `None` where the platform does not publish it.
+    #[must_use]
+    pub fn idle_cores() -> Option<f64> {
+        let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+        let (busy_before, total_before) = busy_and_total()?;
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let (busy_after, total_after) = busy_and_total()?;
+
+        let elapsed = total_after.checked_sub(total_before)?;
+        if elapsed == 0 {
+            return None;
+        }
+        let working = busy_after.saturating_sub(busy_before);
+        #[allow(clippy::cast_precision_loss)]
+        let idle = elapsed.saturating_sub(working) as f64 / elapsed as f64;
+        #[allow(clippy::cast_precision_loss)]
+        Some(idle * cores as f64)
+    }
+
+    /// Jiffies spent working, and jiffies in total, across every core.
+    ///
+    /// `iowait` counts as idle: a core blocked on a disk is a core a measurement could use.
+    fn busy_and_total() -> Option<(u64, u64)> {
+        let stat = std::fs::read_to_string("/proc/stat").ok()?;
+        let line = stat.lines().next()?;
+        let fields: Vec<u64> =
+            line.split_whitespace().skip(1).filter_map(|field| field.parse().ok()).collect();
+        // user nice system idle iowait irq softirq steal guest guest_nice
+        let idle = fields.get(3).copied()?.saturating_add(fields.get(4).copied().unwrap_or(0));
+        let total: u64 = fields.iter().sum();
+        Some((total.saturating_sub(idle), total))
+    }
+
+    /// Say a test was skipped, where it will actually be seen.
+    ///
+    /// `eprintln!` inside a *passing* test goes into libtest's per-test capture and is printed
+    /// only if the test fails, so a skip announced that way is announced to nobody: `check-all`
+    /// reports the suite green with a criterion silently unmeasured, which is the one outcome a
+    /// loud skip exists to prevent. Writing to the descriptor steps around the capture, because
+    /// the capture is installed on the print macros rather than on the stream.
+    pub fn skipped(why: &str) {
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), "SKIPPED {why}");
+    }
+}

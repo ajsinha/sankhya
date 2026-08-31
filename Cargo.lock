@@ -3803,6 +3803,7 @@ dependencies = [
  "sankhya-atomicfs",
  "sankhya-error",
  "sankhya-stats",
+ "sankhya-testkit",
  "sankhya-types",
  "serde",
  "serde_json",

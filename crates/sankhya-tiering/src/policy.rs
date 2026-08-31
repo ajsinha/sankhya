@@ -121,6 +121,36 @@ pub const fn canonical_encoding(logical: &LogicalType) -> Result<(), NotCanonica
     }
 }
 
+/// Whether a type has an ordinal a range can be written down as.
+///
+/// Matches every variant for the same reason [`canonical_encoding`] does: a logical type added
+/// to `sankhya-schema` must fail to compile here until somebody decides whether a range of it
+/// can be ordered, rather than being admitted by a deny-list that never heard of it.
+///
+/// `Float32` and `Float64` order perfectly well and are excluded anyway --- they are already
+/// refused for having no canonical encoding, and admitting them here would produce a policy
+/// refused for one reason that looked acceptable for another.
+#[must_use]
+pub const fn has_ordinal(logical: &LogicalType) -> bool {
+    match *logical {
+        LogicalType::Int16
+        | LogicalType::Int32
+        | LogicalType::Int64
+        | LogicalType::Decimal(_)
+        | LogicalType::TimestampUtc
+        | LogicalType::TimestampLocal
+        | LogicalType::Date
+        | LogicalType::Time => true,
+        LogicalType::Boolean
+        | LogicalType::Float32
+        | LogicalType::Float64
+        | LogicalType::Utf8
+        | LogicalType::Binary
+        | LogicalType::Uuid
+        | LogicalType::Json => false,
+    }
+}
+
 /// A column as a policy sees it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Column {
@@ -235,6 +265,18 @@ pub struct Policy {
 pub enum Ineligible {
     /// The table is not append-only by contract.
     NotAppendOnly,
+    /// The tiering key's type has no ordinal, so its ranges cannot be ordered.
+    ///
+    /// Purge is partition detach over a range, and the archival registry records what it
+    /// covered as `[from, until)`. Both need the key to have an order that survives being
+    /// written down --- which a boolean, a `UUID` or a string does not, at least not one that
+    /// agrees with how the source partitions it. A range that cannot be ordered is a range
+    /// whose coverage cannot be shown, and a coverage gap that cannot be detected is the
+    /// silently-short answer `FR-TIER-17` exists to prevent.
+    TieringKeyNotOrdinal {
+        /// The key.
+        key: String,
+    },
     /// No column is declared part of the primary key.
     ///
     /// `FR-TIER-09` verifies primary-key set equality before anything is purged, and a table
@@ -278,6 +320,12 @@ impl fmt::Display for Ineligible {
                 "the table is not append-only by contract. Tiering purges from the source, and \
                  a row updated in place after its partition was archived is a correction \
                  applying to data that is no longer there",
+            ),
+            Self::TieringKeyNotOrdinal { key } => write!(
+                f,
+                "the tiering key `{key}` has a type with no ordinal, so an archived range \
+                 cannot be written down in a form that can be shown to be covered. A date, a \
+                 timestamp or an integer has one"
             ),
             Self::NoPrimaryKey => f.write_str(
                 "no column is declared part of the primary key. Verification establishes \
@@ -377,6 +425,11 @@ impl Policy {
             }
         }
 
+        if let Some(column) = self.columns.iter().find(|column| column.name == self.tiering_key) {
+            if !has_ordinal(&column.logical) {
+                refusals.push(Ineligible::TieringKeyNotOrdinal { key: self.tiering_key.clone() });
+            }
+        }
         if !self.columns.iter().any(|column| column.key) {
             refusals.push(Ineligible::NoPrimaryKey);
         }
