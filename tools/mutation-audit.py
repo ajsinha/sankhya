@@ -1491,6 +1491,12 @@ CATALOGUE = [
      "        let _kept = table;",
      "sankhya-clone"),
 
+    ("clone: let a sweep discard the versions a clone still reads",
+     "crates/sankhya-clone/src/family.rs",
+     "            .filter(|lineage| lineage.origin == table)",
+     "            .filter(|lineage| lineage.origin != table)",
+     "sankhya-clone"),
+
     ("brake: report a warning when the machine is about to be killed",
      "crates/sankhya-governor/src/memory.rs",
      "    if in_use >= limits.shed_bytes {",

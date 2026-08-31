@@ -144,3 +144,35 @@ fn a_clone_of_a_table_that_was_never_recorded_is_still_a_reader() {
     assert_eq!(lineages.of("entries"), None, "the origin is not itself a clone");
     assert_eq!(lineages.readers_of("entries").unwrap(), named(&["entries", "staging"]));
 }
+
+#[test]
+fn a_sweep_keeps_the_versions_direct_clones_still_read() {
+    // `ADR-0016`'s Decision 1a: a clone records an origin and a version rather than naming the
+    // origin's files, so the sweeper's question is about its own log — which versions of me does
+    // somebody still read?
+    let mut lineages = Lineages::new();
+    lineages.record("staging", Lineage::new("entries", 40, T0));
+    lineages.record("sibling", Lineage::new("entries", 41, T0));
+    lineages.record("also", Lineage::new("entries", 40, T0));
+
+    assert_eq!(lineages.pinned_versions("entries"), BTreeSet::from([40, 41]));
+}
+
+#[test]
+fn transitivity_does_not_compound_into_the_root() {
+    // The simplification Decision 1a buys, and the one most likely to be got wrong the other
+    // way. `scratch` is a clone of `staging`, so it pins a version of *staging* — staging's own
+    // files are protected by staging's sweeper, and staging's dependence on `entries` is
+    // expressed by staging's own pin of version 40.
+    assert_eq!(tree().pinned_versions("entries"), BTreeSet::from([40, 41]));
+    assert_eq!(tree().pinned_versions("staging"), BTreeSet::from([3]));
+    assert!(tree().pinned_versions("scratch").is_empty(), "nothing is cloned from a leaf");
+}
+
+#[test]
+fn a_table_nobody_cloned_pins_no_version_at_all() {
+    // Every table that exists. The sweep then does exactly what it does today, which is the
+    // property that makes this affordable.
+    assert!(Lineages::new().pinned_versions("entries").is_empty());
+    assert!(tree().pinned_versions("unrelated").is_empty());
+}
