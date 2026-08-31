@@ -119,11 +119,48 @@ be, so a file is kept that could have been reclaimed. Keeping a file costs disk.
 same choice the quarantine reaper makes — *"keeping one is never an error"* — and the same one
 the orphan sweeper's age threshold already makes.
 
+## Decision 1a — a clone's log does not name the origin's files at all
+
+Building Decision 1 surfaced a question it had not answered: **how does a clone's log name a file
+it did not write?** `AddFile.path` is documented in this repository as *"relative to the table
+root, as the protocol requires"*, and the sweeper compares names it produced by stripping a table
+root. A clone naming an origin's file has to say so somehow, and the obvious ways are both worse
+than they look.
+
+| How | Why not |
+|---|---|
+| An absolute URI, which the Delta specification does permit | it embeds a filesystem path, so **restore into a different directory silently produces a table whose files are all missing** — and restore-to-a-different-path is an operation this system has |
+| A `../`-relative path | the specification says *relative to the root of the table*; where a reader resolves `..` is undefined, so this is a bet on every reader agreeing |
+
+So the clone's log names **none** of them. It records its origin and version as properties
+(Decision 1) and contains only the files the clone itself writes afterwards. A read of the clone
+splices the origin's live set *at that version* with the clone's own log — which is not a new
+mechanism: [ADR-0015](0015-the-shard-set-seam.md) found that `plan_splice` already resolves one
+table reference to several sources and proves exact coverage.
+
+**This makes the lifetime question simpler rather than harder.** The origin's sweeper does not
+have to normalise another table's paths into its own naming; it asks *"which versions of me does
+a clone still read?"* and keeps the live set of each. That is a question about its own log, which
+it already reads.
+
+### What this costs, stated plainly
+
+A foreign Delta reader pointed at a clone's directory sees only the files the clone wrote, not
+the rows it inherited. **The clone is not independently readable by the kernel**, and the
+open-storage claim holds for ordinary tables and not for clones.
+
+That is a real cost and it is the right one. The alternative buys kernel-readable clones with
+absolute paths that break the moment a warehouse is restored somewhere else — trading a
+correctness property for an interoperability one. A clone that must be readable elsewhere is
+**materialised**, which is the explicit copy the ADR already requires for a clone that must
+travel without its origin, and which produces an ordinary self-contained table.
+
 ## Decision 2 — what each maintenance path does about it
 
-**Orphan collection** takes the family's union as `reachable`. The seam is already there:
-`plan_orphan_cleanup` accepts `reachable` as a parameter and the service passes an empty set. The
-change is at the call site, not in the decision.
+**Orphan collection** takes as `reachable` the union of the origin's own live sets at every
+version a clone still reads, which by Decision 1a is a question about its own log. The seam is
+already there: `plan_orphan_cleanup` accepts `reachable` as a parameter and the service passes an
+empty set. The change is at the call site, not in the decision.
 
 **Retirement** already asks whether every lease that could name an input has drained. A clone is
 a reader that outlives every lease, so a clone's live set is consulted alongside them: an input

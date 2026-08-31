@@ -135,6 +135,33 @@ impl Lineages {
         self.readers_of(&root)
     }
 
+    /// The versions of `table` a clone still reads, and which its sweeper must therefore keep
+    /// the live set of.
+    ///
+    /// # Why only direct clones, which is less than it looks like it should be
+    ///
+    /// `ADR-0016`'s Decision 1a means a clone's log names none of its origin's files: it records
+    /// an origin and a version, and a read splices the origin's live set *at that version* with
+    /// the clone's own log. So a clone of a clone pins a version of the **intermediate** table,
+    /// not of the root --- the intermediate's files are protected by the intermediate's own
+    /// sweeper, and the intermediate's dependence on the root is expressed by the intermediate's
+    /// own pin.
+    ///
+    /// Transitivity therefore does not compound here, and the sweep does not need the
+    /// [`Self::readers_of`] walk at all. That walk is for the questions that genuinely span the
+    /// tree: whether a table may be dropped, and what a backup must include.
+    ///
+    /// Empty for a table nobody has cloned, which is every table that exists --- the sweep then
+    /// does exactly what it does today.
+    #[must_use]
+    pub fn pinned_versions(&self, table: &str) -> BTreeSet<u64> {
+        self.by_table
+            .values()
+            .filter(|lineage| lineage.origin == table)
+            .map(|lineage| lineage.version)
+            .collect()
+    }
+
     /// The clones that would be broken by removing `table`.
     ///
     /// # Errors
