@@ -1,0 +1,18 @@
+[package]
+name         = "sankhya-clone"
+description  = "Zero-copy clone lineage, and who may still read a shared file."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license-file.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 2
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]

@@ -3377,6 +3377,10 @@ name = "sankhya-cli"
 version = "0.1.0"
 
 [[package]]
+name = "sankhya-clone"
+version = "0.1.0"
+
+[[package]]
 name = "sankhya-config"
 version = "0.1.0"
 dependencies = [

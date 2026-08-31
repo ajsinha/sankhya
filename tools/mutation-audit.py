@@ -1455,6 +1455,42 @@ CATALOGUE = [
      "        if next.requires() < Some(self.phase()) {",
      "sankhya-tiering"),
 
+    ("clone: treat a table with an unreadable lineage as an ordinary table",
+     "crates/sankhya-clone/src/lineage.rs",
+     "            return Some(Err(Malformed::NoOrigin));",
+     "            return None;",
+     "sankhya-clone"),
+
+    ("clone: accept a clone that names no origin version",
+     "crates/sankhya-clone/src/lineage.rs",
+     "            return Some(Err(Malformed::NoVersion));",
+     "            return Some(Ok(Self { origin: origin.clone(), version: 0, cloned_at: 0 }));",
+     "sankhya-clone"),
+
+    ("clone: read an unparseable origin version as zero",
+     "crates/sankhya-clone/src/lineage.rs",
+     "            return Some(Err(Malformed::UnreadableVersion { found: version.clone() }));",
+     "            return Some(Ok(Self { origin: origin.clone(), version: 0, cloned_at: 0 }));",
+     "sankhya-clone"),
+
+    ("clone: sweep a table without consulting the clones beneath it",
+     "crates/sankhya-clone/src/family.rs",
+     "                reached.insert(candidate.clone());\n                frontier.push(candidate.clone());",
+     "                reached.insert(candidate.clone());",
+     "sankhya-clone"),
+
+    ("clone: follow a lineage cycle instead of refusing it",
+     "crates/sankhya-clone/src/family.rs",
+     "            if !seen.insert(lineage.origin.clone()) {\n                return Err(Cycle { at: lineage.origin.clone() });\n            }",
+     "            if false {\n                return Err(Cycle { at: lineage.origin.clone() });\n            }\n            if !seen.insert(lineage.origin.clone()) {\n                return Ok(chain);\n            }",
+     "sankhya-clone"),
+
+    ("clone: report a table as its own dependent",
+     "crates/sankhya-clone/src/family.rs",
+     "        readers.remove(table);",
+     "        let _kept = table;",
+     "sankhya-clone"),
+
     ("brake: report a warning when the machine is about to be killed",
      "crates/sankhya-governor/src/memory.rs",
      "    if in_use >= limits.shed_bytes {",
