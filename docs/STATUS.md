@@ -30,8 +30,8 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M6** Operability, packaging and hardening | 2026-08-28 | **Complete.** Six of seven exit criteria met. Criterion 4 accepted on a forty-five-minute judged run by owner decision — `PASS` over 44 minutes with all seven measures steady, on the first soak to exercise a cube. **Criterion 7 carried into M8**: §10.8's size decision and route table are built and tested; the gRPC transport and every write path are not. See [SOAK.md](SOAK.md) |
 | **M7** Multidimensional analysis — cubes, slice/dice, roll-up, consolidation | 2026-08-28 | **Complete.** All eight exit criteria pass against a cube hydrated from a published table. Declared complete once before, on 2026-08-27, and retracted the same day: the hydration path did not exist and every criterion passed on cells its own fixture supplied. Both that gap and the write-only materialisation found on 2026-08-28 are closed. See below, and [ADR-0007](adr/0007-the-cube-model.md) |
 | **M8** **Concurrency and data safety** | 2026-08-30 | **Complete on six of eight**, and the other two moved rather than met. S1–S3 and C1–C3 are proven, each concurrency criterion measured against a control taken in the same run. **§12.2 and criteria 7–8 moved whole to M12 on 2026-08-30** by owner decision: both need a second machine, and a recovery objective measured on one host excludes the failures the criterion exists to price. The one item in §12.2 that could not be safely parked — the shard-set seam — was designed first and turned out to be mislabelled; see [ADR-0015](adr/0015-the-shard-set-seam.md). **Rescoped 2026-08-28** by owner directive after an end-to-end audit found a version claim that could lose a commit silently, four files published non-atomically, and three reclamation paths guarding against a proxy rather than against readers. See [ADR-0013](adr/0013-concurrency-and-data-safety.md) |
-| **M9** Tiering | 12–16 ew | **In progress**, started 2026-08-30. **Gated** on the drills in [`IMPLEMENTATION_PLAN.md` §13](IMPLEMENTATION_PLAN.md): the restore drill exists from M6 §10.3, the archive attestation drill does not. Gate criterion 1 moved to M11 on 2026-08-28, and **destructive purge stays disabled until M11 clears it** — building the purge path and arming it are two decisions |
-| **M10** Zero-copy cloning | 10–14 ew | After M9. **Design-gated: no code before an accepted ADR**, covering shared-file lifetime, the maintenance interaction, and what a clone means for backup, tiering, audit and time travel |
+| **M9** Tiering | 12–16 ew | **In progress**, started 2026-08-30. **All eleven work items are built and the exit criteria demonstrated** on 2026-08-31 — purge end to end with verification, quarantine and rollback; the anomaly guard halting an intentionally-defective policy; nineteen refusal paths shown to fail closed. **The gate is not cleared and that is not a formality**: criterion 3 needs the attestation drill run against a real non-production archive, which cannot be produced from development. **Gated** on the drills in [`IMPLEMENTATION_PLAN.md` §13](IMPLEMENTATION_PLAN.md): the restore drill exists from M6 §10.3, the archive attestation drill does not. Gate criterion 1 moved to M11 on 2026-08-28, and **destructive purge stays disabled until M11 clears it** — building the purge path and arming it are two decisions |
+| **M10** Zero-copy cloning | 10–14 ew | **In progress**, started 2026-08-31. **The design gate is cleared**: [ADR-0016](adr/0016-zero-copy-cloning.md) decides shared-file lifetime as reachability over the clone family rather than reference counting, because a count that drifts low deletes data a clone is the only reader of — the silent loss the gate exists to prevent — while reachability fails towards leaking disk. No implementation before that ADR, and none yet |
 | **M11** Production reconciliation | — | **Not schedulable by development.** Needs a production deployment that does not exist. Holds M9's gate criterion 1 and the arming decision for destructive purge |
 | **M12** Scale-out, HA and disaster recovery, then production-like acceptance | 20–26 ew | **Needs a second machine**, which is why it holds M8 §12.2 and criteria 7–8 as of 2026-08-30. The project's exit criteria: 12 h, two machines, 100 GB, 50 readers, 20 writers. `CREATE CUBE` is a blocking dependency here and is **not** hardware-blocked, so it can be built at any point before the run |
 
@@ -309,7 +309,18 @@ four were taken with none skipped.
 
 They stay inside the full gate rather than beside it, because **a measurement moved out of the
 gate is a measurement that stops being taken.** The capacity guard remains as a backstop for a
-machine busy for some other reason, and should now almost never fire. `INVARIANTS.md` carries the
+machine busy for some other reason, and should now almost never fire.
+
+That was still not the end of it, and the last two causes were both self-inflicted. **The
+compile is the load**: `cargo test` builds with as much parallelism as the machine has, and the
+measurement ran in the seconds after, with rustc processes draining and the page cache thrashed.
+Running as the only cargo process is not the same as running on a quiet machine, so every binary
+is now built before any of them is measured. And **the guard counted `iowait` as idle**, which
+is right for a question about processor capacity and wrong for this one: these arms encode
+Parquet and write files, so the disk is the contended resource, and a machine deep in `iowait`
+is exactly where a write-path throughput figure describes the machine. C3 failed on a machine
+reporting eight idle cores minutes after a full rebuild --- the processors were free and the
+disk was not. `INVARIANTS.md` carries the
 rule, which is what `check-invariants` demanded the moment the check was added --- and it
 rejected two drafts on the way: one that added a check nobody had documented, and one whose prose
 named a check that does not exist.
@@ -1501,6 +1512,67 @@ only the first belongs here.
 
 M9's work is built and demonstrated. M9 is not complete, and the distance between those two
 sentences is the gate doing its job.
+
+## M10, started 2026-08-31 — the design gate first
+
+`M10` is design-gated: **no code before an accepted ADR**, because the failure mode is not a
+failed query but *"silent data loss in a table nobody was touching, discovered when somebody
+reads a clone months later"*. [ADR-0016](adr/0016-zero-copy-cloning.md) is that ADR, and there
+is no implementation yet.
+
+### The premise cloning breaks
+
+Three mechanisms decide that a file may be removed --- retirement, orphan collection and `M9`'s
+purge --- and each consults **one table's log**. Each is correct today for the same reason: **a
+file belongs to exactly one table.** Cloning makes that false, and each becomes a way to delete
+data a clone is the only remaining reader of.
+
+Orphan collection is the sharpest case, and the current code makes it concrete.
+`sweep_orphans_once` lists the files under one table's root, builds the live set from that
+table's log, and passes `reachable` as an **empty set**. Clone a table, let the origin compact
+past a file, wait out the seven-day age threshold, and the origin's sweeper removes a file only
+the clone names. Nothing fails, no query errors, and the first evidence arrives whenever somebody
+next reads that range of the clone. **From the origin's point of view a file only the clone still
+names is indistinguishable from debris.**
+
+### Why not reference counting, which is the obvious answer
+
+It is exact, and exact in the way that matters least. The asymmetry decides it: a count that
+drifts **high** loses disk, and a count that drifts **low** deletes data a clone is the only
+reader of --- silently, in a table nobody was touching. That is the gate's own sentence, and
+reference counting is the only candidate that can produce it. It would also make every clone and
+every drop a crash-safe write on a path maintenance contends with, which `ADR-0013`'s C1 spent a
+milestone keeping per-table.
+
+Copy-on-maintenance was refused for a different reason: it gives up constant space **quietly**. A
+clone's cost would depend on maintenance activity its owner cannot see --- clone a quiet table
+and pay nothing, clone one that compacts tonight and pay for the whole table by morning. A
+feature whose headline property is *constant space* and whose actual space depends on somebody
+else's compaction schedule surprises its users at the worst moment.
+
+### Reachability, and why the usual objection does not apply here
+
+The union of the live sets of the **clone family** --- the transitive closure through a lineage
+record --- becomes the `reachable` set the sweeper already accepts as a parameter. The usual
+objection is that the cost grows with the number of tables rather than the size of one, and three
+things bound it: the scan is over the family rather than the warehouse, reading `n` logs is the
+operation the sweep already performs `n` times, and `DEC-14` puts execution on one node so every
+log is local.
+
+**It is a no-op for every table that has never been cloned.** Its family is itself, its reachable
+set stays empty, and the sweep does exactly what it does today --- which is every table that
+exists right now. And it fails in the safe direction: a lineage record that is stale or
+unreadable makes the reachable set *larger*, so a file is kept that could have been reclaimed.
+Keeping a file costs disk, which is the same trade the quarantine reaper and the age threshold
+already make.
+
+### Three refusals the plan had not named
+
+Enumerating them found more than the four the gate asked for: a clone at a version the origin no
+longer retains (there is nothing to reference), dropping an origin a clone still references (the
+deletion this ADR exists to prevent, arriving through the front door), and time travel on a clone
+before its creation (answering it would give the clone a past it never had). Seven refusals in
+total, each to be built and shown to fail closed.
 
 ## M7, complete
 

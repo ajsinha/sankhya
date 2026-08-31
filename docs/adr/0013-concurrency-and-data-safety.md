@@ -183,6 +183,11 @@ So the properties are stated together, and the second is measured rather than as
 > measurements are therefore `#[ignore]`d and run by `check-concurrency` **alone, as the only
 > cargo process** — the interference removed rather than detected. They remain inside the gate,
 > because a measurement moved out of it is a measurement that stops being taken.
+>
+> Two further causes, both self-inflicted: `cargo test` compiles with full parallelism and the
+> measurement ran seconds later, so every binary is now built before any is measured; and the
+> capacity guard counted `iowait` as idle, which is right for processor capacity and wrong for
+> arms that write Parquet — the disk is the contended resource, and it now counts as busy.
 
 C1 is why [`ARCHITECTURE.md`'s standing note](../ARCHITECTURE.md) — *"keep the commit path
 per-table, never globally serialized"* — stops being a design seam and becomes an exit

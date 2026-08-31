@@ -445,14 +445,24 @@ pub mod capacity {
 
     /// Jiffies spent working, and jiffies in total, across every core.
     ///
-    /// `iowait` counts as idle: a core blocked on a disk is a core a measurement could use.
+    /// # `iowait` counts as **busy**, and the first version of this had it the other way round
+    ///
+    /// For a question about processor capacity, a core blocked on a disk is a core a measurement
+    /// could have used, and counting `iowait` as idle is right. These measurements are not that
+    /// question: their arms encode Parquet and write files, so the **disk** is the contended
+    /// resource, and a machine deep in `iowait` is precisely one where a write-path throughput
+    /// figure describes the machine.
+    ///
+    /// Counting it as idle made the guard blind to the contention that actually matters here.
+    /// C3 duly failed on a machine reporting eight idle cores, minutes after a full rebuild had
+    /// thrashed the page cache: the processors were free and the disk was not.
     fn busy_and_total() -> Option<(u64, u64)> {
         let stat = std::fs::read_to_string("/proc/stat").ok()?;
         let line = stat.lines().next()?;
         let fields: Vec<u64> =
             line.split_whitespace().skip(1).filter_map(|field| field.parse().ok()).collect();
         // user nice system idle iowait irq softirq steal guest guest_nice
-        let idle = fields.get(3).copied()?.saturating_add(fields.get(4).copied().unwrap_or(0));
+        let idle = fields.get(3).copied()?;
         let total: u64 = fields.iter().sum();
         Some((total.saturating_sub(idle), total))
     }

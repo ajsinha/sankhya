@@ -33,6 +33,25 @@ pub fn check(root: &Path) -> bool {
         ("sankhya-table-delta", "commit_scaling"),
     ];
 
+    // Build every binary *before* measuring any of them. `cargo test` compiles with as much
+    // parallelism as the machine has, and a measurement taken in the seconds after that compile
+    // is taken on a machine still finishing it --- rustc processes draining, page cache
+    // thrashed, the disk busy. Running as the only cargo process is not the same as running on
+    // a quiet machine, and this is the difference between the two.
+    for (package, test) in measurements {
+        let built = Command::new(env!("CARGO"))
+            .current_dir(root)
+            .args(["test", "--quiet", "--no-run", "-p", package, "--test", test])
+            .output();
+        match built {
+            Ok(built) if built.status.success() => {}
+            _ => {
+                eprintln!("  COULD NOT BUILD  {package} --test {test}");
+                return false;
+            }
+        }
+    }
+
     let mut ok = true;
     let mut taken = 0usize;
     let mut skipped = Vec::new();

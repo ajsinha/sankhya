@@ -11,7 +11,7 @@
 
 **Document ID:** SNK-IP-001
 **Version:** 0.1.0 (draft for review)
-**Status:** Implementation — M0–M8 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress
+**Status:** Implementation — M0–M8 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M10 in progress
 **Date:** 2026-08-26
 **Companions:** `REQUIREMENTS.md` (SNK-RD-001), `ARCHITECTURE.md` (SNK-AD-001), `ROADMAP.md`
 
@@ -948,7 +948,20 @@ published one, a point to return to before a bulk correction.
 
 ### The gate
 
-**An accepted ADR before any implementation**, covering at minimum:
+~~**An accepted ADR before any implementation**~~ — **cleared 2026-08-31**,
+[ADR-0016](adr/0016-zero-copy-cloning.md). Shared-file lifetime is decided as **reachability over
+the clone family**, scoped by a lineage record, rather than reference counting: a count that
+drifts high loses disk and a count that drifts low deletes data a clone is the only reader of,
+which is the silent loss this gate exists to prevent, and reference counting is the only
+candidate that can produce it. Copy-on-maintenance was refused for giving up constant space
+*quietly* --- a clone's cost would depend on maintenance activity its owner cannot see.
+
+The decision is a no-op for every table that has never been cloned: its family is itself, its
+reachable set stays empty, and the sweep does what it does today. Building the refusal list found
+three the plan had not named --- a clone at a version the origin no longer retains, dropping an
+origin a clone still references, and time travel on a clone before its creation.
+
+It covered, as the gate required:
 
 1. **Shared-file lifetime.** Who may delete a file that more than one table names, and how
    that is decided without a global scan.
