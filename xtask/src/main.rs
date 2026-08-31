@@ -1920,5 +1920,23 @@ fn check_tests(root: &Path) -> bool {
         "   {passed} test(s) passed in {:.0}s",
         started.elapsed().as_secs_f64()
     );
+
+    // A measurement that could not be taken is not a measurement that passed. The concurrency
+    // criteria skip themselves when the machine cannot host them --- too few cores, or cores
+    // this run is already using --- and a green line with no mention of that is how a criterion
+    // stops being measured without anybody deciding to stop measuring it.
+    let mut skips: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("SKIPPED"))
+        .collect();
+    skips.sort_unstable();
+    skips.dedup();
+    for skip in &skips {
+        println!("   {skip}");
+    }
+    if !skips.is_empty() {
+        println!("   {} measurement(s) skipped, and green means the rest", skips.len());
+    }
     true
 }

@@ -67,6 +67,25 @@ pub const BLOCK_ROWS: usize = 4096;
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Hash([u8; 32]);
 
+impl Hash {
+    /// A digest read back from storage.
+    ///
+    /// The registry is written to write-once storage and read again years later, so a digest
+    /// has to be reconstructible from its bytes. There is no parse from the hexadecimal form:
+    /// a reader that can be handed a string can be handed the wrong string, and a fixed-width
+    /// array cannot be the wrong length.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// The digest's bytes.
+    #[must_use]
+    pub const fn to_bytes(&self) -> [u8; 32] {
+        self.0
+    }
+}
+
 impl fmt::Display for Hash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for byte in self.0 {

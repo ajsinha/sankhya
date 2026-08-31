@@ -846,7 +846,17 @@ can produce, and which is neither `Clone` nor `Copy` so it cannot be earned once
 This found that the eligibility rules admitted a table with no primary key, which is a table
 whose key set cannot be compared --- now `Ineligible::NoPrimaryKey`.
 
-The archival registry. Cross-tier query unification with the total tie-break rule. The four-layer purge defence. Quarantine and its reaper. Rehydration with mandatory expiry. Whole-table migration. Command and schedule surfaces with plan digests, blast-radius limits, the anomaly guard and kill switches. Segregated authorization and the evidence pack.
+~~The archival registry.~~ — **built 2026-08-31**, `sankhya-tiering::registry`. The catalog is
+authority for the hot extent and the registry for the cold one, and neither for both. Entries
+may not overlap, ranges are half-open, and an uncovered sub-range is reported as a gap rather
+than assumed hot. `FR-TIER-22` is a value rather than a check: expiry takes a `Pins`, which only
+`Registry::pins` produces, so the registry is not something expiry remembers to ask. `FR-TIER-23`
+produces a `Servable` witness per table, and a table nobody reconciled is not servable.
+`FR-TIER-24` is `Registry::delta`, reported before serving. This needed a range to be *ordered*,
+which the canonical encoding does not promise --- hence `Ineligible::TieringKeyNotOrdinal`, the
+third eligibility rule found by building what sits downstream of it.
+
+Cross-tier query unification with the total tie-break rule. The four-layer purge defence. Quarantine and its reaper. Rehydration with mandatory expiry. Whole-table migration. Command and schedule surfaces with plan digests, blast-radius limits, the anomaly guard and kill switches. Segregated authorization and the evidence pack.
 
 ### Exit
 Purge demonstrated end to end with verification, quarantine and rollback; the anomaly guard demonstrated halting an intentionally-defective policy; every rejected purge path shown to fail closed.

@@ -60,6 +60,22 @@ fn a_table_with_no_declared_primary_key_cannot_be_verified_and_is_refused() {
 }
 
 #[test]
+fn a_tiering_key_whose_type_has_no_ordinal_is_refused() {
+    // Purge is partition detach over a range and the registry records what it covered as
+    // `[from, until)`. A key with no ordinal is a range whose coverage cannot be shown, and an
+    // undetectable coverage gap is a query that quietly returns fewer rows than exist.
+    let mut policy = records();
+    policy.tiering_key = "posting_id".to_string();
+    let eligibility = policy.eligible();
+    assert!(
+        eligibility
+            .refusals
+            .contains(&Ineligible::TieringKeyNotOrdinal { key: "posting_id".to_string() }),
+        "{eligibility}"
+    );
+}
+
+#[test]
 fn a_table_that_satisfies_every_rule_is_eligible() {
     let eligibility = records().eligible();
     assert!(eligibility.is_eligible(), "{eligibility}");

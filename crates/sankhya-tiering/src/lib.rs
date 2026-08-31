@@ -50,9 +50,11 @@ pub mod authorize;
 pub mod encode;
 pub mod machine;
 pub mod policy;
+pub mod registry;
 pub mod verify;
 
 pub use authorize::Authorization;
 pub use machine::{Entry, Halt, Phase, Purge};
 pub use policy::{Eligibility, Ineligible, Policy, Retention};
+pub use registry::{Entry as ArchiveEntry, Range, Registry};
 pub use verify::{Fingerprint, Proof, Scan, Verification};

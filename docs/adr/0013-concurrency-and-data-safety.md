@@ -159,6 +159,19 @@ So the properties are stated together, and the second is measured rather than as
 > design from the one it forbids — and a threshold chosen without both states is taste. C1 is
 > measured twice for the same reason: end to end through a publish, a lock over **only** the
 > commit still scales 1.87×, because encoding Parquet is untouched and is most of a publish.
+>
+> **Amended 2026-08-31.** A serialized arm cannot say whether the *machine* could have scaled
+> anything, and C1's end-to-end measurement duly failed inside `cargo test --workspace` at a
+> load average of 36 on a 24-core machine, with nothing wrong with the code. All three
+> measurements ask for free capacity directly now — `sankhya-testkit::capacity` — and skip
+> loudly, by name, when the cores they need are not there. A ratio over a workload that shares
+> nothing was tried first and does not work: fair scheduling gives every runnable thread an
+> equal share, so that control reports near-linear scaling however busy the machine is.
+>
+> The skips were also invisible, on both ends: libtest captures a passing test's output, and
+> `check-tests` printed only a count. **A criterion that quietly stops being measured is worse
+> than one that fails**, so the skip now writes past the capture and the gate lists what was
+> skipped beneath its total.
 
 C1 is why [`ARCHITECTURE.md`'s standing note](../ARCHITECTURE.md) — *"keep the commit path
 per-table, never globally serialized"* — stops being a design seam and becomes an exit

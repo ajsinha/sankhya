@@ -231,6 +231,48 @@ is not expected to be flat at all. What must hold there is that it is never refu
 blocked, and never shown a state older than one it has already seen, and that is asserted
 directly against `declared_rows` rather than inferred from a rate.
 
+### The third control, added 2026-08-31: the machine itself
+
+The serialized arm answers *"is this path serialized?"*. It cannot answer *"could anything have
+scaled here?"* --- and `check-all` runs `cargo test --workspace`, which is dozens of test
+binaries holding every core. C1's end-to-end measurement failed there at a load average of 36
+on a 24-core machine, scaling 2.47x against a floor of three, with nothing wrong with the code.
+
+That failure mode is worse than it looks. A gate that fails at random is a gate that gets
+re-run until it passes, and a threshold nobody trusts is the same defect as a threshold with no
+control --- the number stops meaning anything and nobody notices when it starts being wrong.
+
+**The obvious control does not work, and finding out why was the useful part.** The first
+attempt ran a workload that shares nothing --- pure arithmetic, same barrier, same thread count
+--- on one thread and on eight, and asked whether the machine scaled it. It does. Under fair
+scheduling every runnable thread gets an equal share, so eight threads collect eight times what
+one thread collects **however oversubscribed the machine is**: that control reported near-linear
+scaling at load 36, in the same run where the real write path managed 2.5x. A proxy that cannot
+go wrong in the way being tested for is not a control.
+
+So free capacity is read directly instead --- idle jiffies over a 200 ms window, `iowait`
+counted as idle because a core blocked on a disk is a core the test could have used. It lives in
+`sankhya-testkit::capacity`, because **all three criteria had the same hole**: C1 end-to-end in
+`sankhya-publish`, C1's commit path in `sankhya-table-delta` and C2's read latency in
+`sankhya-readpath` each guarded on how many cores the machine *has* and none on how many were
+free. Two of the three had already failed that way in this repository.
+
+### A skip nobody could see
+
+The skips were written to be *"loud and by name"*, and they were neither. `eprintln!` inside a
+**passing** test goes into libtest's per-test capture and is printed only if the test fails, so
+the announcement went nowhere; and `check-tests` prints a bare count on success, so it would not
+have carried the line even if libtest had. A criterion could have stopped being measured on
+every run, indefinitely, behind a green gate.
+
+Both ends are fixed. `capacity::skipped` writes to the descriptor directly --- the capture is
+installed on the print macros rather than on the stream --- and `check-tests` now lists every
+skipped measurement under its count, followed by *"green means the rest"*. Verified by running
+under an oversubscribed machine without `--nocapture` and reading the lines back.
+
+The measurements are unchanged when the machine is quiet: C1 at 7.81x free against 0.85x behind
+one lock, on the run that confirmed the guard does not fire.
+
 ### The write path was quadratic in a table's own history
 
 C3 found a defect that had nothing to do with contention, by being a measurement rather than
@@ -897,6 +939,76 @@ own framing, so the test now uses one --- two distinct keys that concatenate to 
 without it.
 
 Twenty tests and 9 mutations.
+
+### Step 5 — the archival registry
+
+`FR-TIER-16` divides the question in two, and the division is the design. The source catalog is
+authority for the **hot** extent --- what is still attached --- and the registry is authority
+for the **cold** extent. Neither is authority for both, because they are written by different
+things at different times: a partition is detached by a purge and the catalog notices, while
+the archive was written before the detach and nothing in the catalog ever knew about it.
+Reading one and inferring the other is how a range comes to be served twice, or not at all.
+
+### An overlap is refused where somebody can still explain it
+
+Two entries covering the same rows of the same table are two claims about where those rows are.
+There is no rule for choosing between them that is not a guess, and the guess would be made at
+query time, when nobody is watching. `Registry::record` refuses the overlap at the moment it
+would be created; `Registry::from_entries` does the same on restore, so a restore that would
+produce an ambiguous registry fails rather than serving from it.
+
+Ranges are half-open, `[from, until)`. With inclusive bounds two adjacent partitions either
+share a day or leave a hole on one, and which of the two happened depends on whoever wrote the
+second entry.
+
+### A hole is reported, never assumed hot
+
+`Coverage` walks the wanted range and reports every sub-range no entry claims. `FR-TIER-17`
+makes an uncovered range intersecting the predicate a **coverage-gap error** rather than an
+empty result, and that is the right severity: a query that quietly returns fewer rows than
+exist is the failure tiering is most able to cause and least able to detect.
+
+### Expiry cannot run without asking
+
+`FR-TIER-22` requires snapshot expiry to be *structurally incapable* of removing a snapshot an
+entry still references. A function that consults the registry can be called with the
+consultation skipped, so `Pins` is a value instead: expiry takes one, the only way to obtain one
+is `Registry::pins`, and the registry stops being something expiry remembers to ask. The pin
+lifts when the retention basis lapses, and a legal hold outlives the basis --- a hold with an
+end date is a retention basis, and the ones that matter do not have one.
+
+### Reconciliation refuses rather than answering plausibly
+
+`FR-TIER-23` runs on startup and after any restore. A range the registry believes cold and the
+catalog shows attached is a conflict, and the affected table stops being servable by a unified
+query --- `Servable` is a witness, like the verification `Proof`, obtainable only from a
+reconciliation with nothing to say about that table. **A table nobody reconciled is not
+servable either**, which is the correct answer for a process that has not run the check yet and
+the reason this is not a boolean somebody defaults to `true`.
+
+`FR-TIER-24` is the other half: `Registry::delta` is what a restore reports before serving.
+The dangerous side is `removed` --- an entry that vanished across a restore is a range the
+system now believes was never archived, and the first evidence would be a query answering from
+a source that no longer holds it.
+
+### A third eligibility rule, found by needing it
+
+A range has to be *ordered* to be shown covered, and the canonical encoding answers equality
+questions rather than ordering ones --- a big-endian `i64` sorts wrongly across zero. So a range
+is a pair of ordinals, and a tiering key whose type has no ordinal is now
+`Ineligible::TieringKeyNotOrdinal`. `has_ordinal` matches every logical type exhaustively for
+the same reason `canonical_encoding` does.
+
+That is the third rule the eligibility check was missing and the second found by building the
+thing downstream of it. Both were the same shape: a policy that would have been accepted, and
+refused later at a point where refusing costs a detached partition.
+
+The marker written to write-once storage before the detach (`FR-TIER-12`) is one line of text
+rather than a serialisation format. Its reader is a person with a copy of an object store and
+no build of this software, and a format that needs a parser is a format that needs a *version*
+of the parser.
+
+Twenty-two tests and 10 mutations.
 
 ## M7, complete
 
@@ -2372,7 +2484,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 456 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 466 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -2888,9 +3000,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,918 tests, none of which needs a database
+cargo test --workspace           # 1,940 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 456 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 466 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 
