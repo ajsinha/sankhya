@@ -856,7 +856,16 @@ produces a `Servable` witness per table, and a table nobody reconciled is not se
 which the canonical encoding does not promise --- hence `Ineligible::TieringKeyNotOrdinal`, the
 third eligibility rule found by building what sits downstream of it.
 
-Cross-tier query unification with the total tie-break rule. The four-layer purge defence. Quarantine and its reaper. Rehydration with mandatory expiry. Whole-table migration. Command and schedule surfaces with plan digests, blast-radius limits, the anomaly guard and kill switches. Segregated authorization and the evidence pack.
+~~The four-layer purge defence.~~ — **built 2026-08-31**, `sankhya-tiering::defence` plus a
+fourth eligibility rule. Only the first layer is load-bearing --- purge is detach then drop, and
+the phase chain has no delete in it --- and the fourth says of itself that it is provenance
+rather than safety, because a scheme depending on a marker arriving fails open when one does
+not. A delete or truncate landing in an archived range halts the applier: not a warning, which
+defers the decision to whoever reads the log, and not a skip, which leaves the two tiers
+permanently disagreeing about a row nobody was told about. A truncate is fatal whether or not it
+can be placed, and a delete whose key cannot be read fails closed.
+
+Cross-tier query unification with the total tie-break rule. Quarantine and its reaper. Rehydration with mandatory expiry. Whole-table migration. Command and schedule surfaces with plan digests, blast-radius limits, the anomaly guard and kill switches. Segregated authorization and the evidence pack.
 
 ### Exit
 Purge demonstrated end to end with verification, quarantine and rollback; the anomaly guard demonstrated halting an intentionally-defective policy; every rejected purge path shown to fail closed.

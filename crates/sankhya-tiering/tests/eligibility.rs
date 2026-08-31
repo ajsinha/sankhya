@@ -42,6 +42,7 @@ fn records() -> Policy {
         contract: Contract::AppendOnly,
         range_partitioned: true,
         retention: Retention::new("7-year statutory record retention", 2557),
+        publication_excludes_deletes: true,
         identifiers_vaulted: true,
     }
 }
@@ -72,6 +73,20 @@ fn a_tiering_key_whose_type_has_no_ordinal_is_refused() {
             .refusals
             .contains(&Ineligible::TieringKeyNotOrdinal { key: "posting_id".to_string() }),
         "{eligibility}"
+    );
+}
+
+#[test]
+fn a_publication_that_would_carry_a_delete_makes_a_table_ineligible() {
+    // The second layer. The capture path replicates deletes, so a delete that reaches the
+    // publication reaches the published tier --- and against an archived range that is the
+    // archive being erased by the machinery meant to preserve it.
+    let mut policy = records();
+    policy.publication_excludes_deletes = false;
+    assert!(
+        policy.eligible().refusals.contains(&Ineligible::PublicationPropagatesDeletes),
+        "{}",
+        policy.eligible()
     );
 }
 

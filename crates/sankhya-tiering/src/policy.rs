@@ -243,6 +243,19 @@ pub struct Policy {
     pub range_partitioned: bool,
     /// Why the archived data must be kept, and for how long.
     pub retention: Retention,
+    /// Whether the table's publication excludes delete and truncate.
+    ///
+    /// # The second of the four layers
+    ///
+    /// `FR-TIER-05`: a tiering-eligible table is published with delete and truncate excluded
+    /// **entirely**, so that a defective code path cannot propagate a deletion. The first layer
+    /// --- purge is detach then drop --- is the one that carries the property; this one exists
+    /// because the first is a claim about code that could be wrong, and this is a claim about
+    /// what the publication is able to carry at all.
+    ///
+    /// Declared rather than observed, and its absence is a refusal rather than a permission,
+    /// for the same reason [`Self::identifiers_vaulted`] is: somebody has to have looked.
+    pub publication_excludes_deletes: bool,
     /// Whether the table's direct identifiers are held elsewhere behind surrogate keys.
     ///
     /// # Why this defaults to the refusing answer
@@ -265,6 +278,12 @@ pub struct Policy {
 pub enum Ineligible {
     /// The table is not append-only by contract.
     NotAppendOnly,
+    /// The publication would carry a delete or a truncate for this table.
+    ///
+    /// `FR-TIER-05`. The capture path replicates deletes, so a delete that reaches the
+    /// publication reaches the published tier --- and against an archived range that is the
+    /// archive being erased by the machinery meant to preserve it.
+    PublicationPropagatesDeletes,
     /// The tiering key's type has no ordinal, so its ranges cannot be ordered.
     ///
     /// Purge is partition detach over a range, and the archival registry records what it
@@ -320,6 +339,12 @@ impl fmt::Display for Ineligible {
                 "the table is not append-only by contract. Tiering purges from the source, and \
                  a row updated in place after its partition was archived is a correction \
                  applying to data that is no longer there",
+            ),
+            Self::PublicationPropagatesDeletes => f.write_str(
+                "the policy does not assert that delete and truncate are excluded from this \
+                 table's publication. The capture path replicates deletes, so a defective code \
+                 path could propagate one into the published tier and erase the archive the \
+                 purge existed to preserve",
             ),
             Self::TieringKeyNotOrdinal { key } => write!(
                 f,
@@ -432,6 +457,9 @@ impl Policy {
         }
         if !self.columns.iter().any(|column| column.key) {
             refusals.push(Ineligible::NoPrimaryKey);
+        }
+        if !self.publication_excludes_deletes {
+            refusals.push(Ineligible::PublicationPropagatesDeletes);
         }
         if !self.identifiers_vaulted {
             refusals.push(Ineligible::IdentifiersNotVaulted);

@@ -47,6 +47,7 @@
 #![doc(html_root_url = "https://docs.rs/sankhya-tiering")]
 
 pub mod authorize;
+pub mod defence;
 pub mod encode;
 pub mod machine;
 pub mod policy;
@@ -56,5 +57,6 @@ pub mod verify;
 pub use authorize::Authorization;
 pub use machine::{Entry, Halt, Phase, Purge};
 pub use policy::{Eligibility, Ineligible, Policy, Retention};
+pub use defence::{Extents, Verdict};
 pub use registry::{Entry as ArchiveEntry, Range, Registry};
 pub use verify::{Fingerprint, Proof, Scan, Verification};

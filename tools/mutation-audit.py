@@ -1125,6 +1125,36 @@ CATALOGUE = [
      "            if has_ordinal(&column.logical) {",
      "sankhya-tiering"),
 
+    ("tiering: skip a delete into an archived range rather than halting",
+     "crates/sankhya-tiering/src/defence.rs",
+     "                Some(extent) => alarm(Reason::DeleteInArchivedRange, Some(extent)),",
+     "                Some(_extent) => Verdict::Apply,",
+     "sankhya-tiering"),
+
+    ("tiering: apply a delete whose key cannot be read",
+     "crates/sankhya-tiering/src/defence.rs",
+     "            (_, At::Unknown) => alarm(Reason::UnlocatableAgainstArchive, None),",
+     "            (_, At::Unknown) => Verdict::Apply,",
+     "sankhya-tiering"),
+
+    ("tiering: let a truncate through when no key places it in an archive",
+     "crates/sankhya-tiering/src/defence.rs",
+     "            (Change::Truncate, _) | (_, At::WholeRelation) => {",
+     "            (Change::Truncate, At::WholeRelation) | (_, At::WholeRelation) => {",
+     "sankhya-tiering"),
+
+    ("tiering: check the archival extent map against the wrong table",
+     "crates/sankhya-tiering/src/defence.rs",
+     "            .find(|range| range.contains(at))",
+     "            .find(|range| !range.contains(at))",
+     "sankhya-tiering"),
+
+    ("tiering: admit a table whose publication would carry a delete",
+     "crates/sankhya-tiering/src/policy.rs",
+     "        if !self.publication_excludes_deletes {",
+     "        if self.publication_excludes_deletes {",
+     "sankhya-tiering"),
+
     ("brake: report a warning when the machine is about to be killed",
      "crates/sankhya-governor/src/memory.rs",
      "    if in_use >= limits.shed_bytes {",
