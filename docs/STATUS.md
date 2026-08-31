@@ -1068,6 +1068,66 @@ Eleven tests and 5 mutations. One of the five did not compile on its first run -
 truncate arm made the match non-exhaustive --- which the catalogue reports rather than counting
 as a pass.
 
+### Step 7 — cross-tier query unification, and what "total" is doing in that sentence
+
+`DEC-25`: a user who queries six years of history and silently receives two has been handed a
+wrong answer by a system that knew better. So a predicate spanning both tiers is unioned, and
+the rule that decides which tier answers which part is **total** --- every point falls into
+exactly one of four cases, each with an answer decided here rather than at the point of
+surprise.
+
+| Catalog | Registry | Answer |
+|---|---|---|
+| attached | silent | read hot |
+| detached | covers it | read cold |
+| attached | covers it | **read hot, exactly once**, and flag the inconsistency separately |
+| detached | silent | **fail** with a coverage gap |
+
+The third case is a restored backup resurrecting purged rows. Hot wins and the range is read
+*once*, so the failure case does not become double-counting on top of an inconsistency --- and
+the inconsistency is reported rather than absorbed, because a query that papers over it is a
+query that stops anybody finding out.
+
+The fourth is the loud one. A coverage gap means the rows are in neither tier, which is either a
+defect or a purge that lost its registry entry, and **answering without them would be a silently
+short answer**. Every hole is named, not the first.
+
+### The property four tests cannot state
+
+The four cases are four tests. What they cannot assert is that there is no fifth, so a property
+test generates arbitrary hot and cold extents and an arbitrary predicate and requires that the
+plan's segments are disjoint, in key order and cover the predicate *exactly* --- or that the
+refusal names holes wholly inside it. That is what "total" means as a checkable claim, and it is
+the assertion that fails if a case is ever added without an answer.
+
+### Two seams that would have been easy to get wrong
+
+**The witness is required, not consulted.** `plan` takes the `Servable` from step 5, so a
+planner cannot reach it without a reconciliation that had nothing to say about the table.
+`FR-TIER-23` stops being something the planner remembers to check.
+
+**Reconciliation and the tie-break run at different times, and the tests say so.** The witness in
+these tests is taken against an *empty* hot extent on purpose. Reconciliation happens at startup
+and after a restore; the query-time rule has to stay total for disagreements that appear after
+it, which is exactly what a resurrected backup produces. A test that could only reach the planner
+with the two authorities already agreeing could not reach the case the rule exists for.
+
+### Zero rows affected is a silent wrong answer
+
+`FR-TIER-18` says it in those words, and the refusal is built around it. A statement reaching an
+archived range gets a typed error naming the archive and the correction mechanism --- a
+compensating entry in the hot tier, or the controlled rewrite that retains the prior version and
+records an amendment link. A count of zero would say those rows do not exist. They do; they are
+somewhere the statement cannot reach.
+
+A predicate covering the whole declared key domain is flagged, which is the tiering equivalent of
+a missing partition filter: it should surface as a warning long before it surfaces as a
+forty-minute query.
+
+Twelve tests and 6 mutations. One did not compile at first --- a guarded arm does not count
+towards exhaustiveness --- which the catalogue reported rather than scoring as a pass, for the
+second time in two steps.
+
 ## M7, complete
 
 Added 2026-08-27 by owner directive and placed before scale-out: cubes are a stated
@@ -2542,7 +2602,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 471 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 477 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -3058,9 +3118,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,952 tests, none of which needs a database
+cargo test --workspace           # 1,964 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 471 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 477 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

@@ -1155,6 +1155,42 @@ CATALOGUE = [
      "        if self.publication_excludes_deletes {",
      "sankhya-tiering"),
 
+    ("tiering: answer short instead of reporting a coverage gap",
+     "crates/sankhya-tiering/src/unify.rs",
+     "        return Err(Unservable::CoverageGap { table, gaps });",
+     "        let _unreported = &gaps;",
+     "sankhya-tiering"),
+
+    ("tiering: report only the first coverage gap",
+     "crates/sankhya-tiering/src/unify.rs",
+     "                gaps.push(piece);",
+     "                if gaps.is_empty() { gaps.push(piece); }",
+     "sankhya-tiering"),
+
+    ("tiering: read a range both tiers claim from the archive instead of the source",
+     "crates/sankhya-tiering/src/unify.rs",
+     "                Read::Source\n            }\n            (true, None) => Read::Source,",
+     "                Read::Archive { archive: entry.archive.clone(), extent: entry.range }\n            }\n            (true, None) => Read::Source,",
+     "sankhya-tiering"),
+
+    ("tiering: absorb a tier disagreement rather than reporting it",
+     "crates/sankhya-tiering/src/unify.rs",
+     "                inconsistencies.push(Conflict::InBothTiers {",
+     "                let _absorbed = (Conflict::InBothTiers {",
+     "sankhya-tiering"),
+
+    ("tiering: merge two query segments read from different places",
+     "crates/sankhya-tiering/src/unify.rs",
+     "            Some(last) if last.read == read && last.range.until == piece.from => {",
+     "            Some(last) if last.range.until == piece.from => {",
+     "sankhya-tiering"),
+
+    ("tiering: report no rows affected instead of refusing a mutation into an archive",
+     "crates/sankhya-tiering/src/unify.rs",
+     "        Some(entry) => Err(Immutable {\n            table: table.to_string(),\n            archive: entry.archive.clone(),\n            extent: entry.range,\n        }),",
+     "        Some(_entry) => Ok(()),",
+     "sankhya-tiering"),
+
     ("brake: report a warning when the machine is about to be killed",
      "crates/sankhya-governor/src/memory.rs",
      "    if in_use >= limits.shed_bytes {",
