@@ -14,5 +14,6 @@ layer = 2
 workspace = true
 
 [dependencies]
+sankhya-table-delta = { path = "../sankhya-table-delta" }
 
 [dev-dependencies]

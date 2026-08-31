@@ -1024,8 +1024,17 @@ sweeper resolves clone pins from **its own log** rather than the clone's, which 
 1a makes possible. A regression test sweeps a table whose clone is the only remaining reader of a
 superseded file, with the same table and no clone as the control.
 
-The clone action in the log. Clone and drop surfaces with the
-refusals enumerated above. Backup, restore and tiering made clone-aware. A soak that clones
+~~The clone action in the log.~~ — **built 2026-08-31**, `sankhya-clone::action`. Creating a
+clone commits lineage properties and **no `Add` actions**, which is Decision 1a as the thing
+actually written. The schema is copied rather than referenced, because a clone diverges and the
+first `ALTER` would otherwise change both.
+
+~~The refusals enumerated above.~~ — **built 2026-08-31**, `sankhya-clone::refuse`. All seven,
+plus a tangled lineage, each a pure predicate taking the facts as arguments — a refusal that had
+to open a log to decide could not be tested against the case it exists for. Tenancy is checked
+first because it is the only one that never becomes true by waiting.
+
+Clone and drop surfaces. Backup, restore and tiering made clone-aware. A soak that clones
 under load, writes to both sides, runs full maintenance, and verifies both still read
 correctly afterwards.
 

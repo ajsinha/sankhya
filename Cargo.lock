@@ -3379,6 +3379,9 @@ version = "0.1.0"
 [[package]]
 name = "sankhya-clone"
 version = "0.1.0"
+dependencies = [
+ "sankhya-table-delta",
+]
 
 [[package]]
 name = "sankhya-config"
