@@ -1275,6 +1275,30 @@ CATALOGUE = [
      "        if !amendment.trim().is_empty() && amendment.trim().is_empty() {",
      "sankhya-tiering"),
 
+    ("tiering: migrate a table that is only partly archived",
+     "crates/sankhya-tiering/src/migrate.rs",
+     "    if !coverage.is_complete() {",
+     "    if coverage.is_complete() && !coverage.is_complete() {",
+     "sankhya-tiering"),
+
+    ("tiering: report the first hole rather than every one when refusing a migration",
+     "crates/sankhya-tiering/src/migrate.rs",
+     "            gaps: coverage.gaps,",
+     "            gaps: coverage.gaps.into_iter().take(1).collect(),",
+     "sankhya-tiering"),
+
+    ("tiering: migrate a table whose declared key domain covers nothing",
+     "crates/sankhya-tiering/src/migrate.rs",
+     "    if domain.is_empty() {",
+     "    if !domain.is_empty() && domain.is_empty() {",
+     "sankhya-tiering"),
+
+    ("tiering: mark a migrated table writable",
+     "crates/sankhya-tiering/src/migrate.rs",
+     "    pub const fn writable(&self) -> bool {\n        false\n    }",
+     "    pub const fn writable(&self) -> bool {\n        true\n    }",
+     "sankhya-tiering"),
+
     ("brake: report a warning when the machine is about to be killed",
      "crates/sankhya-governor/src/memory.rs",
      "    if in_use >= limits.shed_bytes {",
