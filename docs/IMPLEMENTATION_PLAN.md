@@ -1056,9 +1056,16 @@ empty, which is the failure Decision 1a implies and nothing else would catch.
 
 **Tiering's half is a refusal with no reachable path yet.** `may_purge` is written and tested, and
 `M9`'s destructive purge stays disabled until `M11` clears its gate --- so there is nothing to
-wire it into. Recorded rather than quietly skipped. A soak that clones
-under load, writes to both sides, runs full maintenance, and verifies both still read
-correctly afterwards.
+wire it into. Recorded rather than quietly skipped.
+
+**The clone read path** --- the splice `ADR-0016`'s Decision 1a implies and did not name. A
+clone's log holds only its own writes, so reading one means resolving the origin's live set at
+the cloned version and unioning the clone's log over it. **Until this exists a clone reads as
+empty**, which is the failure the backup check refuses and the live behaviour permits. Added to
+this list on 2026-08-31, when planning the soak found it.
+
+A soak that clones under load, writes to both sides, runs full maintenance, and verifies both
+still read correctly afterwards.
 
 ### Exit
 

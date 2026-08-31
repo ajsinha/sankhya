@@ -167,6 +167,17 @@ impl SankhyaTable {
             .count()
     }
 
+    /// The published files this table will read, in plan order.
+    ///
+    /// Exposed so a caller can see *which* files a plan resolved to, not merely how many rows
+    /// they claim. The distinction is not academic: a row count comes from the log, so a file
+    /// resolved to the wrong path still reports the right number, and a test that counts rows
+    /// passes against a plan that cannot open anything. A mutation proved exactly that.
+    #[must_use]
+    pub fn published_files(&self) -> &[LoggedFile] {
+        &self.published
+    }
+
     /// Rows across every tier, before the target filter.
     #[must_use]
     pub fn declared_rows(&self) -> u64 {
@@ -636,6 +647,7 @@ pub fn resolve(
         arrival,
         target,
         None,
+        None,
     )
 }
 
@@ -664,9 +676,63 @@ pub fn resolve_cached(
         arrival,
         target,
         Some(cache),
+        None,
     )
 }
 
+/// What a clone reads from the table it was cloned from.
+///
+/// `ADR-0016`'s Decision 1a: a clone's log names none of its origin's files, so it holds only
+/// what the clone itself wrote. Reading one therefore means reading two logs --- the origin's, as
+/// it stood at the cloned version, and the clone's own --- which is what this describes.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Inherited {
+    /// Where the origin's files are.
+    pub origin_root: std::path::PathBuf,
+    /// The origin version the clone reads.
+    pub version: u64,
+}
+
+/// Resolve a clone: the origin's live set at the cloned version, then the clone's own log.
+///
+/// # Why the origin's files come first
+///
+/// Because the clone's own writes are *later*. A file list is not an ordering for correctness
+/// here --- every file is disjoint, since a clone cannot rewrite a file it does not own --- but
+/// it is the order somebody reads in an explain, and inherited-then-mine is the order that
+/// matches how the table came to be.
+///
+/// # Why this is a second entry point rather than a parameter
+///
+/// [`resolve_cached`] is called from several places that will never see a clone, and widening
+/// its signature would make every one of them pass `None` to say so. A caller that knows a table
+/// is a clone calls this; a caller that does not cannot accidentally get clone behaviour.
+///
+/// # Errors
+///
+/// The same conditions as [`resolve`], plus a failure to read the origin's log at the cloned
+/// version --- which is a clone whose origin has moved out from under it, and is reported rather
+/// than silently served as the rows that remain.
+pub fn resolve_clone_cached(
+    schema: SchemaRef,
+    table_root: &std::path::Path,
+    inherited: &Inherited,
+    published_coverage: Option<LsnRange>,
+    target: Lsn,
+    cache: &LogCache,
+) -> Result<SankhyaTable, ReadError> {
+    resolve_with(
+        schema,
+        table_root,
+        published_coverage,
+        None,
+        target,
+        Some(cache),
+        Some(inherited),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn resolve_with(
     schema: SchemaRef,
     table_root: &std::path::Path,
@@ -674,6 +740,7 @@ fn resolve_with(
     arrival: Option<&ArrivalBuffer>,
     target: Lsn,
     cache: Option<&LogCache>,
+    inherited: Option<&Inherited>,
 ) -> Result<SankhyaTable, ReadError> {
     let mut offered: Vec<TierRef> = Vec::new();
     if let Some(coverage) = published_coverage {
@@ -704,11 +771,53 @@ fn resolve_with(
     for tier in &splice.tiers {
         match tier.name {
             "published" => {
+                // A clone's inherited half, read from the **origin's** log at the version the
+                // clone was taken at. Nothing here consults the clone's log for these files,
+                // because the clone's log does not name them --- that is Decision 1a, and it is
+                // why this arm reads two logs rather than one.
+                let mut resolved: Vec<(std::path::PathBuf, sankhya_table_delta::AddFile)> =
+                    Vec::new();
+                if let Some(inherited) = inherited {
+                    // The origin must *be* a table. `live_files_at` on a directory that is not
+                    // one returns an empty set, which is indistinguishable from version zero of
+                    // a real table --- and version zero is legitimately empty, so the emptiness
+                    // cannot be the signal. The presence of a log is.
+                    let is_a_table = sankhya_table_delta::commits(&inherited.origin_root)
+                        .map(|commits| !commits.is_empty())
+                        .unwrap_or(false);
+                    if !is_a_table {
+                        return Err(ReadError::OriginGone {
+                            table: table_root
+                                .file_name()
+                                .map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
+                            origin: inherited
+                                .origin_root
+                                .file_name()
+                                .map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
+                        });
+                    }
+                    let at = sankhya_table_delta::live_files_at(
+                        &inherited.origin_root,
+                        inherited.version,
+                    )?;
+                    resolved.extend(
+                        at.files
+                            .into_iter()
+                            .map(|file| (inherited.origin_root.clone(), file)),
+                    );
+                }
+
                 let live = match cache {
                     Some(cache) => cache.live_files(table_root)?.0,
                     None => live_files(table_root)?,
                 };
-                for file in &live.files {
+                resolved.extend(
+                    live.files
+                        .into_iter()
+                        .map(|file| (table_root.to_path_buf(), file)),
+                );
+
+                for (root, file) in &resolved {
                     // A file whose row count the log does not carry cannot be planned
                     // against. Treating the absence as zero would tell the optimizer the
                     // table is empty, which is a wrong plan rather than a slow one.
@@ -729,7 +838,7 @@ fn resolve_with(
 
                     files.push(
                         LoggedFile::new(
-                            table_root.join(&file.path).to_string_lossy().into_owned(),
+                            root.join(&file.path).to_string_lossy().into_owned(),
                             file.size,
                             rows,
                         )

@@ -48,7 +48,9 @@ mod provider;
 pub use budgeted::{BudgetedExec, Clock};
 pub use merge::{Capability, CapabilityError, ResolvedTable};
 pub use predicate::extract;
-pub use provider::{resolve, resolve_cached, LoggedFile, SankhyaTable};
+pub use provider::{
+    resolve, resolve_cached, resolve_clone_cached, Inherited, LoggedFile, SankhyaTable,
+};
 
 /// Published files for one table, and what they cover.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -132,6 +134,19 @@ pub enum ReadError {
     /// unknown, and falling back to a directory listing is precisely the mistake the
     /// log exists to prevent.
     Log(String),
+    /// A clone's origin is not there, or is no longer a table.
+    ///
+    /// Refusing matters more here than it looks. A clone's own log resolves perfectly well
+    /// without its origin --- it holds the clone's own writes --- so a splice that treated a
+    /// missing origin as an empty one would answer with those and nothing else: **a short answer
+    /// wearing the shape of a whole one.** That is the failure `ADR-0016` is built around,
+    /// arriving through the read path instead of through a sweep.
+    OriginGone {
+        /// The clone.
+        table: String,
+        /// Where its origin should have been.
+        origin: String,
+    },
     Engine(String),
 }
 
@@ -143,6 +158,13 @@ impl std::fmt::Display for ReadError {
                 f,
                 "no tier offered coverage, so there is nothing to answer from; this is \
                  an empty table or an unregistered one, not a failure to plan"
+            ),
+            Self::OriginGone { table, origin } => write!(
+                f,
+                "`{table}` is a clone of `{origin}`, and `{origin}` is not there. Its own log \
+                 resolves without it, so answering would mean serving the rows this clone wrote \
+                 itself and none of the ones it was made to read --- a short answer that looks \
+                 like a whole one"
             ),
             Self::Arrival(e) => write!(f, "{e}"),
             Self::Log(e) => write!(
