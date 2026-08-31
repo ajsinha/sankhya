@@ -1563,6 +1563,36 @@ CATALOGUE = [
      "    let _unrecorded = lineage.to_properties();",
      "sankhya-clone"),
 
+    ("clone: claim an ordinary CREATE TABLE as clone DDL",
+     "crates/sankhya-clone/src/ddl.rs",
+     "    if !words.iter().skip(at).any(|word| word.eq_ignore_ascii_case(\"CLONE\")) {",
+     "    if false {",
+     "sankhya-clone"),
+
+    ("clone: claim any statement that mentions cloning",
+     "crates/sankhya-clone/src/ddl.rs",
+     "    if !matches_word(words.get(at), \"CREATE\") {",
+     "    if false {",
+     "sankhya-clone"),
+
+    ("clone: ignore a clause the clone parser does not understand",
+     "crates/sankhya-clone/src/ddl.rs",
+     "    if let Some(found) = words.get(at) {\n        return Err(DdlError::Trailing { found: found.clone() });\n    }",
+     "    if let Some(found) = words.get(at) {\n        let _ignored = found;\n    }",
+     "sankhya-clone"),
+
+    ("clone: read a clone with no version as version zero",
+     "crates/sankhya-clone/src/ddl.rs",
+     "    let mut version = None;",
+     "    let mut version = Some(0);",
+     "sankhya-clone"),
+
+    ("clone: reserve the word CLONE as a table name",
+     "crates/sankhya-clone/src/ddl.rs",
+     "    let table = identifier(words.get(at), \"a table name\")?;",
+     "    let table = identifier(words.get(at), \"a table name\").map(|name| name.to_ascii_lowercase())?;",
+     "sankhya-clone"),
+
     ("brake: report a warning when the machine is about to be killed",
      "crates/sankhya-governor/src/memory.rs",
      "    if in_use >= limits.shed_bytes {",

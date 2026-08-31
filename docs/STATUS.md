@@ -1768,6 +1768,48 @@ change.**
 
 Fifteen tests and 8 mutations.
 
+### Step 4 — the statement, and what it declines to read
+
+`CREATE TABLE x CLONE y AT VERSION n` is not standard SQL, so the engine's parser rejects it
+before any planning hook can see it and every extension point sits downstream of a successful
+parse. It has to be recognised **before** the engine is asked --- the same conclusion
+`sankhya-cube-sql` reached for `CREATE CUBE`, for the same reason.
+
+That makes this a pre-filter on every statement the server receives, and **a pre-filter's
+dangerous failure is not rejecting a clone. It is claiming something that was never its
+business.** `CREATE TABLE orders (id BIGINT)` must reach the engine untouched, and so must
+malformed SQL, whose error should come from the thing that owns the language rather than from
+something that happened to look first. So most of the tests assert `None`: ordinary `CREATE
+TABLE` in four shapes, statements that merely mention cloning, and four kinds of broken SQL.
+
+Once `CLONE` is present the statement *is* ours, and then an error is better than silence ---
+handing the engine something it will reject with a worse message helps nobody.
+
+### `DROP TABLE` is deliberately not here
+
+Dropping a table clones still read is one of the seven refusals, and the tempting place to
+enforce it is a parser that intercepts `DROP TABLE`. **That would be wrong.** `DROP TABLE` is
+ordinary SQL the engine owns, and a pre-filter claiming it would have to reimplement everything
+the engine already does --- `IF EXISTS`, qualified names, all of it --- to hand back identical
+behaviour in every case it does not care about.
+
+The refusal belongs where the drop is *executed*, which is also where the answer to *"is
+anything still reading this?"* lives. A statement is the wrong layer to ask it at.
+
+### Two things carried rather than resolved
+
+A clone with no `AT VERSION` carries `None`, not the newest version. *"Newest"* is a question
+about a warehouse this module has never seen, and resolving it here would resolve it at **parse
+time** --- a different moment from the one the clone is made at.
+
+And keywords are not reserved: `CREATE TABLE clone CLONE entries` reads correctly, because a
+table called `clone` is one somebody may already have and refusing it would be the parser
+deciding what names a warehouse may use.
+
+Fourteen tests and 5 mutations. Still not reachable from the server --- that is the next piece,
+and this repository has been bitten four times in one day by a surface that existed and could
+not be reached.
+
 ## M7, complete
 
 Added 2026-08-27 by owner directive and placed before scale-out: cubes are a stated
@@ -3242,7 +3284,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 539 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 544 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -3758,9 +3800,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 2,091 tests, none of which needs a database
+cargo test --workspace           # 2,105 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 539 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 544 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 
