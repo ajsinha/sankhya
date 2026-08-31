@@ -1064,8 +1064,17 @@ the cloned version and unioning the clone's log over it. **Until this exists a c
 empty**, which is the failure the backup check refuses and the live behaviour permits. Added to
 this list on 2026-08-31, when planning the soak found it.
 
-A soak that clones under load, writes to both sides, runs full maintenance, and verifies both
-still read correctly afterwards.
+~~A soak that clones under load, writes to both sides, runs full maintenance, and verifies both
+still read correctly afterwards.~~ — **built 2026-08-31**,
+`sankhya-diagnostic/tests/clone_soak.rs`. Deliberately hostile maintenance — compaction and
+orphan sweeps every tick, no retention grace — against a clone whose inherited files the origin
+sees as debris. It runs on every suite rather than deliberately, because a correctness property
+that runs when somebody remembers is one nobody is checking, and it reads values back out of the
+files rather than counts out of the log.
+
+**With the control beside it**: the same soak, differing only in whether maintenance is told
+about the clone. Told, 120 inherited rows survive; not told, 0 — and the plan afterwards names a
+file that is not there.
 
 ### Exit
 

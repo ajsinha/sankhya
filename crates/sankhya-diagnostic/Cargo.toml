@@ -23,6 +23,7 @@ sankhya-table-delta = { path = "../sankhya-table-delta" }
 [dev-dependencies]
 # The soak drives the product's own write and maintenance paths. Dev-dependencies, because
 # the soak is a test: nothing here is compiled into anything that ships.
+sankhya-clone       = { path = "../sankhya-clone" }
 sankhya-publish     = { path = "../sankhya-publish" }
 sankhya-maintenance = { path = "../sankhya-maintenance" }
 sankhya-cube        = { path = "../sankhya-cube" }
@@ -34,6 +35,9 @@ sankhya-table       = { path = "../sankhya-table" }
 sankhya-table-delta = { path = "../sankhya-table-delta" }
 sankhya-types       = { path = "../sankhya-types" }
 arrow-array         = { workspace = true }
+# Reading values back, not merely counting them: the soak has to prove a clone can still open
+# what its plan names, and a row count comes from the log rather than from the file.
+parquet             = { workspace = true }
 arrow-schema        = { workspace = true }
 tempfile = { workspace = true }
 serde_json = { workspace = true }
