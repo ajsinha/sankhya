@@ -893,7 +893,15 @@ individually reasonable and the accumulation is the problem. `FR-TIER-19`'s comp
 is the default correction, and a controlled rewrite cannot be constructed without retaining the
 prior version and recording an amendment link.
 
-Whole-table migration. Command and schedule surfaces with plan digests, blast-radius limits, the anomaly guard and kill switches. Segregated authorization and the evidence pack.
+~~Whole-table migration.~~ — **built 2026-08-31**, `sankhya-tiering::migrate`. The table keeps
+its name because a table that vanishes breaks every dashboard, view and saved query that names
+it, and `Cold`'s constructor is given one name for both sides so a rename would have to be
+deliberate. The trap that creates is a visible table whose archive covers four of its five years
+and answers four years of questions without mentioning the fifth --- so a migration is refused
+unless the registry covers the whole declared key domain, reusing `Registry::coverage` so the
+definition of *covered* cannot drift.
+
+Command and schedule surfaces with plan digests, blast-radius limits, the anomaly guard and kill switches. Segregated authorization and the evidence pack.
 
 ### Exit
 Purge demonstrated end to end with verification, quarantine and rollback; the anomaly guard demonstrated halting an intentionally-defective policy; every rejected purge path shown to fail closed.

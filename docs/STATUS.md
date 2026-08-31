@@ -1236,6 +1236,43 @@ corrected.
 
 Fourteen tests and 8 mutations.
 
+### Step 10 — whole-table migration, and what a table's name is worth
+
+`FR-TIER-21` is short and easy to underrate: after migrating a table whole to the published tier
+it *"remains visible in the catalog under the same name, backed by the published tier, marked
+cold and read-only"*, because **a table that vanishes breaks every downstream tool and saved
+query**.
+
+A table nobody has written to for four years is still named in dashboards, in a report somebody
+runs each quarter, in a view three other views are built on, and in a query somebody pastes from
+a wiki page. Dropping the name turns one storage decision into a morning of unrelated failures
+in places nobody connected to tiering.
+
+So `migrate` produces a `Cold` table rather than removing anything, and `Cold` carries the
+original name because its constructor is given one name and uses it for both sides. Renaming
+during a migration would have to be written on purpose.
+
+### The trap the requirement creates
+
+The table stays visible. That is the point, and it is also the danger: **a visible table whose
+archive covers four of its five years answers four years of questions without mentioning the
+fifth.** `FR-TIER-17` calls the general form a coverage gap and makes it an error; the same rule
+applies here one step earlier, before the migration rather than at each query.
+
+`migrate` therefore asks the registry to cover the table's whole declared key domain and refuses
+with every hole. It reuses `Registry::coverage` rather than reimplementing it, so the definition
+of *covered* cannot drift between the two places that depend on it.
+
+An empty declared domain is refused separately. *"Wholly archived"* over an empty domain is a
+claim about no rows that an empty registry satisfies, which would migrate a table nobody checked.
+
+`Cold::writable` is `const fn` returning `false` with no path that sets it. A migrated table with
+a writable state would be a table whose rows are in an immutable archive and whose catalog says
+otherwise — and because every key of the domain is inside an archived range, `FR-TIER-18`'s typed
+refusal already applies at every point of it rather than depending on a flag being read.
+
+Eight tests and 4 mutations.
+
 ## M7, complete
 
 Added 2026-08-27 by owner directive and placed before scale-out: cubes are a stated
@@ -2710,7 +2747,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 491 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 495 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -3226,9 +3263,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,989 tests, none of which needs a database
+cargo test --workspace           # 1,997 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 491 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 495 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 
