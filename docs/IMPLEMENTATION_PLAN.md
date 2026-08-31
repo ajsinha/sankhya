@@ -1005,7 +1005,18 @@ undo once tables exist that depend on it.
 
 ### Work
 
-The ADR. The clone action in the log and its lineage record. Whatever the ADR chooses for
+~~The ADR.~~ — **accepted 2026-08-31**, [ADR-0016](adr/0016-zero-copy-cloning.md).
+
+~~Its lineage record.~~ — **built 2026-08-31**, `sankhya-clone::{lineage, family}`. The lineage
+is a table property under a `sankhya.clone.` prefix rather than a log action, because an action
+nobody else knows is a bet that every reader ignores what it does not recognise --- and this
+repository has a test asserting the Delta kernel reads these logs. A table whose lineage cannot
+be *read* is refused rather than treated as an ordinary table, because those two answers differ
+by exactly the sentence that deletes a clone's data. `readers_of` is a table and its clones
+transitively; ancestors are excluded, with the argument written down. A warehouse with no clones
+changes no reclamation decision.
+
+The clone action in the log. Whatever the ADR chooses for
 shared-file lifetime, with maintenance taught to honour it. Clone and drop surfaces with the
 refusals enumerated above. Backup, restore and tiering made clone-aware. A soak that clones
 under load, writes to both sides, runs full maintenance, and verifies both still read
