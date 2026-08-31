@@ -865,7 +865,17 @@ defers the decision to whoever reads the log, and not a skip, which leaves the t
 permanently disagreeing about a row nobody was told about. A truncate is fatal whether or not it
 can be placed, and a delete whose key cannot be read fails closed.
 
-Cross-tier query unification with the total tie-break rule. Quarantine and its reaper. Rehydration with mandatory expiry. Whole-table migration. Command and schedule surfaces with plan digests, blast-radius limits, the anomaly guard and kill switches. Segregated authorization and the evidence pack.
+~~Cross-tier query unification with the total tie-break rule.~~ — **built 2026-08-31**,
+`sankhya-tiering::unify`. Four cases, each with an answer: hot only reads hot, cold only reads
+cold, both reads hot **once** and flags the disagreement, and neither fails with a coverage gap
+naming every hole. A property test over arbitrary extents asserts the segments cover the
+predicate exactly or the refusal accounts for the rest, which is what "total" means as a
+checkable claim. `plan` takes the `Servable` witness, so `FR-TIER-23` is not something a planner
+remembers to check; and a mutation into an archived range is a typed refusal naming the archive
+and the correction mechanism, because `FR-TIER-18` is explicit that reporting zero rows affected
+is a silent wrong answer.
+
+Quarantine and its reaper. Rehydration with mandatory expiry. Whole-table migration. Command and schedule surfaces with plan digests, blast-radius limits, the anomaly guard and kill switches. Segregated authorization and the evidence pack.
 
 ### Exit
 Purge demonstrated end to end with verification, quarantine and rollback; the anomaly guard demonstrated halting an intentionally-defective policy; every rejected purge path shown to fail closed.
