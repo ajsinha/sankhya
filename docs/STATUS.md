@@ -295,6 +295,45 @@ under an oversubscribed machine without `--nocapture` and reading the lines back
 The measurements are unchanged when the machine is quiet: C1 at 7.81x free against 0.85x behind
 one lock, on the run that confirmed the guard does not fire.
 
+### The fix that removed the cause instead of detecting it
+
+The bracketed window was the third guard, and it failed too: `commits_to_different_tables_do_not_contend`
+came in under its floor with the window holding at **both** ends. A sub-second measurement can be
+ruined by a transient neither probe sees, and no guard observable from inside the process can
+close that.
+
+So the interference is removed rather than detected. The four measurements are `#[ignore]`d ---
+the parallel suite skips them --- and a new `check-concurrency` step runs them **one at a time,
+as the only cargo process**. On the machine where `check-tests` had just failed one of them, all
+four were taken with none skipped.
+
+They stay inside the full gate rather than beside it, because **a measurement moved out of the
+gate is a measurement that stops being taken.** The capacity guard remains as a backstop for a
+machine busy for some other reason, and should now almost never fire. `INVARIANTS.md` carries the
+rule, which is what `check-invariants` demanded the moment the check was added --- and it
+rejected two drafts on the way: one that added a check nobody had documented, and one whose prose
+named a check that does not exist.
+
+The pattern was already in the codebase: `check-performance` is deliberately outside the gate for
+the same reason. Three guards were built before noticing that.
+
+### A third test that raced, in a different crate
+
+`resetting_the_peak_keeps_the_current_total` compared `peak()` against a second reading of
+`in_use()`. A global allocator is global --- the harness's own threads allocate between the two
+reads --- so the total could overtake a peak that was correct when it was written. It failed
+under `check-all` the same day.
+
+It is the one test in `sankhya-alloc/tests/counting.rs` that forgot the tolerance the rest of
+that file exists to apply, and adding the tolerance would have been the wrong fix too: the window
+is unbounded rather than small. It now asserts against what the test **holds** --- eight
+megabytes, for the whole assertion --- so ambient allocation can only push the peak up and never
+below it, and the comparison is one-sided rather than a race.
+
+There was also no mutation covering `reset_peak`, which is part of why the assertion drifted into
+a racy form without anybody noticing. There is one now, and it is caught --- so the test is
+load-bearing, which the version it replaced was not reliably.
+
 ### The write path was quadratic in a table's own history
 
 C3 found a defect that had nothing to do with contention, by being a measurement rather than
@@ -1419,6 +1458,49 @@ rearranged is the same evidence and seals identically --- otherwise re-writing a
 invalidate its own seal.
 
 Twenty-eight tests and 14 mutations.
+
+### The exit criteria, demonstrated
+
+Eleven work items each have their own tests, and passing all of them is not the same claim. A
+module can be right and the composition still wrong: a witness nothing asks for, a phase order
+nothing walks, a registry entry nothing writes. So the plan's exit criteria are three
+demonstrations that walk the whole path with the real types, in the order an operator would.
+
+**Purge end to end, with verification, quarantine and rollback.** Eligibility, separation of
+duty, a plan that does nothing, an invocation bound to the exact ranges, a verification that
+produces the proof, six journalled phases each carrying the authorising principal, the registry
+entry and its write-once marker, the evidence pack read back from that marker and sealed, a
+cross-tier query serving both halves, a mutation into the archived range refused --- and then the
+rollback: re-attachment inside the grace period, which withdraws the registry entry in the same
+call, after which the table is whole, wholly hot and writable again.
+
+**The anomaly guard halting an intentionally defective policy.** The defect is deliberately of
+the kind nothing else catches: the policy is valid, the code is correct, the schedule fires on
+time, and a boundary has moved by a year. An ordinary night passes; the night after the boundary
+moved is halted at two hundred times the trailing median. The test also shows the other half of
+the pair --- that eligibility refuses an *invalid* policy --- because the guard catches what a
+valid policy does and eligibility catches what an invalid one is.
+
+**Every rejected purge path failing closed.** One test walks each refusal in turn: an ineligible
+table, `Verified` without a proof, a destructive phase reached by skipping, a failed verification
+yielding no proof, a kill switch, an invocation from the wrong cluster, one with no change
+record, one whose ranges were widened after approval, an expired digest, a principal acting on
+their own policy, a delete and a truncate into an archived range and one that cannot be placed, a
+query over a range neither tier claims, a quarantined partition the registry does not claim at
+ten thousand days, a migration with a hole in it, a rehydration into a capturable schema and one
+into the live schema, an expiry of zero, an unapproved schedule, and a marker that cannot say
+what it is evidence of. **None of them returns success.**
+
+### What none of this clears
+
+The gate. Criterion 3 needs the attestation drill run against a **real non-production archive**,
+which cannot be produced from development, and criterion 1 moved to `M11` because it needs a
+production deployment. **Destructive purge against a system of record stays disabled until
+`M11`** whatever these demonstrations show --- building it and arming it are two decisions, and
+only the first belongs here.
+
+M9's work is built and demonstrated. M9 is not complete, and the distance between those two
+sentences is the gate doing its job.
 
 ## M7, complete
 
@@ -2894,7 +2976,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 519 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 521 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -3410,9 +3492,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 2,046 tests, none of which needs a database
+cargo test --workspace           # 2,045 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 519 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 521 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

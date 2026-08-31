@@ -13,6 +13,7 @@ mod buildtree;
 mod docnumbers;
 mod surfaces;
 mod package;
+mod concurrency;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -143,6 +144,9 @@ fn main() -> ExitCode {
     if run_all || task == "check-tests" {
         failed |= !check_tests(&root);
     }
+    if run_all || task == "check-concurrency" {
+        failed |= !concurrency::check(&root);
+    }
     if run_all || task == "check-invariants" {
         failed |= !check_invariants(&root);
     }
@@ -245,6 +249,7 @@ fn main() -> ExitCode {
                 | "check-writers"
                 | "check-invariants"
                 | "check-tests"
+                | "check-concurrency"
                 | "check-logging"
                 | "check-package"
                 | "check-build-tree"
@@ -261,7 +266,7 @@ fn main() -> ExitCode {
     {
         eprintln!(
             "usage: cargo xtask \
-             [check-all|check-tests|check-invariants|check-writers|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
+             [check-all|check-tests|check-concurrency|check-invariants|check-writers|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
              |check-features|check-lints|check-mutations|check-doc-numbers\
              |check-catalogues|write-catalogues|check-logging|check-package|check-build-tree|check-surfaces|check-atomic-writes|check-lock-order|sweep|sweep-dry-run|sync-doc-numbers|check-performance]"
         );
@@ -1859,6 +1864,7 @@ const KNOWN_CHECKS: &[&str] = &[
     "check-lock-order",
     "check-build-tree",
     "check-tests",
+    "check-concurrency",
 ];
 
 /// Run the test suite.

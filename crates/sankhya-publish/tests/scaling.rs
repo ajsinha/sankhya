@@ -187,6 +187,7 @@ fn arm() -> tempfile::TempDir {
 }
 
 #[test]
+#[ignore = "a throughput measurement: run alone by `check-concurrency`, because a measurement taken while `cargo test --workspace` saturates the machine describes the machine"]
 fn writers_to_different_tables_scale_with_their_count() {
     // Exit criterion 4, and ADR-0013's C1. The property is not "commits succeed" --- they
     // succeed under a global lock too. It is that adding writers adds throughput.
@@ -396,6 +397,7 @@ fn a_loser_under_real_contention_is_told_rather_than_left_to_hang() {
 }
 
 #[test]
+#[ignore = "a throughput measurement: run alone by `check-concurrency`, because a measurement taken while `cargo test --workspace` saturates the machine describes the machine"]
 fn contention_on_one_table_degrades_rather_than_collapsing() {
     // The other half of exit criterion 6. Bounded retries say a contended table finishes;
     // this says it finishes faster than one writer would have, which is what separates

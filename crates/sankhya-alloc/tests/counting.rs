@@ -136,11 +136,28 @@ fn the_peak_remembers_what_the_current_total_forgets() {
 #[test]
 fn resetting_the_peak_keeps_the_current_total() {
     let _measuring = measuring();
-    let _held: Vec<u8> = vec![0u8; CHUNK];
+    let held: Vec<u8> = vec![0u8; CHUNK];
+    std::hint::black_box(&held);
     ALLOC.reset_peak();
+
+    // Against what this test *holds*, not against a second reading of the total.
+    //
+    // The first version compared `peak()` with `in_use()` and raced: a global allocator is
+    // global, and the harness's own threads allocate between the two reads, so `in_use` could
+    // overtake a peak that was correct when it was written. That failed under `check-all` on
+    // 2026-08-31 --- it is the one test in this file that forgot the tolerance the rest of the
+    // file exists to apply, and no tolerance would have been the right fix either, because the
+    // window is unbounded rather than small.
+    //
+    // `CHUNK` is held for the whole assertion, so a reset that keeps the current total leaves a
+    // peak of at least that. Ambient allocation can only push the peak *up*, never below what
+    // is held, so the comparison is one-sided and cannot race. A reset that zeroed the peak ---
+    // the defect this is about --- leaves it far below `CHUNK` and fails.
     assert!(
-        ALLOC.peak() >= ALLOC.in_use(),
-        "the peak was reset below what is currently allocated"
+        ALLOC.peak() >= CHUNK,
+        "the peak is {} after a reset while {CHUNK} bytes are held, so the reset discarded the \
+         current total rather than keeping it",
+        ALLOC.peak()
     );
 }
 

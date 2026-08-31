@@ -177,6 +177,12 @@ So the properties are stated together, and the second is measured rather than as
 > C3 failed with that fix in place, having begun on an idle machine and finished on a saturated
 > one. The check now brackets the measurement — a window opened before and closed after — and a
 > measurement whose window did not hold is discarded rather than asserted on.
+>
+> **And that was still not enough.** A third failure arrived with the window holding at both
+> ends, because a sub-second measurement can be ruined by a transient neither probe sees. The
+> measurements are therefore `#[ignore]`d and run by `check-concurrency` **alone, as the only
+> cargo process** — the interference removed rather than detected. They remain inside the gate,
+> because a measurement moved out of it is a measurement that stops being taken.
 
 C1 is why [`ARCHITECTURE.md`'s standing note](../ARCHITECTURE.md) — *"keep the commit path
 per-table, never globally serialized"* — stops being a design seam and becomes an exit

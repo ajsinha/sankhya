@@ -915,7 +915,18 @@ nothing else, sealed with `HMAC-SHA256` pinned by `RFC 4231`'s published vectors
 inspection.
 
 ### Exit
-Purge demonstrated end to end with verification, quarantine and rollback; the anomaly guard demonstrated halting an intentionally-defective policy; every rejected purge path shown to fail closed.
+~~Purge demonstrated end to end with verification, quarantine and rollback; the anomaly guard
+demonstrated halting an intentionally-defective policy; every rejected purge path shown to fail
+closed.~~ — **demonstrated 2026-08-31**, `sankhya-tiering/tests/end_to_end.rs`. Three tests that
+walk the whole path with the real types rather than asserting each piece separately, because a
+module can be right and the composition still wrong. The third enumerates nineteen ways a purge
+is refused and requires every one of them to refuse.
+
+**This does not clear the gate.** Criterion 3 still needs the attestation drill run against a
+real non-production archive, criterion 1 is in [M11](#13b-m11--production-reconciliation), and
+**destructive purge against a system of record stays disabled until M11**. M9's work is built and
+demonstrated; M9 is not complete, and the distance between those two sentences is the gate
+working.
 
 ---
 
