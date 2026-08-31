@@ -31,7 +31,7 @@ use arrow_array::{Date32Array, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use sankhya_publish::Publication;
 use sankhya_table_delta::live_files;
-use sankhya_testkit::capacity::can_measure;
+use sankhya_testkit::capacity::Window;
 use sankhya_testkit::Hammer;
 use sankhya_types::Lsn;
 use std::collections::BTreeSet;
@@ -196,13 +196,11 @@ fn writers_to_different_tables_scale_with_their_count() {
     // `cargo test --workspace` a free arm that fails to outrun one writer says nothing about
     // the write path. Both are asked here, and either one skips loudly and by name.
     let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-    if !can_measure("writers_to_different_tables_scale_with_their_count", 4) {
+    let writers = cores.min(8).max(4);
+    let Some(window) = Window::open("writers_to_different_tables_scale_with_their_count", writers)
+    else {
         return;
-    }
-    let writers = cores.min(8);
-    if !can_measure("writers_to_different_tables_scale_with_their_count", writers) {
-        return;
-    }
+    };
 
     // Warm up. The first arm otherwise pays for cold page cache and lazily built Parquet
     // machinery, and would report the write path as slower than it is.
@@ -226,6 +224,12 @@ fn writers_to_different_tables_scale_with_their_count() {
         "C1: {writers} writers on {writers} tables --- free {one:.0} -> {many:.0} commits/s \
          ({scales:.2}x); behind one lock {one_locked:.0} -> {many_locked:.0} ({serialized:.2}x)"
     );
+
+    // The other half of the guard: the machine has to have *stayed* quiet. A measurement that
+    // began on an idle machine and finished on a saturated one describes the machine.
+    if !window.held() {
+        return;
+    }
 
     // Three, from three measured states rather than from taste. Free, this path scales
     // between 4.4x and 5.9x across runs. With one lock over the whole publish it scales
@@ -398,13 +402,11 @@ fn contention_on_one_table_degrades_rather_than_collapsing() {
     // *degradation* from a queue with extra steps.
     let _measuring = MEASURING.lock().unwrap_or_else(PoisonError::into_inner);
     let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-    if !can_measure("contention_on_one_table_degrades_rather_than_collapsing", 4) {
+    let writers = cores.min(8).max(4);
+    let Some(window) = Window::open("contention_on_one_table_degrades_rather_than_collapsing", writers)
+    else {
         return;
-    }
-    let writers = cores.min(8);
-    if !can_measure("contention_on_one_table_degrades_rather_than_collapsing", writers) {
-        return;
-    }
+    };
 
     let warm = arm();
     let _ = commits_per_second(warm.path(), 2, None);
@@ -421,6 +423,10 @@ fn contention_on_one_table_degrades_rather_than_collapsing() {
          one table {contended:.0} commits/s ({:.0}% of the uncontended rate)",
         contended / uncontended * 100.0
     );
+
+    if !window.held() {
+        return;
+    }
 
     // The claim, stated as the thing that would be false if rebasing collapsed: writers
     // sharing a table still beat a single writer. If every rebase cost more than it saved,

@@ -257,6 +257,28 @@ counted as idle because a core blocked on a disk is a core the test could have u
 `sankhya-readpath` each guarded on how many cores the machine *has* and none on how many were
 free. Two of the three had already failed that way in this repository.
 
+### And that guard was necessary without being sufficient
+
+It sampled once, **before** the arms ran. C3 then failed on the same day with the fix already in
+place: the measurement began on an idle machine and finished on a saturated one, because under
+`cargo test --workspace` other binaries start and finish continuously. A point-in-time probe
+cannot see that.
+
+So the check now brackets the measurement rather than preceding it. `Window::open` refuses a
+machine that is already busy, `Window::held` refuses one that *became* busy, and a measurement
+whose window did not hold is discarded rather than asserted on --- **a measurement taken on a
+machine that became busy during it is not a measurement.** Two versions of this guard have now
+been wrong in two different ways, which is worth recording: the first could not go wrong in the
+way being tested for, and the second could not see the failure arriving.
+
+The decision is split from the sampling so the rule has a test. `capacity::enough` is a pure
+function of *how much idle capacity was found* and *how much is needed*, and it is asserted
+directly --- including that an unreadable platform permits the measurement rather than skipping
+it everywhere, which would silently stop measuring the criteria on every system that does not
+publish free capacity. The sampling cannot be driven from a test without the test becoming the
+load it is measuring, which is the problem the mechanism exists to solve, so that half is
+verified by hand under an oversubscribed machine.
+
 ### A skip nobody could see
 
 The skips were written to be *"loud and by name"*, and they were neither. `eprintln!` inside a
@@ -1272,6 +1294,56 @@ otherwise — and because every key of the domain is inside an archived range, `
 refusal already applies at every point of it rather than depending on a flag being read.
 
 Eight tests and 4 mutations.
+
+### Step 11a — the command surface, the plan digest, and seven permissions
+
+`FR-TIER-26` says the planning command *"SHALL always be a dry run"*, and **always** is the word
+doing the work. A `--dry-run` flag defaulting to true is one argument away from not being one, so
+`propose` returns a `Proposal` and a `Proposal` has no method that does anything. The path that
+acts starts at `clear`, which cannot be reached without a digest, and the digest cannot be
+produced except by planning.
+
+### What the digest binds, said as the mistake it catches
+
+An approval is read by a person and the arguments are typed by a machine, and **between those two
+the ranges are where a mistake hides.** A digest that were merely a random token would say
+*"somebody planned something recently"*. This one is taken over the cluster, the policy, the
+table and every range in order, so it says *"somebody planned **this**"* --- and a plan approved
+for `[0, 200)` cannot authorise `[0, 300)` by editing the command line.
+
+The cluster is inside the digest as well as being asserted separately, which is not redundancy: a
+plan approved on staging would otherwise authorise the same ranges on production, defeating the
+cluster assertion with the thing meant to complement it.
+
+**It expires because a plan is a statement about a table's contents at a moment.** Rows arrive; a
+boundary outside the retention basis this morning is inside it tonight. An approval with no
+expiry approves whatever the table holds when somebody gets round to running it, which is not
+what the approver read.
+
+### One place that reports everything, and one that reports the first thing
+
+The two are opposite on purpose. A plan's failing preconditions are reported **all together**,
+because an operator fixes them in one sitting --- that is `FR-TIER-26`, and it is the same
+argument the eligibility rules make. An invocation's checks return the **first** failure, because
+they answer *"should this run at all"* and there is nothing to fix in a runbook that names the
+wrong cluster.
+
+### Separation of duty is checked against the policy, not in the abstract
+
+`FR-TIER-33` names seven distinct permissions and one prohibition: a policy's definer may not
+also approve it or execute a purge under it. **The person this catches is not a malicious one.**
+It is a competent one working alone at the end of a long day, who writes a policy with a boundary
+a day out and then approves their own work because they are the person who understands it. Every
+step is reasonable and the review that was supposed to happen did not, because it was the same
+person twice.
+
+Holding both permissions is ordinary in a small team, so the conflict is between a definer and an
+approver **of the same policy** rather than between two permissions in the abstract. `Execute` is
+included alongside approval and purge because the difference between executing a plan and
+executing a purge is one of arguments rather than of permissions, and a rule that read the
+arguments would be a rule somebody has to apply correctly at each call site.
+
+Seventeen tests and 10 mutations.
 
 ## M7, complete
 
@@ -2747,7 +2819,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 495 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 505 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -3263,9 +3335,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,997 tests, none of which needs a database
+cargo test --workspace           # 2,018 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 495 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 505 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

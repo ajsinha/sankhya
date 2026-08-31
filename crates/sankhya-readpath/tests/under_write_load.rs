@@ -35,7 +35,7 @@ use arrow_schema::{DataType, Field, Schema};
 use sankhya_publish::Publication;
 use sankhya_readpath::resolve_cached;
 use sankhya_table_delta::LogCache;
-use sankhya_testkit::capacity::can_measure;
+use sankhya_testkit::capacity::Window;
 use sankhya_testkit::Until;
 use sankhya_types::{Lsn, LsnRange};
 use std::sync::{Arc, Barrier, Mutex, PoisonError};
@@ -197,9 +197,9 @@ fn read_latency_is_flat_under_write_load() {
     // loses throughput to the scheduler rather than to a lock, and this would measure that;
     // with the cores present but already busy --- a full `cargo test --workspace` --- it would
     // measure the same thing while appearing to have enough. This test has failed that way.
-    if !can_measure("read_latency_is_flat_under_write_load", WRITERS + 2) {
+    let Some(window) = Window::open("read_latency_is_flat_under_write_load", WRITERS + 2) else {
         return;
-    }
+    };
 
     // Warm up, so the first arm does not pay for a cold page cache and report the read path
     // as slower than it is.
@@ -237,6 +237,12 @@ fn read_latency_is_flat_under_write_load() {
         loaded.worst,
         loaded_locked.p99
     );
+
+    // The machine has to have *stayed* quiet. A measurement that began on an idle machine and
+    // finished on a saturated one describes the machine rather than the read path.
+    if !window.held() {
+        return;
+    }
 
     // Measured across repeated runs on a twenty-four core machine: the free reader holds
     // 0.59 to 0.80 of its idle rate, and a reader sharing one lock with the writers holds
