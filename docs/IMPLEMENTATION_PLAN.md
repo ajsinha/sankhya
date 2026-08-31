@@ -820,7 +820,33 @@ Tiering may not ship until **all** of the following hold:
 
 ### Work
 
-The policy model and eligibility validation. The durable, resumable state machine. Exhaustive verification with canonical encoding. The archival registry. Cross-tier query unification with the total tie-break rule. The four-layer purge defence. Quarantine and its reaper. Rehydration with mandatory expiry. Whole-table migration. Command and schedule surfaces with plan digests, blast-radius limits, the anomaly guard and kill switches. Segregated authorization and the evidence pack.
+~~The policy model and eligibility validation.~~ — **built 2026-08-30**, `sankhya-tiering::policy`.
+Every rule is evaluated at policy creation and every reason is reported rather than the first.
+`canonical_encoding` matches every logical type exhaustively, so adding one to `sankhya-schema`
+fails to compile until somebody decides what archiving it means; `Float32`, `Float64` and `Json`
+are refused, and refused rather than normalised — normalising would make the encoding canonical
+and the archive **not byte-faithful to the source**, which is the property `FR-TIER-09` checks.
+
+~~The durable, resumable state machine.~~ — **built 2026-08-30**,
+`sankhya-tiering::{authorize, machine}`. The journal is written before the action, so a crash
+leaves a record of something that may not have happened and resume re-runs it; the opposite
+order leaves a partition detached with nothing recording it. Phases form a chain in which every
+destructive one requires `Verified` behind it, which is `FR-TIER-15` as a property of the type
+rather than of a review.
+
+~~Exhaustive verification with canonical encoding.~~ — **built 2026-08-31**,
+`sankhya-tiering::{encode, verify}`. Row count, primary-key set equality via a Merkle digest
+over sorted blocks, and per-column checksums **taken in key order** --- because two rows with
+their values exchanged pass every check that is not, leaving each column's multiset, the row
+count and the key set unchanged. The plan's row count is compared too: two scans pointed at the
+wrong place agree about everything, so source-against-archive alone passes when nothing was
+read. `FR-TIER-15` is now the compiler's job rather than the chain's: `Purge::entering` refuses
+`Phase::Verified` and `Purge::verified` takes a `Proof` that only a comparison finding nothing
+can produce, and which is neither `Clone` nor `Copy` so it cannot be earned once and reused.
+This found that the eligibility rules admitted a table with no primary key, which is a table
+whose key set cannot be compared --- now `Ineligible::NoPrimaryKey`.
+
+The archival registry. Cross-tier query unification with the total tie-break rule. The four-layer purge defence. Quarantine and its reaper. Rehydration with mandatory expiry. Whole-table migration. Command and schedule surfaces with plan digests, blast-radius limits, the anomaly guard and kill switches. Segregated authorization and the evidence pack.
 
 ### Exit
 Purge demonstrated end to end with verification, quarantine and rollback; the anomaly guard demonstrated halting an intentionally-defective policy; every rejected purge path shown to fail closed.

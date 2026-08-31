@@ -286,8 +286,9 @@ two it had eaten never ran at all.
 It survived because every check in that file only ever looked at the first three fields, which
 are strings either way. `--check` reported *all 421 catalogue entries match the source* while
 three of them were incapable of proving anything. The check now validates the **shape** of
-every entry before it validates its text, and the count is 436: the two that were swallowed,
-plus three new ones, then five for cube DDL and five for the attestation drill.
+every entry before it validates its text, and the count is 442: the two that were swallowed,
+plus three new ones, then five for cube DDL, five for the attestation drill and six for
+tiering eligibility.
 
 ### The allocator is installed, and the stranded crates got their decisions
 
@@ -701,6 +702,201 @@ Twenty-two new tests and 5 new mutations. One of those mutations survived its fi
 ever built an `Attestation` any other way --- and a short list is exactly what a partial run
 or a truncated record produces. `passed()` is a property of a public type rather than of its
 one current constructor, and the audit is what said so.
+
+### Step 1 — the policy model and eligibility
+
+`sankhya-tiering` is no longer empty. It holds `policy`: what a tiering policy declares, and
+every reason a table may not have one.
+
+**Everything is decided at policy creation.** `FR-TIER-10` is explicit that a type which cannot
+round-trip must make a table ineligible *there*, not at purge time — and the reason is what
+purge time means: a partition already detached, a verification that cannot complete, and data
+that is neither in the source nor provably in the archive.
+
+**Every reason, never the first.** A table failing on four counts reports four refusals.
+`FR-TIER-26` requires the planning command to report *"every failing precondition rather than
+the first"*, and this is where that starts. Reporting one per attempt is how somebody fixes the
+float column, re-runs, learns about the mutable contract, and stops reading the output.
+
+### What "canonical byte encoding" has to mean, and what it excludes
+
+Verification compares source against archive by per-column checksum over a canonical encoding.
+For that to mean anything the encoding needs one property:
+
+> **Two values are equal if and only if they encode to the same bytes.**
+
+Both halves fail independently, and only one of them loses data. If equal values encode
+differently, a faithful archive is reported as a mismatch and the purge halts on a defect that
+is not there — annoying, and safe. If **unequal values encode identically**, a corrupted
+archive verifies as faithful and the purge proceeds.
+
+Two logical types break it:
+
+| Type | Why | Refused as |
+|---|---|---|
+| `Float32`, `Float64` | Breaks it in *both* directions at once: `-0.0 == 0.0` with different bytes, and two `NaN`s can share bytes while comparing unequal | `FloatingPoint` |
+| `Json` | Its stored text is not determined by its value — same document, different key order, different bytes | `UnstableTextForm` |
+
+**Neither is normalised, and that is the decision.** Collapsing `-0.0` or canonicalising a JSON
+document would make the encoding canonical and make the archive **not byte-faithful to the
+source** — which is the property being checked. The verification would then pass while the
+archived bytes differed from what was purged. A table needing JSON archived can store it as
+`Utf8` and take responsibility for its own canonical form, which is an honest thing to ask.
+
+`canonical_encoding` matches **every** variant rather than listing the bad ones, so adding a
+logical type to `sankhya-schema` fails to compile until somebody decides what archiving it
+means. A deny-list would admit the new type silently, and the first evidence would be a
+checksum mismatch during a purge.
+
+### Two rules that fail towards refusal
+
+**Unvaulted identifiers.** `FR-TIER-25` makes a table carrying them ineligible *by default*,
+because tiering converts a cheap erasure into an expensive one. Nothing in this system
+classifies a column as a direct identifier, and a classifier guessing from names would be
+confidently wrong about `customer_ref` in both directions — so it is an assertion the policy's
+author makes, and **the absence of the assertion is a refusal rather than a permission**.
+
+**A table with no columns** is reported alone. Every other rule passes vacuously over an empty
+schema — no column has a bad type when there are no columns — and "eligible except for having
+no columns" invites somebody to read the rest of the report.
+
+Thirteen tests and 6 mutations.
+
+### Step 3 — the purge state machine, and the two ways in
+
+`FR-TIER-03` makes a claim that is unusual because it is about *reading*: **enumerating the
+constructors of the authorization value is a complete audit of every way data can leave the
+system of record.** That is true only if the type cannot be built any other way, so `Origin` is
+private, there is no `Default`, no `new`, and nothing public to assemble one from.
+`Authorization::from_command` and `Authorization::from_schedule` are the list, and `grep`
+finding them is the audit.
+
+A boolean parameter would have let any of the jobs `FR-TIER-02` names — maintenance, retention,
+compaction, vacuum, expiry — pass `true`, and the audit would then be a search of every call
+site rather than of two constructors. Same shape as `Guard` in `sankhya-catalog`, reused
+deliberately: it is the one mechanism here that makes *"was this checked?"* a question the
+compiler answers.
+
+**A schedule that cannot name its approver cannot construct one.** `FR-TIER-34` requires audit
+records to name the service principal *and* the human definer and approver, because *"the
+scheduler did it" is not an acceptable audit answer* — so those are constructor arguments, and
+the attribution is carried into **every** journal entry rather than once at the start. A journal
+read years later has to say who authorised the phase in front of the reader.
+
+### Why the journal is written before the action
+
+`FR-TIER-08` requires every transition to be committed *before* the corresponding real-world
+action, and only one of the two orders survives a crash between them.
+
+| Order | A crash leaves | Recovery |
+|---|---|---|
+| **Write, then act** | a journal entry for something that may not have happened | re-run the phase — safe, and why idempotence is a requirement rather than a nicety |
+| Act, then write | a partition detached with nothing recording it | resume believes the phase never ran, re-detaches, and either fails against a partition that is gone or succeeds against a different one |
+
+There is no recovery from the second that does not involve somebody reading storage by hand.
+The cost of the first is that a resumed run repeats work it may already have done, and a phase
+recorded twice is **the expected case** rather than a fault.
+
+### Verification is unskippable structurally, not by discipline
+
+`FR-TIER-15` says there SHALL be no flag that skips verification, and that *"verification is
+structurally absent from every path that could bypass it"*. A `skip_verification: bool` nobody
+passes is one merge away from somebody passing it.
+
+So the phases form a chain — `Planned → Verified → Gated → Marked → Detached → Dropped →
+Recorded` — and each one's `requires()` names the phase that must precede it. There is no
+argument to omit because there is no parameter. A test asserts the property over the whole
+order rather than at one step: **every destructive phase has `Verified` somewhere behind it**,
+so adding a phase later cannot open a path around it.
+
+`Detached` is where destructive begins. Everything up to `Marked` is undone by doing nothing;
+from `Detached` a person is involved. That is the line M11 arms.
+
+**The kill switch is checked when a phase is entered and there is no method to interrupt one.**
+`FR-TIER-32` requires it to stop new phases and *never* abort a job mid-detach — so the absence
+of an interrupt is the guarantee, not an omission.
+
+### A defect the tests found
+
+`resume` seeded its replay from an empty list, so the first real journal entry looked like a
+skipped phase and **every journal it was written to read was refused**. A purge is `Planned` by
+existing; nothing is journalled to enter it. Sixteen tests, and three of them failed on it.
+
+Sixteen tests and 5 mutations.
+
+### Step 4 — exhaustive verification
+
+`FR-TIER-09` names three checks and then says the thing that matters: **count equality alone is
+not evidence**. A partition of a million rows copied with every value replaced by its default
+has the right count. So verification is a row count, primary-key set equality via a Merkle
+digest over sorted blocks, *and* per-column checksums over the canonical byte encoding --- all
+three, on every run, with no path that computes fewer.
+
+### The corruption a cheaper check cannot see
+
+The obvious implementation checksums each column independently over its own sorted values. It
+is order-independent, which is the property that appears to be wanted, and it is blind to this:
+
+> Take two rows and exchange their `amount` values.
+
+Every column's multiset is unchanged, so every independent per-column checksum matches. The row
+count matches. The primary-key set matches. An archive in which two accounts' balances have
+been swapped verifies as faithful, and the source is then purged.
+
+So rows are sorted by their **encoded primary key** and every column is checksummed in that
+order. The result is still independent of the order rows were read in --- which is the real
+requirement, since an archive scan and a source scan have no reason to agree on it --- while
+remaining a check on the association between a key and its row.
+
+### A hole in comparing source against archive at all
+
+Two scans pointed at the wrong place agree about everything, because there is nothing to
+disagree about: same count, same empty key set, same columns. Source-against-archive **passes**,
+and the purge detaches a partition nobody read.
+
+The plan already knows how many rows the partition holds --- it is what the blast-radius limit
+is computed against --- so `compare` takes it as well, and "both sides scanned nothing" is now
+the loudest failure available rather than a pass.
+
+### `FR-TIER-15` moved from the doc comment to the compiler
+
+Step 3 claimed verification was structurally unskippable and delivered half of it: the phase
+chain put `Verified` behind every destructive phase, but nothing stopped a caller from
+journalling `Verified` without having verified anything.
+
+`Verification::proof` now returns a `Proof` only when the comparison found nothing. It has a
+private field, no constructor, no `Default` --- and deliberately no `Clone` or `Copy`, so a
+proof cannot be earned once and passed again for the next partition. `Purge::entering` refuses
+`Phase::Verified` outright and `Purge::verified` is the only way in. There is no argument to
+omit because there is no parameter, and no way to fabricate the evidence because the type does
+not offer one.
+
+### Two defects this found in what was already written
+
+**The eligibility rules admitted a table that cannot be verified.** Nothing required a primary
+key, and primary-key set equality is not a question that can be asked without one. The refusal
+would have arrived at verification time, with the partition already marked --- which is the
+exact failure `FR-TIER-10` moved every other type rule to policy creation to avoid. `Column`
+now carries `key`, and `Ineligible::NoPrimaryKey` is checked with the rest.
+
+**The state machine's module doc described a design that was never built.** It said each phase
+is *"a separate type that can only be built from the previous one"*; what exists is a phase
+enum whose `requires()` names its predecessor. The doc was written from the sketch and not
+corrected when the shape changed, which is the kind of rot no gate catches --- it was
+prose about types that do not exist, in a file that compiles.
+
+### The audit found two tests that were not testing what they said
+
+Both survived their first run. **The type tag**: the test that was meant to cover it compared
+`Int32` against `Int64`, whose encodings differ in *length*, so removing the tag changed
+nothing --- the property needs two types of the same width, and `TimestampUtc` against
+`TimestampLocal` is exactly that pair and the one the tag exists for. **The length prefix**: the
+composite-key test used `("ab", "c")` against `("a", "bc")`, which the tag and presence bytes
+separate on their own. The prefix only earns its place against a value containing the encoder's
+own framing, so the test now uses one --- two distinct keys that concatenate to identical bytes
+without it.
+
+Twenty tests and 9 mutations.
 
 ## M7, complete
 
@@ -2176,7 +2372,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 436 specific defects applied one at a time, each required to fail the suite. Twenty-nine did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — two revealed tests that did not test what their names claimed, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 456 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -2692,9 +2888,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,867 tests, none of which needs a database
+cargo test --workspace           # 1,918 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 436 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 456 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

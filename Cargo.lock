@@ -3830,6 +3830,13 @@ version = "0.1.0"
 [[package]]
 name = "sankhya-tiering"
 version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "proptest",
+ "sankhya-schema",
+ "sha2",
+]
 
 [[package]]
 name = "sankhya-types"
