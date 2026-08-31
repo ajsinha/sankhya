@@ -136,34 +136,37 @@ impl Entry {
         self.legal_hold || now < self.retained_until()
     }
 
-    /// The line written to write-once storage before the detach.
+    /// What is written to write-once storage before the detach.
     ///
-    /// `FR-TIER-12`. Deliberately one line of text rather than a serialisation format: the
-    /// reader of this is a person with a copy of an object store and no build of this software,
-    /// and a format that needs a parser is a format that needs a version of the parser.
+    /// `FR-TIER-12`. Deliberately `key=value`, one per line, rather than a serialisation format.
+    /// The reader is a person with a copy of an object store and no build of this software, and
+    /// a format that needs a parser is a format that needs a *version* of the parser --- which
+    /// is the one thing that cannot be relied on years later.
+    ///
+    /// It is nonetheless machine-readable, because `FR-TIER-35` requires the evidence pack to be
+    /// generatable from this alone. Lines rather than a single line so that a value containing
+    /// spaces --- a retention basis is a sentence --- needs no escaping, and the first `=` on a
+    /// line is the separator so a value containing one needs none either. An unknown key is
+    /// ignored by [`crate::evidence::Pack::from_marker`], so adding a field later does not
+    /// break a reader written today.
     #[must_use]
     pub fn marker(&self) -> String {
-        let attribution = self
-            .attribution
-            .iter()
-            .map(|(key, value)| format!("{key}={value}"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        format!(
-            "table={} range={} archive={} snapshot={} rows={} keys={} archived_at={} \
-             retention_days={} basis={:?} legal_hold={} {}",
-            self.table,
-            self.range,
-            self.archive,
-            self.snapshot,
-            self.rows,
-            self.keys,
-            self.archived_at,
-            self.retention.days,
-            self.retention.basis,
-            self.legal_hold,
-            attribution
-        )
+        let mut lines = vec![
+            format!("table={}", self.table),
+            format!("range={}", self.range),
+            format!("archive={}", self.archive),
+            format!("snapshot={}", self.snapshot),
+            format!("rows={}", self.rows),
+            format!("keys={}", self.keys),
+            format!("archived_at={}", self.archived_at),
+            format!("retention_days={}", self.retention.days),
+            format!("retention_basis={}", self.retention.basis),
+            format!("legal_hold={}", self.legal_hold),
+        ];
+        for (key, value) in &self.attribution {
+            lines.push(format!("attribution.{key}={value}"));
+        }
+        lines.join("\n")
     }
 }
 
