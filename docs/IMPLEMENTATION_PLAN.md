@@ -1016,8 +1016,15 @@ by exactly the sentence that deletes a clone's data. `readers_of` is a table and
 transitively; ancestors are excluded, with the argument written down. A warehouse with no clones
 changes no reclamation decision.
 
-The clone action in the log. Whatever the ADR chooses for
-shared-file lifetime, with maintenance taught to honour it. Clone and drop surfaces with the
+~~Whatever the ADR chooses for shared-file lifetime, with maintenance taught to honour it.~~ —
+**built 2026-08-31** for the two paths that reclaim on this node's own schedule. `retire_inputs`
+and the orphan sweep now take `StillReferenced`, one value for a question asked along two axes
+that do not convert into each other: positions a snapshot pins, and files a clone reads. The
+sweeper resolves clone pins from **its own log** rather than the clone's, which is what Decision
+1a makes possible. A regression test sweeps a table whose clone is the only remaining reader of a
+superseded file, with the same table and no clone as the control.
+
+The clone action in the log. Clone and drop surfaces with the
 refusals enumerated above. Backup, restore and tiering made clone-aware. A soak that clones
 under load, writes to both sides, runs full maintenance, and verifies both still read
 correctly afterwards.

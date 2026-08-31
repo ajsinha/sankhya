@@ -41,7 +41,8 @@ use crate::schedule::SystemState;
 use sankhya_error::{Error, Result};
 use sankhya_leases::Leases;
 use sankhya_table::{CompactionOutcome, WriterConfig};
-use sankhya_table_delta::live_files;
+use crate::execute::StillReferenced;
+use sankhya_table_delta::{live_files, live_files_at};
 use sankhya_types::Lsn;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -126,6 +127,11 @@ pub struct Maintainer {
     /// warehouse no server is serving --- and then the grace period is the only protection, as
     /// it was for every tick before leases existed.
     leases: Option<Arc<Leases>>,
+    /// Which tables were cloned from which.
+    ///
+    /// Empty unless somebody has cloned something, which is the state of every warehouse
+    /// today --- and the reason `ADR-0016`'s answer costs nothing until it is used.
+    clones: sankhya_clone::Lineages,
 }
 
 impl Maintainer {
@@ -137,6 +143,7 @@ impl Maintainer {
             pending: Vec::new(),
             tick: 0,
             leases: None,
+            clones: sankhya_clone::Lineages::new(),
         }
     }
 
@@ -149,6 +156,22 @@ impl Maintainer {
     #[must_use]
     pub fn watching(mut self, leases: Arc<Leases>) -> Self {
         self.leases = Some(leases);
+        self
+    }
+
+    /// The same, told which tables are clones of which.
+    ///
+    /// Without this a maintainer reclaims exactly as it always has, which is correct for every
+    /// warehouse that has never cloned anything. With it, the two reclamation paths stop
+    /// assuming a file belongs to one table --- the premise `ADR-0016` exists because cloning
+    /// breaks.
+    ///
+    /// It is a separate builder rather than a field on the policy because it is **state**, not
+    /// configuration: it changes when somebody clones or drops a table, and a reload that reset
+    /// it would leave a sweep about to delete a clone's data.
+    #[must_use]
+    pub fn among(mut self, clones: sankhya_clone::Lineages) -> Self {
+        self.clones = clones;
         self
     }
 
@@ -221,7 +244,7 @@ impl Maintainer {
             self.pending.push((outcome.clone(), tick, marked));
         }
 
-        let retired = self.retire_due(tick)?;
+        let retired = self.retire_due(tick, table_root)?;
         report.bytes_reclaimed = report.bytes_reclaimed.saturating_add(retired.bytes_reclaimed);
         report.files_removed.extend(retired.files_removed);
 
@@ -277,16 +300,50 @@ impl Maintainer {
             return crate::orphans::OrphanReport::default();
         }
 
-        // Empty for the same reason retirement's referenced set is empty: nothing here holds
-        // an older snapshot open. When session leases reach maintenance this becomes the set
-        // of paths those snapshots still resolve, and until then the age threshold is what
-        // protects a file --- not this.
-        let reachable = BTreeSet::new();
+        // Every file a clone of this table still reads. `ADR-0016`: a clone's log does not name
+        // the origin's files, it records a version --- so this is resolved from *this table's*
+        // log, which the sweep already reads, rather than by normalising another table's paths
+        // into this one's naming.
+        //
+        // Empty for a table nobody has cloned, and then the sweep does exactly what it did
+        // before any of this existed.
+        let reachable = self.pinned_by_clones(table_root);
         let plan = plan_orphan_cleanup(&on_disk, &named, &reachable, &self.policy.orphans);
         if plan.remove.is_empty() {
             return crate::orphans::OrphanReport::default();
         }
         sweep_orphans(&plan, table_root)
+    }
+
+    /// The files a clone of this table still reads, named the way the sweeper names them.
+    ///
+    /// # Why this reads the origin's own log rather than the clone's
+    ///
+    /// `ADR-0016`'s Decision 1a: a clone's log names none of the origin's files. It records an
+    /// origin and a version, and a read splices the origin's live set at that version with the
+    /// clone's own log. So the question *"which of my files does a clone still need?"* is
+    /// answered by replaying this table to each pinned version --- which is this table's own
+    /// log, in this table's own naming, with nothing to translate.
+    ///
+    /// A version that cannot be read is **skipped rather than defaulted**, and skipping keeps
+    /// files rather than removing them: an unreadable version contributes nothing to the
+    /// reachable set, so the sweep falls back to the age threshold that protected everything
+    /// before clones existed. That is the safe direction, and it is the only one --- a resolver
+    /// that guessed a version's contents would be guessing about what may be deleted.
+    fn pinned_by_clones(&self, table_root: &Path) -> BTreeSet<String> {
+        if self.clones.is_empty() {
+            return BTreeSet::new();
+        }
+        let Some(table) = table_root.file_name().and_then(|name| name.to_str()) else {
+            return BTreeSet::new();
+        };
+
+        self.clones
+            .pinned_versions(table)
+            .into_iter()
+            .filter_map(|version| live_files_at(table_root, version).ok())
+            .flat_map(|live| live.files.into_iter().map(|file| file.path))
+            .collect()
     }
 
     /// Retire the inputs of merges that no reader can still name.
@@ -297,10 +354,19 @@ impl Maintainer {
     /// backstop for the case where a lease is leaked and never released, because a registry
     /// with a leak and no backstop reclaims nothing for ever, which is the failure this
     /// warehouse has already met from the other direction.
-    fn retire_due(&mut self, tick: u64) -> Result<TickReport> {
-        // Versions an *arrival buffer* still pins, which is a separate mechanism from reader
-        // leases and still empty here.
-        let referenced: BTreeSet<Lsn> = BTreeSet::new();
+    fn retire_due(&mut self, tick: u64, table_root: &Path) -> Result<TickReport> {
+        // Everything that may still need a file this table would otherwise reclaim, along both
+        // axes that do not convert into each other: positions an *arrival buffer* pins, which
+        // is a separate mechanism from reader leases and still empty here, and the files a
+        // clone reads, which `ADR-0016` made a question about this table's own log.
+        let referenced = StillReferenced {
+            snapshots: BTreeSet::new(),
+            cloned: self
+                .pinned_by_clones(table_root)
+                .into_iter()
+                .map(|path| table_root.join(path))
+                .collect(),
+        };
 
         let mut due = Vec::new();
         let mut waiting = Vec::new();

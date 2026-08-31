@@ -63,9 +63,8 @@ use std::path::{Path, PathBuf};
 use crate::compaction::{
     plan_compaction, CompactionPlan, CompactionPolicy, CompactionUrgency, FileStat, PartitionState,
 };
-use crate::execute::{retire_inputs, run_compaction, RetentionPolicy};
+use crate::execute::{retire_inputs, run_compaction, RetentionPolicy, StillReferenced};
 use crate::schedule::{schedule, Class, Job, SystemState};
-use sankhya_types::Lsn;
 
 /// How the loop turns file counts into budget.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -477,7 +476,7 @@ pub fn checkpoint_if_due(
 /// did not actually happen and nothing may be removed.
 pub fn retire_completed(
     outcomes: &[(CompactionOutcome, u64)],
-    referenced: &BTreeSet<Lsn>,
+    referenced: &StillReferenced,
     policy: &RetentionPolicy,
 ) -> Result<TickReport> {
     let mut report = TickReport::default();

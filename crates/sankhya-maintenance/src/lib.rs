@@ -45,7 +45,9 @@ pub use driver::{
     PendingCompaction, TickPlan, TickReport, CHECKPOINT_INTERVAL,
 };
 pub use layout::{check as check_clustering, clustering, clustering_key, declared};
-pub use execute::{retire_inputs, run_compaction, RetentionPolicy, RetirementOutcome};
+pub use execute::{
+    retire_inputs, run_compaction, RetentionPolicy, RetirementOutcome, StillReferenced,
+};
 pub use orphans::{plan_orphan_cleanup, sweep, FileOnDisk, OrphanPlan, OrphanPolicy, OrphanReport};
 pub use schedule::{schedule, Class, Deferral, Job, Schedule, Scheduled, SystemState};
 pub use service::{

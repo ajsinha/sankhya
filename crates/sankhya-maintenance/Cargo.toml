@@ -14,6 +14,7 @@ layer = 3
 workspace = true
 
 [dependencies]
+sankhya-clone       = { path = "../sankhya-clone" }
 sankhya-leases = { path = "../sankhya-leases" }
 sankhya-config      = { path = "../sankhya-config" }
 sankhya-types = { path = "../sankhya-types" }
@@ -24,6 +25,7 @@ sankhya-cube      = { path = "../sankhya-cube" }
 sankhya-publish   = { path = "../sankhya-publish" }
 
 [dev-dependencies]
+sankhya-clone       = { path = "../sankhya-clone" }
 parquet = { workspace = true }
 sankhya-ingest = { path = "../sankhya-ingest" }
 sankhya-cdc-apply = { path = "../sankhya-cdc-apply" }

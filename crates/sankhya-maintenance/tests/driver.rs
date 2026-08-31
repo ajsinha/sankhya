@@ -20,7 +20,7 @@
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use sankhya_maintenance::{
-    apply, execute_tick, plan_tick, retire_completed, Class, CompactionPolicy, CompactionUrgency,
+    apply, execute_tick, plan_tick, retire_completed, StillReferenced, Class, CompactionPolicy, CompactionUrgency,
     DriverPolicy, FileStat, PartitionState, RetentionPolicy, SystemState,
 };
 use sankhya_table::{read_parquet_stats, write_parquet, WriterConfig};
@@ -251,7 +251,7 @@ fn nothing_is_removed_on_the_tick_that_merged_it() {
 
     // A later tick, once the grace period has passed, does remove them.
     let outcomes: Vec<_> = report.merged.iter().map(|o| (o.clone(), 100u64)).collect();
-    let retired = retire_completed(&outcomes, &BTreeSet::new(), &RetentionPolicy::default())
+    let retired = retire_completed(&outcomes, &StillReferenced::nothing(), &RetentionPolicy::default())
         .expect("retiring");
 
     assert_eq!(retired.files_removed.len(), 10);
@@ -396,7 +396,7 @@ fn ticking_converges_and_the_data_is_unchanged() {
             .into_iter()
             .map(|(o, age)| (o, age + 100))
             .collect();
-        retire_completed(&due, &BTreeSet::new(), &RetentionPolicy::default()).expect("retiring");
+        retire_completed(&due, &StillReferenced::nothing(), &RetentionPolicy::default()).expect("retiring");
     }
 
     assert!(
