@@ -12,7 +12,7 @@
 *A general-purpose unified OLTP + OLAP + Graph data server — one binary, written entirely in Rust.*
 
 [![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-M0--M8%20complete%2C%20M9%20in%20progress-yellow.svg)](docs/STATUS.md)
+[![Status](https://img.shields.io/badge/status-M0--M8%20complete%2C%20M9%20and%20M10%20in%20progress-yellow.svg)](docs/STATUS.md)
 [![Rust](https://img.shields.io/badge/rust-1.97%2B-b7410e.svg)](https://www.rust-lang.org)
 [![JVM](https://img.shields.io/badge/JVM-none-success.svg)](#design-principles)
 
@@ -154,9 +154,11 @@ Spark, Trino, DuckDB, Snowflake and Athena read these tables **directly**, with 
 
 ## Status
 
-**Implementation — M0 through M8 complete, M9 in progress.** M8 closed on six of its eight
-exit criteria; the two that need a second machine, and the scale-out work behind them, moved
-to M12. The architecture and requirements were reviewed and amended by a panel covering
+**Implementation — M0 through M8 complete, M9 and M10 in progress.** M8 closed on six of its
+eight exit criteria; the two that need a second machine, and the scale-out work behind them,
+moved to M12. M9's eleven work items are built and its exit criteria demonstrated, and **its gate
+is deliberately not cleared** — see below. M10 has cleared its design gate
+([ADR-0016](docs/adr/0016-zero-copy-cloning.md)) and has no implementation yet. The architecture and requirements were reviewed and amended by a panel covering
 systems architecture, database internals, analytical query engines and Rust engineering
 practice.
 
@@ -228,8 +230,14 @@ one table's rate where the serialized control runs at 0.91×; a reader under fou
 seconds. A forty-five-minute soak at twenty gigabytes passes with resident memory flat.
 
 What does not exist: the streaming transport, the gRPC control plane and the REST gateway.
-**Tiering is M9 and gated** — `sankhya-tiering` is deliberately empty, and destructive purge
-stays disabled until reconciliation has run clean in production. Also unbuilt inside work
+**Tiering is M9 and still gated.** `sankhya-tiering` is no longer empty: the policy model,
+the resumable purge state machine, exhaustive verification, the archival registry, the
+four-layer defence against a propagated delete, cross-tier query unification, quarantine,
+rehydration, whole-table migration and the command and schedule surfaces are all built, and the
+exit criteria are demonstrated end to end. **Destructive purge against a system of record is
+disabled until M11 regardless** — building the purge path and arming it are two decisions, and
+the gate's remaining criterion needs an attestation drill run against a real non-production
+archive, which development cannot produce. Also unbuilt inside work
 already counted: bloom filters, table
 partitioning, the result cache, leader election, a timer that drives graph hydration, and
 a measured graph benchmark — the graph primitives are correct against brute force and
