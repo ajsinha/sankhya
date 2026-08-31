@@ -257,6 +257,24 @@ impl Registry {
         &self.entries
     }
 
+    /// Remove the entry covering exactly this range, returning it.
+    ///
+    /// # Why this is not public policy on its own
+    ///
+    /// Withdrawing an entry says *"this range is no longer archived"*, and the only occasion on
+    /// which that is true is a re-attachment from quarantine --- which must withdraw it, because
+    /// a range the registry still claims and the catalog has attached is the disagreement
+    /// [`crate::unify`] has to flag. So this exists to be called by
+    /// [`crate::quarantine::Quarantine::reattach`], which does both halves in one call and
+    /// leaves no state in which one happened without the other.
+    pub(crate) fn withdraw(&mut self, table: &str, range: Range) -> Option<Entry> {
+        let at = self
+            .entries
+            .iter()
+            .position(|entry| entry.table == table && entry.range == range)?;
+        Some(self.entries.remove(at))
+    }
+
     /// Which archives answer a range of a table, and what is not covered.
     #[must_use]
     pub fn coverage(&self, table: &str, wanted: Range) -> Coverage {

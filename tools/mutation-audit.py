@@ -1191,6 +1191,42 @@ CATALOGUE = [
      "        Some(_entry) => Ok(()),",
      "sankhya-tiering"),
 
+    ("tiering: allow a quarantine grace period of zero days",
+     "crates/sankhya-tiering/src/quarantine.rs",
+     "        if days == 0 {\n            return Err(NoGrace);",
+     "        if days > 0 && days == 0 {\n            return Err(NoGrace);",
+     "sankhya-tiering"),
+
+    ("tiering: reap a quarantined partition the registry no longer claims",
+     "crates/sankhya-tiering/src/quarantine.rs",
+     "            } else if archived(&held) {",
+     "            } else if archived(&held) || true {",
+     "sankhya-tiering"),
+
+    ("tiering: reap a quarantined partition while its grace period runs",
+     "crates/sankhya-tiering/src/quarantine.rs",
+     "            if held.within_grace(now) {",
+     "            if false && held.within_grace(now) {",
+     "sankhya-tiering"),
+
+    ("tiering: match a quarantined range against any archive of the table",
+     "crates/sankhya-tiering/src/quarantine.rs",
+     "                .any(|entry| entry.table == held.table && entry.range == held.range)",
+     "                .any(|entry| entry.table == held.table)",
+     "sankhya-tiering"),
+
+    ("tiering: re-attach without withdrawing the archival entry",
+     "crates/sankhya-tiering/src/quarantine.rs",
+     "        let entry_withdrawn = registry.withdraw(&held.table, held.range).is_some();",
+     "        let entry_withdrawn = registry.entries().iter().any(|e| e.range == held.range);",
+     "sankhya-tiering"),
+
+    ("tiering: re-attach a partition whose grace period has ended",
+     "crates/sankhya-tiering/src/quarantine.rs",
+     "        if !held.within_grace(now) {",
+     "        if false && !held.within_grace(now) {",
+     "sankhya-tiering"),
+
     ("brake: report a warning when the machine is about to be killed",
      "crates/sankhya-governor/src/memory.rs",
      "    if in_use >= limits.shed_bytes {",

@@ -875,7 +875,16 @@ remembers to check; and a mutation into an archived range is a typed refusal nam
 and the correction mechanism, because `FR-TIER-18` is explicit that reporting zero rows affected
 is a silent wrong answer.
 
-Quarantine and its reaper. Rehydration with mandatory expiry. Whole-table migration. Command and schedule surfaces with plan digests, blast-radius limits, the anomaly guard and kill switches. Segregated authorization and the evidence pack.
+~~Quarantine and its reaper.~~ — **built 2026-08-31**, `sankhya-tiering::quarantine`. Detach is
+undone by re-attaching and drop is undone by nothing, which is what the grace period is for: it
+insures against the defect verification cannot catch, a policy that was wrong rather than a copy
+that was. Age is not a sufficient condition to reap --- a partition the registry no longer claims
+is the only copy there is, and no amount of age makes releasing it safe. `Grace::of(0)` is a
+refusal, because a grace of nothing is the requirement unimplemented rather than configured. And
+`reattach` withdraws the archival entry in the same call, so neither half can happen without the
+other.
+
+Rehydration with mandatory expiry. Whole-table migration. Command and schedule surfaces with plan digests, blast-radius limits, the anomaly guard and kill switches. Segregated authorization and the evidence pack.
 
 ### Exit
 Purge demonstrated end to end with verification, quarantine and rollback; the anomaly guard demonstrated halting an intentionally-defective policy; every rejected purge path shown to fail closed.

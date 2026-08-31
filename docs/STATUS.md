@@ -1128,6 +1128,58 @@ Twelve tests and 6 mutations. One did not compile at first --- a guarded arm doe
 towards exhaustiveness --- which the catalogue reported rather than scoring as a pass, for the
 second time in two steps.
 
+### Step 8 — quarantine, and the two things the reaper must refuse
+
+`DEC-24` prices it: *"it costs a week of disk and buys reversible recovery from a defect
+discovered late. Against permanent loss of a retained record, this is the cheapest insurance in
+the system."*
+
+**What it insures against is precisely what verification cannot catch.** Verification proves the
+archive matches the source at the moment of the copy. It cannot prove the *policy* was right ---
+that the range was the one somebody meant, that the tiering key meant what its author thought,
+that a timezone did not move a year's boundary. Those are found days later by a person, and the
+only thing that helps then is the partition still being on disk.
+
+This is also why `FR-TIER-04` separates detach from drop with quarantine between them. **Detach
+is undone by re-attaching; drop is undone by nothing.** A detached partition is a catalog
+change --- the files are there, unreferenced --- and putting it back is metadata. Once dropped,
+the way back is a restore at best and a rehydration at worst, both of which are operations
+somebody schedules rather than performs.
+
+### Age is not a sufficient condition
+
+The reaper refuses two things. The first is obvious: a partition inside its grace period, which
+is the mechanism.
+
+The second is not, and it is the one worth having. **If the registry no longer claims the range
+--- a restore that lost the entry, an entry withdrawn by hand --- the quarantined copy is the
+only copy**, and reaping it on age would be the permanent loss quarantine exists to prevent,
+performed by the machinery meant to prevent it. Ten thousand days does not make it safe. Same
+shape as the orphan sweeper refusing to reclaim a file a retained snapshot still reaches, and
+the registry claiming *something* about the table is not the registry claiming *this* range.
+
+### A grace period of zero is not expressible
+
+`Grace::of(0)` is a refusal rather than a value. A grace of nothing is `FR-TIER-13` not being
+implemented rather than being configured, and making it unrepresentable costs one constructor
+and removes the setting somebody reaches for when a disk is full at four in the morning. The
+default is seven days.
+
+### Re-attachment is one call because it is two invariants
+
+Re-attaching without withdrawing the archival entry leaves a range the registry claims and the
+catalog has attached --- the disagreement step 7 has to serve hot and flag. Withdrawing without
+re-attaching leaves the range in neither tier --- a coverage gap. Both are recoverable and
+neither should be reachable by forgetting a step, so `reattach` does both halves: there is no
+order to get wrong because there are not two calls.
+
+Re-attaching a range the registry did not claim reports that rather than returning success:
+something already withdrew it, and two facts that disagree should reach a person. After the
+grace period the refusal points at rehydration by name, because `FR-TIER-13` promises
+re-attachment is *simple* and after the files are gone that promise could only be kept in name.
+
+Eleven tests and 6 mutations.
+
 ## M7, complete
 
 Added 2026-08-27 by owner directive and placed before scale-out: cubes are a stated
@@ -2602,7 +2654,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 477 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 483 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -3118,9 +3170,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 1,964 tests, none of which needs a database
+cargo test --workspace           # 1,975 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 477 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 483 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 
