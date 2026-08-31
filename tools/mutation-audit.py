@@ -1497,6 +1497,24 @@ CATALOGUE = [
      "            .filter(|lineage| lineage.origin != table)",
      "sankhya-clone"),
 
+    ("maintenance: sweep a table without consulting the versions its clones pin",
+     "crates/sankhya-maintenance/src/service.rs",
+     "        let reachable = self.pinned_by_clones(table_root);",
+     "        let reachable = BTreeSet::new();",
+     "sankhya-maintenance"),
+
+    ("maintenance: retire an input a clone still reads",
+     "crates/sankhya-maintenance/src/execute.rs",
+     "        if referenced.cloned.contains(input) {",
+     "        if false && referenced.cloned.contains(input) {",
+     "sankhya-maintenance"),
+
+    ("maintenance: pin every version of a table rather than the ones clones name",
+     "crates/sankhya-maintenance/src/service.rs",
+     "            .filter_map(|version| live_files_at(table_root, version).ok())",
+     "            .filter_map(|_version| live_files(table_root).ok())",
+     "sankhya-maintenance"),
+
     ("brake: report a warning when the machine is about to be killed",
      "crates/sankhya-governor/src/memory.rs",
      "    if in_use >= limits.shed_bytes {",

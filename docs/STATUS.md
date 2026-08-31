@@ -1664,6 +1664,60 @@ dropped, and what a backup must include.
 Twenty-four tests and 7 mutations. No clone action yet, and no maintenance wiring: this is the
 vocabulary, and the gate said design before code.
 
+### Step 2 — the two reclamation paths taught to ask
+
+`ADR-0016` calls maintenance the hard part, and this is it: **retirement** and **orphan
+collection** each decided a file was removable by consulting one table's log, and each was
+correct only because a file belonged to exactly one table.
+
+### One value, because it is one question along two axes
+
+`retire_inputs` took `referenced: &BTreeSet<Lsn>` --- positions a retained snapshot may still
+resolve from. A clone pins a **table version**, and the two do not convert into each other. They
+are nonetheless the same question, *who still reads this?*, so they are now one value:
+`StillReferenced { snapshots, cloned }`.
+
+Keeping them as separate parameters invited exactly one mistake --- a caller that had learned
+about one and not the other --- and one value means a third reason later is a field rather than a
+signature change at every call site. The two are also **reported differently** when they keep a
+file, because one clears when a reader finishes and the other when a clone is dropped, and an
+operator reading a sweep report needs to know which.
+
+### The sweeper asks its own log, not the clone's
+
+Decision 1a pays off here. A clone's log names none of the origin's files, so the origin does not
+have to normalise another table's paths into its own naming --- it replays *itself* to each
+pinned version and keeps that live set. `live_files_at` already existed.
+
+A version that cannot be read is **skipped rather than defaulted**, and skipping keeps files: an
+unreadable version contributes nothing to the reachable set, so the sweep falls back to the age
+threshold that protected everything before clones existed. A resolver that guessed a version's
+contents would be guessing about what may be deleted.
+
+### The test, and the control that makes it mean something
+
+The regression test builds a table whose version 1 names `part-0000` and whose version 2
+replaces it, then clones at version 1 and runs a sweep. From the origin's point of view that file
+is indistinguishable from debris --- on disk, absent from the live set, past the threshold.
+
+**And the control is the same table with no clone**, which must still reclaim it. Without that,
+the first test would pass just as happily against a maintainer that had stopped sweeping
+altogether --- which is the failure this repository has shipped before in a different guise.
+
+Two more pin the shape of the pin: a clone taken at version 2 does *not* keep `part-0000`,
+because the pin is a version rather than the table, and a clone of some other table pins nothing
+here.
+
+Seven tests and 3 mutations. `Maintainer::among` is a separate builder from the policy because
+lineage is **state**, not configuration: it changes when somebody clones or drops a table, and a
+reload that reset it would leave a sweep about to delete a clone's data.
+
+A gate caught its own excuse going stale on the way. `sankhya-clone` had been listed as
+deliberately unreached with the milestone that would reach it; once maintenance depended on it,
+`check-surfaces` reported `STALE EXCUSE` --- reachable now, so the listing had become a claim that
+was no longer true. **An excuse that outlives its reason is worse than no excuse**, because it
+reads as a decision somebody is still standing behind.
+
 ## M7, complete
 
 Added 2026-08-27 by owner directive and placed before scale-out: cubes are a stated
@@ -3138,7 +3192,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 528 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 531 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -3654,9 +3708,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 2,069 tests, none of which needs a database
+cargo test --workspace           # 2,076 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 528 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 531 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

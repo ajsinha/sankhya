@@ -16,6 +16,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+use sankhya_clone::{Lineage, Lineages};
 use sankhya_maintenance::{Maintainer, MaintenancePolicy, OrphanPolicy};
 use sankhya_table_delta::{commit, create, Action, AddFile, Metadata};
 use std::path::Path;
@@ -246,4 +247,107 @@ fn the_running_thread_reports_the_policy_it_is_running_under() {
         "the handle must report what it was last given, or a reload cannot be confirmed"
     );
     handle.stop();
+}
+
+/// A table whose version 1 names `first`, and whose version 2 replaces it with `second`.
+///
+/// Both files stay on disk. After version 2 the log's *live* set names only `second`, so
+/// `first` is exactly what an origin's sweeper sees as debris — and exactly what a clone taken
+/// at version 1 still reads.
+fn table_that_moved_on(root: &Path, first: &str, second: &str) {
+    std::fs::create_dir_all(root).expect("the table directory");
+    commit(root, 0, &create(Metadata::new("t", SCHEMA.to_string(), 0))).expect("creating");
+
+    std::fs::write(root.join(first), vec![b'x'; 512]).expect("the first file");
+    commit(root, 1, &[Action::Add(AddFile::with_rows(first, 512, 0, 1))]).expect("v1");
+
+    std::fs::write(root.join(second), vec![b'x'; 512]).expect("the second file");
+    commit(
+        root,
+        2,
+        &[
+            Action::Remove(sankhya_table_delta::RemoveFile::rewritten(first, 0)),
+            Action::Add(AddFile::with_rows(second, 512, 0, 1)),
+        ],
+    )
+    .expect("v2");
+}
+
+#[test]
+fn a_file_only_a_clone_still_names_is_not_swept_from_its_origin() {
+    // The failure ADR-0016 exists to prevent, at the exact place it would happen. From the
+    // origin's point of view a file only the clone still names is indistinguishable from
+    // debris: on disk, not in the live set, older than the threshold. Nothing would fail and
+    // no query would error; the clone would simply be missing rows the next time anybody read
+    // that range of it.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path().join("entries");
+    table_that_moved_on(&root, "part-0000.parquet", "part-0001.parquet");
+
+    let mut clones = Lineages::new();
+    clones.record("staging", Lineage::new("entries", 1, 0));
+
+    let mut maintainer = Maintainer::new(sweeping_at_once()).among(clones);
+    maintainer.tick(&root).expect("a tick");
+
+    assert!(
+        root.join("part-0000.parquet").exists(),
+        "the origin swept a file its clone is the only remaining reader of"
+    );
+    assert!(root.join("part-0001.parquet").exists(), "and the live file is untouched");
+}
+
+#[test]
+fn the_same_file_is_swept_when_nothing_was_cloned_from_the_table() {
+    // The control, and the point of it: without it the test above would pass just as happily
+    // against a maintainer that had stopped sweeping altogether.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path().join("entries");
+    table_that_moved_on(&root, "part-0000.parquet", "part-0001.parquet");
+
+    let mut maintainer = Maintainer::new(sweeping_at_once());
+    maintainer.tick(&root).expect("a tick");
+
+    assert!(
+        !root.join("part-0000.parquet").exists(),
+        "a superseded file nobody reads is debris, and a warehouse with no clones must still \
+         reclaim it"
+    );
+}
+
+#[test]
+fn a_clone_taken_at_a_later_version_does_not_pin_what_that_version_had_dropped() {
+    // The pin is a version, not the table. A clone taken at version 2 reads `part-0001`, and
+    // `part-0000` is no more reachable from it than from the origin — so keeping it would be
+    // keeping a file on the strength of a clone that never read it.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path().join("entries");
+    table_that_moved_on(&root, "part-0000.parquet", "part-0001.parquet");
+
+    let mut clones = Lineages::new();
+    clones.record("staging", Lineage::new("entries", 2, 0));
+
+    let mut maintainer = Maintainer::new(sweeping_at_once()).among(clones);
+    maintainer.tick(&root).expect("a tick");
+
+    assert!(
+        !root.join("part-0000.parquet").exists(),
+        "version 2 does not name it, so a clone of version 2 does not read it"
+    );
+    assert!(root.join("part-0001.parquet").exists());
+}
+
+#[test]
+fn a_clone_of_a_different_table_pins_nothing_here() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path().join("entries");
+    table_that_moved_on(&root, "part-0000.parquet", "part-0001.parquet");
+
+    let mut clones = Lineages::new();
+    clones.record("scratch", Lineage::new("somewhere-else", 1, 0));
+
+    let mut maintainer = Maintainer::new(sweeping_at_once()).among(clones);
+    maintainer.tick(&root).expect("a tick");
+
+    assert!(!root.join("part-0000.parquet").exists());
 }

@@ -109,6 +109,44 @@ pub struct RetirementOutcome {
     pub bytes_reclaimed: u64,
 }
 
+/// Everything that may still need a file this table would otherwise reclaim.
+///
+/// # Why the two are one value
+///
+/// They are the same question — *who still reads this?* — asked along two axes that do not
+/// convert into each other. A retained snapshot pins a **position**: anything at or before it
+/// may still resolve to a file the merge replaced. A clone pins a **table version**, and
+/// `ADR-0016`'s Decision 1a means the clone's log does not name the origin's files at all, so
+/// the pin has to be resolved into paths by reading the origin's own log at that version.
+///
+/// Keeping them as separate parameters invited exactly one mistake: a caller that had learned
+/// about one and not the other. One value means adding a third reason later is a field rather
+/// than a signature change at every call site.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct StillReferenced {
+    /// Positions a retained snapshot may still resolve from.
+    pub snapshots: BTreeSet<Lsn>,
+    /// Files a clone still reads, resolved from the versions clones were taken at.
+    ///
+    /// Empty for a table nobody has cloned, which is every table that exists — and the reason
+    /// this costs nothing until somebody clones something.
+    pub cloned: BTreeSet<PathBuf>,
+}
+
+impl StillReferenced {
+    /// Nothing holds anything.
+    #[must_use]
+    pub fn nothing() -> Self {
+        Self::default()
+    }
+
+    /// Only retained snapshots hold anything, which is every deployment before cloning.
+    #[must_use]
+    pub fn snapshots(snapshots: BTreeSet<Lsn>) -> Self {
+        Self { snapshots, cloned: BTreeSet::new() }
+    }
+}
+
 /// Remove inputs a compaction replaced, if every precondition holds.
 ///
 /// Preconditions, all of which must hold for a given input:
@@ -117,7 +155,9 @@ pub struct RetirementOutcome {
 ///    expected row count. This is re-checked rather than trusted: the merge may have
 ///    succeeded hours ago.
 /// 2. The input is not referenced by any retained snapshot.
-/// 3. Enough time has passed that no reader could still be holding a listing that
+/// 3. **The input is not one a clone still reads.** Before cloning, a file belonged to exactly
+///    one table and this question could not arise; see `ADR-0016`.
+/// 4. Enough time has passed that no reader could still be holding a listing that
 ///    predates the merge.
 ///
 /// An input failing any of these is retained with a reason. That is the correct
@@ -130,7 +170,7 @@ pub struct RetirementOutcome {
 /// compaction did not actually happen and no input should be removed at all.
 pub fn retire_inputs(
     outcome: &CompactionOutcome,
-    referenced: &BTreeSet<Lsn>,
+    referenced: &StillReferenced,
     ticks_since_merge: u64,
     policy: &RetentionPolicy,
 ) -> Result<RetirementOutcome> {
@@ -169,10 +209,26 @@ pub fn retire_inputs(
         }
 
         // A snapshot pinned at or before this file's coverage may still resolve to it.
-        if referenced.iter().any(|lsn| *lsn <= outcome.covers_through) {
+        if referenced
+            .snapshots
+            .iter()
+            .any(|lsn| *lsn <= outcome.covers_through)
+        {
             retained.push((
                 input.clone(),
                 "a retained snapshot may still reference it".to_string(),
+            ));
+            continue;
+        }
+
+        // And a clone reads it whatever the grace period says. A clone is a reader that
+        // outlives every lease, which is the premise cloning breaks: before it, a file
+        // belonged to exactly one table and this branch could not be reached.
+        if referenced.cloned.contains(input) {
+            retained.push((
+                input.clone(),
+                "a clone of this table still reads it; it is not this table's file alone"
+                    .to_string(),
             ));
             continue;
         }

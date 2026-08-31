@@ -20,7 +20,7 @@
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use sankhya_maintenance::{
-    retire_inputs, run_compaction, CompactionPlan, CompactionUrgency, FileStat, RetentionPolicy,
+    retire_inputs, run_compaction, StillReferenced, CompactionPlan, CompactionUrgency, FileStat, RetentionPolicy,
 };
 use sankhya_table::{write_parquet, WriterConfig};
 use sankhya_types::Lsn;
@@ -121,7 +121,7 @@ fn retirement_waits_out_the_grace_period() {
         grace_ticks: 24,
         verify_replacement: true,
     };
-    let retirement = retire_inputs(&outcome, &BTreeSet::new(), 23, &policy).expect("retiring");
+    let retirement = retire_inputs(&outcome, &StillReferenced::nothing(), 23, &policy).expect("retiring");
 
     assert!(retirement.removed.is_empty());
     assert_eq!(retirement.retained.len(), 4);
@@ -144,7 +144,7 @@ fn retirement_proceeds_once_the_grace_period_has_passed() {
     )
     .expect("running the plan");
 
-    let retirement = retire_inputs(&outcome, &BTreeSet::new(), 24, &RetentionPolicy::default())
+    let retirement = retire_inputs(&outcome, &StillReferenced::nothing(), 24, &RetentionPolicy::default())
         .expect("retiring");
 
     assert_eq!(retirement.removed.len(), 4);
@@ -178,7 +178,7 @@ fn a_pinned_snapshot_keeps_its_files() {
     let mut referenced = BTreeSet::new();
     referenced.insert(Lsn::new(2001));
 
-    let retirement = retire_inputs(&outcome, &referenced, 10_000, &RetentionPolicy::default())
+    let retirement = retire_inputs(&outcome, &StillReferenced::snapshots(referenced.clone()), 10_000, &RetentionPolicy::default())
         .expect("retiring");
 
     assert!(retirement.removed.is_empty());
@@ -206,7 +206,7 @@ fn a_snapshot_past_the_merge_does_not_block_retirement() {
     let mut referenced = BTreeSet::new();
     referenced.insert(Lsn::new(9_999));
 
-    let retirement = retire_inputs(&outcome, &referenced, 10_000, &RetentionPolicy::default())
+    let retirement = retire_inputs(&outcome, &StillReferenced::snapshots(referenced.clone()), 10_000, &RetentionPolicy::default())
         .expect("retiring");
 
     assert_eq!(retirement.removed.len(), 3);
@@ -231,7 +231,7 @@ fn a_missing_replacement_stops_retirement_entirely() {
 
     let err = retire_inputs(
         &outcome,
-        &BTreeSet::new(),
+        &StillReferenced::nothing(),
         10_000,
         &RetentionPolicy::default(),
     )
@@ -276,7 +276,7 @@ fn a_truncated_replacement_stops_retirement_entirely() {
 
     let err = retire_inputs(
         &outcome,
-        &BTreeSet::new(),
+        &StillReferenced::nothing(),
         10_000,
         &RetentionPolicy::default(),
     )
@@ -307,4 +307,111 @@ fn a_stale_plan_is_reported_rather_than_absorbed() {
     .expect_err("a stale plan should be reported");
 
     assert!(format!("{err}").contains("expected"));
+}
+
+#[test]
+fn an_input_a_clone_still_reads_is_kept_however_long_the_grace_period_has_run() {
+    // The premise cloning breaks, at the point where it breaks. Before clones, an input past
+    // its grace period with no snapshot pinning it belonged to exactly one table and was safe
+    // to remove. A clone is a reader that outlives every lease, so age says nothing about it.
+    let dir = tempfile::tempdir().expect("a directory");
+    let plan = plan_over(dir.path(), 4);
+    let outcome = run_compaction(
+        &plan,
+        dir.path(),
+        "merged.parquet",
+        WriterConfig::default(),
+        &[],
+    )
+    .expect("running the plan");
+
+    let read_by_a_clone = outcome.inputs_retained[0].clone();
+    let referenced = StillReferenced {
+        snapshots: std::collections::BTreeSet::new(),
+        cloned: std::collections::BTreeSet::from([read_by_a_clone.clone()]),
+    };
+
+    let retirement = retire_inputs(&outcome, &referenced, 10_000, &RetentionPolicy::default())
+        .expect("retiring");
+
+    assert!(
+        read_by_a_clone.exists(),
+        "a file a clone reads was removed because this table had finished with it"
+    );
+    assert!(!retirement.removed.contains(&read_by_a_clone));
+    assert_eq!(
+        retirement.removed.len(),
+        3,
+        "the other three are this table's alone and go as they always did"
+    );
+
+    let (kept, why) = retirement
+        .retained
+        .iter()
+        .find(|(path, _)| *path == read_by_a_clone)
+        .expect("kept with a reason");
+    assert_eq!(kept, &read_by_a_clone);
+    assert!(why.contains("clone"), "{why}");
+    assert!(why.contains("not this table's file alone"), "{why}");
+}
+
+#[test]
+fn a_table_nobody_cloned_retires_exactly_as_it_did_before() {
+    // The property that makes ADR-0016's answer affordable: an empty clone set changes nothing.
+    let dir = tempfile::tempdir().expect("a directory");
+    let plan = plan_over(dir.path(), 4);
+    let outcome = run_compaction(
+        &plan,
+        dir.path(),
+        "merged.parquet",
+        WriterConfig::default(),
+        &[],
+    )
+    .expect("running the plan");
+
+    let retirement =
+        retire_inputs(&outcome, &StillReferenced::nothing(), 10_000, &RetentionPolicy::default())
+            .expect("retiring");
+
+    assert_eq!(retirement.removed.len(), 4);
+    assert!(retirement.retained.is_empty());
+}
+
+#[test]
+fn a_snapshot_pin_and_a_clone_pin_are_reported_differently() {
+    // They are the same question asked along two axes that do not convert into each other, and
+    // an operator reading a sweep report needs to know which one kept a file: one clears when a
+    // reader finishes, the other when a clone is dropped.
+    let dir = tempfile::tempdir().expect("a directory");
+    let plan = plan_over(dir.path(), 4);
+    let outcome = run_compaction(
+        &plan,
+        dir.path(),
+        "merged.parquet",
+        WriterConfig::default(),
+        &[],
+    )
+    .expect("running the plan");
+
+    let by_snapshot = retire_inputs(
+        &outcome,
+        &StillReferenced::snapshots(std::collections::BTreeSet::from([Lsn::new(1)])),
+        10_000,
+        &RetentionPolicy::default(),
+    )
+    .expect("retiring");
+    assert!(by_snapshot.retained[0].1.contains("retained snapshot"));
+
+    let by_clone = retire_inputs(
+        &outcome,
+        &StillReferenced {
+            snapshots: std::collections::BTreeSet::new(),
+            cloned: outcome.inputs_retained.iter().cloned().collect(),
+        },
+        10_000,
+        &RetentionPolicy::default(),
+    )
+    .expect("retiring");
+    assert!(by_clone.retained[0].1.contains("clone"));
+    assert!(!by_clone.retained[0].1.contains("retained snapshot"));
 }
