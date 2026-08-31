@@ -30,6 +30,17 @@ fn table(name: &str, version: u64, covers_to: u64) -> TableSnapshot {
     TableSnapshot::new(name, version, Lsn::new(covers_to), digest(100, 4_242))
 }
 
+fn clone_of(name: &str, origin: &str, origin_version: u64, covers_to: u64) -> TableSnapshot {
+    TableSnapshot::cloned(
+        name,
+        1,
+        Lsn::new(covers_to),
+        digest(100, 4_242),
+        origin,
+        origin_version,
+    )
+}
+
 fn keys() -> KeyGeneration {
     KeyGeneration {
         name: "warehouse".to_string(),
@@ -212,4 +223,101 @@ fn two_backups_taken_at_the_same_instant_have_different_identities() {
     let two = bind(vec![table("a", 1, 10)], 800).expect("consistent");
     assert_ne!(one.id, two.id);
     assert!(one.id.to_string().starts_with("backup:"));
+}
+
+// --- a clone in a backup, and what it needs beside it -------------------
+
+#[test]
+fn a_backup_holding_a_clone_and_its_origin_is_bound() {
+    let manifest = bind(
+        vec![table("entries", 52, 10), clone_of("staging", "entries", 40, 10)],
+        20,
+    )
+    .expect("both are there");
+
+    let staging = manifest
+        .tables
+        .iter()
+        .find(|table| table.table == "staging")
+        .expect("the clone is recorded");
+    let cloned = staging.cloned_from.as_ref().expect("as a clone");
+    assert_eq!(cloned.origin, "entries");
+    assert_eq!(cloned.version, 40);
+}
+
+#[test]
+fn a_backup_holding_a_clone_without_its_origin_is_refused_at_build_time() {
+    // The failure: a clone's log names none of its origin's files — it reads the origin's live
+    // set at a version and splices its own log over it — so restoring one without its origin
+    // produces a table that is present, readable and **empty**. Nothing about it looks broken.
+    //
+    // Refused where the position check is refused, and for the same reason: a backup that
+    // cannot be restored is worse than no backup, because it is counted as one.
+    let refusal = bind(vec![clone_of("staging", "entries", 40, 10)], 20)
+        .expect_err("its origin is not in the backup");
+
+    assert_eq!(
+        refusal,
+        InconsistentBackup::CloneWithoutItsOrigin {
+            clones: vec![("staging".to_string(), "entries".to_string())]
+        }
+    );
+    let said = refusal.to_string();
+    assert!(said.contains("present, readable and empty"), "{said}");
+    assert!(said.contains("materialise"), "{said}");
+}
+
+#[test]
+fn every_orphaned_clone_is_named_rather_than_the_first() {
+    // An operator who takes another full backup to discover the second omission has been made
+    // to pay twice for one mistake.
+    let refusal = bind(
+        vec![
+            clone_of("staging", "entries", 40, 10),
+            clone_of("scratch", "ledgerless", 3, 10),
+            table("orders", 7, 10),
+        ],
+        20,
+    )
+    .expect_err("two clones are orphaned");
+
+    let InconsistentBackup::CloneWithoutItsOrigin { clones } = refusal else {
+        panic!("an orphaned clone")
+    };
+    assert_eq!(clones.len(), 2);
+    assert!(clones.contains(&("staging".to_string(), "entries".to_string())));
+    assert!(clones.contains(&("scratch".to_string(), "ledgerless".to_string())));
+}
+
+#[test]
+fn a_chain_of_clones_is_bound_when_the_whole_chain_is_present() {
+    // `scratch` reads `staging`, which reads `entries`. Each link is checked against the
+    // backup's own contents, so the chain holds without the check knowing it is a chain.
+    assert!(bind(
+        vec![
+            table("entries", 52, 10),
+            clone_of("staging", "entries", 40, 10),
+            clone_of("scratch", "staging", 3, 10),
+        ],
+        20,
+    )
+    .is_ok());
+}
+
+#[test]
+fn a_broken_link_part_way_up_a_chain_is_refused() {
+    // `scratch` reads `staging` and `staging` is absent. That the *root* is present does not
+    // help: `scratch` splices `staging`'s live set, not `entries`'s.
+    let refusal = bind(
+        vec![table("entries", 52, 10), clone_of("scratch", "staging", 3, 10)],
+        20,
+    )
+    .expect_err("the middle of the chain is missing");
+    assert!(matches!(refusal, InconsistentBackup::CloneWithoutItsOrigin { .. }));
+}
+
+#[test]
+fn an_ordinary_table_records_no_lineage() {
+    let manifest = bind(vec![table("entries", 52, 10)], 20).expect("bound");
+    assert_eq!(manifest.tables[0].cloned_from, None);
 }

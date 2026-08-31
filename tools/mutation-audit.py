@@ -1635,6 +1635,30 @@ CATALOGUE = [
      "        if !self.settings.warehouse.join(&statement.table).exists() && false {",
      "sankhya-server"),
 
+    ("backup: record a backup of a clone whose origin it does not contain",
+     "crates/sankhya-backup/src/manifest.rs",
+     "        if !orphaned.is_empty() {",
+     "        if orphaned.is_empty() && false {",
+     "sankhya-backup"),
+
+    ("backup: name only the first clone whose origin is missing",
+     "crates/sankhya-backup/src/manifest.rs",
+     "                    .then(|| (table.table.clone(), origin.clone()))\n            })\n            .collect();",
+     "                    .then(|| (table.table.clone(), origin.clone()))\n            })\n            .take(1)\n            .collect();",
+     "sankhya-backup"),
+
+    ("backup: look for a clone's origin among the clones rather than the tables",
+     "crates/sankhya-backup/src/manifest.rs",
+     "                (!tables.iter().any(|other| other.table == *origin))",
+     "                (!tables.iter().any(|other| other.cloned_from.is_some() && other.table == *origin))",
+     "sankhya-backup"),
+
+    ("backup: record a clone as an ordinary table",
+     "crates/sankhya-backup/src/manifest.rs",
+     "            cloned_from: Some(ClonedFrom {\n                origin: origin.into(),\n                version: origin_version,\n            }),",
+     "            cloned_from: { let _ = (origin.into(), origin_version); None },",
+     "sankhya-backup"),
+
     ("brake: report a warning when the machine is about to be killed",
      "crates/sankhya-governor/src/memory.rs",
      "    if in_use >= limits.shed_bytes {",

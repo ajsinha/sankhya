@@ -1927,6 +1927,45 @@ applying the same defect is one more than can fail.
 
 Seven tests and 4 mutations.
 
+### Step 7 — a backup that cannot restore what it contains
+
+`ADR-0016` Decision 3: a backup of a clone alone is incomplete **by construction**. Decision 1a
+is why --- a clone's log names none of its origin's files, so it reads the origin's live set at a
+version and splices its own log over it. Restore that without its origin and you get a table that
+is present, readable and **empty**. Nothing about it looks broken.
+
+So `TableSnapshot` records what a table is a clone of, and `Manifest::bind` refuses a backup
+containing a clone whose origin it does not contain --- **at bind time, where the position check
+already lives, and for the same reason: a backup that cannot be restored is worse than no backup,
+because it is counted as one.** Every orphaned clone is named rather than the first, since an
+operator who takes another full backup to find the second omission has paid twice for one
+mistake.
+
+The lineage is *recorded* rather than derived at restore, because at restore the origin may be
+the thing that is missing --- and a manifest that cannot say what it needed is a manifest that
+cannot say what went wrong.
+
+A chain holds without the check knowing it is a chain: each link is verified against the backup's
+own contents, so `scratch → staging → entries` binds when all three are present and is refused
+when the **middle** is absent. That the root is there does not help, because `scratch` splices
+`staging`'s live set rather than `entries`'s.
+
+`TableSnapshot::cloned` is a separate constructor rather than a field somebody sets afterwards,
+so a caller that knows a table is a clone cannot record it as an ordinary one by forgetting a
+line --- and one that does not know cannot claim it is. Old manifests read unchanged: the field
+is `serde(default)` and absent when there is nothing to say.
+
+### Where the tiering half stands, exactly
+
+`ADR-0016` also refuses purging a table any clone references, and `may_purge` is written and
+tested. **It has no call site, and that is not the same omission `may_drop` had.** A drop was a
+reachable operation with a missing check; purge is not reachable at all --- `M9`'s destructive
+path stays disabled until `M11` clears its gate. Wiring a refusal into a path nothing can invoke
+would be a call site that proves nothing, so the honest position is to say where it is and why,
+which is here.
+
+Six tests and 4 mutations.
+
 ## M7, complete
 
 Added 2026-08-27 by owner directive and placed before scale-out: cubes are a stated
@@ -3401,7 +3440,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 551 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 555 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -3917,9 +3956,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 2,122 tests, none of which needs a database
+cargo test --workspace           # 2,128 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 551 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 555 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

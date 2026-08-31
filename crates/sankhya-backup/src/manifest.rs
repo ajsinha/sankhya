@@ -110,6 +110,29 @@ pub struct TableSnapshot {
     /// silently losing the high bits to a double is exactly the failure a digest exists to
     /// catch.
     pub checksum: String,
+    /// What this table is a clone of, when it is one.
+    ///
+    /// # Why a backup has to record this
+    ///
+    /// `ADR-0016` Decision 1a: a clone's log names none of its origin's files. It reads the
+    /// origin's live set at a version and splices its own log over it --- so **a backup of a
+    /// clone alone contains no rows at all**, and one that restored it beside an unrelated
+    /// warehouse would produce a table that is present, readable and empty.
+    ///
+    /// Recorded here rather than derived at restore, because at restore the origin may be the
+    /// thing that is missing, and a manifest that cannot say what it needed is a manifest that
+    /// cannot say what went wrong.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloned_from: Option<ClonedFrom>,
+}
+
+/// The origin a backed-up clone reads.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct ClonedFrom {
+    /// The table it was cloned from.
+    pub origin: String,
+    /// The origin version it reads.
+    pub version: u64,
 }
 
 impl TableSnapshot {
@@ -122,6 +145,30 @@ impl TableSnapshot {
             covers_to,
             rows: digest.rows(),
             checksum: digest.checksum().to_string(),
+            cloned_from: None,
+        }
+    }
+
+    /// The same, for a table that is a clone.
+    ///
+    /// A separate constructor rather than a field somebody sets afterwards, so a caller that
+    /// knows a table is a clone cannot record it as an ordinary one by forgetting a line --- and
+    /// a caller that does not know cannot claim it is.
+    #[must_use]
+    pub fn cloned(
+        table: impl Into<String>,
+        version: Version,
+        covers_to: Lsn,
+        digest: TableDigest,
+        origin: impl Into<String>,
+        origin_version: u64,
+    ) -> Self {
+        Self {
+            cloned_from: Some(ClonedFrom {
+                origin: origin.into(),
+                version: origin_version,
+            }),
+            ..Self::new(table, version, covers_to, digest)
         }
     }
 
@@ -217,6 +264,25 @@ impl Manifest {
             .collect();
         if !ahead.is_empty() {
             return Err(InconsistentBackup::TableAheadOfSource { tables: ahead });
+        }
+
+        // A clone whose origin is not in this backup cannot be restored into anything. The
+        // check is here, at the moment the backup is bound, rather than at restore --- the same
+        // argument the position check above makes: a backup that could not be restored is worse
+        // than no backup, because it is counted as one.
+        //
+        // Every such clone, not the first. An operator who takes another full backup to find the
+        // second omission has been made to pay twice for one mistake.
+        let orphaned: Vec<(String, String)> = tables
+            .iter()
+            .filter_map(|table| {
+                let origin = &table.cloned_from.as_ref()?.origin;
+                (!tables.iter().any(|other| other.table == *origin))
+                    .then(|| (table.table.clone(), origin.clone()))
+            })
+            .collect();
+        if !orphaned.is_empty() {
+            return Err(InconsistentBackup::CloneWithoutItsOrigin { clones: orphaned });
         }
 
         // Sorted, so that two manifests describing the same state serialise identically and
@@ -346,6 +412,11 @@ pub enum InconsistentBackup {
         /// Which tables, what they cover, and what the source restores to.
         tables: Vec<(String, Lsn, Lsn)>,
     },
+    /// A clone is in the backup and the table it reads is not.
+    CloneWithoutItsOrigin {
+        /// Each clone, and the origin it needed.
+        clones: Vec<(String, String)>,
+    },
 }
 
 impl fmt::Display for InconsistentBackup {
@@ -355,6 +426,24 @@ impl fmt::Display for InconsistentBackup {
                 "a backup of no tables is not a backup: restoring it would produce a source \
                  with no analytical tier, and nothing would say so",
             ),
+            Self::CloneWithoutItsOrigin { clones } => {
+                write!(
+                    f,
+                    "refusing to record a backup containing {} clone(s) whose origin it does \
+                     not contain:",
+                    clones.len()
+                )?;
+                for (clone, origin) in clones {
+                    write!(f, "\n  `{clone}` reads `{origin}`")?;
+                }
+                f.write_str(
+                    "\nA clone's log names none of its origin's files --- it reads the origin's \
+                     live set at a version and splices its own log over it --- so restoring one \
+                     without its origin produces a table that is present, readable and empty. \
+                     Back up the warehouse, or materialise the clone into a table of its own \
+                     first",
+                )
+            }
             Self::TableAheadOfSource { tables } => {
                 write!(
                     f,
