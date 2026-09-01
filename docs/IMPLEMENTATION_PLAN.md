@@ -1252,6 +1252,196 @@ that says the system does what the documents claim.
 
 ---
 
+## 13d. M13 — Config-driven ingest, from files
+
+**After M10. Schedulable now.** Added 2026-08-31 by owner directive.
+
+### On the numbering, before anything else
+
+`M13` to `M15` come after `M11` and `M12` in the numbering and **before them in the ordering**,
+because `M11` needs a production deployment and `M12` needs a second machine, and neither is
+schedulable by development. The numbers are identity rather than priority: they are quoted in
+ADR headers, in `REQUIREMENTS.md`, and in commit messages that cannot be rewritten, and
+renumbering would silently falsify every sentence of the form *"M8 §12.2 moved to M12"*.
+
+### What it is
+
+A **configuration** declares a source, the shape of what arrives, and where it lands. Files
+first: a directory of JSON documents, each a dictionary, with the config naming the target table,
+the mapping from keys to columns, and a microbatch policy. Rows flow through `sankhya-publish` to
+the published tier and are answerable by OLAP without a second step.
+
+Nothing here is a new storage path. Ingest is a *producer* for the write path that already
+exists, and a config that reached storage another way would be the second writer
+`check-writers` refuses.
+
+### The gate
+
+**An accepted ADR before any implementation**, covering one question that has no obvious answer:
+
+> **What happens to a record that does not fit the config?**
+
+Everything else in this system refuses rather than coerces --- a type that cannot round-trip
+makes a table ineligible, an unreadable clone lineage is a refusal rather than an absence. **A
+stream cannot refuse the way a statement can.** There is nobody to tell; the producer has moved
+on; and stopping the pipeline for one bad record makes one malformed document an outage.
+
+So the ADR must decide: what is quarantined, for how long, who is told, and when a run of bad
+records stops the pipeline rather than sidelining them one at a time. A quarantine with no
+lifetime is `RSK-35` again --- the accumulation nobody is responsible for --- so it needs the
+expiry treatment rehydration got.
+
+It must also decide **what a config may not do**: silently widen a type, invent a value for a
+missing key, or accept a document whose keys it has never seen. Each is a way to turn a source
+defect into published data that looks fine.
+
+### Work
+
+The config model and its validation, reporting every failing rule rather than the first. The
+mapping from a JSON dictionary to typed rows against `sankhya-schema`'s logical types, refusing
+what `canonical_encoding` refuses. Microbatch assembly bounded by size *and* by time, because
+either alone stalls. The quarantine and its expiry. The command surface. A soak that ingests
+under load and reconciles what arrived against what was published.
+
+### Exit
+
+Ingest demonstrated end to end from a file to an OLAP answer; a malformed record shown to be
+quarantined rather than coerced or dropped; a run of bad records shown to stop the pipeline
+loudly rather than quietly; every refused config shown to fail closed; and the quarantine shown
+to expire rather than accumulate.
+
+---
+
+## 13e. M14 — The client contract and the Python SDK
+
+**After M13. Schedulable now.** Added 2026-08-31 by owner directive.
+
+### What it is, from the outside
+
+Somebody installs a package, connects to a running SANKHYA over a network, and uses it: lists
+what is there, queries it, ingests into it, declares and materialises cubes, clones a table,
+registers an aggregation of their own. **Python first**; Java and Rust follow in `M16` and are
+the reason the contract matters more than the binding.
+
+### The gate
+
+Two things, both before implementation.
+
+**`FR-SEC-03` is mandatory and nothing implements it.** *"Authentication SHALL support federated
+identity tokens, mutual TLS, and scram authentication on the wire-protocol door."* There is no
+TLS anywhere in this workspace --- not on the wire protocol, not on Flight, not as a dependency.
+Today a password crosses an unencrypted socket, which is tolerable on a loopback and is
+credential exposure the moment the client is somewhere else. **An SDK whose whole purpose is
+connecting over a network cannot ship in front of it.**
+
+**An accepted ADR for the client contract**, covering:
+
+1. **What the SDK is allowed to know.** Three bindings are coming. Any validation the client
+   performs and the server does not becomes a specification the other two will not share, and
+   the divergence surfaces as "it worked in Python". The rule to decide: **the SDK contains no
+   logic the server does not also enforce.**
+2. **How an error survives the wire.** The server's refusals carry a `SQLSTATE`, a code and a
+   remediation --- *"drop it first"*, *"materialise them first"*, *"plan again and have it
+   read"*. An SDK that renders those as a string has thrown away the half that says what to do.
+3. **How a large answer is returned.** `MAX_RESULT_ROWS` bounds a result today. A client asking
+   for a hundred million rows must stream, and a binding that materialises before yielding turns
+   a working query into an out-of-memory kill on the client.
+4. **What happens to a long operation.** Materialising a cuboid, taking a backup, cloning a large
+   table: whether the call blocks a connection, and what a client that disconnects mid-way has
+   done.
+5. **Version skew.** An SDK is installed independently of the server it talks to.
+   `sankhya-version` already versions artefacts; the client contract needs the same treatment,
+   and a mismatch must say so rather than fail somewhere specific.
+
+### Where ADR-0010 gets built
+
+[ADR-0010](adr/0010-external-aggregations.md) is `Proposed` and decides the hard half already:
+an external aggregation is a **contract rather than a function** --- `accumulate`, `merge`,
+`finish`, `state` --- where **the presence of `merge` is the composability declaration**, no
+`merge` means `Rule::None`, what materialises is the *state* rather than the number, and
+determinism is **exercised rather than trusted**.
+
+It left exactly one thing open, and the owner decided it on 2026-08-31: **out of process, behind
+Arrow IPC.** Slower per call, isolated and killable. A panicking or looping aggregation is a
+sidecar that dies rather than a query engine that takes the audit chain and every other tenant
+with it. Embedded `pyo3` stays available behind the same contract, later, justified by a
+measurement rather than by preference.
+
+### Cloning, which is built and not yet reachable from a client's hands
+
+`M10` shipped `CREATE TABLE ... CLONE` and the drop that refuses to break a clone, so any client
+that executes SQL already has both. Two things are missing for it to be *usable*:
+
+- **Nothing surfaces lineage.** `Lineages` resolves it server-side and no client can ask *"what
+  is this a clone of?"* or *"what still reads this?"*. A refusal that names what would break is
+  no use if the client could not have known beforehand.
+- **Time travel is refused and never offered.** `may_read_as_of` guards a moment before a clone
+  existed, and there is no way to read a table as of a moment at all.
+
+### Work
+
+TLS on both doors. The client contract and its ADR. The Python package: connect, discover, query
+with streaming results, ingest, cube declaration and materialisation, clone and lineage,
+registered aggregations through the out-of-process contract. Ephemeral cubes with a **mandatory
+expiry**, because a cube that materialises cuboids and is never dropped is the accumulation
+`RSK-35` describes wearing a different costume. A gate that runs the SDK's own tests against a
+real server, because a client tested against a mock is a client tested against its author's
+belief.
+
+### Exit
+
+A user connects over TLS from an unmodified Python installation and, without touching the
+server's filesystem: queries a table larger than the client's memory; ingests a file; declares a
+cube, materialises it, and rolls it up; clones a table and reads the clone; registers an
+aggregation whose `merge` is exercised and whose determinism is checked; and receives a typed,
+remediable error for each refused path. Every one demonstrated against a running server rather
+than a mock.
+
+---
+
+## 13f. M15 — Ingest from Kafka
+
+**After M14.** Added 2026-08-31 by owner directive.
+
+### What it is
+
+The same config-driven ingest as `M13`, sourced from a topic rather than a directory. A config
+names the topic, the messages are JSON dictionaries, and everything downstream is `M13`'s ---
+which is the point of doing files first.
+
+### The gate
+
+**A pin-set decision under [ADR-0001](adr/0001-dependency-pin-set.md).** A Kafka client is a
+substantial dependency, and the usual one brings a C library with it. That is a project-level
+event rather than a dependency bump.
+
+**And an accepted ADR on how a consumer is tested without a broker.** This project vendors
+PostgreSQL 17.11 to test capture against a real server, and its own rule is that a harness
+driving its own code measures its own code. A fake broker is the easy answer and the one that
+proves least; whether to vendor a broker, run one in the gate, or define a seam narrow enough
+that the fake is honest is a decision to make before the code, not after.
+
+### Work
+
+The source, offset management and its durability, delivery semantics stated rather than assumed,
+and the same quarantine `M13` built. A soak that consumes under load and reconciles.
+
+### Exit
+
+Messages consumed from a real broker and answerable by OLAP; a restart shown to resume without
+loss or duplication; a malformed message quarantined; and the delivery guarantee stated and
+demonstrated rather than claimed.
+
+---
+
+## 13g. M16 — The Java and Rust SDKs
+
+**After M14.** Named here so that `M14`'s contract is written for three bindings rather than
+retrofitted to them. Each is a binding over the contract `M14` specifies, and neither may carry
+logic the server does not enforce.
+
+---
+
 ## 14. Parallelisation and critical path
 
 ```
