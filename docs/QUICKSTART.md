@@ -9,7 +9,7 @@
 
 # SANKHYA — Quickstart
 
-**Status:** Implementation — M0–M8 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M10 in progress
+**Status:** Implementation — M0–M8 and M10 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11
 
 This guide reflects what works **today**, and says plainly what does not yet. Anything
 not listed here is not built.
