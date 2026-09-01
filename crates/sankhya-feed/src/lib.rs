@@ -31,8 +31,10 @@
 #![doc(html_root_url = "https://docs.rs/sankhya-feed")]
 
 pub mod bind;
+pub mod command;
 pub mod declare;
 pub mod progress;
+pub mod state;
 pub mod quarantine;
 pub mod run;
 pub mod shape;
@@ -41,8 +43,14 @@ pub mod stop;
 pub mod validate;
 
 pub use bind::{bind, Cell, Row, Unfit};
+pub use command::{parse as parse_command, Command, CommandError};
 pub use declare::{Column, DateFrom, Declaration, Microbatch, Missing, Quarantine, Unknown};
-pub use progress::{Partial, Position, Standing};
+// `Standing` is not re-exported: `progress::Standing` says what a *source* is relative to the
+// position, and `state::Standing` says what a *feed* is doing. Both are the right word in
+// their own module, and flattening them here would force one of them to be renamed to
+// something worse. Callers name the module.
+pub use state::{Feeds, Health};
+pub use progress::{Partial, Position};
 pub use quarantine::{code, fingerprint, Refused};
 pub use run::{run, Ran, RunError, Running};
 pub use shape::{table_schema, Unassembled};

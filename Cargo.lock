@@ -3595,6 +3595,7 @@ dependencies = [
  "sankhya-cube",
  "sankhya-cube-sql",
  "sankhya-error",
+ "sankhya-feed",
  "sankhya-ingest",
  "sankhya-maintenance",
  "sankhya-math",
@@ -3732,6 +3733,7 @@ dependencies = [
  "sankhya-plan",
  "sankhya-publish",
  "sankhya-readpath",
+ "sankhya-schema",
  "sankhya-stats",
  "sankhya-table",
  "sankhya-table-delta",
@@ -3739,6 +3741,7 @@ dependencies = [
  "sankhya-types",
  "serde_json",
  "tempfile",
+ "time",
  "tokio",
 ]
 

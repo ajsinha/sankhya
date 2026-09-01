@@ -145,6 +145,59 @@ pub(crate) fn run_once(declared: &Declared, warehouse: &Path) -> Result<Ran, Str
     .map_err(|error| error.to_string())
 }
 
+/// Expire quarantined records whose retention has run out.
+///
+/// # Why the longest retention wins
+///
+/// One quarantine holds every feed's refused records, and a partition holds whatever arrived
+/// that day. Detaching it on the shortest declared retention would let one feed destroy
+/// another feed's records by editing its own configuration, which is a feed being given
+/// authority over data it did not produce.
+///
+/// # Why this is detach and not delete
+///
+/// `DEC-23` gets no exception here. The partition leaves the live set, the files stay on disk,
+/// and retirement reclaims them after its grace period --- so an expiry that should not have
+/// happened is reversible for as long as that period lasts. That is what makes running this
+/// automatically defensible where running a delete would not be.
+///
+/// Returns what it detached, or the reason it could not. `None` when there is nothing to do.
+pub(crate) fn expire_quarantine(
+    declared: &[Declared],
+    warehouse: &Path,
+    today: i32,
+    now: i64,
+) -> Option<Result<String, String>> {
+    let retain = declared
+        .iter()
+        .map(|feed| feed.feed.quarantine().retain_days)
+        .max()?;
+    let root = warehouse.join("sank").join(quarantine::TABLE);
+    if !sankhya_publish::is_table(&root) {
+        return None;
+    }
+    let live = match sankhya_table_delta::live_files(&root) {
+        Ok(live) => live,
+        Err(error) => return Some(Err(format!("reading the quarantine: {error}"))),
+    };
+    let expired = sankhya_maintenance::expire::plan(&live, today, retain);
+    if expired.is_empty() {
+        return None;
+    }
+    let version = live.version.map_or(1, |version| version.saturating_add(1));
+    match sankhya_maintenance::expire::detach(&root, version, &live, &expired, now) {
+        Ok(_) => Some(Ok(format!(
+            "{} partition(s), {} file(s), older than {retain} day(s)",
+            expired.partitions.len(),
+            expired.files
+        ))),
+        // Not fatal and not silent. Another committer taking the version is ordinary --- the
+        // next tick tries again --- and an operator should still be able to see that expiry
+        // is not getting through if it never does.
+        Err(error) => Some(Err(format!("detaching expired partitions: {error}"))),
+    }
+}
+
 /// The publication a feed writes through, with its date axis applied.
 fn publication(root: &Path, name: &str, feed: &Feed) -> Publication {
     let publication = Publication::external(root, name);

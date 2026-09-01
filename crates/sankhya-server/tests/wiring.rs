@@ -397,3 +397,72 @@ async fn a_syntactically_invalid_statement_is_refused_without_taking_the_server_
     // And the next statement still works.
     assert!(server.query("SELECT id FROM example").is_ok());
 }
+
+/// A feed's standing, over the wire the operator uses.
+///
+/// Written against the server rather than the registry because the registry's own tests
+/// already prove the state machine. What these check is that the two statements reach it at
+/// all --- which is the half that a client depends on and a unit test cannot see.
+#[tokio::test(flavor = "multi_thread")]
+async fn showing_feeds_reports_every_declared_feed_and_its_state() {
+    let (server, _dir) = server_over(|tables| permissive_policy(&tenant(), tables));
+    let feeds = server.feeds();
+    feeds.declare("orders");
+    feeds.declare("sessions");
+    feeds.halted("sessions", "not one of this source's 40 records fitted", 1_756_000_000_000_000);
+
+    let result = server.query("SHOW FEEDS").expect("a feed command is answered");
+
+    assert_eq!(result.rows.len(), 2);
+    let names: Vec<&str> = result
+        .rows
+        .iter()
+        .filter_map(|row| row.first().and_then(Option::as_deref))
+        .collect();
+    assert_eq!(names, vec!["orders", "sessions"]);
+
+    // The reason is a column rather than something to grep a log for, which is the whole
+    // point: an operator arriving an hour later has the same question as one arriving
+    // immediately.
+    let sessions = result.rows.iter().find(|row| row[0].as_deref() == Some("sessions"));
+    let sessions = sessions.expect("the halted feed");
+    assert_eq!(sessions[1].as_deref(), Some("halted"));
+    assert!(
+        sessions[3].as_deref().is_some_and(|why| why.contains("40 records")),
+        "the reason travels with the state: {sessions:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resuming_a_feed_sets_it_running_and_resuming_a_typo_is_refused() {
+    let (server, _dir) = server_over(|tables| permissive_policy(&tenant(), tables));
+    server.feeds().declare("orders");
+    server.feeds().halted("orders", "a reason", 1);
+    assert!(!server.feeds().should_run("orders"));
+
+    server.query("RESUME FEED orders").expect("resuming a declared feed");
+    assert!(server.feeds().should_run("orders"), "it runs again on the next tick");
+
+    // Named rather than reported as success. An operator who mistypes and is told it resumed
+    // will go away believing it did.
+    let refused = server
+        .query("RESUME FEED odrers")
+        .expect_err("no feed by that name");
+    assert!(refused.message.contains("odrers"), "{}", refused.message);
+    assert!(refused.message.contains("SHOW FEEDS"), "{}", refused.message);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_statement_that_merely_begins_like_a_feed_command_reaches_the_engine() {
+    // The important half. `SHOW server_version_num` is what a catalogue-browsing client sends
+    // on connection, and a feed parser that took it would break every such client while
+    // reporting a refusal about feeds.
+    let (server, _dir) = server_over(|tables| permissive_policy(&tenant(), tables));
+
+    let version = server.query("SHOW server_version_num");
+    let refused = version.err().map(|failure| failure.message).unwrap_or_default();
+    assert!(
+        !refused.contains("feed"),
+        "whatever answers this, it is not the feed parser: {refused}"
+    );
+}

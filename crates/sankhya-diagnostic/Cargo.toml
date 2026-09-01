@@ -21,6 +21,7 @@ sankhya-math        = { path = "../sankhya-math" }
 sankhya-table-delta = { path = "../sankhya-table-delta" }
 
 [dev-dependencies]
+sankhya-feed = { path = "../sankhya-feed" }
 # The soak drives the product's own write and maintenance paths. Dev-dependencies, because
 # the soak is a test: nothing here is compiled into anything that ships.
 sankhya-clone       = { path = "../sankhya-clone" }

@@ -73,10 +73,12 @@ pub enum Standing {
     Fresh,
     /// Part-read. Skip this many records and carry on.
     Resume(u64),
-    /// Already read to completion.
+    /// At or below the mark: read already, as far as a mark can tell.
+    ///
+    /// Covers a source finished last week and a source that has only just appeared behind
+    /// the mark, because those are the same answer to a structure that records where a feed
+    /// got to rather than which files it read.
     Done,
-    /// Sorts before the mark and is not the partial one: it arrived late.
-    Late,
 }
 
 impl Position {
@@ -112,14 +114,13 @@ impl Position {
         }
         if self.through.is_empty() {
             // Nothing has ever finished. A partial source is handled above, so anything else
-            // is new — including a name that sorts before the partial one, since there is no
-            // mark for it to be late against.
+            // is new.
             return Standing::Fresh;
         }
-        match source.cmp(self.through.as_str()) {
-            std::cmp::Ordering::Greater => Standing::Fresh,
-            std::cmp::Ordering::Equal => Standing::Done,
-            std::cmp::Ordering::Less => Standing::Late,
+        if source > self.through.as_str() {
+            Standing::Fresh
+        } else {
+            Standing::Done
         }
     }
 
