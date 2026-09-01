@@ -11,7 +11,7 @@
 
 **Document ID:** SNK-RD-001
 **Version:** 0.1.0 (draft for review)
-**Status:** Implementation — M0–M8 and M10 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11
+**Status:** Implementation — M0–M8, M10 and M13 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14 in progress
 **Date:** 2026-08-26
 **Supersedes:** `docs/initial_reqmt.docx` ("Unified Enterprise Data Architecture & Requirements Document", URARD)
 

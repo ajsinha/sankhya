@@ -11,7 +11,7 @@
 
 **Document ID:** SNK-IP-001
 **Version:** 0.1.0 (draft for review)
-**Status:** Implementation — M0–M8 and M10 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11
+**Status:** Implementation — M0–M8, M10 and M13 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14 in progress
 **Date:** 2026-08-26
 **Companions:** `REQUIREMENTS.md` (SNK-RD-001), `ARCHITECTURE.md` (SNK-AD-001), `ROADMAP.md`
 
@@ -1299,11 +1299,54 @@ defect into published data that looks fine.
 
 ### Progress, 2026-08-31
 
-Built and tested (2,232 tests): the declaration, its validation, the binder, the stop control and
-the quarantine's schema and fingerprint. Not built: the runner --- reading sources, assembling
-microbatches, publishing, and committing the position with the rows.
+**Built, tested and wired.** The declaration and its validation, the binder, the stop control,
+the quarantine, the position, the source reader, the batch assembly, and the runner that joins
+them. The server loads declarations from `config/feeds/`, runs each on its own cadence, and
+drops a feed that stops rather than retrying it. `sankhya-feed` is off the `UNREACHED` list,
+which is the mechanical statement that it is reached rather than merely built.
 
-Two things the ADR did not name turned up while building. A feed must **declare its date axis**,
+(Written without a count of this crate's own tests, deliberately: `check-doc-numbers` reads any
+figure of the form *"N tests"* as the workspace total and rewrites it, so a per-crate figure in
+prose becomes a false claim on the next sync.)
+
+**Quarantine expiry is built** in `sankhya-maintenance::expire`, as partition detach rather than
+row deletion --- `DEC-23` gets no exception here, and detaching stays reversible until
+retirement's grace period runs, which is what makes doing it automatically defensible where
+deleting would not be. It refuses wherever it would have to guess: a partition whose date cannot
+be read, and a file at the table root belonging to no partition, are both left alone. A
+partition is kept until the **longest** retention any feed declares has passed, because one
+quarantine holds several feeds' records and the alternative is a feed destroying data it did not
+produce by editing its own configuration. **The maintenance tick calls it**, on the same thread
+that already retires and compacts, so quarantine expiry is not a separate schedule anybody has to
+remember to arm.
+
+**The soak has an ingest arm.** It writes documents into a spool every round, one in twenty
+deliberately malformed --- under the stop rate so the feed runs throughout, above zero so the
+quarantine path is exercised under load. It is the only arm whose statement is exact rather than
+statistical: every document written is known, so the published and quarantined counts must
+*equal* the sound and malformed counts, and a discrepancy is a row that arrived twice or did not
+arrive.
+
+### The command surface a halted feed needs, and what was built for it
+
+`ADR-0018` requires that a stopped feed be **visible** and that resuming be an act somebody
+performs. The halted set used to live in the server's feed task, which meant it was visible in a
+log line at the moment it happened and nowhere afterwards --- an operator arriving an hour later
+had no way to ask. Three requirements followed, and all three are now built: the state lives in
+`sankhya-feed::state`, and `SHOW FEEDS` and `RESUME FEED <name>` reach it from a client.
+
+1. **A feed is a thing with a state**, readable from a client: its name, whether it is running
+   or halted, why, and what its last run did. Held where a query can reach it rather than in a
+   task's local set.
+2. **Resuming is a statement**, not a restart. Restarting the server to resume one feed takes an
+   outage on every other.
+3. **Resuming does not forget.** A feed that halted, was resumed, and halted again for the same
+   reason is a different situation from one that halted once, and an operator should be able to
+   tell without reading a log. `Feeds` therefore keeps the halt count across a resume rather than
+   clearing it, and a resume of a feed nobody declared is refused by name rather than creating an
+   entry for it.
+
+Three things the ADR did not name turned up while building. A feed must **declare its date axis**,
 because `DEC-34` requires the date to be declared per table and never defaulted, and a feed is
 where a table's rows come from; a date column that is nullable, absent, or not a date is refused
 by name. And the ADR's source-level stop control was written here as a *threshold* first, which
@@ -1311,6 +1354,10 @@ made a two-record file with one bad record stop the feed --- the same mistake as
 first malformed document, one level up. It is now an unambiguous condition: a source that
 produced **nothing** usable stops the feed, and everything between that and one bad record is a
 rate, which the window measures across sources.
+
+The third is the one the soak found: the position is a high-water mark, so it **cannot**
+distinguish a source that arrived late from one finished last week. The ADR is amended with the
+decision that follows --- never re-ingest, count what was skipped, and say so.
 
 ### Work
 
@@ -1422,6 +1469,30 @@ that executes SQL already has both. Two things are missing for it to be *usable*
   no use if the client could not have known beforehand.
 - **Time travel is refused and never offered.** `may_read_as_of` guards a moment before a clone
   existed, and there is no way to read a table as of a moment at all.
+
+### The server grows first
+
+[ADR-0017](adr/0017-the-client-contract.md)'s first consequence, and the thing that makes this
+milestone larger than *"write a Python package"*: a binding may contain no logic the server does
+not enforce, so anything a client shows must be something the server can be asked. Four of these
+do not exist, and none of them is client work.
+
+1. **Lineage, from a client.** `M10` records where a clone came from and `Lineages` resolves it
+   server-side; nothing surfaces it. Without this a user can create a clone and never ask what
+   it is a clone of, which makes its numbers unplaceable.
+2. **Dependents, from a client.** `may_drop` refuses a drop that would strand a clone and names
+   the clones --- *after* the attempt. A refusal that names what would break is no use to
+   somebody who could not have asked beforehand, and an interface that creates clones freely and
+   never surfaces them quietly grows a warehouse.
+3. **Refusals as data.** The wire carries a sentence today. The contract needs `code`,
+   `sqlstate`, `remediation` and **the names a refusal cites** as separate fields --- the last
+   being the one that is cheap now and expensive later, because a client that must parse names
+   out of prose turns the message into an API nobody may reword.
+4. **A version handshake.** A mismatch must be refused at connection, naming both versions,
+   rather than surfacing eleven calls later as a missing field.
+
+Only then the binding, which is thin by construction --- and thin is what makes three of them
+agree.
 
 ### Work
 

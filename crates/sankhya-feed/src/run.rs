@@ -50,8 +50,14 @@ pub struct Ran {
     pub quarantined: u64,
     /// Records skipped because the position said they were already published.
     pub resumed_past: u64,
-    /// Sources refused for arriving behind the high-water mark.
-    pub late: Vec<String>,
+    /// Sources skipped because they sort at or below the high-water mark.
+    ///
+    /// Ordinary rather than alarming: a spool directory keeps its files, so every source
+    /// finished on a previous run is counted here on every run afterwards. It is reported
+    /// because the *number* carries the information --- one that grows when it should be
+    /// steady means sources are arriving behind the mark, which no mark can tell apart from
+    /// files it read yesterday.
+    pub already_read: u64,
     /// Why the feed stopped, if it did.
     pub stopped: Option<Reason>,
 }
@@ -142,12 +148,8 @@ pub fn run(feed: &Feed, directory: &Path, mut at: Running<'_>) -> Result<Ran, Ru
             .file_name()
             .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
         let skip = match position.standing(&name) {
-            Standing::Done => continue,
-            Standing::Late => {
-                // Two possible meanings — a producer wrote out of order, or somebody
-                // replayed an old file — and they want opposite responses. Named rather
-                // than guessed at.
-                ran.late.push(name);
+            Standing::Done => {
+                ran.already_read = ran.already_read.saturating_add(1);
                 continue;
             }
             Standing::Fresh => 0,

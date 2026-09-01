@@ -31,10 +31,11 @@ fn a_finished_source_and_everything_before_it_is_done() {
 
     assert_eq!(position.standing("2026-08-15.json"), Standing::Done);
     assert_eq!(position.standing("2026-08-16.json"), Standing::Fresh);
-    // Behind the mark: either a producer wrote out of order or somebody replayed an old
-    // file. Those want opposite responses and the feed cannot tell which happened, so it
-    // refuses and names the event for whoever can.
-    assert_eq!(position.standing("2026-08-14.json"), Standing::Late);
+    // And everything below the mark, which is where the honest limit of a high-water mark
+    // is: a source finished last week and a source that has just appeared behind the mark
+    // are the same answer, because a mark records where a feed got to and not which files
+    // it read. Never re-ingesting is the error this design prefers.
+    assert_eq!(position.standing("2026-08-14.json"), Standing::Done);
 }
 
 #[test]
@@ -73,7 +74,7 @@ fn the_mark_only_ever_moves_forward() {
     position.finished("2026-08-03.json");
 
     assert_eq!(position.through, "2026-08-20.json");
-    assert_eq!(position.standing("2026-08-10.json"), Standing::Late);
+    assert_eq!(position.standing("2026-08-10.json"), Standing::Done);
 }
 
 #[test]

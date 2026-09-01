@@ -14,6 +14,8 @@ layer = 3
 workspace = true
 
 [dependencies]
+sankhya-schema = { path = "../sankhya-schema" }
+time = { workspace = true }
 sankhya-clone       = { path = "../sankhya-clone" }
 sankhya-leases = { path = "../sankhya-leases" }
 sankhya-config      = { path = "../sankhya-config" }

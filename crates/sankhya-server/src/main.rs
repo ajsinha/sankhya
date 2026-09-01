@@ -309,6 +309,18 @@ fn now_micros() -> i64 {
         .unwrap_or(0)
 }
 
+/// Today, as days since the epoch.
+///
+/// Whole days, so expiry is decided on the same boundary the partitions are written on.
+/// Anything finer would make a partition's fate depend on the time of day a tick happened to
+/// run, which is a thing nobody chose.
+fn today() -> i32 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| i32::try_from(since.as_secs() / 86_400).unwrap_or(0))
+}
+
+
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     // Installing the allocator is a `#[global_allocator]` attribute and reaches nothing;
@@ -473,6 +485,12 @@ async fn main() -> std::io::Result<()> {
     if !declared.is_empty() {
         let cadence = std::time::Duration::from_secs(feed_interval_seconds);
         let warehouse = settings_warehouse.clone();
+        // Declared up front, so a feed that has never managed to run is still visible to
+        // `SHOW FEEDS` --- which is the case an operator most needs to see.
+        let standing = server.feeds();
+        for feed in &declared {
+            standing.declare(feed.feed.name());
+        }
         println!(
             "  {} feed(s) declared: {}",
             declared.len(),
@@ -483,12 +501,26 @@ async fn main() -> std::io::Result<()> {
                 .join(", ")
         );
         tokio::spawn(async move {
-            let mut halted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
             loop {
                 tokio::time::sleep(cadence).await;
+
+                // Quarantine expiry, on the same tick as the feeds themselves. `ADR-0018`
+                // makes a retention mandatory precisely so that this exists: a quarantine
+                // that only grows holds exactly the records nobody looked at, and nobody is
+                // responsible for it.
+                match tokio::task::block_in_place(|| {
+                    feeds::expire_quarantine(&declared, &warehouse, today(), now_micros())
+                }) {
+                    None => {}
+                    Some(Ok(said)) => println!("  quarantine expired {said}"),
+                    Some(Err(why)) => eprintln!("  quarantine could not be expired — {why}"),
+                }
+
                 for feed in &declared {
                     let name = feed.feed.name().to_owned();
-                    if halted.contains(&name) {
+                    // Asked of the registry rather than a local set, so `RESUME FEED` takes
+                    // effect on the next tick without this task knowing the command exists.
+                    if !standing.should_run(&name) {
                         continue;
                     }
                     let warehouse = warehouse.clone();
@@ -497,11 +529,19 @@ async fn main() -> std::io::Result<()> {
                         Err(refusal) => {
                             // Loud and once. A feed that cannot run at all is a
                             // configuration problem, and repeating it every cadence buries
-                            // everything else in the log.
+                            // everything else in the log. The registry keeps it after the
+                            // line has scrolled away.
                             eprintln!("  feed `{name}` refused — {refusal}");
-                            halted.insert(name);
+                            standing.halted(&name, &refusal, now_micros());
                         }
                         Ok(result) => {
+                            standing.ran(
+                                &name,
+                                result.published,
+                                result.quarantined,
+                                result.already_read,
+                                now_micros(),
+                            );
                             if result.published > 0 || result.quarantined > 0 {
                                 println!(
                                     "  feed `{name}`: {} published, {} quarantined, {} \
@@ -509,18 +549,12 @@ async fn main() -> std::io::Result<()> {
                                     result.published, result.quarantined, result.sources
                                 );
                             }
-                            for late in &result.late {
-                                eprintln!(
-                                    "  feed `{name}`: `{late}` arrived behind what has \
-                                     already been read and was not ingested. Either a \
-                                     producer wrote out of order or an old file was \
-                                     replayed, and only somebody who knows which should \
-                                     decide"
-                                );
-                            }
                             if let Some(reason) = result.stopped {
-                                eprintln!("  feed `{name}` STOPPED — {reason}");
-                                halted.insert(name);
+                                eprintln!(
+                                    "  feed `{name}` STOPPED — {reason}. It will not run \
+                                     again until somebody says `RESUME FEED {name}`"
+                                );
+                                standing.halted(&name, &reason.to_string(), now_micros());
                             }
                         }
                     }

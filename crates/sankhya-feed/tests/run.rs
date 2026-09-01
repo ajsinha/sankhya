@@ -212,7 +212,7 @@ fn a_wholly_quarantined_source_still_counts_as_progress() {
 }
 
 #[test]
-fn a_source_arriving_behind_the_mark_is_named_rather_than_ingested() {
+fn a_source_arriving_behind_the_mark_is_counted_and_not_ingested() {
     let dir = tempfile::tempdir().expect("a directory");
     let feed = feed();
     let (table, quarantine) = tables(dir.path(), &feed);
@@ -220,14 +220,16 @@ fn a_source_arriving_behind_the_mark_is_named_rather_than_ingested() {
     spool(&spool_at, &[("2026-08-30.json", &[r#"{"id": 1, "amount": "1.00"}"#])]);
     once(&feed, &spool_at, &table, &quarantine);
 
-    // A file appearing behind the high-water mark means either a producer wrote out of order
-    // or somebody replayed an old file. Those want opposite responses and the feed cannot
-    // tell which, so it names the event instead of choosing.
+    // A file appearing behind the mark is indistinguishable from one this feed finished
+    // earlier, because a high-water mark records where it got to and not which files it
+    // read. Never re-ingesting is the error this design prefers — duplication is silent and
+    // permanent, where a skipped source is a file still sitting in the directory — and the
+    // count is what makes an unexpected number visible.
     spool(&spool_at, &[("2026-08-29.json", &[r#"{"id": 99, "amount": "9.99"}"#])]);
     let ran = once(&feed, &spool_at, &table, &quarantine);
 
-    assert_eq!(ran.published, 0);
-    assert_eq!(ran.late, vec!["2026-08-29.json".to_owned()]);
+    assert_eq!(ran.published, 0, "nothing behind the mark is read again");
+    assert_eq!(ran.already_read, 2, "both the finished source and the one behind it");
 }
 
 #[test]

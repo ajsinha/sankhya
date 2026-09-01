@@ -114,9 +114,38 @@ is, which makes a restart a question with an answer rather than a reconciliation
 is `FR-TIER-08`'s argument for the purge journal --- commit the transition before the action, and
 make every phase resumable --- applied to ingest.
 
-It also settles re-ingest: a source already recorded as complete is **refused**, not silently
-re-read. A file redelivered under the same name is a real event with two possible meanings, and
-the system cannot tell which; refusing names it for somebody who can.
+It also settles re-ingest: a source already recorded as complete is **not read again**. A file
+redelivered under the same name is a real event with two possible meanings and the system cannot
+tell which, so it does not guess.
+
+### Amendment, 2026-09-01 --- what a position can actually record
+
+Implementation found a claim in the paragraph above that the design cannot support, and the
+soak found it in under a minute.
+
+The position is a **high-water mark**: the last source finished, in name order. That is what
+keeps it O(1) --- the alternative, a set of every source ever read, grows for as long as the
+feed runs and is held in a table property rewritten on every commit.
+
+A mark records *where a feed got to*, not *which files it read*. So a source sorting below the
+mark is **indistinguishable** from one finished last week: both are "behind where we are". The
+first implementation reported everything below the mark as having arrived late, and in a spool
+directory --- which keeps its files --- that meant every previously-finished source was
+announced as a late arrival on every run after the third.
+
+**The decision is which error to prefer, and it is: never re-ingest.** A source that genuinely
+arrives out of order is skipped rather than read. Duplication is silent and permanent --- every
+row twice, in a table somebody reconciles against, with nothing in the result saying so --- where
+a skipped source is a file still sitting in a directory, findable and replayable.
+
+What replaces the refusal is a **count**. Every run reports how many sources it skipped as
+already read. The number is steady for a spool that accumulates and grows when sources start
+arriving behind the mark, which is what turns an undetectable event into one an operator can
+notice. Refusing individually is not available at this cost; noticing is.
+
+Distinguishing them properly requires remembering which sources were read, and no bounded
+structure does it: a *recent* set answers "in the set" but cannot tell "long since done" from
+"never seen" for anything that has fallen out of it.
 
 ## Consequences
 

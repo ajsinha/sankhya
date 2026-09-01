@@ -173,6 +173,8 @@ fn fan_out_condition(table: usize, strain: &Strain) -> String {
 ///
 /// Configured by environment rather than by arguments, because a test harness has no argv of
 /// its own.
+mod feedarm;
+
 #[test]
 #[ignore = "a soak takes forty-five minutes; run it deliberately"]
 fn soak() {
@@ -323,6 +325,10 @@ fn soak() {
     // rendered message carries a running batch count and so is never the same twice.
     let mut fan_out_reported: std::collections::BTreeSet<String> =
         std::collections::BTreeSet::new();
+    // The ingest arm: documents arriving in a directory, which is the path a deployment
+    // actually uses and the only arm whose correctness statement is exact rather than
+    // statistical.
+    let mut feed = feedarm::FeedArm::open(&at, &schema);
     let mut accumulators: Vec<Accumulator<'_>> = publications
         .iter()
         .map(|publication| Accumulator::new(publication, FanOut::default()))
@@ -354,6 +360,12 @@ fn soak() {
             }
         }
 
+        // Ingest, every round. Cheap next to a table scan and it exercises the write path
+        // through the door a deployment uses rather than through the harness.
+        if let Some(said) = feed.step(now_micros()) {
+            eprintln!("{}  feed: {said}", stamp());
+        }
+
         // Reconciliation: is what was written still what is there?
         //
         // One table, rotating, every `RECONCILE_EVERY` rounds. A full table scan is far more
@@ -368,6 +380,25 @@ fn soak() {
         // explicitly refuses as a substitute.
         if round % RECONCILE_EVERY == 0 {
             let which = ((round / RECONCILE_EVERY) as usize).wrapping_sub(1) % roots.len().max(1);
+            // Flushed first, and this is the whole correctness of the check.
+            //
+            // `expected` is merged when a batch is *absorbed*, and absorbing hands it to the
+            // fan-out accumulator, which defers partitions that are still too small to be
+            // worth a file. So at any instant some absorbed rows are in a buffer rather than
+            // in the table, and comparing the two without flushing compares "what was handed
+            // over" against "what was written" --- which differ by design.
+            //
+            // The first run with reconciliation switched on reported four tables missing
+            // rows for exactly this reason, in round numbers that were multiples of the
+            // batch size. Reconciliation asks whether what was *written* is still there, so
+            // everything outstanding has to be written before the question is meaningful.
+            if let Some(accumulator) = accumulators.get_mut(which) {
+                if let Err(error) =
+                    accumulator.flush(&format!("reconcile-{round:06}.parquet"), Lsn::new(round))
+                {
+                    eprintln!("{}  could not flush before reconciling: {error}", stamp());
+                }
+            }
             if let (Some(root), Some(want)) = (roots.get(which), expected.get(which)) {
                 match observed_digest(root) {
                     Some(found) => {
@@ -540,6 +571,20 @@ fn soak() {
     //
     // Reported before the measures, because a run whose data no longer matches what was
     // written has already failed and the growth curves are beside the point.
+    // The ingest arm's statement is exact: every document written is known, so the counts
+    // must agree rather than merely be plausible.
+    let feed_complaints = feed.reconcile();
+    println!(
+        "{}  feed: {} document(s) written, {} published, {} quarantined",
+        stamp(),
+        feed.written,
+        feed.published,
+        feed.quarantined
+    );
+    for complaint in &feed_complaints {
+        eprintln!("{}  FEED  {complaint}", stamp());
+    }
+
     println!(
         "{}  reconciled {reconciled} table-scan(s), {} row(s), {unreadable} unreadable",
         stamp(),
@@ -560,6 +605,10 @@ fn soak() {
     // Zero reconciliations is not a pass. A run short enough never to reach the first one
     // would otherwise report a clean reconciliation it never performed --- the same shape as
     // the cube assertion above, and the same reason for asserting rather than printing.
+    assert!(
+        feed_complaints.is_empty(),
+        "the ingest arm did not reconcile: {feed_complaints:?}"
+    );
     assert!(
         reconciled > 0,
         "no reconciliation ran in {minutes} minute(s); at one every {RECONCILE_EVERY} rounds \
@@ -658,6 +707,13 @@ fn emit(
         }
     }
     std::fs::write(artefacts(at).join("soak-report.txt"), report.describe()).ok();
+}
+
+/// Microseconds since the epoch, for stamping a quarantined record with when it arrived.
+fn now_micros() -> i64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |since| i64::try_from(since.as_micros()).unwrap_or(i64::MAX))
 }
 
 /// Seconds since the epoch, and a readable clock time beside it.
