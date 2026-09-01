@@ -12,7 +12,7 @@ use sankhya_types::Lsn;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Write the sample warehouse a first-time user is told to generate.
@@ -147,6 +147,13 @@ fn declare_the_sample_cube(root: &std::path::Path) {
 pub(crate) struct Running {
     child: Child,
     pub(crate) port: u16,
+    /// Every line the server printed, on either stream.
+    ///
+    /// Kept rather than discarded because some of what this system does is **say something**.
+    /// A feed that stops is required by `ADR-0018` to stop loudly, and a test that only
+    /// checks the feed stopped would pass against a server that stopped it in silence ---
+    /// which is the failure an operator actually meets.
+    said: Arc<Mutex<Vec<String>>>,
 }
 
 impl Drop for Running {
@@ -172,22 +179,62 @@ const BANNER_TIMEOUT: Duration = Duration::from_secs(30);
 /// Reading the banner rather than sleeping. A sleep long enough to be reliable dominates the
 /// measurement; one short enough not to is a flaky test.
 pub(crate) fn start(warehouse: &std::path::Path, data: &std::path::Path) -> Running {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sankhya-server"))
+    start_with(warehouse, data, &[])
+}
+
+/// Start the binary with extra environment, and wait until it says which port it took.
+///
+/// The environment is a slice rather than a struct of known keys: what a test needs to
+/// configure is a property of the test, and a struct here would grow a field per caller and
+/// still be wrong for the next one.
+///
+/// **Both streams are captured.** `start` used to discard stderr, which is where every
+/// refusal and every stopped feed is reported --- so the one channel a test would want to
+/// assert on was the one thrown away.
+pub(crate) fn start_with(
+    warehouse: &std::path::Path,
+    data: &std::path::Path,
+    extra: &[(&str, &str)],
+) -> Running {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sankhya-server"));
+    command
         .env("SANKHYA_NO_PASSWORD", "1")
         .env("SANKHYA_LISTEN", "127.0.0.1:0")
         .env("SANKHYA_METRICS_LISTEN", "127.0.0.1:0")
         .env("SANKHYA_WAREHOUSE", warehouse)
-        .env("SANKHYA_DATA_DIR", data)
+        .env("SANKHYA_DATA_DIR", data);
+    for (name, value) in extra {
+        command.env(name, value);
+    }
+    let mut child = command
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("the server binary starts");
+
+    let said: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    // Stderr is drained on its own thread for the reason stdout is: a full pipe blocks the
+    // writer, and the writer here is the process under test.
+    if let Some(stderr) = child.stderr.take() {
+        let said = Arc::clone(&said);
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stderr);
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 0 {
+                if let Ok(mut lines) = said.lock() {
+                    lines.push(line.trim_end().to_owned());
+                }
+                line.clear();
+            }
+        });
+    }
 
     let stdout = child.stdout.take().expect("piped");
     // Read on another thread and wait with a deadline, because `read_line` has none. The
     // thread is left to finish on its own: it ends when the child does, and the child is
     // killed by `Running`'s `Drop` on every path out of this test.
     let (sender, receiver) = std::sync::mpsc::channel();
+    let recording = Arc::clone(&said);
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         let mut line = String::new();
@@ -202,6 +249,9 @@ pub(crate) fn start(warehouse: &std::path::Path, data: &std::path::Path) -> Runn
         // sometimes did not. A supervisor drains the pipe for the life of the child; so does
         // this.
         while reader.read_line(&mut line).unwrap_or(0) > 0 {
+            if let Ok(mut lines) = recording.lock() {
+                lines.push(line.trim_end().to_owned());
+            }
             if !announced {
                 if let Some(address) = line.trim().strip_prefix("listening on ") {
                     let port = address
@@ -224,12 +274,12 @@ pub(crate) fn start(warehouse: &std::path::Path, data: &std::path::Path) -> Runn
     let port = match announced {
         Ok(Some(port)) => port,
         Ok(None) => {
-            let mut running = Running { child, port: 0 };
+            let mut running = Running { child, port: 0, said };
             running.child.kill().ok();
             panic!("the server exited without announcing a port");
         }
         Err(_) => {
-            let mut running = Running { child, port: 0 };
+            let mut running = Running { child, port: 0, said: Arc::clone(&said) };
             running.child.kill().ok();
             panic!(
                 "the server did not announce a port within {}s",
@@ -237,7 +287,41 @@ pub(crate) fn start(warehouse: &std::path::Path, data: &std::path::Path) -> Runn
             );
         }
     };
-    Running { child, port }
+    Running { child, port, said }
+}
+
+impl Running {
+    /// Wait until the server has printed a line containing `needle`, or give up.
+    ///
+    /// Bounded, and the bound is the assertion's other half: "it eventually says so" is not a
+    /// property anybody can rely on, and a test that waits forever for a line that never
+    /// comes takes the build with it rather than reporting anything.
+    pub(crate) fn wait_until_said(&self, needle: &str, within: Duration) -> bool {
+        let deadline = std::time::Instant::now() + within;
+        loop {
+            if self.said_matching(needle).next().is_some() {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Every line the server printed that contains `needle`.
+    pub(crate) fn said_matching(&self, needle: &str) -> std::vec::IntoIter<String> {
+        let needle = needle.to_owned();
+        let lines = match self.said.lock() {
+            Ok(lines) => lines.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        lines
+            .into_iter()
+            .filter(|line| line.contains(&needle))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
 }
 
 /// Run one simple query over the wire and return the rows it produced.
@@ -320,6 +404,118 @@ pub(crate) fn query_outcome(port: u16, sql: &str) -> Result<usize, String> {
         return Err(text.split_whitespace().collect::<Vec<&str>>().join(" "));
     }
     Ok(count_tags(&buffer, b'D'))
+}
+
+/// Run a statement and return its rows as text.
+///
+/// # Why this exists beside [`query`] and [`query_outcome`]
+///
+/// Both of those answer *how many* rows came back, which is enough for a query whose subject
+/// is the rows. It is not enough for a statement whose subject is a **status**: `SHOW FEEDS`
+/// returns one row per feed whether the feed is running happily or stopped an hour ago, so a
+/// count cannot tell those apart, and the whole point of the statement is that it can.
+///
+/// A `NULL` value is `None`; anything else is its text as the server sent it.
+pub(crate) fn text_rows(port: u16, sql: &str) -> Vec<Vec<Option<String>>> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connecting");
+    stream.set_nodelay(true).ok();
+
+    let mut startup = Vec::new();
+    let mut body = 196_608i32.to_be_bytes().to_vec();
+    body.extend_from_slice(b"user\0quickstart\0\0");
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    startup.extend_from_slice(&((body.len() + 4) as i32).to_be_bytes());
+    startup.extend_from_slice(&body);
+    stream.write_all(&startup).expect("startup");
+
+    let mut buffer = Vec::new();
+    read_until_ready(&mut stream, &mut buffer);
+
+    let mut message = vec![b'Q'];
+    let payload = format!("{sql}\0");
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    message.extend_from_slice(&((payload.len() + 4) as i32).to_be_bytes());
+    message.extend_from_slice(payload.as_bytes());
+    stream.write_all(&message).expect("query");
+
+    buffer.clear();
+    read_until_ready(&mut stream, &mut buffer);
+    // A refused statement returns no rows, so a caller reading the rows alone cannot tell a
+    // typo in a column name from a table that is legitimately empty. This panics with what
+    // the server said instead, because every caller here wants the statement to succeed.
+    assert!(
+        count_tags(&buffer, b'E') == 0,
+        "`{sql}` was refused: {}",
+        buffer
+            .iter()
+            .map(|byte| if byte.is_ascii_graphic() || *byte == b' ' { *byte as char } else { ' ' })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<&str>>()
+            .join(" ")
+    );
+    data_rows(&buffer)
+}
+
+/// The `DataRow` messages in a buffer, decoded to text.
+///
+/// Walks the framing exactly as [`count_tags`] does rather than searching for the tag byte,
+/// because a value can contain any byte and a search would decode data as a message header.
+fn data_rows(buffer: &[u8]) -> Vec<Vec<Option<String>>> {
+    let mut rows = Vec::new();
+    let mut at = 0usize;
+    while at + 5 <= buffer.len() {
+        let length = i32::from_be_bytes([
+            buffer[at + 1],
+            buffer[at + 2],
+            buffer[at + 3],
+            buffer[at + 4],
+        ]);
+        let Ok(length) = usize::try_from(length) else {
+            return rows;
+        };
+        if length < 4 || at + 1 + length > buffer.len() {
+            return rows;
+        }
+        if buffer[at] == b'D' {
+            let body = &buffer[at + 5..at + 1 + length];
+            if let Some(row) = decode_row(body) {
+                rows.push(row);
+            }
+        }
+        at += 1 + length;
+    }
+    rows
+}
+
+/// One `DataRow` body: a column count, then a length and that many bytes per column.
+///
+/// `None` for a body that does not decode, which the caller reports as a missing row rather
+/// than as a panic --- a malformed row is a server defect worth seeing as a failed assertion
+/// about the rows, not as a decoding stack trace.
+fn decode_row(body: &[u8]) -> Option<Vec<Option<String>>> {
+    let columns = u16::from_be_bytes([*body.first()?, *body.get(1)?]);
+    let mut values = Vec::with_capacity(usize::from(columns));
+    let mut at = 2usize;
+    for _ in 0..columns {
+        let length = i32::from_be_bytes([
+            *body.get(at)?,
+            *body.get(at + 1)?,
+            *body.get(at + 2)?,
+            *body.get(at + 3)?,
+        ]);
+        at += 4;
+        if length < 0 {
+            // The protocol's `NULL`, which is a length of -1 and no bytes.
+            values.push(None);
+            continue;
+        }
+        let length = usize::try_from(length).ok()?;
+        let text = body.get(at..at + length)?;
+        values.push(Some(String::from_utf8_lossy(text).into_owned()));
+        at += length;
+    }
+    Some(values)
 }
 
 /// Read until the server says it is ready for the next statement.

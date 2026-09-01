@@ -855,6 +855,18 @@ impl Handler for Server {
         Ok(())
     }
 
+    /// The statements this server defines itself, which the catalogue must not answer for it.
+    ///
+    /// Only the feed commands today, and only because `SHOW FEEDS` collides with the
+    /// catalogue's `SHOW <setting>` shortcut. Cube and clone DDL are listed too — not because
+    /// anything shadows them now, but because "which statements are ours" is one question,
+    /// and answering it in two places is how the next one comes to be shadowed silently.
+    fn claims(&self, sql: &str) -> bool {
+        sankhya_feed::parse_command(sql).is_some()
+            || sankhya_cube_sql::parse_ddl(sql).is_some()
+            || sankhya_clone::parse_ddl(sql).is_some()
+    }
+
     fn query(&self, sql: &str) -> Result<QueryResult, QueryFailure> {
         let started = std::time::Instant::now();
         let outcome = self.run_statement(sql);

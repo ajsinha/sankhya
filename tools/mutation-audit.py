@@ -3811,6 +3811,35 @@ CATALOGUE = [
      "            if false {",
      "sankhya-server"),
 
+    # The defect M13's exit demonstration found. `recognise` answers `SHOW <anything>` as a
+    # session setting, so `SHOW FEEDS` was answered with one empty value and never reached the
+    # handler that implements it. Nothing below the socket could notice.
+    ("wire: let the catalogue answer a statement the handler defines itself",
+     "crates/sankhya-api-pg/src/session.rs",
+     "        if let Some(catalogue) = recognise(sql).filter(|_| !handler.claims(sql)) {",
+     "        if let Some(catalogue) = recognise(sql) {",
+     "sankhya-api-pg"),
+
+    # And the other direction: a handler that claims one `SHOW` must not have claimed every
+    # settings query a catalogue-browsing client sends on connection.
+    ("wire: let a handler's claim swallow every catalogue query",
+     "crates/sankhya-api-pg/src/session.rs",
+     "        if let Some(catalogue) = recognise(sql).filter(|_| !handler.claims(sql)) {",
+     "        if let Some(catalogue) = None::<crate::catalog::CatalogQuery> {",
+     "sankhya-api-pg"),
+
+    ("server: answer a feed command from the catalogue instead of the feed registry",
+     "crates/sankhya-server/src/wiring.rs",
+     "        sankhya_feed::parse_command(sql).is_some()",
+     "        false && sankhya_feed::parse_command(sql).is_some()",
+     "sankhya-server"),
+
+    ("server: accept a feed cadence of zero, which is a loop with no sleep in it",
+     "crates/sankhya-server/src/main.rs",
+     "            Ok(0) | Err(_) => {",
+     "            Err(_) => {",
+     "sankhya-server"),
+
 ]
 
 

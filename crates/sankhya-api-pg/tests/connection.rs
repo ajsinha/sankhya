@@ -29,9 +29,22 @@ use tokio::net::TcpStream;
 #[derive(Debug)]
 struct Fixture {
     password: Option<&'static str>,
+    /// A statement this handler defines itself, which the catalogue must not answer for it.
+    claims: Option<&'static str>,
+}
+
+impl Fixture {
+    /// The ordinary fixture: no password, and no statements of its own.
+    fn open() -> Self {
+        Self { password: None, claims: None }
+    }
 }
 
 impl Handler for Fixture {
+    fn claims(&self, sql: &str) -> bool {
+        self.claims.is_some_and(|claimed| sql.trim() == claimed)
+    }
+
     fn requires_password(&self, _parameters: &[(String, String)]) -> bool {
         self.password.is_some()
     }
@@ -195,10 +208,7 @@ fn tags(messages: &[(u8, Vec<u8>)]) -> Vec<char> {
 async fn a_client_connects_authenticates_and_runs_a_query() {
     // The whole handshake, over a real socket. Individually-correct messages arriving in
     // the wrong order is the failure mode that only an end-to-end test finds.
-    let address = start(Fixture {
-        password: Some("hunter2"),
-    })
-    .await;
+    let address = start(Fixture { password: Some("hunter2"), claims: None }).await;
     let mut client = Client::connect(address).await;
 
     client.startup("ana").await;
@@ -233,7 +243,7 @@ async fn a_client_connects_authenticates_and_runs_a_query() {
 async fn a_null_survives_the_round_trip_as_a_null() {
     // The second fixture row has a null. A client that receives an empty string instead has
     // been told something false about the data.
-    let address = start(Fixture { password: None }).await;
+    let address = start(Fixture::open()).await;
     let mut client = Client::connect(address).await;
     client.startup("ana").await;
     client.read_until(b'Z').await;
@@ -261,10 +271,7 @@ async fn a_null_survives_the_round_trip_as_a_null() {
 async fn a_query_before_authentication_is_refused() {
     // The whole point of authentication. The state machine makes this structural rather
     // than a check somebody remembered to write.
-    let address = start(Fixture {
-        password: Some("hunter2"),
-    })
-    .await;
+    let address = start(Fixture { password: Some("hunter2"), claims: None }).await;
     let mut client = Client::connect(address).await;
 
     client.startup("ana").await;
@@ -279,10 +286,7 @@ async fn a_query_before_authentication_is_refused() {
 
 #[tokio::test]
 async fn a_wrong_password_is_refused_with_the_sqlstate_drivers_branch_on() {
-    let address = start(Fixture {
-        password: Some("hunter2"),
-    })
-    .await;
+    let address = start(Fixture { password: Some("hunter2"), claims: None }).await;
     let mut client = Client::connect(address).await;
 
     client.startup("ana").await;
@@ -305,7 +309,7 @@ async fn a_wrong_password_is_refused_with_the_sqlstate_drivers_branch_on() {
 async fn a_catalogue_query_is_answered_without_reaching_the_engine() {
     // These refer to tables the engine does not have, so passing them through would
     // produce "no such table" for a query the client considers routine.
-    let address = start(Fixture { password: None }).await;
+    let address = start(Fixture::open()).await;
     let mut client = Client::connect(address).await;
     client.startup("ana").await;
     client.read_until(b'Z').await;
@@ -322,7 +326,7 @@ async fn a_catalogue_query_is_answered_without_reaching_the_engine() {
 async fn a_failing_query_leaves_the_connection_usable() {
     // An error is not a disconnection. A client that has to reconnect after every mistyped
     // query is one nobody can use interactively.
-    let address = start(Fixture { password: None }).await;
+    let address = start(Fixture::open()).await;
     let mut client = Client::connect(address).await;
     client.startup("ana").await;
     client.read_until(b'Z').await;
@@ -345,7 +349,7 @@ async fn a_failing_query_leaves_the_connection_usable() {
 async fn a_tls_request_is_declined_and_the_client_may_continue() {
     // 'N' means "no TLS available, carry on in the clear". Every client knows how to
     // proceed after it; a silent close looks like a crash.
-    let address = start(Fixture { password: None }).await;
+    let address = start(Fixture::open()).await;
     let mut client = Client::connect(address).await;
 
     let mut packet = Vec::new();
@@ -367,7 +371,7 @@ async fn a_tls_request_is_declined_and_the_client_may_continue() {
 async fn an_empty_query_gets_the_empty_response_rather_than_an_error() {
     // Clients send these — a trailing semicolon, a comment-only statement. Treating one as
     // an error makes a script fail on a blank line.
-    let address = start(Fixture { password: None }).await;
+    let address = start(Fixture::open()).await;
     let mut client = Client::connect(address).await;
     client.startup("ana").await;
     client.read_until(b'Z').await;
@@ -382,7 +386,7 @@ async fn an_empty_query_gets_the_empty_response_rather_than_an_error() {
 async fn a_message_split_across_two_writes_is_reassembled() {
     // A network splits wherever it likes. A server that assumed one read equals one message
     // works on a loopback and fails in production.
-    let address = start(Fixture { password: None }).await;
+    let address = start(Fixture::open()).await;
     let mut client = Client::connect(address).await;
     client.startup("ana").await;
     client.read_until(b'Z').await;
@@ -407,7 +411,7 @@ async fn a_message_split_across_two_writes_is_reassembled() {
 async fn two_pipelined_queries_are_both_answered() {
     // A client may send without waiting. A server that read one message per read would
     // leave the second sitting in its buffer forever.
-    let address = start(Fixture { password: None }).await;
+    let address = start(Fixture::open()).await;
     let mut client = Client::connect(address).await;
     client.startup("ana").await;
     client.read_until(b'Z').await;
@@ -430,7 +434,7 @@ async fn two_pipelined_queries_are_both_answered() {
 
 #[tokio::test]
 async fn a_terminate_closes_the_connection() {
-    let address = start(Fixture { password: None }).await;
+    let address = start(Fixture::open()).await;
     let mut client = Client::connect(address).await;
     client.startup("ana").await;
     client.read_until(b'Z').await;
@@ -439,4 +443,48 @@ async fn a_terminate_closes_the_connection() {
     let mut chunk = [0u8; 16];
     let read = client.stream.read(&mut chunk).await.expect("reading");
     assert_eq!(read, 0, "the server closes without further messages");
+}
+
+#[tokio::test]
+async fn a_statement_the_handler_claims_is_not_answered_from_the_catalogue() {
+    // The defect this exists for: `recognise` answers `SHOW <anything>` as a session setting,
+    // because tools spell settings queries a dozen ways and matching them literally works for
+    // one client and breaks the next. That leniency swallowed `SHOW FEEDS` — a statement the
+    // *server* defines — and answered it with one empty value.
+    //
+    // Nothing below this layer could see it. The handler's own tests call the handler, so the
+    // surface worked everywhere except over a socket, which is the only place it is used.
+    let address = start(Fixture { password: None, claims: Some("SHOW FEEDS") }).await;
+    let mut client = Client::connect(address).await;
+    client.startup("ana").await;
+    client.read_until(b'Z').await;
+
+    client.query("SHOW FEEDS").await;
+    let result = client.read_until(b'Z').await;
+    let (_, row) = result.iter().find(|(t, _)| *t == b'D').expect("a row");
+    // The fixture's own two-column answer, not the catalogue's one empty setting.
+    assert!(
+        String::from_utf8_lossy(row).contains("first"),
+        "the catalogue answered a statement the handler claimed: {:?}",
+        String::from_utf8_lossy(row)
+    );
+}
+
+#[tokio::test]
+async fn a_setting_the_handler_does_not_claim_is_still_answered_from_the_catalogue() {
+    // The other half, and the reason the fix is a claim rather than a narrower prefix match.
+    // `SHOW server_version_num` is sent by catalogue-browsing clients on connection and must
+    // keep being answered here — a handler that claims one `SHOW` has not claimed them all.
+    let address = start(Fixture { password: None, claims: Some("SHOW FEEDS") }).await;
+    let mut client = Client::connect(address).await;
+    client.startup("ana").await;
+    client.read_until(b'Z').await;
+
+    client.query("SHOW server_version_num").await;
+    let result = client.read_until(b'Z').await;
+    let (_, row) = result.iter().find(|(t, _)| *t == b'D').expect("a row");
+    assert!(
+        !String::from_utf8_lossy(row).contains("first"),
+        "the handler was asked about a setting it did not claim"
+    );
 }

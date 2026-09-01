@@ -87,6 +87,28 @@ pub trait Handler: Send + Sync {
     /// Run a statement.
     fn query(&self, sql: &str) -> Result<QueryResult, QueryFailure>;
 
+    /// Whether this handler recognises the statement as one of its own.
+    ///
+    /// # Why the handler gets to say so first
+    ///
+    /// [`crate::catalog::recognise`] is deliberately lenient — it answers `SHOW <anything>`
+    /// as a session setting, because tools generate settings queries in a dozen spellings and
+    /// matching them literally works for one client and fails for the next.
+    ///
+    /// That leniency swallows statements a *server* defines. `SHOW FEEDS` was answered here
+    /// as a setting called `feeds`, with one empty value, and never reached the handler that
+    /// implements it. Nothing below this layer could notice: the handler's own tests call it
+    /// directly, so the surface worked everywhere except over the wire, which is the only
+    /// place anybody uses it.
+    ///
+    /// So a handler may claim a statement, and a claimed statement bypasses the shortcut. The
+    /// precedence is the right way round — the thing that *defines* a statement decides
+    /// before the thing that guesses at one — and it is a default of `false`, so a handler
+    /// that claims nothing behaves exactly as before.
+    fn claims(&self, _sql: &str) -> bool {
+        false
+    }
+
     /// The tables this client may see, for catalogue answers.
     ///
     /// Already filtered by policy when this is called. A catalogue that listed tables the
@@ -348,7 +370,7 @@ impl Connection {
         // Catalogue queries are answered here rather than reaching the engine. They refer
         // to tables that do not exist in it, so passing them through would produce a
         // "no such table" error for a query the client considers routine.
-        if let Some(catalogue) = recognise(sql) {
+        if let Some(catalogue) = recognise(sql).filter(|_| !handler.claims(sql)) {
             let result = answer(
                 &catalogue,
                 &handler.server_version(),
