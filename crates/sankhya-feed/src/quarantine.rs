@@ -21,7 +21,7 @@
 
 use crate::bind::Unfit;
 use crate::declare::Declaration;
-use arrow_array::{Date32Array, Int64Array, RecordBatch, StringArray, TimestampMicrosecondArray};
+use arrow_array::{Int64Array, RecordBatch, StringArray, TimestampMicrosecondArray};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use std::sync::Arc;
 
@@ -47,8 +47,6 @@ pub struct Refused {
     pub declaration: String,
     /// The record, exactly as it arrived.
     pub payload: String,
-    /// Days since the epoch, for the date axis.
-    pub data_date: i32,
 }
 
 /// The stable code for a refusal.
@@ -59,6 +57,7 @@ pub struct Refused {
 #[must_use]
 pub const fn code(unfit: &Unfit) -> &'static str {
     match unfit {
+        Unfit::Unparseable { .. } => "unparseable",
         Unfit::NotADocument => "not-a-document",
         Unfit::MissingKey { .. } => "missing-key",
         Unfit::UnknownKey { .. } => "unknown-key",
@@ -91,7 +90,11 @@ pub fn schema() -> Schema {
         // document and rendering it as bytes would make the table unreadable by the person
         // who most needs to read it.
         Field::new("payload", DataType::Utf8, false),
-        Field::new(sankhya_schema::DATA_DATE_COLUMN, DataType::Date32, false),
+        // No `sank_data_date` here. `sankhya-publish` owns the date axis: it appends the
+        // column to the stored schema and stamps it onto every partition file. A
+        // hand-written one would be redundant at best and, if it ever disagreed with the
+        // axis the table was created under, a table partitioned by one date and carrying
+        // another.
     ])
 }
 
@@ -129,7 +132,6 @@ pub fn batch(refused: &[Refused]) -> Result<RecordBatch, Unassembled> {
     let declarations =
         StringArray::from_iter_values(refused.iter().map(|r| r.declaration.as_str()));
     let payloads = StringArray::from_iter_values(refused.iter().map(|r| r.payload.as_str()));
-    let dates = Date32Array::from_iter_values(refused.iter().map(|r| r.data_date));
 
     RecordBatch::try_new(
         Arc::new(schema()),
@@ -142,7 +144,6 @@ pub fn batch(refused: &[Refused]) -> Result<RecordBatch, Unassembled> {
             Arc::new(reasons),
             Arc::new(declarations),
             Arc::new(payloads),
-            Arc::new(dates),
         ],
     )
     .map_err(|error| Unassembled { detail: error.to_string() })

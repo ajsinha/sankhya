@@ -575,9 +575,22 @@ impl TableProvider for SankhyaTable {
 
         let combined: Arc<dyn ExecutionPlan> = match parts.len() {
             0 => {
+                // **Projected**, not the whole schema. A plan whose schema is not the one
+                // the caller asked for is a plan the engine cannot use, and it says so with
+                // an internal assertion rather than a wrong answer --- which is the good
+                // outcome and still a defect.
+                //
+                // Found on 2026-08-31 by the first query against a table with no live files:
+                // a freshly created one, and equally a table whose files have all been
+                // retired. Every test of this path had happened to select every column, and
+                // selecting every column is the one projection that cannot show this.
+                let projected = match projection {
+                    Some(columns) => Arc::new(self.schema.project(columns)?),
+                    None => Arc::clone(&self.schema),
+                };
                 return Ok(Arc::new(datafusion::physical_plan::empty::EmptyExec::new(
-                    Arc::clone(&self.schema),
-                )))
+                    projected,
+                )));
             }
             1 => parts.remove(0),
             _ => UnionExec::try_new(parts)?,

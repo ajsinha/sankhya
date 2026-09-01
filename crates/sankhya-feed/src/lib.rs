@@ -32,12 +32,20 @@
 
 pub mod bind;
 pub mod declare;
+pub mod progress;
 pub mod quarantine;
+pub mod run;
+pub mod shape;
+pub mod source;
 pub mod stop;
 pub mod validate;
 
 pub use bind::{bind, Cell, Row, Unfit};
 pub use declare::{Column, DateFrom, Declaration, Microbatch, Missing, Quarantine, Unknown};
+pub use progress::{Partial, Position, Standing};
 pub use quarantine::{code, fingerprint, Refused};
+pub use run::{run, Ran, RunError, Running};
+pub use shape::{table_schema, Unassembled};
+pub use source::{records, sources, Arrived};
 pub use stop::{Outcomes, Reason, Span, Verdict};
 pub use validate::{validate, Fault, Feed, Shaped};

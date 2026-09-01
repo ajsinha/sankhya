@@ -33,7 +33,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M9** Tiering | 12–16 ew | **In progress**, started 2026-08-30. **All eleven work items are built and the exit criteria demonstrated** on 2026-08-31 — purge end to end with verification, quarantine and rollback; the anomaly guard halting an intentionally-defective policy; nineteen refusal paths shown to fail closed. **The gate is not cleared and that is not a formality**: criterion 3 needs the attestation drill run against a real non-production archive, which cannot be produced from development. **Gated** on the drills in [`IMPLEMENTATION_PLAN.md` §13](IMPLEMENTATION_PLAN.md): the restore drill exists from M6 §10.3, the archive attestation drill does not. Gate criterion 1 moved to M11 on 2026-08-28, and **destructive purge stays disabled until M11 clears it** — building the purge path and arming it are two decisions |
 | **M10** Zero-copy cloning | 10–14 ew | **Complete 2026-08-31.** Design gate cleared by [ADR-0016](adr/0016-zero-copy-cloning.md) before any code; eight work items built; **all five exit criteria met**. Walking the criteria found two that were not — constant cost and the fail-closed enumeration — and both were built rather than reinterpreted. Nothing external holds it: no production deployment, no second machine, no drill against a real archive. |
 | **M11** Production reconciliation | — | **Not schedulable by development.** Needs a production deployment that does not exist. Holds M9's gate criterion 1 and the arming decision for destructive purge |
-| **M13** Config-driven ingest, from files | — | **Schedulable now**, added 2026-08-31 by owner directive. A config declares the source, the shape of what arrives, and where it lands. **Design gate met 2026-08-31**: [ADR-0018](adr/0018-a-record-that-does-not-fit.md) answers what happens to a record that does not fit --- quarantined whole into a *table* with a mandatory expiry, one bad record an incident and a rate of them an outage that stops the pipeline and waits for a person, and a file's position committed with its rows so a restart cannot duplicate or skip. **Building**: `sankhya-feed` holds the declaration, its validation, the binder, the stop control and the quarantine's schema --- everything with no I/O in it. The runner is not built, which is why the crate is still listed in `UNREACHED` with this milestone against it |
+| **M13** Config-driven ingest, from files | — | **Schedulable now**, added 2026-08-31 by owner directive. A config declares the source, the shape of what arrives, and where it lands. **Design gate met 2026-08-31**: [ADR-0018](adr/0018-a-record-that-does-not-fit.md) answers what happens to a record that does not fit --- quarantined whole into a *table* with a mandatory expiry, one bad record an incident and a rate of them an outage that stops the pipeline and waits for a person, and a file's position committed with its rows so a restart cannot duplicate or skip. **Substantially built 2026-08-31**: declaration, validation, binder, stop control, quarantine, position, source reader and runner, wired into the server, which loads `config/feeds/*.yaml` and runs each feed on its own cadence. `sankhya-feed` is off the `UNREACHED` list, which is the mechanical statement that it is reached rather than merely built. What remains is quarantine expiry on the maintenance thread, a command surface for a halted feed, and the soak |
 | **M14** The client contract and the Python SDK | — | **Schedulable now**, added 2026-08-31. Python first; Java and Rust in M16, which is why the *contract* matters more than the binding. **Transport security built 2026-08-31** --- one certificate, both doors, the wire protocol's own negotiation in front of it, and a startup line naming the posture in words. `FR-SEC-03`'s other half, federated identity, is still unbuilt: a `Principal` is a fixed tenant, and mutual TLS puts a client's certificate where a door can see it without anything yet deriving an identity from it. Also where [ADR-0010](adr/0010-external-aggregations.md) is built, its open question decided **out-of-process** by owner decision. The contract is decided in [ADR-0017](adr/0017-the-client-contract.md) and placed in [ARCHITECTURE](ARCHITECTURE.md) §11a |
 | **M15** Ingest from Kafka | — | After M14. Gated on a pin-set decision under [ADR-0001](adr/0001-dependency-pin-set.md) and on deciding how a consumer is tested without a broker — a fake is the easy answer and the one that proves least |
 | **M16** The Java and Rust SDKs | — | After M14. Named now so M14's contract is written for three bindings rather than retrofitted to them |
@@ -3638,7 +3638,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 579 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 589 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -3757,11 +3757,33 @@ Stated plainly, because a status document that omits this is marketing.
 
 ---
 
-## A control that measured a share instead of the waiting
+## Two controls that measured a share instead of the thing
 
-**2026-08-31.** `read_latency_is_flat_under_write_load` --- C2, the criterion that a reader is
-never blocked by a writer --- failed in the gate and passed when run by hand. Both statements
-were true at once, which is the shape of a measurement problem rather than a code one.
+**2026-08-31, both found the same way**: a concurrency criterion failed in the gate and passed
+when run by hand, which is the shape of a measurement problem rather than a code one. The cause
+in both is that `check-concurrency` builds its test binaries **optimized** and a plain
+`cargo test` does not. With every participant faster, a writer holds a lock for less time, the
+*serialized* arm does better, and any control expressed as a **ratio of the two arms** narrows
+--- for a reason that has nothing to do with the path being measured.
+
+**C2, the reader that must not wait.** The control was `flat >= serialized * 5.0`, a ratio of
+throughput shares. What the criterion forbids is waiting, and waiting is a latency: the control
+is now the lock-sharing reader's p99 against the free reader's, which separates by four orders
+of magnitude --- 1.2s against 106µs --- where the share was a factor of a few.
+
+**C1, the writers that must scale.** The control was `scales >= serialized * 2.0`. It is now
+`serialized < FLOOR`: **the serialized arm must fail the very threshold the free arm passes.**
+That reuses the number the test already demands rather than calibrating a second one, and it
+states the property directly --- if a workload known to be serialized ever cleared the floor,
+passing the floor would say nothing about whether writers are serialized.
+
+In both cases the primary assertions are untouched. Only the controls changed, and both changed
+from a proxy to the thing itself.
+
+### C2 in full, as it was found
+
+`read_latency_is_flat_under_write_load` --- the criterion that a reader is never blocked by a
+writer --- failed in the gate and passed when run by hand. Both statements were true at once.
 
 The cause is that `check-concurrency` builds its test binaries **optimized** and a plain
 `cargo test` does not. The test's *control* arm compared throughput shares:
@@ -3784,6 +3806,24 @@ serialized arm has produced and far above anything the free one reaches by accid
 The primary assertions are untouched: the free reader still has to hold four tenths of its idle
 rate, and its p99 still has to stay within four times idle. Only the control changed, and it
 changed from a proxy to the thing itself.
+
+---
+
+## A projection over an empty table, which had never been run
+
+**2026-08-31.** The first query ever aimed at a table with no live files *and* a column list
+failed with an internal assertion: the scan returned an `EmptyExec` carrying the **whole**
+schema, so the engine got a plan whose columns were not the ones it asked for.
+
+Two things about how it was found are worth keeping. It was found by a **documentation
+example** --- the guide's `SELECT source, position, reason_code, ... FROM sank_quarantine`,
+which the gate insists on executing --- against a freshly created quarantine table. And every
+existing test of that path had selected *every* column, which is the one projection under which
+the bug cannot appear.
+
+It is not a niche state: a freshly created table has no live files, and so does a table whose
+files have all been retired. Both are ordinary, and both would have failed any projected query
+until this was fixed.
 
 ---
 
@@ -4195,9 +4235,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 2,207 tests, none of which needs a database
+cargo test --workspace           # 2,232 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 579 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 589 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

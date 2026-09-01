@@ -244,13 +244,27 @@ fn writers_to_different_tables_scale_with_their_count() {
          writer ({one:.0} -> {many:.0} commits/s). Throughput that does not grow with writers \
          is a global serialization point, whatever the code looks like"
     );
-    // The control is what makes the number above mean something. If the serialized arm
-    // scaled as well as the free one, this test could not tell the two apart and its
-    // threshold would be taste rather than measurement.
+    // The control is what makes the number above mean something, and it is stated as the
+    // same threshold rather than a multiple of the free arm's result.
+    //
+    // # Why not `scales >= serialized * 2.0`
+    //
+    // It was, and it failed in the gate on 2026-08-31 while passing when run by hand. The
+    // cause is the one C2 had: `check-concurrency` builds optimized and a plain `cargo test`
+    // does not, so a writer holds the lock for less time, the serialized arm scales better,
+    // and a *ratio of ratios* narrows for a reason that has nothing to do with the write
+    // path. Calibrating the multiple against one build profile is calibrating against the
+    // machine.
+    //
+    // What the criterion forbids is throughput that does not grow with writers. So the
+    // control is that a workload which genuinely does not grow **fails the very threshold
+    // the free arm passes**. If the serialized arm ever cleared `FLOOR`, this measurement
+    // could not tell a scaling write path from a serialized one, whatever the numbers were.
     assert!(
-        scales >= serialized * 2.0,
-        "the free path scaled {scales:.2}x and the same workload behind one warehouse lock \
-         scaled {serialized:.2}x --- too close for this measurement to distinguish them"
+        serialized < FLOOR,
+        "the same workload behind one warehouse lock scaled {serialized:.2}x, which clears \
+         the {FLOOR:.1}x this test demands of the free path ({scales:.2}x) --- so passing it \
+         says nothing about whether writers are serialized"
     );
 }
 

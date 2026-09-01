@@ -3634,7 +3634,9 @@ version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
+ "sankhya-publish",
  "sankhya-schema",
+ "sankhya-types",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -3901,6 +3903,7 @@ dependencies = [
  "sankhya-cube-sql",
  "sankhya-diagnostic",
  "sankhya-error",
+ "sankhya-feed",
  "sankhya-governor",
  "sankhya-graph",
  "sankhya-graph-sql",

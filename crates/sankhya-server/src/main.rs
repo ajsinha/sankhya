@@ -42,6 +42,7 @@ static ALLOCATOR: sankhya_alloc::Counting<std::alloc::System> =
 mod backup;
 mod doctor;
 mod execute;
+mod feeds;
 mod flight;
 mod scrape;
 mod warehouse;
@@ -236,6 +237,17 @@ fn maintenance_policy(
 ///
 /// `SANKHYA_CONFIG` names an explicit file, which is what a deployment with several
 /// instances on one machine needs. Otherwise the file beside the binary's working directory.
+/// The directory configuration is read from, which is where `feeds/` sits beside it.
+///
+/// Derived from the first configuration file rather than configured separately: two settings
+/// that must agree are two settings that will one day not.
+fn configuration_dir() -> std::path::PathBuf {
+    configuration_files()
+        .first()
+        .and_then(|file| file.parent().map(std::path::Path::to_path_buf))
+        .unwrap_or_else(|| std::path::PathBuf::from("config"))
+}
+
 fn configuration_files() -> Vec<std::path::PathBuf> {
     std::env::var("SANKHYA_CONFIG").map_or_else(
         |_| vec![std::path::PathBuf::from("config/application.yaml")],
@@ -323,6 +335,10 @@ async fn main() -> std::io::Result<()> {
         }
     };
     let settings_flight = settings.flight_listen.clone();
+    let settings_warehouse = settings.warehouse.clone();
+    // How often a feed looks at its spool directory. Its own cadence rather than
+    // maintenance's: an operator who turned maintenance off did not ask for ingest to stop.
+    let feed_interval_seconds = 30;
     let settings_metrics = settings.metrics_listen.clone();
     let settings_listen = settings.listen.clone();
 
@@ -434,6 +450,80 @@ async fn main() -> std::io::Result<()> {
                 let built = tokio::task::block_in_place(|| cubes.refresh_maintained_cubes());
                 if !built.is_empty() {
                     println!("  materialised {} cuboid(s): {}", built.len(), built.join(", "));
+                }
+            }
+        });
+    }
+
+    // Declared feeds, run on their own cadence.
+    //
+    // Not on the maintenance thread. Maintenance is work the warehouse does to itself and an
+    // operator turns it off when another process is doing it; a feed is somebody's data
+    // arriving, and stopping ingest because compaction was disabled would be a surprise
+    // nobody asked for.
+    //
+    // A feed that **stops** stays stopped. `ADR-0018` is explicit that a run of records which
+    // do not fit means a source has changed shape, and that retrying on a timer rediscovers
+    // the same outage every few minutes and is acted on by nobody. So the task drops it and
+    // says so once.
+    let (declared, feed_complaints) = feeds::load(&configuration_dir());
+    for complaint in &feed_complaints {
+        eprintln!("  feed not loaded — {complaint}");
+    }
+    if !declared.is_empty() {
+        let cadence = std::time::Duration::from_secs(feed_interval_seconds);
+        let warehouse = settings_warehouse.clone();
+        println!(
+            "  {} feed(s) declared: {}",
+            declared.len(),
+            declared
+                .iter()
+                .map(|feed| feed.feed.name().to_owned())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        tokio::spawn(async move {
+            let mut halted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            loop {
+                tokio::time::sleep(cadence).await;
+                for feed in &declared {
+                    let name = feed.feed.name().to_owned();
+                    if halted.contains(&name) {
+                        continue;
+                    }
+                    let warehouse = warehouse.clone();
+                    let ran = tokio::task::block_in_place(|| feeds::run_once(feed, &warehouse));
+                    match ran {
+                        Err(refusal) => {
+                            // Loud and once. A feed that cannot run at all is a
+                            // configuration problem, and repeating it every cadence buries
+                            // everything else in the log.
+                            eprintln!("  feed `{name}` refused — {refusal}");
+                            halted.insert(name);
+                        }
+                        Ok(result) => {
+                            if result.published > 0 || result.quarantined > 0 {
+                                println!(
+                                    "  feed `{name}`: {} published, {} quarantined, {} \
+                                     source(s)",
+                                    result.published, result.quarantined, result.sources
+                                );
+                            }
+                            for late in &result.late {
+                                eprintln!(
+                                    "  feed `{name}`: `{late}` arrived behind what has \
+                                     already been read and was not ingested. Either a \
+                                     producer wrote out of order or an old file was \
+                                     replayed, and only somebody who knows which should \
+                                     decide"
+                                );
+                            }
+                            if let Some(reason) = result.stopped {
+                                eprintln!("  feed `{name}` STOPPED — {reason}");
+                                halted.insert(name);
+                            }
+                        }
+                    }
                 }
             }
         });

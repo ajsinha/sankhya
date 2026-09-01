@@ -40,6 +40,23 @@ pub struct Declaration {
     pub quarantine: Quarantine,
 }
 
+impl Declaration {
+    /// Read a declaration from the document somebody wrote.
+    ///
+    /// Here rather than in whoever loads the file, so that one crate decides what a feed
+    /// document *is*. A second parser elsewhere would be a second answer to what an unknown
+    /// field means, and they would drift.
+    ///
+    /// # Errors
+    ///
+    /// The parse error, naming the line. A declaration that does not parse is not validated
+    /// --- there is nothing to validate --- so this is the only refusal a malformed document
+    /// gets.
+    pub fn from_document(text: &str) -> Result<Self, serde_yaml_ng::Error> {
+        serde_yaml_ng::from_str(text)
+    }
+}
+
 /// One column, and the key it is read from.
 #[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize)]
 pub struct Column {

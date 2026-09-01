@@ -1299,7 +1299,7 @@ defect into published data that looks fine.
 
 ### Progress, 2026-08-31
 
-Built and tested (2,207 tests): the declaration, its validation, the binder, the stop control and
+Built and tested (2,232 tests): the declaration, its validation, the binder, the stop control and
 the quarantine's schema and fingerprint. Not built: the runner --- reading sources, assembling
 microbatches, publishing, and committing the position with the rows.
 

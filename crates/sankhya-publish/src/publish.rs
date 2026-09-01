@@ -431,6 +431,112 @@ impl Publication {
         })
     }
 
+    /// Publish a batch and record properties on the table **in the same commit**.
+    ///
+    /// # Why this exists rather than a second write
+    ///
+    /// A feed that publishes rows and then records how far it got has two commits and a gap
+    /// between them. A crash in the gap leaves either rows nobody knows arrived --- which a
+    /// restart duplicates --- or a position ahead of the data, which a restart skips. Which
+    /// of the two you get depends on the order somebody chose, and both are silent.
+    ///
+    /// Committing them together makes a restart a question with an answer: either the rows
+    /// and the position are both visible or neither is. This is `FR-TIER-08`'s argument for
+    /// the purge journal --- commit the transition before the action, and make every phase
+    /// resumable --- applied to ingest.
+    ///
+    /// The properties are merged into the table's existing metadata, re-read on every rebase
+    /// attempt: another committer may have changed it between attempts, and writing back a
+    /// copy read before theirs would silently undo it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Publication::append_rebasing`], and [`PublishError::Commit`] when the table's
+    /// current metadata cannot be read --- a table being appended to has some.
+    pub fn append_recording(
+        &self,
+        start: u64,
+        attempts: usize,
+        file_name: &str,
+        batch: &RecordBatch,
+        covers_through: Lsn,
+        properties: &BTreeMap<String, String>,
+    ) -> Result<Rebased, PublishError> {
+        let (written, actions) = self.write_files(start, file_name, batch, covers_through)?;
+        let mut version = start;
+        for retries in 0..attempts.max(1) {
+            let mut metadata = self.current_metadata()?;
+            metadata.configuration.extend(
+                properties.iter().map(|(key, value)| (key.clone(), value.clone())),
+            );
+            let mut recorded = Vec::with_capacity(actions.len() + 1);
+            recorded.push(Action::Metadata(metadata));
+            recorded.extend(actions.iter().cloned());
+
+            match commit(&self.root, version, &recorded) {
+                Ok(_) => {
+                    self.remember(version);
+                    return Ok(Rebased { written, version, retries });
+                }
+                Err(sankhya_table_delta::CommitError::VersionTaken(_)) => {
+                    self.remember(version);
+                    version = self
+                        .newest()
+                        .map_or(version.saturating_add(1), |v| v.saturating_add(1));
+                }
+                Err(error) => {
+                    return Err(PublishError::Commit {
+                        version,
+                        detail: error.to_string(),
+                    })
+                }
+            }
+        }
+        Err(PublishError::Commit {
+            version,
+            detail: format!(
+                "could not commit after {attempts} rebases; something else is committing to \
+                 this table faster than this writer can follow"
+            ),
+        })
+    }
+
+    /// One of the table's properties, as it stands.
+    ///
+    /// `None` for a table with no such property **and** for a table whose log cannot be read
+    /// --- the two are the same answer to a writer that is about to create the table anyway.
+    /// A caller that needs to tell them apart is asking a different question and should read
+    /// the metadata.
+    #[must_use]
+    pub fn property(&self, key: &str) -> Option<String> {
+        self.current_metadata().ok()?.configuration.get(key).cloned()
+    }
+
+    /// The table's metadata as it stands.
+    ///
+    /// The newest `metaData` action wins, which is what a reader of the log concludes too.
+    fn current_metadata(&self) -> Result<Metadata, PublishError> {
+        let actions = sankhya_table_delta::read_actions(&self.root).map_err(|error| {
+            PublishError::Commit {
+                version: 0,
+                detail: format!("reading this table's metadata: {error}"),
+            }
+        })?;
+        actions
+            .into_iter()
+            .filter_map(|(_, action)| match action {
+                Action::Metadata(metadata) => Some(metadata),
+                _ => None,
+            })
+            .next_back()
+            .ok_or_else(|| PublishError::Commit {
+                version: 0,
+                detail: "this table's log has no metadata, so it is not a table this writer \
+                         may append to"
+                    .to_owned(),
+            })
+    }
+
     /// Write a batch's files and build the actions that would publish them.
     ///
     /// Separated from the commit so a caller can retry the commit without rewriting the

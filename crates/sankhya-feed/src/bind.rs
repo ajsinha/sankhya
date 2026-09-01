@@ -80,6 +80,15 @@ pub struct Row {
 /// to its error message cannot be replayed --- and replay is the only actual remedy.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Unfit {
+    /// The record is not JSON at all.
+    ///
+    /// Produced by the reader rather than the binder, and kept in this enum so that
+    /// everything a record can be refused for has one shape, one code, and one place in the
+    /// quarantine. A truncated line at the end of a file being written is the usual cause.
+    Unparseable {
+        /// What the parser said.
+        detail: String,
+    },
     /// What arrived is not a dictionary.
     NotADocument,
     /// A column's key is absent and the column does not say what that means.
@@ -124,6 +133,11 @@ pub enum Unfit {
 impl fmt::Display for Unfit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Unparseable { detail } => write!(
+                f,
+                "this record is not JSON: {detail}. A truncated last line is the usual cause, \
+                 and it is kept whole here so it can be replayed once the file is complete"
+            ),
             Self::NotADocument => write!(
                 f,
                 "what arrived is not a dictionary. A feed reads named keys, and an array or a \

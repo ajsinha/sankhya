@@ -8,13 +8,15 @@ license-file.workspace      = true
 repository.workspace   = true
 
 [package.metadata.sankhya]
-layer = 2
+layer = 3
 
 [lints]
 workspace = true
 
 [dependencies]
 sankhya-schema = { path = "../sankhya-schema" }
+sankhya-publish = { path = "../sankhya-publish" }
+sankhya-types   = { path = "../sankhya-types" }
 arrow-array    = { workspace = true }
 arrow-schema   = { workspace = true }
 serde          = { workspace = true }

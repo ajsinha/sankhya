@@ -217,6 +217,76 @@ round-trip, or an action missing a field the format requires.
 
 ---
 
+## 3a. Declaring a feed
+
+Publishing a table by writing Rust is the M2 way in. A **feed** is the declared one: a file
+says where documents arrive, what shape they are, and where they land, and the server does the
+rest on a cadence.
+
+One file per feed, under `config/feeds/`:
+
+```yaml
+name: orders
+from: /var/spool/sankhya/orders   # newline-delimited JSON, one dictionary per line
+schema: sales
+table: orders                     # must already exist — a feed never creates a table
+date: ingest                      # or { column: booked_on }, which must be a date and not null
+columns:
+  - name: id
+    type: int64
+  - name: amount
+    from: total                   # the key in the document, when it differs
+    type: decimal(18,2)           # decimals arrive as *strings*
+```
+
+`config/feeds/README.md` is the annotated version, with every setting and its default.
+
+### What it will not do
+
+Each of these turns a defect at the source into published data that looks fine, which is the
+failure nobody notices at the time:
+
+| It refuses | Rather than |
+|---|---|
+| `"42"` into an `int64` | parsing it, and hiding the day the source sends `"forty-two"` |
+| `3.0` into an `int32` | converting it, and then having to decide about `3.5` |
+| a JSON *number* into a `decimal` | accepting it, when `0.1` is not `0.1` in binary floating point |
+| a missing key | inventing a value indistinguishable from a measurement |
+| a key no column claims | discarding a field the source just grew |
+| `"31/08/2026"` as a date | guessing between day-first and month-first |
+
+### What happens to a record that does not fit
+
+It is **quarantined**: written whole, exactly as it arrived, into `sank.sank_quarantine` — a
+table, not a directory of rejected files — alongside the reason, a stable code, the position it
+arrived at, and a fingerprint of the declaration that refused it. Whole, because a record
+reduced to an error message cannot be replayed, and replay is the only actual remedy.
+
+```sql
+SELECT source, position, reason_code, reason, payload
+FROM sank_quarantine
+WHERE feed = 'orders';
+```
+
+**One bad record is an incident; a run of them is an outage.** Above `stop_above` of a recent
+window, or on a source that produced nothing usable at all, the feed **stops and waits for a
+person**. It does not retry on a timer: a source whose shape has changed produces all-bad
+records for as long as it runs, and a feed that keeps going leaves every dashboard green while
+nothing arrives.
+
+### Restarts
+
+A feed records how far it has got as a property of the table it writes to, **in the same commit
+as the rows**. Either both are visible or neither is, so a restart can neither duplicate nor
+skip. Sources are read in name order and the position is the last one finished — so a file
+appearing *behind* that mark is named rather than ingested, because a producer writing out of
+order and somebody replaying an old file want opposite responses and only a person can tell
+which happened.
+
+See [ADR-0018](adr/0018-a-record-that-does-not-fit.md) for the reasoning.
+
+---
+
 ## 4. The date axis
 
 Every table carries **`sank_data_date`**, of type `DATE`, and is partitioned on it. That one

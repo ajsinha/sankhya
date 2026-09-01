@@ -17,6 +17,15 @@ use std::time::Duration;
 
 /// Write the sample warehouse a first-time user is told to generate.
 pub(crate) fn write_warehouse(root: &std::path::Path) {
+    // The quarantine, empty. Created so the guide's example of reading it *runs* rather than
+    // being excused: an example that does not run is documentation that lies, and this one
+    // is read by somebody whose feed has just refused a record and who is not in a position
+    // to tell a wrong query from a wrong system.
+    let quarantine_root = root.join("sank").join(sankhya_feed::quarantine::TABLE);
+    Publication::external(&quarantine_root, sankhya_feed::quarantine::TABLE)
+        .create(&sankhya_feed::quarantine::schema())
+        .expect("creating the quarantine");
+
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("region", DataType::Utf8, true),

@@ -301,3 +301,45 @@ async fn a_query_with_no_predicate_prunes_nothing() {
         "the plan reads fewer files than it should:\n{text}"
     );
 }
+
+/// A table with no live files at all: freshly created, or every file retired.
+fn empty_provider() -> SankhyaTable {
+    let coverage = LsnRange::up_to(Lsn::new(600));
+    let splice =
+        plan_splice(&[TierRef::new("published", coverage)], Lsn::new(600)).expect("a single tier");
+    SankhyaTable::new(schema(), Vec::new(), Vec::new(), Lsn::new(600), splice, true)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_projection_over_a_table_with_no_files_returns_the_projected_schema() {
+    // Found on 2026-08-31 by the first query ever run against an empty table with a column
+    // list: the scan returned an `EmptyExec` carrying the *whole* schema, the engine found a
+    // plan whose columns were not the ones it asked for, and the statement failed with an
+    // internal assertion about a field name.
+    //
+    // Every earlier test of this path had selected every column, and selecting every column
+    // is the one projection under which the bug cannot appear.
+    let context = SessionContext::new();
+    let provider = empty_provider();
+    let full = provider.schema();
+
+    let plan = provider
+        .scan(&context.state(), Some(&vec![2, 0]), &[], None)
+        .await
+        .expect("a plan over an empty table");
+
+    let projected = plan.schema();
+    assert_eq!(projected.fields().len(), 2, "the projection, not the table");
+    assert_eq!(projected.field(0).name(), full.field(2).name());
+    assert_eq!(projected.field(1).name(), full.field(0).name());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_projection_over_a_table_with_no_files_still_returns_every_column() {
+    // The other half, so the fix cannot be "always project to nothing".
+    let context = SessionContext::new();
+    let provider = empty_provider();
+    let plan = provider.scan(&context.state(), None, &[], None).await.expect("a plan");
+
+    assert_eq!(plan.schema().fields().len(), provider.schema().fields().len());
+}

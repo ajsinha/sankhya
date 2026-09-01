@@ -51,7 +51,6 @@ fn refused(payload: &str) -> Refused {
         reason: "`id` reads a whole number and this document has a string".to_owned(),
         declaration: fingerprint(&declaration()),
         payload: payload.to_owned(),
-        data_date: 20_697,
     }
 }
 
@@ -123,8 +122,10 @@ fn the_schema_is_the_same_for_every_feed_and_carries_the_date_axis() {
             "reason",
             "declaration",
             "payload",
-            sankhya_schema::DATA_DATE_COLUMN,
-        ]
+        ],
+        "and no `sank_data_date`: `sankhya-publish` owns the date axis and stamps that \
+         column on. A hand-written one would be redundant at best, and a table partitioned \
+         by one date while carrying another at worst"
     );
     assert!(quarantine.fields().iter().all(|field| !field.is_nullable()));
     assert!(TABLE.starts_with("sank_"), "reserved, so a feed cannot land on it");
