@@ -32,8 +32,12 @@
 
 pub mod bind;
 pub mod declare;
+pub mod quarantine;
+pub mod stop;
 pub mod validate;
 
 pub use bind::{bind, Cell, Row, Unfit};
-pub use declare::{Column, Declaration, Microbatch, Missing, Quarantine, Unknown};
+pub use declare::{Column, DateFrom, Declaration, Microbatch, Missing, Quarantine, Unknown};
+pub use quarantine::{code, fingerprint, Refused};
+pub use stop::{Outcomes, Reason, Span, Verdict};
 pub use validate::{validate, Fault, Feed, Shaped};

@@ -1297,6 +1297,21 @@ It must also decide **what a config may not do**: silently widen a type, invent 
 missing key, or accept a document whose keys it has never seen. Each is a way to turn a source
 defect into published data that looks fine.
 
+### Progress, 2026-08-31
+
+Built and tested (2,207 tests): the declaration, its validation, the binder, the stop control and
+the quarantine's schema and fingerprint. Not built: the runner --- reading sources, assembling
+microbatches, publishing, and committing the position with the rows.
+
+Two things the ADR did not name turned up while building. A feed must **declare its date axis**,
+because `DEC-34` requires the date to be declared per table and never defaulted, and a feed is
+where a table's rows come from; a date column that is nullable, absent, or not a date is refused
+by name. And the ADR's source-level stop control was written here as a *threshold* first, which
+made a two-record file with one bad record stop the feed --- the same mistake as stopping on the
+first malformed document, one level up. It is now an unambiguous condition: a source that
+produced **nothing** usable stops the feed, and everything between that and one bad record is a
+rate, which the window measures across sources.
+
 ### Work
 
 Six decisions came out of the ADR, and two of them are work this section did not previously
@@ -1304,6 +1319,17 @@ name: the quarantine is **a table** rather than a directory beside the warehouse
 **position is committed with its rows in one commit**, so a restart is a question with an answer
 rather than a reconciliation exercise. A halted pipeline is also a *state*, which means a command
 surface to see it and to resume it, rather than a flag in a file.
+
+**Built so far**, everything that has no I/O in it: the declaration and its validation, the
+binder, the stop control and the quarantine's schema and fingerprint. Two decisions were made
+while building that the ADR did not name. A feed must declare **where its rows' date comes
+from** --- `DEC-34` requires that per table and a feed is where a table's rows come from, and
+the two meanings produce the same column while answering the same query with different rows.
+And the source-level stop is **not** a threshold: it fires only when a source produced nothing
+usable at all, because a two-record file with one bad record trips any fraction worth setting,
+and stopping a feed for that is the same mistake as stopping it for its first malformed
+document. Everything between one bad record and an unusable source is a rate, and the window
+measures rates --- it spans sources, so a run of half-bad files still stops the feed.
 
 The config model and its validation, reporting every failing rule rather than the first. The
 mapping from a JSON dictionary to typed rows against `sankhya-schema`'s logical types, refusing

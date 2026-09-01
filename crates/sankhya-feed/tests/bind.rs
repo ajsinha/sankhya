@@ -15,7 +15,9 @@
 )]
 
 use sankhya_feed::bind::{bind, Cell, Unfit};
-use sankhya_feed::declare::{Column, Declaration, Microbatch, Missing, Quarantine, Unknown};
+use sankhya_feed::declare::{
+    Column, DateFrom, Declaration, Microbatch, Missing, Quarantine, Unknown,
+};
 use sankhya_feed::validate::{validate, Feed};
 use serde_json::json;
 
@@ -33,6 +35,7 @@ fn feed_of(written_type: &str, nullable: bool, missing: Missing, unknown: Unknow
             nullable,
             missing,
         }],
+        date: Some(DateFrom::Ingest),
         unknown,
         microbatch: Microbatch::default(),
         quarantine: Quarantine::default(),
@@ -181,4 +184,56 @@ fn something_that_is_not_a_dictionary_is_not_a_record() {
             Unfit::NotADocument
         );
     }
+}
+
+#[test]
+fn a_date_arrives_as_text_in_one_spelling() {
+    let feed = strict("date");
+
+    // 2026-08-31 is 20696 days after 1970-01-01. Asserted as a number rather than round-
+    // tripped through the same parser that produced it, which would agree with itself
+    // whatever it did.
+    let row = bind(&feed, &json!({"value": "2026-08-31"})).expect("an ISO date");
+    assert_eq!(row.cells, vec![Cell::Days(20_696)]);
+
+    for wrong in ["31/08/2026", "August 31 2026", "2026-8-31", "2026-13-01"] {
+        assert!(
+            bind(&feed, &json!({"value": wrong})).is_err(),
+            "`{wrong}` is not a date this feed reads"
+        );
+    }
+}
+
+#[test]
+fn a_number_is_not_a_date_however_convenient_that_would_be() {
+    // The convenience that is wrong three times in four: a number here would have to be
+    // seconds, or milliseconds, or microseconds, or days, and every producer picks a
+    // different one.
+    let feed = strict("date");
+    let refused = bind(&feed, &json!({"value": 20_696})).expect_err("a number is not a date");
+    assert!(refused.to_string().contains("every producer picks a different one"), "{refused}");
+}
+
+#[test]
+fn a_timestamp_with_an_offset_is_not_the_same_column_as_one_without() {
+    let utc = strict("timestamp_utc");
+    let row = bind(&utc, &json!({"value": "2026-08-31T12:00:00Z"})).expect("RFC 3339");
+    assert_eq!(row.cells, vec![Cell::Micros(1_788_177_600_000_000)]);
+
+    // An offset-carrying timestamp is not accepted where a local one is declared, and the
+    // reverse. Conflating them is how an entire column shifts by hours.
+    assert!(bind(&utc, &json!({"value": "2026-08-31T12:00:00"})).is_err());
+    let local = strict("timestamp_local");
+    assert!(bind(&local, &json!({"value": "2026-08-31T12:00:00Z"})).is_err());
+    assert!(bind(&local, &json!({"value": "2026-08-31T12:00:00"})).is_ok());
+}
+
+#[test]
+fn bytes_are_refused_rather_than_guessed_at() {
+    // Base64, hex or escaped are all plausible and only the producer knows which. Refused
+    // until a declaration can say, rather than decoded on a guess that succeeds on the wrong
+    // convention and produces bytes nobody sent.
+    let feed = strict("binary");
+    let refused = bind(&feed, &json!({"value": "aGVsbG8="})).expect_err("bytes are not decided");
+    assert!(refused.to_string().contains("producer's decision"), "{refused}");
 }

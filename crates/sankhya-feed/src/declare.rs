@@ -22,6 +22,13 @@ pub struct Declaration {
     /// The columns, and where each one's value comes from.
     #[serde(default)]
     pub columns: Vec<Column>,
+    /// Where each row's `sank_data_date` comes from.
+    ///
+    /// An `Option` so that saying nothing is refused *here*, with a sentence, rather than by
+    /// a deserializer reporting a missing field. `DEC-34` requires the date to be declared
+    /// per table and never defaulted, and a feed is where a table's rows come from.
+    #[serde(default)]
+    pub date: Option<DateFrom>,
     /// What to do with a key no column claims.
     #[serde(default)]
     pub unknown: Unknown,
@@ -69,6 +76,30 @@ impl Column {
     pub fn key(&self) -> &str {
         self.from.as_deref().unwrap_or(&self.name)
     }
+}
+
+/// Where a row's date comes from.
+///
+/// # Why this cannot be left out
+///
+/// Every table carries one date axis, and the two possible meanings --- *the date this row is
+/// about* and *the date we heard about it* --- are not interchangeable. A table holding a
+/// mixture answers `WHERE sank_data_date = '2024-03-01'` with rows of both kinds, and nothing
+/// in the answer says which is which.
+///
+/// So a feed says which it is. `IngestDate` is a legitimate answer and it has to be written
+/// down, because "nobody thought about it" and "this is arrival time, deliberately" produce
+/// the same column and mean different things.
+#[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DateFrom {
+    /// The moment this system read the record.
+    Ingest,
+    /// A declared column of the record, which must be a date and must not be null.
+    Column {
+        /// Which column.
+        name: String,
+    },
 }
 
 /// What a document that lacks a column's key means.

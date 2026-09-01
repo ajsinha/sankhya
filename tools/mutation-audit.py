@@ -3635,6 +3635,74 @@ CATALOGUE = [
      "        GSS_REQUEST_CODE if false => Ok((FrontendMessage::GssEncRequest, length)),",
      "sankhya-api-pg"),
 
+    # --- M13: a declared feed, and the coercions it will not make --------------------
+
+    ("feed: accept a declaration that never says where its rows' date comes from",
+     "crates/sankhya-feed/src/validate.rs",
+     "        None => faults.push(Fault::NoDateAxis),",
+     "        None => {}",
+     "sankhya-feed"),
+
+    ("feed: let a not-null column be filled with null when its key is absent",
+     "crates/sankhya-feed/src/validate.rs",
+     "        if column.missing == Missing::Null && !column.nullable {",
+     "        if false {",
+     "sankhya-feed"),
+
+    ("feed: accept a stop rate that can never fire",
+     "crates/sankhya-feed/src/validate.rs",
+     "    if !(quarantine.stop_above > 0.0 && quarantine.stop_above < 1.0) {",
+     "    if false {",
+     "sankhya-feed"),
+
+    ("feed: let two columns read the same key without saying so",
+     "crates/sankhya-feed/src/validate.rs",
+     "        if columns.len() > 1 {",
+     "        if false {",
+     "sankhya-feed"),
+
+    ("feed: accept a key no column claims",
+     "crates/sankhya-feed/src/bind.rs",
+     "    if feed.unknown() == Unknown::Refuse {",
+     "    if false {",
+     "sankhya-feed"),
+
+    ("feed: let a whole number too wide for its column through",
+     "crates/sankhya-feed/src/bind.rs",
+     "        LogicalType::Int16 => i16::try_from(whole).is_ok(),",
+     "        LogicalType::Int16 => true,",
+     "sankhya-feed"),
+
+    ("feed: round a decimal with more places than the column declares",
+     "crates/sankhya-feed/src/bind.rs",
+     "    if fraction.len() > usize::from(precision.scale) {",
+     "    if false {",
+     "sankhya-feed"),
+
+    ("feed: accept a null in a column that does not take one",
+     "crates/sankhya-feed/src/bind.rs",
+     "        return if column.nullable {",
+     "        return if true {",
+     "sankhya-feed"),
+
+    ("feed: measure a stop rate before there is one to measure",
+     "crates/sankhya-feed/src/stop.rs",
+     "        if self.recent.len() < self.window as usize {",
+     "        if false {",
+     "sankhya-feed"),
+
+    ("feed: let a source that produced nothing usable pass quietly",
+     "crates/sankhya-feed/src/stop.rs",
+     "        if read > 0 && unfit == read {",
+     "        if false {",
+     "sankhya-feed"),
+
+    ("feed: fingerprint a declaration without length-prefixing its fields",
+     "crates/sankhya-feed/src/quarantine.rs",
+     "    for byte in (bytes.len() as u64).to_le_bytes().iter().chain(bytes) {",
+     "    for byte in bytes {",
+     "sankhya-feed"),
+
     ("server: start in the clear when a certificate is configured without its key",
      "crates/sankhya-server/src/main.rs",
      "            if present.is_none() || absent.is_none() {",

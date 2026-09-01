@@ -23,6 +23,21 @@ use crate::validate::{Feed, Shaped};
 use sankhya_schema::LogicalType;
 use serde_json::{Map, Value};
 use std::fmt;
+use time::format_description::well_known::Rfc3339;
+use time::macros::format_description;
+use time::{Date, OffsetDateTime, PrimitiveDateTime, Time};
+
+/// The Julian day number of 1970-01-01, for turning a date into days since the epoch.
+const UNIX_EPOCH_JULIAN_DAY: i32 = 2_440_588;
+
+/// A timestamp with no offset, which is the only spelling accepted for a local one.
+const LOCAL_TIMESTAMP: &[time::format_description::FormatItem<'_>] =
+    format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]");
+
+/// Microseconds from nanoseconds, saturating rather than wrapping.
+fn micros_of(nanos: i128) -> i64 {
+    i64::try_from(nanos / 1_000).unwrap_or(i64::MAX)
+}
 
 /// One cell of a bound row.
 ///
@@ -216,6 +231,34 @@ fn wrong(column: &Shaped, wanted: &'static str, value: &Value, because: &'static
     }
 }
 
+/// A value that arrives as text in a stated spelling.
+///
+/// Temporal columns read strings and not numbers. A number would have to be seconds, or
+/// milliseconds, or microseconds, or days --- and every producer picks a different one, so a
+/// feed that accepted a number would be choosing on the producer's behalf and would be right
+/// about three quarters of them.
+fn temporal(
+    column: &Shaped,
+    wanted: &'static str,
+    value: &Value,
+    read: impl Fn(&str) -> Option<Cell>,
+) -> Result<Cell, Unfit> {
+    let Some(text) = value.as_str() else {
+        return Err(wrong(
+            column,
+            wanted,
+            value,
+            "a number here would have to be seconds, or milliseconds, or days, and every \
+             producer picks a different one",
+        ));
+    };
+    read(text).ok_or_else(|| Unfit::OutOfRange {
+        column: column.name.clone(),
+        wanted,
+        value: text.to_owned(),
+    })
+}
+
 /// Read a present, non-null value.
 fn read(column: &Shaped, value: &Value) -> Result<Cell, Unfit> {
     match column.logical {
@@ -234,17 +277,57 @@ fn read(column: &Shaped, value: &Value) -> Result<Cell, Unfit> {
             .ok_or_else(|| wrong(column, "text", value, "a number rendered as text is a \
                                                         decision this feed will not make")),
         LogicalType::Json => Ok(Cell::Text(value.to_string())),
-        LogicalType::Binary
-        | LogicalType::TimestampUtc
-        | LogicalType::TimestampLocal
-        | LogicalType::Date
-        | LogicalType::Time
-        | LogicalType::Uuid => Err(wrong(
+        LogicalType::Date => temporal(column, "a date, written as YYYY-MM-DD", value, |text| {
+            Date::parse(text, &format_description!("[year]-[month]-[day]"))
+                .ok()
+                .map(|date| Cell::Days(date.to_julian_day() - UNIX_EPOCH_JULIAN_DAY))
+        }),
+        LogicalType::TimestampUtc => temporal(
             column,
-            "a type this feed cannot yet read",
+            "a timestamp with an offset, written as RFC 3339",
             value,
-            "binary, temporal and uuid columns are not readable from a document yet --- \
-             refused rather than approximated",
+            |text| {
+                OffsetDateTime::parse(text, &Rfc3339)
+                    .ok()
+                    .map(|moment| Cell::Micros(micros_of(moment.unix_timestamp_nanos())))
+            },
+        ),
+        LogicalType::TimestampLocal => temporal(
+            column,
+            "a timestamp with no offset, written as YYYY-MM-DDTHH:MM:SS",
+            value,
+            |text| {
+                PrimitiveDateTime::parse(text, &LOCAL_TIMESTAMP).ok().map(|moment| {
+                    Cell::Micros(micros_of(moment.assume_utc().unix_timestamp_nanos()))
+                })
+            },
+        ),
+        LogicalType::Time => temporal(column, "a time of day, written as HH:MM:SS", value, |text| {
+            Time::parse(text, &format_description!("[hour]:[minute]:[second]"))
+                .ok()
+                .map(|time| {
+                    let (hour, minute, second, micro) = time.as_hms_micro();
+                    Cell::Micros(
+                        i64::from(hour) * 3_600_000_000
+                            + i64::from(minute) * 60_000_000
+                            + i64::from(second) * 1_000_000
+                            + i64::from(micro),
+                    )
+                })
+        }),
+        LogicalType::Uuid => temporal(column, "a uuid", value, |text| {
+            uuid::Uuid::parse_str(text).ok().map(|id| Cell::Uuid(*id.as_bytes()))
+        }),
+        // Binary is refused, deliberately and for now. Bytes in a JSON document are text in
+        // some encoding, and choosing one here --- base64, hex, escaped --- would be this
+        // feed guessing at a producer's convention. A declaration that says which encoding
+        // is the answer, and it waits until there is a source with an opinion.
+        LogicalType::Binary => Err(wrong(
+            column,
+            "bytes, which a feed cannot yet read",
+            value,
+            "bytes in a JSON document are text in some encoding, and which one is the \
+             producer's decision rather than this feed's to guess",
         )),
     }
 }

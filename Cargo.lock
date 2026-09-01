@@ -3632,11 +3632,15 @@ dependencies = [
 name = "sankhya-feed"
 version = "0.1.0"
 dependencies = [
+ "arrow-array",
+ "arrow-schema",
  "sankhya-schema",
  "serde",
  "serde_json",
  "serde_yaml_ng",
  "tempfile",
+ "time",
+ "uuid",
 ]
 
 [[package]]

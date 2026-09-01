@@ -15,7 +15,11 @@ workspace = true
 
 [dependencies]
 sankhya-schema = { path = "../sankhya-schema" }
+arrow-array    = { workspace = true }
+arrow-schema   = { workspace = true }
 serde          = { workspace = true }
+time           = { workspace = true }
+uuid           = { workspace = true }
 serde_json     = { workspace = true }
 serde_yaml_ng  = { workspace = true }
 

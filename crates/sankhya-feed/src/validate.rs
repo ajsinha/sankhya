@@ -1,6 +1,6 @@
 //! Turning a declaration into a feed, or into every reason it is not one.
 
-use crate::declare::{Declaration, Microbatch, Missing, Quarantine, Unknown};
+use crate::declare::{DateFrom, Declaration, Microbatch, Missing, Quarantine, Unknown};
 use sankhya_schema::{LogicalType, Precision};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -71,6 +71,7 @@ const TYPE_NAMES: &str = "boolean, int16, int32, int64, float32, float64, decima
 pub struct Feed {
     declaration: Declaration,
     columns: Vec<Shaped>,
+    date: DateFrom,
 }
 
 impl Feed {
@@ -102,6 +103,16 @@ impl Feed {
     #[must_use]
     pub const fn microbatch(&self) -> Microbatch {
         self.declaration.microbatch
+    }
+
+    /// Where each row's date comes from.
+    ///
+    /// Not an `Option`, and not a field with a default. A declaration that does not say is
+    /// not a feed, so by the time anything holds one of these the question has an answer
+    /// somebody wrote down.
+    #[must_use]
+    pub const fn date(&self) -> &DateFrom {
+        &self.date
     }
 
     /// What happens to records that do not fit.
@@ -142,6 +153,23 @@ pub enum Fault {
     },
     /// A column is filled with null when its key is absent, and does not accept nulls.
     NullIntoNotNull {
+        /// The column.
+        name: String,
+    },
+    /// The feed does not say where its rows' date comes from.
+    NoDateAxis,
+    /// The date is declared to come from a column the feed does not have.
+    DateColumnUnknown {
+        /// The column named.
+        name: String,
+    },
+    /// The date is declared to come from a column that is not a date.
+    DateColumnNotADate {
+        /// The column.
+        name: String,
+    },
+    /// The date is declared to come from a column that may be null.
+    DateColumnNullable {
         /// The column.
         name: String,
     },
@@ -191,6 +219,29 @@ impl fmt::Display for Fault {
                 f,
                 "`{name}` is filled with null when its key is absent, and does not accept \
                  nulls. Make the column nullable, or say what a missing key means"
+            ),
+            Self::NoDateAxis => write!(
+                f,
+                "the feed does not say where `sank_data_date` comes from. Write `date: \
+                 ingest` if it is the moment this system read the record, or `date: {{column: \
+                 <name>}}` if the record carries the date it is about --- the two are not \
+                 interchangeable, and a table holding a mixture cannot be asked about either"
+            ),
+            Self::DateColumnUnknown { name } => write!(
+                f,
+                "the date is declared to come from `{name}`, and this feed has no such column"
+            ),
+            Self::DateColumnNotADate { name } => write!(
+                f,
+                "the date is declared to come from `{name}`, which is not a date or a \
+                 timestamp. A date derived from something else is a conversion nobody \
+                 reviewed"
+            ),
+            Self::DateColumnNullable { name } => write!(
+                f,
+                "the date is declared to come from `{name}`, which may be null. A row with no \
+                 date belongs to no partition, and answering that with a fallback \
+                 reintroduces the mixture one row at a time"
             ),
             Self::UnknownType { name, written } => write!(
                 f,
@@ -293,6 +344,25 @@ pub fn validate(declaration: Declaration) -> Result<Feed, Vec<Fault>> {
         }
     }
 
+    match &declaration.date {
+        None => faults.push(Fault::NoDateAxis),
+        Some(DateFrom::Ingest) => {}
+        Some(DateFrom::Column { name }) => match shaped.iter().find(|c| &c.name == name) {
+            None => faults.push(Fault::DateColumnUnknown { name: name.clone() }),
+            Some(column) => {
+                if !matches!(
+                    column.logical,
+                    LogicalType::Date | LogicalType::TimestampUtc | LogicalType::TimestampLocal
+                ) {
+                    faults.push(Fault::DateColumnNotADate { name: name.clone() });
+                }
+                if column.nullable || column.missing == Missing::Null {
+                    faults.push(Fault::DateColumnNullable { name: name.clone() });
+                }
+            }
+        },
+    }
+
     let quarantine = declaration.quarantine;
     if quarantine.retain_days == 0 {
         faults.push(Fault::QuarantineForever);
@@ -311,9 +381,14 @@ pub fn validate(declaration: Declaration) -> Result<Feed, Vec<Fault>> {
         faults.push(Fault::UnboundedBatch { bound: "seconds" });
     }
 
-    if faults.is_empty() {
-        Ok(Feed { declaration, columns: shaped })
-    } else {
-        Err(faults)
+    if !faults.is_empty() {
+        return Err(faults);
+    }
+    match declaration.date.clone() {
+        Some(date) => Ok(Feed { declaration, columns: shaped, date }),
+        // Unreachable: a missing date axis is itself a fault, so this cannot be `None` with
+        // no faults. Written as a refusal rather than an `unwrap` because "cannot happen" is
+        // a claim, and one the compiler is not keeping is worth less than one it is.
+        None => Err(vec![Fault::NoDateAxis]),
     }
 }

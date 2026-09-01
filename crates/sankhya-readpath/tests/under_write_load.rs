@@ -270,13 +270,31 @@ fn read_latency_is_flat_under_write_load() {
         idle.p99,
         loaded.p99
     );
-    // The control is what gives the threshold above its meaning. If a reader sharing a lock
-    // with the writers scored as well as one that does not, this measurement could not see
-    // the difference it exists to see.
+    // The control is what gives the thresholds above their meaning: if a reader sharing a
+    // lock with the writers scored as well as one that does not, this measurement could not
+    // see the difference it exists to see.
+    //
+    // # Why the control is a latency and not a throughput share
+    //
+    // It was `flat >= serialized * 5.0` --- a ratio of ratios --- and it failed in the gate
+    // on 2026-08-31 while passing when run by hand. The cause is that `check-concurrency`
+    // builds optimized and a plain `cargo test` does not: with every participant faster, a
+    // writer holds the lock for less time, the reader wins more of the acquisitions, and the
+    // *share* the control depends on narrows. The separation it was asserting is real and
+    // the quantity it was asserting it over is not robust to how fast the machine is.
+    //
+    // Waiting is what criterion 5 forbids, and waiting is a latency. A reader behind a lock
+    // held across a Parquet encode shows it directly and enormously --- measured at 8.77s
+    // against the free reader's 211µs, four orders of magnitude --- where the throughput
+    // share was a factor of a few. Twenty is far below anything the serialized arm has
+    // produced and far above anything the free one could reach by accident.
     assert!(
-        flat >= serialized * 5.0,
-        "the free reader held {flat:.2} of its idle rate and a reader sharing one lock with \
-         the writers held {serialized:.2} --- too close for this to distinguish them"
+        loaded_locked.p99 >= loaded.p99 * 20,
+        "a reader sharing one lock with the writers reached p99 {:?} against the free \
+         reader's {:?} ({flat:.2}x of idle against {serialized:.2}x) --- too close for this \
+         to distinguish a reader that waits from one that does not",
+        loaded_locked.p99,
+        loaded.p99
     );
 }
 

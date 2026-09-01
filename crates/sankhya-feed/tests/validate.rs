@@ -15,7 +15,9 @@
     clippy::float_cmp
 )]
 
-use sankhya_feed::declare::{Column, Declaration, Microbatch, Missing, Quarantine, Unknown};
+use sankhya_feed::declare::{
+    Column, DateFrom, Declaration, Microbatch, Missing, Quarantine, Unknown,
+};
 use sankhya_feed::validate::{validate, Fault};
 
 /// A declaration that is entirely fine, for a test to spoil one part of.
@@ -41,6 +43,7 @@ fn sound() -> Declaration {
                 missing: Missing::Refuse,
             },
         ],
+        date: Some(DateFrom::Ingest),
         unknown: Unknown::Refuse,
         microbatch: Microbatch::default(),
         quarantine: Quarantine::default(),
@@ -180,4 +183,89 @@ fn a_feed_with_no_columns_is_refused() {
         faults[0].to_string().contains("evidence that something ran"),
         "the refusal says what the mistake produces"
     );
+}
+
+#[test]
+fn a_feed_that_does_not_say_where_its_date_comes_from_is_refused() {
+    // `DEC-34`: the date is declared per table and never defaulted. The two meanings — the
+    // date a row is *about*, and the date this system heard about it — produce the same
+    // column and answer the same query with different rows.
+    let mut declaration = sound();
+    declaration.date = None;
+
+    let faults = validate(declaration).expect_err("no date axis");
+
+    assert!(faults.contains(&Fault::NoDateAxis));
+    let said = faults[0].to_string();
+    assert!(said.contains("date: ingest"), "the refusal shows both spellings: {said}");
+    assert!(said.contains("not interchangeable"), "{said}");
+}
+
+#[test]
+fn a_missing_date_axis_is_reported_alongside_everything_else_that_is_wrong() {
+    // There is a second refusal for a missing date, at the end of `validate`, guarding the
+    // construction of a `Feed` that has no date to hold. It is a safety net and it must not
+    // be doing this rule's job: reached that way, it is the *only* fault reported, and the
+    // operator fixes their date declaration to be told about the other three.
+    //
+    // A mutation that deleted the rule survived every other test in this file for exactly
+    // that reason, which is what this asserts against.
+    let mut declaration = sound();
+    declaration.date = None;
+    declaration.name = String::new();
+    declaration.quarantine.retain_days = 0;
+
+    let faults = validate(declaration).expect_err("three things are wrong");
+
+    assert!(faults.contains(&Fault::NoDateAxis));
+    assert!(faults.contains(&Fault::Empty { field: "name" }));
+    assert!(faults.contains(&Fault::QuarantineForever));
+    assert_eq!(faults.len(), 3, "every rule, not the one that stopped it: {faults:?}");
+}
+
+#[test]
+fn a_date_column_must_exist_be_a_date_and_never_be_null() {
+    let mut absent = sound();
+    absent.date = Some(DateFrom::Column { name: "traded_on".to_owned() });
+    assert!(validate(absent)
+        .expect_err("no such column")
+        .contains(&Fault::DateColumnUnknown { name: "traded_on".to_owned() }));
+
+    // `id` is an int64. A date derived from one is a conversion nobody reviewed.
+    let mut wrong_type = sound();
+    wrong_type.date = Some(DateFrom::Column { name: "id".to_owned() });
+    assert!(validate(wrong_type)
+        .expect_err("not a date")
+        .contains(&Fault::DateColumnNotADate { name: "id".to_owned() }));
+
+    // A row with no date belongs to no partition, and a fallback reintroduces the mixture
+    // one row at a time.
+    let mut nullable = sound();
+    nullable.columns.push(Column {
+        name: "booked_on".to_owned(),
+        from: None,
+        written_type: "date".to_owned(),
+        nullable: true,
+        missing: Missing::Refuse,
+    });
+    nullable.date = Some(DateFrom::Column { name: "booked_on".to_owned() });
+    assert!(validate(nullable)
+        .expect_err("nullable date")
+        .contains(&Fault::DateColumnNullable { name: "booked_on".to_owned() }));
+}
+
+#[test]
+fn a_sound_business_date_column_is_accepted() {
+    let mut declaration = sound();
+    declaration.columns.push(Column {
+        name: "booked_on".to_owned(),
+        from: None,
+        written_type: "date".to_owned(),
+        nullable: false,
+        missing: Missing::Refuse,
+    });
+    declaration.date = Some(DateFrom::Column { name: "booked_on".to_owned() });
+
+    let feed = validate(declaration).expect("a declared business date");
+    assert_eq!(feed.date(), &DateFrom::Column { name: "booked_on".to_owned() });
 }
