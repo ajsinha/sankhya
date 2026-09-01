@@ -313,3 +313,115 @@ fn the_origin_is_actually_maintained_which_is_what_makes_the_other_test_mean_som
          the clone soak would have proven nothing"
     );
 }
+
+/// Bytes on disk under a directory, and how many files.
+fn footprint(root: &std::path::Path) -> (u64, usize) {
+    fn walk(at: &std::path::Path, bytes: &mut u64, files: &mut usize) {
+        let Ok(entries) = std::fs::read_dir(at) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, bytes, files);
+            } else if let Ok(meta) = entry.metadata() {
+                *bytes += meta.len();
+                *files += 1;
+            }
+        }
+    }
+    let (mut bytes, mut files) = (0, 0);
+    walk(root, &mut bytes, &mut files);
+    (bytes, files)
+}
+
+/// An origin of `files` published fragments.
+fn origin_of(root: &std::path::Path, name: &str, files: i64) -> Publication {
+    let publication = Publication::external(root.join(name), name);
+    publication.create(&schema()).expect("creating");
+    for file in 0..files {
+        publication
+            .append(
+                u64::try_from(file + 1).unwrap_or(1),
+                &format!("part-{file:04}.parquet"),
+                &batch(file * ROWS),
+                Lsn::new(u64::try_from((file + 1) * ROWS).unwrap_or(1)),
+            )
+            .expect("publishing");
+    }
+    publication
+}
+
+/// Clone `origin` and report what the clone cost on disk.
+fn clone_cost(root: &std::path::Path, origin: &str, at: u64, name: &str) -> (u64, usize) {
+    let clone_root = root.join(name);
+    let publication = Publication::external(&clone_root, name);
+    publication
+        .create_clone(
+            &sankhya_table_delta::schema_string(&schema()).expect("a schema string"),
+            &Lineage::new(origin, at, 0).to_properties(),
+        )
+        .expect("creating the clone");
+    footprint(&clone_root)
+}
+
+#[test]
+fn a_clone_costs_the_same_against_a_large_table_as_against_a_small_one() {
+    // `M10`'s first exit criterion: a clone demonstrated at **constant cost** against a large
+    // table.
+    //
+    // # Why this is proved structurally rather than timed
+    //
+    // The tempting demonstration is a stopwatch: clone a small table, clone a large one, compare.
+    // That would be a *throughput measurement*, and this repository has spent a day learning what
+    // those cost — five guards, four failed gate runs, and the eventual answer that such
+    // measurements have to run alone on a quiet machine. Inventing a sixth would be poor
+    // value for a property that is not statistical.
+    //
+    // Because it is not. `ADR-0016` Decision 1a makes a clone's log hold **no `Add` actions at
+    // all** — the rows it starts with are the origin's and stay where they are. So the clone's
+    // cost is one commit whatever the origin holds, and that is an exact claim about bytes and
+    // files rather than a distribution over runs. Proving the exact thing exactly is better than
+    // measuring a proxy badly.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+
+    origin_of(dir.path(), "small", 2);
+    origin_of(dir.path(), "large", 60);
+
+    let (small_bytes, small_files) = footprint(&dir.path().join("small"));
+    let (large_bytes, large_files) = footprint(&dir.path().join("large"));
+    assert!(
+        large_files > small_files * 10 && large_bytes > small_bytes * 5,
+        "the two origins are not different enough for this to mean anything: \
+         {small_files} files/{small_bytes} bytes against {large_files}/{large_bytes}"
+    );
+
+    let (from_small, files_small) = clone_cost(dir.path(), "small", 2, "of_small");
+    let (from_large, files_large) = clone_cost(dir.path(), "large", 60, "of_large");
+
+    assert_eq!(
+        files_small, files_large,
+        "cloning a {large_files}-file table wrote a different number of files than cloning a \
+         {small_files}-file one"
+    );
+    // Within a few bytes rather than identical, and the difference is worth naming because the
+    // first version of this test asserted equality and failed by **one byte**: the lineage
+    // records the origin version as text, so cloning at version 60 writes one character more
+    // than cloning at version 2. That is the only thing about a clone that varies with anything,
+    // and it varies with the *number*, not with the table.
+    let difference = from_large.abs_diff(from_small);
+    assert!(
+        difference <= 16,
+        "cloning a {large_files}-file table cost {from_large} bytes and a {small_files}-file \
+         one cost {from_small}, a difference of {difference}; a clone that grows with its \
+         origin is a copy"
+    );
+    assert!(
+        from_large < large_bytes / 10,
+        "the clone cost {from_large} bytes against an origin of {large_bytes}, which is not \
+         constant space by any reading"
+    );
+
+    println!(
+        "clone cost: {files_small} file(s), {from_small} and {from_large} bytes, from origins \
+         of {small_files} and {large_files} files"
+    );
+}

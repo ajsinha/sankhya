@@ -1078,10 +1078,18 @@ file that is not there.
 
 ### Exit
 
-A clone demonstrated at constant cost against a large table; divergent writes on both sides
+~~A clone demonstrated at constant cost against a large table; divergent writes on both sides
 verified independent; **maintenance run to completion on the origin with the clone proven to
 read every row it could read before**; the same for orphan collection specifically; and every
-refused clone path shown to fail closed.
+refused clone path shown to fail closed.~~ — **all five met 2026-08-31.**
+
+Walking them found two that were not: constant cost, and the fail-closed enumeration. Constant
+cost is proved **structurally rather than timed** — Decision 1a means a clone's log holds no
+`Add` actions, so its cost is one commit whatever the origin holds: 1 file and 410 bytes from
+origins of 5 and 121 files. Timing it would have been a sixth throughput measurement, and this
+milestone had just learned what those cost. Fail-closed is twelve refused paths in one list, with
+a control asserting the permitted cases are permitted — because every such assertion is satisfied
+by a feature that refuses everything.
 
 ---
 
