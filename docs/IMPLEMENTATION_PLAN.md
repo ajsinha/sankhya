@@ -1328,13 +1328,19 @@ the reason the contract matters more than the binding.
 Two things, both before implementation.
 
 **`FR-SEC-03` is mandatory and nothing implements it.** *"Authentication SHALL support federated
-identity tokens, mutual TLS, and scram authentication on the wire-protocol door."* There is no
-TLS anywhere in this workspace --- not on the wire protocol, not on Flight, not as a dependency.
-Today a password crosses an unencrypted socket, which is tolerable on a loopback and is
-credential exposure the moment the client is somewhere else. **An SDK whose whole purpose is
+identity tokens, mutual TLS, and scram authentication on the wire-protocol door."* Neither door
+offers TLS today, so a password crosses an unencrypted socket --- tolerable on a loopback, and
+credential exposure the moment the client is somewhere else.
+
+The dependency half is already paid: `rustls` 0.23.43 resolves as a **single version** in the
+lock, pulled transitively through the object-store HTTP client, and `tonic` has a TLS feature of
+its own. So the pin-set question under [ADR-0001](adr/0001-dependency-pin-set.md) is a check to
+run rather than a risk to carry, and the work is wiring, certificate handling and the refusals
+around them. **An SDK whose whole purpose is
 connecting over a network cannot ship in front of it.**
 
-**An accepted ADR for the client contract**, covering:
+**An accepted ADR for the client contract.** Written and accepted on 2026-08-31 as
+[ADR-0017](adr/0017-the-client-contract.md), covering:
 
 1. **What the SDK is allowed to know.** Three bindings are coming. Any validation the client
    performs and the server does not becomes a specification the other two will not share, and
@@ -1388,6 +1394,16 @@ expiry**, because a cube that materialises cuboids and is never dropped is the a
 real server, because a client tested against a mock is a client tested against its author's
 belief.
 
+**A worked example per capability**, by owner directive 2026-08-31 --- not a README snippet but a
+runnable `examples/` tree the owner can point at a server and use to exercise the product:
+connecting, discovery, a streamed result larger than memory, ingest, each of the five cube
+navigations, an ephemeral cube and a persisted one, a clone and its lineage, a registered
+aggregation, and one example per refusal that shows the typed error and its remediation.
+
+Examples are held to the same standard as tests, for a sharper reason: **an example that does not
+run is documentation that lies**, and it lies to the person least able to tell. So they run in
+the gate against a real server, and one that breaks fails the build like anything else.
+
 ### Exit
 
 A user connects over TLS from an unmodified Python installation and, without touching the
@@ -1395,7 +1411,8 @@ server's filesystem: queries a table larger than the client's memory; ingests a 
 cube, materialises it, and rolls it up; clones a table and reads the clone; registers an
 aggregation whose `merge` is exercised and whose determinism is checked; and receives a typed,
 remediable error for each refused path. Every one demonstrated against a running server rather
-than a mock.
+than a mock, and **every capability above has a runnable example in the tree** that the gate
+executes.
 
 ---
 

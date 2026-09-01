@@ -1383,6 +1383,193 @@ Traversing a shared graph and filtering afterwards is **not offered**, even as a
 
 ---
 
+## 10a. Multidimensional analysis
+
+Cubing is native rather than a layer bolted above SQL, and it is the capability this system is
+most willing to be slower than its competitors to get right. `M7` is complete and everything below
+is built, with two exceptions named where they appear: the **Ephemeral** cube lifetime (§10a.9),
+which arrives with the client contract in `M14`, and cuboid **selection** (§10a.11), which is
+waiting on data rather than on code.
+
+### 10a.1 One structure, navigated --- not five unrelated queries
+
+`GROUP BY ROLLUP(year, quarter, month)` enumerates combinations of three column names. It does not
+know that a month is inside a quarter, that a balance may not be summed across time, or that the
+previous statement and this one are two views of one thing.
+
+Slice, dice, roll up, drill down and pivot each **take a cube and return a cube**, so they compose:
+dice, then roll up, then drill into the outlier, and the result is still addressable. Roll-up is the
+only one of the five that can produce a number that was not already there --- the others remove or
+rearrange cells --- which is why the additivity rules below sit under it and not under the others.
+
+### 10a.2 The default that produces wrong numbers
+
+Every OLAP product this design was measured against defaults an undeclared measure to **summation**.
+It is the convenient choice and it is the single most productive source of wrong analytics figures
+there is, because summing a balance across time, or a rate across anything, yields a number that is
+plausible, wrong, and indistinguishable from a correct one.
+
+**SANKHYA refuses.** A measure with no declared rule for a dimension is a *definition error*,
+reported before the cube exists, naming **every** dimension it failed to declare rather than the
+first --- since fixing them one build at a time is how a person gives up and writes `Sum`
+everywhere.
+
+The two decisions this costs are the two where a cube engine produces wrong answers:
+
+- **May this measure be summed along this axis?** Refused rather than defaulted.
+- **May this query be answered from that materialised cuboid?** Refusing a valid roll-up costs a
+  slow query; permitting an invalid one produces a figure that is wrong, plausible, and derived
+  from real data.
+
+### 10a.3 Three crates, and why the algebra has no dependencies
+
+| Crate | Layer | Knows about |
+|---|---|---|
+| `sankhya-cube-algo` | 1, **no dependencies at all** | the lattice, additivity, hierarchies, ancestor selection |
+| `sankhya-cube` | 2 | tables, columns, versions, published data |
+| `sankhya-cube-sql` | 3 | table functions callable from a `FROM` clause |
+
+The algebra knows nothing about tables, columns or versions, **and so cannot be wrong about them**.
+Its functions are pure functions of a declaration, which makes their property tests fast enough to
+exhaust a space rather than sample it --- and that matters more here than anywhere, because
+ancestor selection is where a wrong number comes from.
+
+`sankhya-cube` is where the algebra meets a real warehouse: a `Definition` names published tables
+and their columns, validating it produces a `Cube`, and **a `Cube` cannot be constructed any other
+way**. Planning, consolidation and materialisation all take a `Cube`, so no code path exists that
+operates on a definition nobody checked.
+
+### 10a.4 Cubes are reachable from SQL, or they are a second product
+
+A cube that cannot be joined against a table is a separate product with its own query language, and
+the point of putting multidimensional analysis in the same engine is that it is not one.
+`FR-CUBE-14` requires slice, dice, roll-up, drill-down and pivot expressible from SQL **with no
+separate build step**, so every operation is a table function with a fixed output schema:
+
+```sql
+SELECT r.region, r.amount, p.manager
+FROM cube_rollup('figures', 'amount', 'by=region') AS r
+JOIN people AS p ON p.region = r.region
+WHERE r.completeness = 1.0 AND r.overlay IS NULL
+```
+
+### 10a.5 Everything that qualifies a number is a column
+
+Inherited from the graph engine's truncation columns (§10.4), with more force:
+
+> A qualification that lives outside the rows is dropped by the first `SELECT` that does not
+> mention it.
+
+For a graph, that costs a truncated result read as complete. For a cube the same mistake produces a
+**partial total read as a total**, or a **what-if figure read as fact** --- numbers that reconcile
+against nothing, in a report, with no way to tell from the value what went wrong.
+
+So `completeness`, `withheld`, `overlay`, `materialised` and `from_cuboid` are columns on every row.
+A query may project them away, but it has to do so on purpose, and the statement then says so in its
+own text.
+
+**Completeness exists because row-level policy is working.** Two principals may run the same query
+and legitimately get different totals; `4,182,900` computed over every row and `4,182,900` computed
+over the sixty percent a principal may read render identically (`FR-QUERY-13`, `FR-CUBE-13`).
+Nothing about the second says it is partial, so it gets reconciled against a complete one.
+
+**`materialised` is not there for correctness** --- `M7`'s exit criterion requires the answer to be
+identical either way, and it is, to the bit. It is there because *"why was this fast?"* and *"why
+was this slow?"* are the same question, and an operator cannot answer either from a result that
+carries only numbers.
+
+### 10a.6 Sparse, and the difference between nothing and zero
+
+Six dimensions of a thousand members each is 10^18 cells. A dense cube of any realistic shape does
+not fit anywhere, and well under a percent of it holds data --- most account/period/product
+combinations simply never happened. Cells are held by address and the absent ones are absent.
+
+Once cells are sparse, the convenient reading of a missing cell is `0.0`: it makes every array the
+same length, every chart complete and every total easy. It is also false. **"No transactions in this
+period" and "transactions netting to zero" are different facts**, and an operator acts differently
+on each.
+
+### 10a.7 Consolidation runs on the graph engine
+
+A declared hierarchy is a few dozen roll-up edges somebody wrote down. A real one is a dimension
+table --- an organisation chart, a chart of accounts, a product taxonomy --- hundreds of thousands
+of members deep and irregular. That is a graph, this system has a graph engine (§10), and
+consolidation is a bounded traversal over typed edges. Reimplementing it against a map would produce
+a second, worse traversal with no budget and no truncation reporting.
+
+It also inherits the three ways a consolidated total goes silently wrong: a member reachable by two
+paths and counted twice, a cycle, and a traversal truncated by budget and reported as a total.
+
+### 10a.8 Materialisation is a cache, not a second copy of the truth
+
+A materialised cuboid is keyed by *(definition version, snapshot, scope, cuboid)*. Per
+`FR-QUERY-20` the snapshot is the entire invalidation story: files are immutable and every key
+embeds the snapshot, so a new commit produces a **miss rather than a stale hit**. There is no
+invalidation protocol to get wrong, no TTL to tune, and no window in which a stale answer is
+served.
+
+That is what makes materialisation safe to automate: being wrong about what to cache costs latency
+rather than correctness.
+
+**The scope in that key is stronger than a cache key.** Per [ADR-0008](adr/0008-serving-cubes-under-policy.md)
+an aggregate computed under one entitlement is not an answer under another, and a cuboid is
+itself a published table --- so **two scopes are two tables**, separate files with separate names.
+A bug in the lookup cannot serve one principal's rows to another, because those rows are not in the
+file being read. The unrestricted scope is a named sentinel rather than a bare zero, so a caller
+reaching for it has to say what it means.
+
+It is also what decides whether materialising is worth anything: a cube whose callers hold
+different entitlements materialises mostly into cuboids nobody else may use, and Declared is then
+the honest lifetime.
+
+**The definition version is derived, not declared** --- a fingerprint of the validated content. The
+key only works if the version actually changes when the definition does, so there is no field to
+forget to increment and no review that has to catch it. The same reasoning made `queryable_at`
+derived in the backup manifest.
+
+### 10a.9 Three lifetimes, one model
+
+[ADR-0009](adr/0009-the-cube-lifecycle.md) gives a cube three lifetimes differing only in what is
+persisted and what maintains it, so a cube is **promoted or demoted rather than rebuilt**.
+
+| | Definition | Materialised | Maintained by | Dies when |
+|---|---|---|---|---|
+| **Ephemeral** *(planned, `M14`)* | session only | never | nothing | the session ends |
+| **Declared** | `_cubes/*.json` | never | nothing | it is dropped |
+| **Maintained** | `_cubes/*.json` + `target_lag` | yes | the maintenance thread | it is dropped |
+
+**Declared and Maintained are built.** Ephemeral --- a cube declared against a session and never
+written --- needs a session that outlives a statement, which is what a connected client provides;
+it is designed here and delivered in `M14` (§11a.9). It is intended to become the **default**,
+because a user exploring should not have to decide whether their question deserves to be durable:
+persisting is the deliberate act, and the reversible option is the one you get without asking.
+
+`target_lag` is a **staleness target, not a schedule**. Freshness is exact rather than estimated:
+staleness is the distance between the cuboid's snapshot and the table's current version, not a
+wall-clock guess about when a job last ran. Refresh is another job in the maintenance tick under the
+same budget, so refreshing a cube cannot starve compaction; a rebuilt cuboid is a new published
+table and the old one stays live until it commits. **A cuboid past its lag is not served as though
+it were fresh** --- the answer falls back to live aggregation, slower and correct, with
+`materialised = false` saying so.
+
+### 10a.10 Overlays --- what-if, never the published data
+
+Planning needs somewhere to put a number that is not a fact: a budget, a proposed reorganisation, a
+stress scenario. `FR-CUBE-19` makes that a separately versioned **overlay**, applied when a query is
+answered and discarded afterwards; the files underneath are unchanged.
+
+An overlaid figure reaching a report without saying so is the failure the mechanism exists to
+prevent, and it is a quiet one --- the number is well-formed and the query succeeded. Hence the
+`overlay` column of §10a.5.
+
+### 10a.11 What is deliberately not decided
+
+**Which cuboids a Maintained cube materialises.** Greedy selection under an operator budget needs
+the recorded query log, and choosing before that signal exists is an error `M7` made once already.
+The query log is built; the selection policy waits on data from it.
+
+---
+
 ## 11. Extension architecture
 
 ### 11.1 The boundary
@@ -1450,6 +1637,269 @@ The claim is tested, not asserted, by four mechanisms of increasing strength:
 > **The lint catches leakage; the reference packs catch shape.** A core can be immaculately neutral in its naming and still be structurally bent toward one domain — which is exactly what happened to the graph model during review, and exactly what no lint would have caught. Both mechanisms are needed and only the second is hard.
 
 The adversarial pack matters because once third parties author packs, **the extension API is a security boundary** and must be tested as one. That is the difference between a plugin system and a remote code execution feature.
+
+---
+
+## 11a. The client contract and the SDKs
+
+**Planned, `M14`.** Nothing in this section is built. It is here because the decisions below are
+the ones that are expensive to change after a client exists, and because three bindings are
+coming --- Python first, then Java and Rust --- and a contract retrofitted to three clients is
+three clients that disagree. [ADR-0017](adr/0017-the-client-contract.md) is the accepted decision
+record; this section is its architectural placement.
+
+### 11a.1 What somebody actually does
+
+Every capability in this document assumes a user already has data in the warehouse and a way to
+reach it. Both assumptions do a great deal of work. From outside, the product is this sequence:
+
+1. Install a package.
+2. Connect to a running server, over a network, with credentials.
+3. Discover what is there --- schemas, tables, cubes, and their shapes.
+4. Query, and receive an answer that may be larger than the client's memory.
+5. Put data in --- a file, a frame, a stream.
+6. Declare a cube, materialise it, roll it up; drop it, or let it expire.
+7. Clone a table, read the clone, ask what it came from.
+8. Register an aggregation the system did not write, and use it in a cube.
+
+Steps 1 and 2 are the whole product until they work. Everything behind them is reachable today
+only by somebody willing to write SQL over a socket.
+
+### 11a.2 The contract is the product; a binding is not
+
+The temptation with three SDKs is to write the good one first and port it. That produces three
+clients that each decided for themselves what to validate, and the divergence surfaces as *"it
+worked in Python"* --- a sentence somebody then has to debug across two languages and a wire.
+
+> **An SDK contains no logic the server does not also enforce.**
+
+A client may *anticipate* a refusal to give a better message, and it may never *be* the refusal.
+If the Python binding rejects a cube whose measure declares no `merge`, and the Java binding does
+not, then the rule lives in Python and the server is not enforcing it --- and the second binding
+is a way around a correctness rule. The check belongs at the choke point (§12.1) like every other
+one, and the client's copy is a courtesy that must fail the same way or not exist.
+
+This is the same argument §11 makes about packs: the extension API is a security boundary, and a
+capability that is only enforced in one caller is not enforced.
+
+### 11a.3 Which door, and why not a third one
+
+Two doors exist and neither is new work. **Arrow Flight SQL** ([ADR-0006](adr/0006-flight-sql.md))
+is the data path for a client: it is Arrow-native end to end, it streams by construction, and it
+carries a result's schema without a second description of it. **The PostgreSQL wire protocol**
+stays what it is --- the door for tools nobody wrote for this system: `psql`, a notebook's
+existing driver, a BI product.
+
+A REST/JSON API is deliberately not a third door. The engine is columnar and typed; a
+row-oriented JSON surface converts twice, loses the type distinctions §7 spent effort preserving
+--- a `Decimal(38,9)` becomes a double or a string, and both are wrong in different ways --- and
+would need its own pagination, its own error shape and its own authorization path. That is a
+second product surface maintained forever to avoid a dependency the client already has.
+
+### 11a.4 Identity on the wire, which does not exist yet
+
+`FR-SEC-03` requires federated identity tokens, mutual TLS, and scram on the wire-protocol door.
+**None of it is implemented.** Neither door offers TLS: a password crosses an unencrypted socket
+today.
+
+What is *not* missing is the machinery. `rustls` 0.23 is already resolved in the graph --- a
+single version, pulled transitively by the object-store HTTP client --- and `tonic` carries its
+own TLS feature. So this is a wiring job under [ADR-0001](adr/0001-dependency-pin-set.md) rather
+than a pin-set risk, which is worth stating precisely because "we have no TLS" sounds like the
+larger problem and is not the one.
+
+On a loopback that is tolerable and honest --- the server has been a local thing. **For a client
+whose entire purpose is connecting from somewhere else it is credential exposure**, and it is why
+`M14` is gated on transport security rather than treating it as work inside the milestone. An SDK
+shipped in front of it would be a feature whose first use is a mistake.
+
+A connection carries a `Principal` (§12), and every statement is authorized at the same choke
+point a local one is. The SDK holds a session, not a permission: it must never cache an
+authorization decision, because a grant revoked between two calls has to take effect on the
+second.
+
+### 11a.5 A refusal has to survive the wire
+
+This system spends a great deal of effort on refusals that say what to do --- *"drop it first"*,
+*"materialise them first"*, *"plan again and have it read"*, *"the archive is the copy and the
+way back is a rehydration"*. Each carries a `SQLSTATE`, a stable code, and a remediation.
+
+An SDK that renders those as a string has thrown away the half that matters. So the contract
+carries all three, and a binding maps the code to a typed exception:
+
+| Server | Python |
+|---|---|
+| `SQLSTATE` + code + remediation | an exception class per code family, with `.remediation` intact |
+| a refusal naming what would break | the names, as data rather than prose to be parsed |
+
+**The names must arrive as data.** `may_drop` refuses and names the clones that would break; a
+client that can only read that out of a sentence will parse the sentence, and the message becomes
+an API nobody meant to publish.
+
+### 11a.6 An answer larger than the client
+
+`MAX_RESULT_ROWS` bounds what a statement returns today. A client asking for a hundred million
+rows must **stream**, and a binding that collects before yielding converts a working query into
+an out-of-memory kill on the user's laptop --- with the server having done nothing wrong.
+
+So the Python surface yields Arrow batches, and the convenience conversions (`to_pandas`,
+`to_polars`) are opt-in on a result the caller has decided is small. Back-pressure is the
+transport's; a slow consumer slows the scan rather than buffering it into the client.
+
+### 11a.7 Operations that are not queries
+
+Materialising a cuboid, cloning a large table, taking a backup, ingesting a file: each can outlast
+a sensible request timeout, and each is a *decision* rather than a read. Two shapes are possible
+and the choice is `M14`'s ADR: block the call and hold a connection, or return a handle to a job
+the client polls.
+
+Whichever is chosen, one property is not negotiable: **what a disconnected client has done must
+be knowable.** A clone half-created, a cuboid half-materialised, an ingest half-committed --- each
+must be either completed or absent, never a state that only the disconnected client could have
+described. This is the argument `FR-TIER-08` already makes for the purge journal, applied to a
+network boundary.
+
+### 11a.8 Aggregations the system did not write
+
+[ADR-0010](adr/0010-external-aggregations.md) decides the correctness half: an external
+aggregation is a **contract rather than a function** --- `accumulate`, `merge`, `finish`,
+`state` --- where the presence of `merge` *is* the composability declaration, no `merge` means
+`Rule::None`, what materialises is the **state** rather than the number, and determinism is
+**exercised rather than trusted**.
+
+The runtime half was left open and decided on 2026-08-31: **out of process, behind Arrow IPC.**
+
+The reasoning is the correctness argument applied to blast radius. A user's aggregation is the
+one part of a query this system did not write. In-process it shares an address space with the
+audit chain, with every other tenant's data, and with a runtime whose threads it can stall; a
+panic is a server, and an infinite loop is an outage. A sidecar that panics is a sidecar that
+dies, and the query fails with a typed error naming the aggregation.
+
+That places three obligations on the design, none of them optional:
+
+- **A registered aggregation names its sidecar**, and a query planned against it fails closed
+  when that sidecar is absent --- rather than silently falling back to computing something else.
+- **A sidecar that dies mid-query fails the query.** Partial state is not an answer, and the cube
+  model's whole point is that a materialised cell must be exactly what a full recomputation would
+  have produced.
+- **The determinism exercise runs before the aggregation is trusted**, not on first use in
+  anger --- the same input accumulated in one batch and in several, merged in two groupings,
+  compared by bits.
+
+The contract says nothing about where it runs, which is what keeps the decision reversible: an
+embedded interpreter stays available later, justified by a measurement rather than a preference.
+
+### 11a.9 Cubes as a product surface, including the ones that should not survive
+
+§10a.9 and [ADR-0009](adr/0009-the-cube-lifecycle.md) already give cubes a lifecycle, two of
+whose three lifetimes are built. What a client adds is the **ephemeral** one: a cube declared for a session, used, and gone --- the what-if that
+must not become a fixture.
+
+An ephemeral cube materialises cuboids like any other, and cuboids are storage. **A cube that
+materialises and is never dropped is `RSK-35` in a different costume** --- rehydrated copies
+accumulating into a shadow system of record, each one individually reasonable, with no day on
+which anybody could have decided otherwise. So an ephemeral cube carries a **mandatory expiry**,
+exactly as a rehydration does, and its cuboids are reclaimed by the mechanism that already
+reclaims a dropped cube's.
+
+### 11a.10 Cloning through a client
+
+Zero-copy cloning ([ADR-0016](adr/0016-zero-copy-cloning.md), built in `M10`) is a client-facing
+capability rather than an administrative one: the reason to clone is to *try something* against
+production-sized data without copying it or endangering it, and the person trying something is
+holding an SDK.
+
+Three properties have to survive the wire, and each is one the server already enforces:
+
+- **A clone is a table.** It is queried, described and dropped like any other, and a binding that
+  gives it a separate object type has invented a distinction the server does not make.
+- **Lineage is readable.** *"What did this come from, and as of when?"* is answerable from the
+  client --- origin and version --- because a clone whose provenance is only visible on the server
+  is a table whose numbers nobody can place.
+- **A refusal names what would break.** `may_drop` refuses a drop that would strand a clone and
+  names the clones; that list arrives as **data** (§11a.5), so a client can show *"three clones
+  read this"* rather than parse a sentence.
+
+The thing a client must not do is make cloning look free of consequence. A clone pins the origin's
+files at its version --- maintenance will not retire what a clone still reads --- so an interface
+that creates them freely and never surfaces them is an interface that quietly grows a warehouse.
+Listing a table's dependents is therefore part of the surface, not a diagnostic.
+
+### 11a.11 The surface, concretely
+
+Illustrative rather than normative --- the ADR in `M14` fixes the names. It is here because a
+contract argued only in prose is one where three bindings each imagine a different shape.
+
+```python
+import sankhya
+
+sank = sankhya.connect("sankhya://analytics.internal:9944", token=...)
+
+# Discovery, and an answer that may not fit in memory.
+sank.tables()                                  # -> [Table(...), ...]
+for batch in sank.sql("SELECT ...").batches(): # Arrow, streamed; never collected for you
+    ...
+df = sank.sql("SELECT ... LIMIT 1000").to_pandas()   # opt-in, on a result you decided is small
+
+# Data in.
+sank.ingest("trades", path="2026-08-31.parquet")
+
+# A cube: ephemeral by default, persisted on purpose.
+cube = sank.cube("pnl", fact="trades", dimensions=[...], measures=[
+    sankhya.Measure("balance", rule={"time": "Last", "book": "Sum"}),   # undeclared is refused
+])
+cube.slice(book="EQ").rollup(by="desk").to_arrow()
+cube.persist(target_lag="10 minutes")          # Ephemeral -> Declared -> Maintained
+cube.purge()                                   # Maintained -> Declared: stop paying, keep the model
+
+# An aggregation the system did not write. Runs out of process (§11a.8).
+@sankhya.aggregation(state="f64[2]")
+class Mean:
+    def accumulate(self, acc, values): ...
+    def merge(self, a, b): ...                 # its presence IS the composability declaration
+    def finish(self, acc): ...
+sank.register(Mean)                            # determinism is exercised here, not on first use
+
+# Zero-copy clone.
+clone = sank.clone("trades", as_="trades_experiment")
+clone.lineage()                                # Lineage(origin="trades", version=418, cloned_at=...)
+sank.table("trades").dependents()              # the clones that pin this table's files
+clone.drop()
+```
+
+Every line above is a statement the server authorizes, refuses and audits exactly as it would from
+`psql`. That is the test of the whole section: **remove the SDK and nothing about what the system
+permits changes.**
+
+Each of those lines also ships as a runnable example against a real server, and the gate executes
+them. That is not documentation policy but the same argument as everywhere else here: an example
+nobody runs is a claim nobody checked, and it is read by the person least equipped to notice it
+has gone stale.
+
+### 11a.12 Version skew
+
+An SDK is installed independently of the server it talks to, and the two will differ. This
+project already versions its artefacts (`sankhya-version`, `VERSIONS.md`) precisely so that an
+artefact from a newer release fails with *"upgrade the binary"* rather than somewhere in the
+middle of parsing.
+
+The client contract needs the same property: a mismatch says so, at connection, naming both
+versions --- rather than working for eleven calls and failing on the twelfth because a field was
+added.
+
+### 11a.13 What an SDK must never do
+
+Collected because each is a plausible convenience that costs a property this system has spent
+milestones establishing.
+
+| Never | Because |
+|---|---|
+| Cache an authorization decision | a grant revoked between two calls must take effect on the second |
+| Validate what the server validates | the check moves into one binding and out of the other two (§11a.2) |
+| Retry a non-idempotent operation | a clone or an ingest retried after a timeout is a second one |
+| Materialise a stream to make an API tidy | it turns a working query into a client-side kill (§11a.6) |
+| Reconstruct a refusal from its message text | the message becomes an API nobody meant to publish (§11a.5) |
+| Reach the filesystem the server uses | there is one write path, and a client is not it |
 
 ---
 
@@ -1960,6 +2410,19 @@ The trade-off, stated plainly: scale-up gives lower latency, far simpler failure
 | `DEC-53` | Shutdown drains in-flight connections, and the drain is bounded | §17.3e |
 | `DEC-54` | Every manifest's termination grace is checked against the drain deadline | §17.3e |
 | `DEC-55` | The platform baseline is declared and the binary is checked against it, failing only on a release build | §17.3f |
+| `DEC-56` | An undeclared measure is a definition error, never defaulted to summation | §10a.2 |
+| `DEC-57` | Everything that qualifies a number is a column on the row, not metadata beside it | §10a.5 |
+| `DEC-58` | A cuboid is keyed by definition version, snapshot, scope and cuboid; two scopes are two tables | §10a.8 |
+| `DEC-59` | A cube's definition version is derived from its content, never declared | §10a.8 |
+| `DEC-60` | Clone lifetime is decided by reachability over the clone family, not by reference counting | [ADR-0016](adr/0016-zero-copy-cloning.md) |
+| `DEC-61` | A client binding contains no logic the server does not also enforce | §11a.2 |
+| `DEC-62` | Two doors — Flight SQL and the wire protocol; no REST/JSON surface | §11a.3 |
+| `DEC-63` | External aggregations run out of process, behind Arrow IPC | §11a.8, [ADR-0010](adr/0010-external-aggregations.md) |
+| `DEC-64` | An ephemeral cube carries a mandatory expiry | §11a.9 |
+| `DEC-65` | A long operation is a commit, not a job handle; a disconnected client asks the warehouse | [ADR-0017](adr/0017-the-client-contract.md) |
+| `DEC-66` | A refusal crosses the wire as data — code, SQLSTATE, remediation and the names it cites | §11a.5 |
+| `DEC-67` | The Python binding is pure Python; if a thin client's language matters, it is not thin enough | [ADR-0017](adr/0017-the-client-contract.md) |
+| `DEC-68` | Examples are gated artefacts, executed against a real server | §11a.11 |
 
 ---
 
