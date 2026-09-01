@@ -274,6 +274,33 @@ person**. It does not retry on a timer: a source whose shape has changed produce
 records for as long as it runs, and a feed that keeps going leaves every dashboard green while
 nothing arrives.
 
+### Seeing a feed, and starting one again
+
+A feed that stopped is a **state**, not a log line somebody had to be watching for. Ask the
+server:
+
+```sql
+SHOW FEEDS;
+```
+
+One row per declared feed: its name, whether it is `running` or `halted`, when it halted and
+why, and how much it has published, quarantined and skipped. A feed that has never managed to
+run is listed too — that is the case an operator most needs to see.
+
+Resuming is a statement, not a restart:
+
+```
+RESUME FEED orders
+```
+
+It takes effect on the next tick. Restarting the server would resume it as well, and take an
+outage on every other feed and every open connection to do it.
+
+Resuming does not forget. The halt count survives it, because a feed that halted, was resumed
+and halted again for the same reason is not in the situation a feed that halted once is in, and
+the row is how anybody tells them apart. How often a feed looks at its spool is
+`SANKHYA_FEED_INTERVAL_SECONDS`, thirty seconds by default.
+
 ### Restarts
 
 A feed records how far it has got as a property of the table it writes to, **in the same commit

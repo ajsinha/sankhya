@@ -33,7 +33,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M9** Tiering | 12–16 ew | **In progress**, started 2026-08-30. **All eleven work items are built and the exit criteria demonstrated** on 2026-08-31 — purge end to end with verification, quarantine and rollback; the anomaly guard halting an intentionally-defective policy; nineteen refusal paths shown to fail closed. **The gate is not cleared and that is not a formality**: criterion 3 needs the attestation drill run against a real non-production archive, which cannot be produced from development. **Gated** on the drills in [`IMPLEMENTATION_PLAN.md` §13](IMPLEMENTATION_PLAN.md): the restore drill exists from M6 §10.3, the archive attestation drill does not. Gate criterion 1 moved to M11 on 2026-08-28, and **destructive purge stays disabled until M11 clears it** — building the purge path and arming it are two decisions |
 | **M10** Zero-copy cloning | 10–14 ew | **Complete 2026-08-31.** Design gate cleared by [ADR-0016](adr/0016-zero-copy-cloning.md) before any code; eight work items built; **all five exit criteria met**. Walking the criteria found two that were not — constant cost and the fail-closed enumeration — and both were built rather than reinterpreted. Nothing external holds it: no production deployment, no second machine, no drill against a real archive. |
 | **M11** Production reconciliation | — | **Not schedulable by development.** Needs a production deployment that does not exist. Holds M9's gate criterion 1 and the arming decision for destructive purge |
-| **M13** Config-driven ingest, from files | — | **Schedulable now**, added 2026-08-31 by owner directive. A config declares the source, the shape of what arrives, and where it lands. **Design gate met 2026-08-31**: [ADR-0018](adr/0018-a-record-that-does-not-fit.md) answers what happens to a record that does not fit --- quarantined whole into a *table* with a mandatory expiry, one bad record an incident and a rate of them an outage that stops the pipeline and waits for a person, and a file's position committed with its rows so a restart cannot duplicate or skip. **Substantially built 2026-08-31**: declaration, validation, binder, stop control, quarantine, position, source reader and runner, wired into the server, which loads `config/feeds/*.yaml` and runs each feed on its own cadence. `sankhya-feed` is off the `UNREACHED` list, which is the mechanical statement that it is reached rather than merely built. Quarantine expiry is built as **partition detach** rather than row deletion --- `DEC-23` gets no exception, and a detach stays reversible until retirement's grace period runs. The soak has an ingest arm whose statement is exact rather than statistical: every document it writes is known, so the published and quarantined counts must *equal* the sound and malformed ones. **Complete 2026-09-01**: the maintenance tick calls the expiry job, and a halted feed is now visible and resumable from a client --- `SHOW FEEDS` and `RESUME FEED <name>` read a registry that keeps the halt count across a resume, because a feed that halted twice for the same reason is not the same situation as one that halted once |
+| **M13** Config-driven ingest, from files | — | **Schedulable now**, added 2026-08-31 by owner directive. A config declares the source, the shape of what arrives, and where it lands. **Design gate met 2026-08-31**: [ADR-0018](adr/0018-a-record-that-does-not-fit.md) answers what happens to a record that does not fit --- quarantined whole into a *table* with a mandatory expiry, one bad record an incident and a rate of them an outage that stops the pipeline and waits for a person, and a file's position committed with its rows so a restart cannot duplicate or skip. **Substantially built 2026-08-31**: declaration, validation, binder, stop control, quarantine, position, source reader and runner, wired into the server, which loads `config/feeds/*.yaml` and runs each feed on its own cadence. `sankhya-feed` is off the `UNREACHED` list, which is the mechanical statement that it is reached rather than merely built. Quarantine expiry is built as **partition detach** rather than row deletion --- `DEC-23` gets no exception, and a detach stays reversible until retirement's grace period runs. The soak has an ingest arm whose statement is exact rather than statistical: every document it writes is known, so the published and quarantined counts must *equal* the sound and malformed ones. **Complete 2026-09-01**: the maintenance tick calls the expiry job, and a halted feed is now visible and resumable from a client --- `SHOW FEEDS` and `RESUME FEED <name>` read a registry that keeps the halt count across a resume, because a feed that halted twice for the same reason is not the same situation as one that halted once. **All five exit criteria demonstrated 2026-09-01** through the real binary and the real wire protocol, which is how it was found that `SHOW FEEDS` had never worked over a socket at all |
 | **M14** The client contract and the Python SDK | — | **In progress**, added 2026-08-31. Python first; Java and Rust in M16, which is why the *contract* matters more than the binding. **Transport security built 2026-08-31** --- one certificate, both doors, the wire protocol's own negotiation in front of it, and a startup line naming the posture in words. `FR-SEC-03`'s other half, federated identity, is still unbuilt: a `Principal` is a fixed tenant, and mutual TLS puts a client's certificate where a door can see it without anything yet deriving an identity from it. Also where [ADR-0010](adr/0010-external-aggregations.md) is built, its open question decided **out-of-process** by owner decision. The contract is decided in [ADR-0017](adr/0017-the-client-contract.md) and placed in [ARCHITECTURE](ARCHITECTURE.md) §11a |
 | **M15** Ingest from Kafka | — | After M14. Gated on a pin-set decision under [ADR-0001](adr/0001-dependency-pin-set.md) and on deciding how a consumer is tested without a broker — a fake is the easy answer and the one that proves least |
 | **M16** The Java and Rust SDKs | — | After M14. Named now so M14's contract is written for three bindings rather than retrofitted to them |
@@ -3638,7 +3638,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 596 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 600 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -3806,6 +3806,40 @@ serialized arm has produced and far above anything the free one reaches by accid
 The primary assertions are untouched: the free reader still has to hold four tenths of its idle
 rate, and its p99 still has to stay within four times idle. Only the control changed, and it
 changed from a proxy to the thing itself.
+
+---
+
+## `SHOW FEEDS` worked everywhere except over a socket
+
+**2026-09-01.** `M13`'s exit demonstration --- the five criteria run against the real binary
+over the real wire protocol --- failed on its first pass, and one of the failures was a
+product defect rather than a defect in the demonstration.
+
+`SHOW FEEDS` returned **one row with one empty column**. The command surface was built, wired,
+unit-tested and mutation-tested, and none of that could see it, because the statement never
+reached the code that implements it.
+
+The wire layer answers catalogue queries itself, before the handler, so that a client asking
+about `pg_class` gets an answer instead of *"no such table"*. Its recogniser is deliberately
+lenient --- it treats `SHOW <anything>` as a session setting, because tools generate settings
+queries in a dozen spellings and matching them literally works for the client it was written
+against and fails for the next one. `SHOW FEEDS` is a `SHOW`, so it was answered as a setting
+named `feeds`, whose value is nothing.
+
+The fix inverts the precedence: a handler may **claim** a statement it defines itself, and a
+claimed statement bypasses the shortcut. The thing that defines a statement decides before the
+thing that guesses at one. It defaults to claiming nothing, so every other handler behaves
+exactly as it did.
+
+**This is the fourth time a whole SQL surface has turned out to be unreachable from the thing
+that serves SQL** --- `sankhya-maintenance`, `sankhya-cube-sql` and the `sankhya-olap` function
+set were the others. The pattern is always the same: the surface's own tests call the surface,
+and the layer above it is where the statement goes missing. It is also why the guide's examples
+are executed, and why this one would *not* have been caught by that: the guide test asserts an
+example is not refused, and an empty answer is not a refusal.
+
+What caught it was insisting that an exit criterion be demonstrated **through the front door a
+user has**, rather than through the library the criterion is about.
 
 ---
 
@@ -4265,9 +4299,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 2,254 tests, none of which needs a database
+cargo test --workspace           # 2,265 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 596 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 600 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

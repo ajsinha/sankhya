@@ -233,6 +233,41 @@ fn maintenance_policy(
     }))
 }
 
+/// How often each declared feed looks at its spool directory, in seconds.
+///
+/// # Why this is configurable and why it is bounded below
+///
+/// A spool is somebody else's schedule. One that lands a file a minute is served badly by a
+/// half-hourly scan, and one that lands a file a day is served badly by scanning it every
+/// thirty seconds --- the cost of a scan is paid whether or not anything arrived. So the
+/// cadence belongs to the deployment.
+///
+/// **Zero is not accepted**, because a zero cadence is not "as fast as possible": it is a
+/// loop with no sleep in it, which is a busy wait that takes a core and starves the tasks it
+/// competes with. Zero and an unparseable value both fall back to the default and **say so on
+/// the way past**. Not silently, because an operator who set it believes it took effect; and
+/// not by refusing to start, because that takes an outage on every table over one knob --- the
+/// same reasoning that keeps one malformed feed declaration from stopping the server.
+fn feed_interval_seconds() -> u64 {
+    /// What a deployment gets by not thinking about it: often enough that a file is picked
+    /// up while somebody is still watching for it, rarely enough to cost nothing.
+    const DEFAULT: u64 = 30;
+
+    match std::env::var("SANKHYA_FEED_INTERVAL_SECONDS") {
+        Err(_) => DEFAULT,
+        Ok(value) => match value.trim().parse::<u64>() {
+            Ok(0) | Err(_) => {
+                eprintln!(
+                    "  SANKHYA_FEED_INTERVAL_SECONDS is `{value}`, which is not a number of \
+                     seconds greater than zero — using {DEFAULT}"
+                );
+                DEFAULT
+            }
+            Ok(seconds) => seconds,
+        },
+    }
+}
+
 /// The configuration files, lowest precedence first.
 ///
 /// `SANKHYA_CONFIG` names an explicit file, which is what a deployment with several
@@ -350,7 +385,7 @@ async fn main() -> std::io::Result<()> {
     let settings_warehouse = settings.warehouse.clone();
     // How often a feed looks at its spool directory. Its own cadence rather than
     // maintenance's: an operator who turned maintenance off did not ask for ingest to stop.
-    let feed_interval_seconds = 30;
+    let feed_interval_seconds = feed_interval_seconds();
     let settings_metrics = settings.metrics_listen.clone();
     let settings_listen = settings.listen.clone();
 

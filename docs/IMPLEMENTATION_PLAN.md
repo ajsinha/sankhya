@@ -1391,6 +1391,22 @@ quarantined rather than coerced or dropped; a run of bad records shown to stop t
 loudly rather than quietly; every refused config shown to fail closed; and the quarantine shown
 to expire rather than accumulate.
 
+**Demonstrated 2026-09-01** in `crates/sankhya-server/tests/feed_exit.rs`, through the real
+binary and the real wire protocol rather than through the library the criteria are about. That
+distinction earned itself immediately: `SHOW FEEDS` had never worked over a socket, because the
+wire layer answers `SHOW <anything>` as a session setting before the handler sees it, and every
+test of the command surface called the handler directly.
+
+One criterion cannot be shown by waiting. Expiry is measured in **days**, and a partition
+written today is expired by no retention at all --- the cutoff is `today - retain_days`, and
+today is never before itself, which is deliberate: a record refused an hour ago is precisely the
+one somebody is about to come looking for. Hand-writing a partition directory with yesterday's
+date would make the fixture encode the storage layout, and moving the process clock would make
+every later failure a story about the clock. So expiry is demonstrated by calling the
+deployment's own expiry with a *stated* day --- `plan` takes it as an argument for this reason
+--- over a quarantine the real feed really wrote, with a separate test for the only thing that
+leaves unproven: that the tick calls it with the real calendar, unasked.
+
 ---
 
 ## 13e. M14 — The client contract and the Python SDK
