@@ -3585,6 +3585,62 @@ CATALOGUE = [
      "        let floor: Option<u64> = None;",
      "sankhya-publish"),
 
+    # --- M14: transport security, and the mistakes it exists to name -----------------
+
+    ("tls: accept a file with no certificate in it as a certificate",
+     "crates/sankhya-tls/src/material.rs",
+     "        if chain.is_empty() {",
+     "        if false {",
+     "sankhya-tls"),
+
+    ("tls: leave a mismatched key and certificate to be discovered at the first connection",
+     "crates/sankhya-tls/src/material.rs",
+     "        material.server_config(&[])?;",
+     "        let _ = &material;",
+     "sankhya-tls"),
+
+    ("tls: report a handshake that never arrived as one that was rejected",
+     "crates/sankhya-tls/src/acceptor.rs",
+     "            Err(_) => Err(Failed::TimedOut),",
+     "            Err(_) => Err(Failed::Rejected(String::new())),",
+     "sankhya-tls"),
+
+    ("tls: advertise no application protocol on the columnar door",
+     "crates/sankhya-tls/src/acceptor.rs",
+     "            Self::Http2 => vec![b\"h2\".to_vec()],",
+     "            Self::Http2 => Vec::new(),",
+     "sankhya-tls"),
+
+    ("tls: trust a client bundle that yields no anchor",
+     "crates/sankhya-tls/src/material.rs",
+     "        if anchors.is_empty() {",
+     "        if false {",
+     "sankhya-tls"),
+
+    ("wire protocol: decline TLS on a door that has it",
+     "crates/sankhya-api-pg/src/session.rs",
+     "                if self.encrypts {",
+     "                if false {",
+     "sankhya-api-pg"),
+
+    ("wire protocol: serve a plain client on a door that requires encryption",
+     "crates/sankhya-api-pg/src/session.rs",
+     "            (Phase::Startup, FrontendMessage::Startup { parameters }) if self.insists => {",
+     "            (Phase::Startup, FrontendMessage::Startup { parameters }) if false => {",
+     "sankhya-api-pg"),
+
+    ("wire protocol: say nothing to a client asking about GSSAPI encryption",
+     "crates/sankhya-api-pg/src/message.rs",
+     "        GSS_REQUEST_CODE => Ok((FrontendMessage::GssEncRequest, length)),",
+     "        GSS_REQUEST_CODE if false => Ok((FrontendMessage::GssEncRequest, length)),",
+     "sankhya-api-pg"),
+
+    ("server: start in the clear when a certificate is configured without its key",
+     "crates/sankhya-server/src/main.rs",
+     "            if present.is_none() || absent.is_none() {",
+     "            if false {",
+     "sankhya-server"),
+
 ]
 
 

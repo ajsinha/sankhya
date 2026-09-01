@@ -93,11 +93,92 @@ pub struct Settings {
     /// an interface clients cannot reach. Defaulting to loopback rather than to every
     /// interface, because the safe choice should be the one you get by not thinking.
     pub metrics_listen: Option<String>,
+    /// The certificate both doors serve with, or `None` to serve in the clear.
+    ///
+    /// One certificate for both, because two would be two expiries, two renewals and two
+    /// chances for the pair to disagree about who this server is. `sankhya-tls` loads it and
+    /// each door names its own ALPN.
+    pub transport_security: Option<TransportSecurity>,
+}
+
+/// What an operator configured about encryption.
+///
+/// # Why a half-configured door refuses to start
+///
+/// A certificate with no key, or a key with no certificate, is not a server that is *nearly*
+/// encrypted --- it is a server with an operator who believes it is encrypted. Starting in
+/// the clear at that point is the single most expensive default available, so the settings
+/// are read as one unit and an incomplete one is an error rather than a fallback.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct TransportSecurity {
+    /// The certificate chain, PEM.
+    pub certificate: std::path::PathBuf,
+    /// Its private key, PEM.
+    pub private_key: std::path::PathBuf,
+    /// Anchors a client certificate must chain to, for mutual TLS.
+    pub client_ca: Option<std::path::PathBuf>,
+    /// Whether a wire-protocol client that never asks for TLS is refused.
+    ///
+    /// Only the wire protocol has this question: its clients negotiate, so a door can be
+    /// encrypted and permissive at once. The columnar door has no such state --- a client
+    /// either completes a handshake or gets nothing.
+    pub require: bool,
+}
+
+/// The two doors' acceptors, from one certificate.
+#[derive(Clone, Debug)]
+pub struct Doors {
+    /// The wire protocol's, advertising nothing.
+    pub wire: sankhya_tls::Acceptor,
+    /// The columnar door's, advertising HTTP/2.
+    pub columnar: sankhya_tls::Acceptor,
+}
+
+/// Load one certificate and produce both doors' acceptors.
+///
+/// One load, because two would be two reads of a file that can change between them --- and a
+/// server whose two doors present different certificates is one nobody can reason about.
+///
+/// # Errors
+///
+/// [`sankhya_tls::Refused`] naming the file, when the certificate, key or client bundle
+/// cannot be used.
+pub fn load_transport_security(
+    security: &TransportSecurity,
+) -> Result<Doors, sankhya_tls::Refused> {
+    let material = sankhya_tls::Material::load(&security.certificate, &security.private_key)?;
+    let material = match &security.client_ca {
+        None => material,
+        Some(bundle) => material.requiring_client_certificates(bundle)?,
+    };
+    Ok(Doors {
+        wire: sankhya_tls::Acceptor::new(&material, sankhya_tls::Alpn::None)?,
+        columnar: sankhya_tls::Acceptor::new(&material, sankhya_tls::Alpn::Http2)?,
+    })
+}
+
+/// What this server's doors actually do, for saying out loud at startup.
+///
+/// Four states rather than a boolean, because *"encrypted"* covers three of them and an
+/// operator reading a startup line needs to know which one they have. The dangerous one is
+/// [`Posture::Offered`]: it looks like encryption in every log and serves a plain client
+/// anyway.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Posture {
+    /// No certificate. Everything crosses the network as it was typed.
+    Clear,
+    /// Encrypted for clients that ask; plain for the rest.
+    Offered,
+    /// Encrypted, and a client that does not ask is refused.
+    Required,
+    /// Encrypted, refused without asking, and a client certificate is checked too.
+    Mutual,
 }
 
 /// Everything the server owns.
 #[derive(Debug)]
 pub struct Server {
+    doors: Option<Doors>,
     settings: Settings,
     policy: PolicySet,
     quotas: Quotas,
@@ -381,6 +462,39 @@ impl Server {
     /// Returns a complaint per definition that could not be adopted, in the same shape as the
     /// table complaints the caller already prints.
     #[must_use]
+    /// Carry the loaded doors, so the columnar transport can be given its acceptor.
+    ///
+    /// The wire protocol's is applied to its listener at bind; the columnar one is started
+    /// later by the binary, and this is how it reaches it without loading the certificate a
+    /// second time.
+    pub fn serving_encrypted(mut self, doors: Option<Doors>) -> Self {
+        self.doors = doors;
+        self
+    }
+
+    /// What this server's doors do.
+    #[must_use]
+    pub fn transport_posture(&self) -> Posture {
+        match (&self.doors, &self.settings.transport_security) {
+            (None, _) | (_, None) => Posture::Clear,
+            (Some(doors), Some(security)) => {
+                if doors.wire.is_mutual() {
+                    Posture::Mutual
+                } else if security.require {
+                    Posture::Required
+                } else {
+                    Posture::Offered
+                }
+            }
+        }
+    }
+
+    /// The columnar door's acceptor, if this server encrypts.
+    #[must_use]
+    pub fn columnar_acceptor(&self) -> Option<sankhya_tls::Acceptor> {
+        self.doors.as_ref().map(|doors| doors.columnar.clone())
+    }
+
     pub fn adopting_cubes(self, warehouse: &std::path::Path) -> (Self, Vec<String>) {
         let mut complaints = Vec::new();
         let definitions = match sankhya_cube::catalogue::load_all(warehouse) {
@@ -434,6 +548,7 @@ impl Server {
         let mut quotas = Quotas::new();
         quotas.set(settings.tenant, Quota::generous());
         Self {
+            doors: None,
             settings,
             policy,
             quotas,
@@ -2156,10 +2271,31 @@ pub async fn start(
 
     let tables = crate::warehouse::describe(&found);
     let policy = permissive_policy(&settings.tenant, &tables);
+    // Both doors' certificates, loaded once. A refusal here stops startup: an operator who
+    // configured a certificate and gets a server listening in the clear has been told the
+    // opposite of the truth by a process that exited zero.
+    let encryption = match &settings.transport_security {
+        None => None,
+        Some(security) => Some(load_transport_security(security).map_err(|refused| {
+            std::io::Error::other(format!("transport security could not be configured: {refused}"))
+        })?),
+    };
     let listener = sankhya_api_pg::listener::PgListener::bind(&settings.listen).await?;
+    let listener = match &encryption {
+        None => listener,
+        Some(doors) => listener.encrypted(if settings.transport_security
+            .as_ref()
+            .is_some_and(|security| security.require)
+        {
+            sankhya_api_pg::Encryption::Required(doors.wire.clone())
+        } else {
+            sankhya_api_pg::Encryption::Offered(doors.wire.clone())
+        }),
+    };
     let warehouse = settings.warehouse.clone();
-    let (server, cube_complaints) =
-        Server::with_tables(settings, policy, tables, servable).adopting_cubes(&warehouse);
+    let (server, cube_complaints) = Server::with_tables(settings, policy, tables, servable)
+        .adopting_cubes(&warehouse);
+    let server = server.serving_encrypted(encryption);
     // Cube complaints join the table ones rather than getting a channel of their own. They
     // are the same kind of news --- something in this warehouse could not be served --- and
     // an operator scanning startup output should not have to know there are two lists.

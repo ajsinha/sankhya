@@ -71,6 +71,12 @@ const DUP_ALLOWLIST: &[&str] = &[
     "regex-syntax",
     "socket2",
     "winnow",
+    // `yasna`, which is how `rcgen` writes ASN.1, wants `bit-vec 0.9`; `proptest` wants
+    // `0.8`. Both arrive only through dev-dependencies — one generates the certificates the
+    // transport tests hand a real handshake, the other generates cases — so neither is in
+    // the graph a server links. Two copies of a bit vector cost kilobytes in a test binary
+    // and can differ in no observable way.
+    "bit-vec",
     // proptest pulls an older chacha; it is a dev dependency and never reaches a
     // SANKHYA API boundary.
     "rand_chacha",
@@ -1439,37 +1445,7 @@ mod tests {
 
     use std::path::Path;
 
-    /// The hash is the generation; everything either side of it is the identity.
-    #[test]
-        /// A file whose name it cannot parse is a file it has no business deleting.
-    #[test]
-        /// The newest generations survive and the superseded ones go.
-    ///
-    /// Written because the sweep deletes files, and the only thing worse than a build tree
-    /// that grows without bound is a cleanup that removes the build you are standing on.
-    #[test]
-        /// A dry run reports exactly what a real run would remove, and removes none of it.
-    #[test]
-        /// Set a file's modification time, so generation order is stated rather than raced for.
-        /// A dev-dependency is not a way for a server to reach a SQL surface.
-    ///
-    /// This is the whole point of the check. `sankhya-cube-sql` was reachable from the
-    /// server's *tests* long before it was reachable from the server, and that is precisely
-    /// the state where a capability exists, is tested, and cannot be called.
-    #[test]
-        /// Reachability follows the graph, not just the first hop.
-    #[test]
-        /// A surface no server reaches fails the check.
-    ///
-    /// Against a synthetic tree, because the real one passes --- and a check that has only
-    /// ever been run against a passing tree is a check nobody has seen work.
-    #[test]
-        /// The real repository serves every SQL surface it builds.
-    ///
-    /// Run against the actual tree rather than a fixture, because the fixture is what would
-    /// have passed on every one of the four days this was wrong.
-    #[test]
-        /// The extractor finds paths written in prose and in backticks.
+    /// The extractor finds paths written in prose and in backticks.
     ///
     /// Tested because the check that uses it had none, and a check nobody tests is a check
     /// that can be quietly disabled by a one-character edit --- which is exactly what a
@@ -1544,7 +1520,6 @@ mod tests {
         assert!(check_named_sources(dir.path(), &[doc]));
     }
 
-    #[test]
     /// A document naming a check that does not exist must be rejected.
     #[test]
     fn an_invariant_naming_a_check_that_does_not_run_is_rejected() {
@@ -1586,6 +1561,8 @@ mod tests {
         assert!(super::check_invariants(&root));
     }
 
+    /// Which milestones are in progress is read from the status table, not declared here.
+    #[test]
     fn milestones_in_progress_are_read_from_the_status_table() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()

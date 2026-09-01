@@ -209,6 +209,7 @@ async fn an_error_does_not_disclose_that_the_other_tenants_table_exists() {
         maintenance: None,
         require_password: true,
         metrics_listen: None,
+        transport_security: None,
     };
     // Acme's server, with the rival's table granted only to the rival.
     let server = wiring::Server::with_tables(empty, policy(), Vec::new(), Vec::new());

@@ -14,3 +14,7 @@ layer = 1
 workspace = true
 
 [dependencies]
+sankhya-atomicfs = { path = "../sankhya-atomicfs" }
+# Certificates, generated. A private key committed to a repository is a private key,
+# whatever the file is named, and a fixture certificate expires on a date nobody chose.
+rcgen = { workspace = true }

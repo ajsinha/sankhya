@@ -1,0 +1,23 @@
+[package]
+name         = "sankhya-feed"
+description  = "A declared feed: what arrives, how it is shaped, and where it lands."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license-file.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 2
+
+[lints]
+workspace = true
+
+[dependencies]
+sankhya-schema = { path = "../sankhya-schema" }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+serde_yaml_ng  = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

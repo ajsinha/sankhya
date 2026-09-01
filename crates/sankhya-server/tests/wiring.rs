@@ -120,6 +120,7 @@ fn settings(require_password: bool, warehouse: &std::path::Path) -> Settings {
         maintenance: None,
         require_password,
         metrics_listen: None,
+        transport_security: None,
     }
 }
 

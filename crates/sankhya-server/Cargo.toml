@@ -14,6 +14,7 @@ layer = 5
 workspace = true
 
 [dependencies]
+sankhya-tls   = { path = "../sankhya-tls" }
 sankhya-api-flight = { path = "../sankhya-api-flight" }
 sankhya-api-grpc   = { path = "../sankhya-api-grpc" }
 tonic              = { workspace = true }

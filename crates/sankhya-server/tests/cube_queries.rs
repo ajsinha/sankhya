@@ -152,6 +152,7 @@ fn settings(warehouse: &std::path::Path) -> Settings {
         maintenance: None,
         require_password: false,
         metrics_listen: None,
+        transport_security: None,
     }
 }
 

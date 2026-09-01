@@ -14,6 +14,7 @@ layer = 4
 workspace = true
 
 [dependencies]
+sankhya-tls   = { path = "../sankhya-tls" }
 sankhya-types   = { path = "../sankhya-types" }
 sankhya-error   = { path = "../sankhya-error" }
 sankhya-authz   = { path = "../sankhya-authz" }
@@ -23,6 +24,10 @@ tokio           = { workspace = true }
 tracing         = { workspace = true }
 
 [dev-dependencies]
+rustls          = { workspace = true }
+sankhya-testkit = { path = "../sankhya-testkit" }
+tokio-rustls    = { workspace = true }
+tempfile        = { workspace = true }
 uuid = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 

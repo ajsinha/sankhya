@@ -1696,17 +1696,44 @@ row-oriented JSON surface converts twice, loses the type distinctions §7 spent 
 would need its own pagination, its own error shape and its own authorization path. That is a
 second product surface maintained forever to avoid a dependency the client already has.
 
-### 11a.4 Identity on the wire, which does not exist yet
+### 11a.4 Identity on the wire
 
 `FR-SEC-03` requires federated identity tokens, mutual TLS, and scram on the wire-protocol door.
-**None of it is implemented.** Neither door offers TLS: a password crosses an unencrypted socket
-today.
+**Transport security is built; identity is not.**
 
-What is *not* missing is the machinery. `rustls` 0.23 is already resolved in the graph --- a
-single version, pulled transitively by the object-store HTTP client --- and `tonic` carries its
-own TLS feature. So this is a wiring job under [ADR-0001](adr/0001-dependency-pin-set.md) rather
-than a pin-set risk, which is worth stating precisely because "we have no TLS" sounds like the
-larger problem and is not the one.
+**One certificate, both doors.** `sankhya-tls` loads it, and each door names only its own ALPN
+--- `h2` for the columnar door, nothing for the wire protocol. Two loaders would mean two sets of
+refusals and two answers to *"is this key the one for this certificate?"*, and the divergence
+would surface on whichever door is used less.
+
+**The wire protocol negotiates rather than wraps.** A PostgreSQL client opens a plain socket,
+asks in eight bytes whether encryption is available, and reads a single byte back before any
+handshake exists. Encryption there is part of the protocol, which is why the decision belongs to
+the same state machine that decodes everything else and only the handshake happens outside it.
+A GSSAPI request is declined out loud for the same reason: `psql` with `gssencmode=prefer` --- a
+default on several distributions --- asks it first, and a server that says nothing leaves the
+most ordinary client on Linux waiting.
+
+**What is refused, and when:**
+
+| Situation | Answer |
+|---|---|
+| A certificate configured with no key, or a key with none | **startup stops**, naming the missing setting |
+| A key that is not the certificate's | refused at load, not at the first connection |
+| A key file named as the certificate (or the reverse) | named as such --- the most common first-day mistake |
+| A client trust bundle with no anchor | refused; trusting nobody rejects every client it was configured to accept |
+| A plain client on a door that requires TLS | `28000` and *"connect with sslmode=require"*, before authentication |
+| A peer that connects and never handshakes | dropped on a deadline --- one socket must not cost a server a task indefinitely |
+
+The half-configured case is the one worth stating twice. A server that starts in the clear
+because its key was missing is not nearly encrypted: it is a server whose operator believes it is
+encrypted, and the belief survives until somebody captures a packet. So the startup line names
+the posture in words --- clear, offered, required, or mutual --- every time.
+
+**Still missing:** identity itself. `FR-SEC-03`'s federated tokens and scram are not built, and
+a `Principal` is still a fixed tenant rather than something a certificate or token establishes.
+Mutual TLS puts the client's certificate where a door can see it, which is the hook that work
+will hang from; nothing derives an identity from it yet.
 
 On a loopback that is tolerable and honest --- the server has been a local thing. **For a client
 whose entire purpose is connecting from somewhere else it is credential exposure**, and it is why

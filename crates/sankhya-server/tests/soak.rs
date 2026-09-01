@@ -156,6 +156,7 @@ async fn a_short_run_under_concurrent_load_is_judged() {
             maintenance: None,
             require_password: false,
             metrics_listen: None,
+            transport_security: None,
         },
         wiring::permissive_policy(&tenant, &tables),
         tables,

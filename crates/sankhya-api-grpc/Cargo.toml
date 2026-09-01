@@ -15,6 +15,8 @@ workspace = true
 
 [dependencies]
 sankhya-api-flight = { path = "../sankhya-api-flight" }
+sankhya-tls  = { path = "../sankhya-tls" }
+tokio-rustls = { workspace = true }
 arrow-flight = { workspace = true }
 tonic        = { workspace = true }
 tokio        = { workspace = true }
@@ -22,4 +24,12 @@ tracing      = { workspace = true }
 tokio-stream = "0.1"
 
 [dev-dependencies]
+sankhya-testkit = { path = "../sankhya-testkit" }
+sankhya-types   = { path = "../sankhya-types" }
+datafusion  = { workspace = true }
+uuid        = { workspace = true }
+rustls      = { workspace = true }
+tempfile    = { workspace = true }
+tower       = { version = "0.5" }
+hyper-util  = { version = "0.1" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

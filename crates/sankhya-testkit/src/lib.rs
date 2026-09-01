@@ -479,3 +479,124 @@ pub mod capacity {
         let _ = writeln!(std::io::stderr(), "SKIPPED {why}");
     }
 }
+
+/// Certificates, for the tests that need a real handshake.
+///
+/// # Why these are generated rather than committed
+///
+/// A private key in a repository is a private key, whatever the file is named and whatever
+/// the comment above it says. A committed fixture also expires --- on a date nobody chose,
+/// in a test nobody touched, usually while somebody is trying to ship something else.
+///
+/// Generating costs milliseconds and removes both problems. It also puts the two doors'
+/// tests on one implementation: `sankhya-tls` proves the loading and the handshake, the
+/// wire protocol proves the negotiation in front of it, and neither crate gets its own idea
+/// of what a certificate is.
+///
+/// # Why every function here returns a `Result`
+///
+/// This is a library, and the workspace denies `expect` in one. A testkit that panics is a
+/// testkit whose failure arrives as a stack trace inside somebody else's test, attributed to
+/// the thing they were actually testing.
+pub mod certificates {
+    use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair};
+    use rcgen::KeyUsagePurpose;
+    use std::path::{Path, PathBuf};
+
+    /// A certificate and the key that signs for it, as PEM.
+    #[derive(Clone, Debug)]
+    pub struct Pair {
+        /// The certificate, PEM-encoded.
+        pub certificate: String,
+        /// Its private key, PEM-encoded.
+        pub key: String,
+    }
+
+    impl Pair {
+        /// Write both halves into `directory` as `<stem>.crt` and `<stem>.key`.
+        ///
+        /// # Errors
+        ///
+        /// Whatever the filesystem says.
+        ///
+        /// Published rather than written. A certificate is read by whatever is starting up
+        /// while it is being written, and a reader that opens a half-written PEM gets a
+        /// refusal about a malformed file rather than the one it should have got.
+        pub fn write(&self, directory: &Path, stem: &str) -> std::io::Result<(PathBuf, PathBuf)> {
+            let certificate = directory.join(format!("{stem}.crt"));
+            let key = directory.join(format!("{stem}.key"));
+            sankhya_atomicfs::publish(&certificate, self.certificate.as_bytes())?;
+            sankhya_atomicfs::publish(&key, self.key.as_bytes())?;
+            Ok((certificate, key))
+        }
+    }
+
+    /// A self-signed certificate for `localhost`.
+    ///
+    /// # Errors
+    ///
+    /// [`rcgen::Error`] when a key cannot be generated or the certificate cannot be signed.
+    pub fn self_signed() -> Result<Pair, rcgen::Error> {
+        let key = KeyPair::generate()?;
+        let mut params = CertificateParams::new(vec!["localhost".to_owned()])?;
+        params.distinguished_name.push(DnType::CommonName, "localhost");
+        let certificate = params.self_signed(&key)?;
+        Ok(Pair { certificate: certificate.pem(), key: key.serialize_pem() })
+    }
+
+    /// A certificate authority, and the certificates it signs.
+    ///
+    /// What mutual TLS needs: a server certificate and a client certificate that a door can
+    /// check against one anchor.
+    pub struct Authority {
+        issuer: Issuer<'static, KeyPair>,
+        pem: String,
+    }
+
+    impl std::fmt::Debug for Authority {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Authority").finish_non_exhaustive()
+        }
+    }
+
+    impl Authority {
+        /// Create one.
+        ///
+        /// # Errors
+        ///
+        /// [`rcgen::Error`] when a key cannot be generated or the certificate cannot be
+        /// signed.
+        pub fn new() -> Result<Self, rcgen::Error> {
+            let key = KeyPair::generate()?;
+            let mut params = CertificateParams::new(Vec::new())?;
+            params
+                .distinguished_name
+                .push(DnType::CommonName, "sankhya test authority");
+            params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+            params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+            let certificate = params.self_signed(&key)?;
+            let pem = certificate.pem();
+            Ok(Self { issuer: Issuer::new(params, key), pem })
+        }
+
+        /// This authority's own certificate, which is the trust bundle a door is given.
+        #[must_use]
+        pub fn bundle(&self) -> String {
+            self.pem.clone()
+        }
+
+        /// Sign a certificate for `name`.
+        ///
+        /// # Errors
+        ///
+        /// [`rcgen::Error`] when a key cannot be generated or the certificate cannot be
+        /// signed.
+        pub fn sign(&self, name: &str) -> Result<Pair, rcgen::Error> {
+            let key = KeyPair::generate()?;
+            let mut params = CertificateParams::new(vec![name.to_owned()])?;
+            params.distinguished_name.push(DnType::CommonName, name);
+            let certificate = params.signed_by(&key, &self.issuer)?;
+            Ok(Pair { certificate: certificate.pem(), key: key.serialize_pem() })
+        }
+    }
+}

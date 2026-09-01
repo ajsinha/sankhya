@@ -30,6 +30,7 @@
 //! [`Transport::serve_until`] takes a future and returns when it resolves, which is what lets a
 //! server own its listener rather than abandon it.
 
+use sankhya_tls::Acceptor;
 use std::net::SocketAddr;
 
 /// Why the transport could not run.
@@ -68,13 +69,25 @@ impl std::error::Error for TransportError {}
 #[derive(Debug)]
 pub struct Transport {
     address: SocketAddr,
+    encryption: Option<Acceptor>,
 }
 
 impl Transport {
     /// A transport bound to this address when it is served.
     #[must_use]
     pub const fn new(address: SocketAddr) -> Self {
-        Self { address }
+        Self { address, encryption: None }
+    }
+
+    /// Serve this door over TLS.
+    ///
+    /// The certificate comes from `sankhya-tls`, which is also where the wire protocol's
+    /// comes from. One loader, one set of refusals, and no chance of the two doors
+    /// disagreeing about what a valid certificate is.
+    #[must_use]
+    pub fn encrypted(mut self, acceptor: Acceptor) -> Self {
+        self.encryption = Some(acceptor);
+        self
     }
 
     /// Where it will listen.
@@ -105,16 +118,83 @@ impl Transport {
                 detail: error.to_string(),
             }
         })?;
-        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+        let service =
+            arrow_flight::flight_service_server::FlightServiceServer::new(flight);
+
+        let Some(acceptor) = self.encryption else {
+            let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+            return tonic::transport::Server::builder()
+                .add_service(service)
+                .serve_with_incoming_shutdown(incoming, shutdown)
+                .await
+                .map_err(|error| TransportError::Stopped { detail: error.to_string() });
+        };
+
+        // Two futures need to know about shutdown: the server, and the accept loop below.
+        // Without the second, stopping the server would leave a task holding the listening
+        // socket until the next connection happened to arrive — so the port would stay bound
+        // after a shutdown that reported success.
+        let (stopping, mut stopped) = tokio::sync::watch::channel(false);
+        let shutdown = async move {
+            shutdown.await;
+            let _ = stopping.send(true);
+        };
+
+        // A bounded channel, because an unbounded one would let a burst of connections
+        // become memory the server cannot refuse.
+        let (ready, sessions) = tokio::sync::mpsc::channel::<Result<
+            tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+            std::io::Error,
+        >>(64);
+
+        tokio::spawn(async move {
+            loop {
+                let accepted = tokio::select! {
+                    () = wait_for_shutdown(&mut stopped) => break,
+                    accepted = listener.accept() => accepted,
+                };
+                let Ok((stream, _)) = accepted else { continue };
+                let acceptor = acceptor.clone();
+                let ready = ready.clone();
+                // Spawned rather than awaited here. A handshake takes a round trip, and a
+                // peer that opens a connection and then says nothing takes the whole
+                // handshake deadline — doing it inline would let one silent client stop the
+                // server accepting anybody else, which is a denial of service that costs
+                // the attacker one socket.
+                tokio::spawn(async move {
+                    match acceptor.accept(stream).await {
+                        Ok(session) => {
+                            let _ = ready.send(Ok(session)).await;
+                        }
+                        Err(failure) => {
+                            // Below `warn`: a failed handshake is routine on any address a
+                            // scanner can reach, and a line per scan is a log nobody reads.
+                            tracing::debug!(%failure, "a connection did not become a TLS session");
+                        }
+                    }
+                });
+            }
+        });
 
         tonic::transport::Server::builder()
-            .add_service(arrow_flight::flight_service_server::FlightServiceServer::new(
-                flight,
-            ))
-            .serve_with_incoming_shutdown(incoming, shutdown)
+            .add_service(service)
+            .serve_with_incoming_shutdown(
+                tokio_stream::wrappers::ReceiverStream::new(sessions),
+                shutdown,
+            )
             .await
             .map_err(|error| TransportError::Stopped {
                 detail: error.to_string(),
             })
+    }
+}
+
+/// Resolve once the shutdown signal turns true.
+async fn wait_for_shutdown(stopped: &mut tokio::sync::watch::Receiver<bool>) {
+    while !*stopped.borrow_and_update() {
+        if stopped.changed().await.is_err() {
+            // The sender is gone, which happens only when the server has already stopped.
+            return;
+        }
     }
 }

@@ -50,7 +50,7 @@ mod wiring;
 use std::collections::BTreeMap;
 use sankhya_authz::principal::TenantId;
 use std::sync::Arc;
-use wiring::{start, Settings, CUBOID_ROW_BUDGET};
+use wiring::{start, Posture, Settings, TransportSecurity, CUBOID_ROW_BUDGET};
 
 /// Read configuration: files first, then the environment, then the command line.
 ///
@@ -120,8 +120,10 @@ fn settings() -> Result<Settings, String> {
         .map_err(|error| error.to_string())?
         .and_then(|value| u64::try_from(value).ok())
         .unwrap_or(CUBOID_ROW_BUDGET);
+    let transport_security = transport_security(&config)?;
     Ok(Settings {
         maintenance,
+        transport_security,
         cuboid_budget_rows,
         listen,
         warehouse,
@@ -133,6 +135,57 @@ fn settings() -> Result<Settings, String> {
     })
 }
 
+
+/// What a configuration says about encryption, or `None` if it says nothing.
+///
+/// # Half a configuration is refused rather than completed
+///
+/// A certificate with no key is not a server that is nearly encrypted. It is a server whose
+/// operator believes it is encrypted, and starting in the clear there is the most expensive
+/// default this file could offer: everything works, nothing complains, and the mistake is
+/// discovered by somebody else.
+///
+/// So the pair is read as one thing, and either half without the other stops startup, naming
+/// the setting that is missing.
+fn transport_security(
+    config: &sankhya_config::Configuration,
+) -> Result<Option<TransportSecurity>, String> {
+    let certificate = config.get("server.tls.certificate").map(str::to_owned);
+    let private_key = config.get("server.tls.private_key").map(str::to_owned);
+    match (certificate, private_key) {
+        (None, None) => Ok(None),
+        (present, absent) => {
+            if present.is_none() || absent.is_none() {
+                let (set, missing) = if present.is_some() {
+                    ("server.tls.certificate", "server.tls.private_key")
+                } else {
+                    ("server.tls.private_key", "server.tls.certificate")
+                };
+                return Err(format!(
+                    "{set} is set and {missing} is not. Refused rather than started in the \
+                     clear: a half-configured door is not a server that is nearly encrypted, \
+                     it is a server whose operator believes it is encrypted"
+                ));
+            }
+            let (certificate, private_key) = (
+                present.unwrap_or_default(),
+                absent.unwrap_or_default(),
+            );
+            Ok(Some(TransportSecurity {
+                certificate: certificate.into(),
+                private_key: private_key.into(),
+                client_ca: config.get("server.tls.client_ca").map(Into::into),
+                // Requiring by default. An operator who has gone to the trouble of
+                // configuring a certificate did not do it so that a client could decline to
+                // use it, and the permissive setting is the one to ask for by name.
+                require: config
+                    .boolean("server.tls.require")
+                    .map_err(|error| error.to_string())?
+                    .unwrap_or(true),
+            }))
+        }
+    }
+}
 
 /// The maintenance policy a configuration asks for, or `None` if it asks for none.
 ///
@@ -332,9 +385,18 @@ async fn main() -> std::io::Result<()> {
         match address.parse::<std::net::SocketAddr>() {
             Ok(socket) => {
                 let flying = flight::Flying::new(Arc::clone(&server));
-                println!("  Arrow Flight SQL on {socket}");
+                let acceptor = server.columnar_acceptor();
+                println!(
+                    "  Arrow Flight SQL on {socket}{}",
+                    if acceptor.is_some() { " (TLS)" } else { "" }
+                );
                 tokio::spawn(async move {
                     let transport = sankhya_api_grpc::Transport::new(socket);
+                    // The same certificate the wire door presents, loaded once at startup.
+                    let transport = match acceptor {
+                        None => transport,
+                        Some(acceptor) => transport.encrypted(acceptor),
+                    };
                     let service = sankhya_api_flight::SankhyaFlight::new(std::sync::Arc::new(
                         flying,
                     ));
@@ -454,6 +516,18 @@ async fn main() -> std::io::Result<()> {
     println!("SANKHYA {}", env!("CARGO_PKG_VERSION"));
     println!("  {}", server.describe());
     println!("  listening on {bound}");
+    // Said out loud, both ways. A server that is in the clear and does not mention it is how
+    // an operator comes to believe their passwords are encrypted, and the belief survives
+    // until somebody captures a packet.
+    println!(
+        "  wire protocol {}",
+        match server.transport_posture() {
+            Posture::Clear => "unencrypted — passwords cross the network in plain text",
+            Posture::Offered => "TLS offered; a client that does not ask is still served",
+            Posture::Required => "TLS required",
+            Posture::Mutual => "TLS required, and a client certificate with it",
+        }
+    );
     println!(
         "  audit chain head {} ({} record(s))",
         server.audit_head(),
@@ -548,4 +622,87 @@ async fn main() -> std::io::Result<()> {
     }
     println!("shutting down");
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::transport_security;
+    use std::collections::BTreeMap;
+
+    /// A configuration built from arguments alone, which is the highest precedence there is.
+    fn configured(pairs: &[(&str, &str)]) -> sankhya_config::Configuration {
+        let arguments: BTreeMap<String, String> = pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect();
+        sankhya_config::Configuration::load_with(
+            &[] as &[std::path::PathBuf],
+            &BTreeMap::new(),
+            &arguments,
+        )
+        .expect("a configuration from arguments")
+    }
+
+    /// Saying nothing about TLS is how every existing deployment is configured.
+    #[test]
+    fn a_configuration_that_says_nothing_about_tls_asks_for_none() {
+        assert_eq!(transport_security(&configured(&[])), Ok(None));
+    }
+
+    /// A certificate with no key stops startup.
+    ///
+    /// The whole reason this function exists rather than two independent settings. Starting
+    /// in the clear here would be the most expensive default available: everything works,
+    /// nothing complains, and the operator believes their passwords are encrypted.
+    #[test]
+    fn a_certificate_without_its_key_refuses_to_start() {
+        let refused = transport_security(&configured(&[("server.tls.certificate", "/x.crt")]))
+            .expect_err("half a configuration is not a configuration");
+        assert!(refused.contains("server.tls.private_key"), "{refused}");
+        assert!(refused.contains("believes it is encrypted"), "{refused}");
+    }
+
+    /// And a key with no certificate, which is the same mistake made the other way round.
+    #[test]
+    fn a_key_without_its_certificate_refuses_to_start() {
+        let refused = transport_security(&configured(&[("server.tls.private_key", "/x.key")]))
+            .expect_err("half a configuration is not a configuration");
+        assert!(refused.contains("server.tls.certificate"), "{refused}");
+    }
+
+    /// Both halves, and the default that has to be asked out of rather than into.
+    #[test]
+    fn a_complete_configuration_requires_tls_unless_told_otherwise() {
+        let security = transport_security(&configured(&[
+            ("server.tls.certificate", "/x.crt"),
+            ("server.tls.private_key", "/x.key"),
+        ]))
+        .expect("a complete configuration")
+        .expect("some security");
+        assert!(security.require, "requiring is the default an operator gets by not deciding");
+        assert_eq!(security.client_ca, None);
+
+        let permissive = transport_security(&configured(&[
+            ("server.tls.certificate", "/x.crt"),
+            ("server.tls.private_key", "/x.key"),
+            ("server.tls.require", "false"),
+        ]))
+        .expect("a complete configuration")
+        .expect("some security");
+        assert!(!permissive.require, "and it can be asked out of, by name");
+    }
+
+    /// A client bundle is what makes both doors mutual.
+    #[test]
+    fn a_client_bundle_is_carried_through() {
+        let security = transport_security(&configured(&[
+            ("server.tls.certificate", "/x.crt"),
+            ("server.tls.private_key", "/x.key"),
+            ("server.tls.client_ca", "/clients.pem"),
+        ]))
+        .expect("a complete configuration")
+        .expect("some security");
+        assert_eq!(security.client_ca, Some(std::path::PathBuf::from("/clients.pem")));
+    }
 }

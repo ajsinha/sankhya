@@ -90,6 +90,7 @@ fn server() -> (Arc<Server>, tempfile::TempDir) {
         maintenance: None,
         require_password: false,
         metrics_listen: None,
+        transport_security: None,
     };
     (
         Arc::new(Server::with_tables(settings, policy, tables, servable)),
@@ -157,6 +158,7 @@ async fn a_refusal_is_not_counted_as_an_error() {
         maintenance: None,
         require_password: false,
         metrics_listen: None,
+        transport_security: None,
     };
     // An empty policy: the principal may read nothing.
     let server = Server::with_tables(settings, PolicySet::new(), warehouse::describe(&found), servable);
@@ -545,6 +547,7 @@ async fn a_query_naming_a_forbidden_table_looks_exactly_like_one_naming_a_missin
         maintenance: None,
         require_password: false,
         metrics_listen: None,
+        transport_security: None,
     };
     let server = Server::with_tables(settings, policy, tables, servable);
 

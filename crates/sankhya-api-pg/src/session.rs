@@ -28,6 +28,13 @@ use bytes::BytesMut;
 pub enum Phase {
     /// Waiting for the startup packet.
     Startup,
+    /// The client asked for TLS, the door has it, and `S` has been written.
+    ///
+    /// Nothing more can be decoded from this connection until a handshake happens, which
+    /// needs a socket — so the state machine stops here and the caller that owns the socket
+    /// takes over. Keeping the *decision* here and only the *handshake* out there is what
+    /// stops there being two places that know what an `SSLRequest` is.
+    Handshaking,
     /// Startup received; waiting for credentials.
     Authenticating,
     /// Authenticated and ready for statements.
@@ -120,6 +127,8 @@ pub struct Connection {
     parameters: Vec<(String, String)>,
     process_id: i32,
     secret: i32,
+    encrypts: bool,
+    insists: bool,
 }
 
 impl Connection {
@@ -135,7 +144,19 @@ impl Connection {
             parameters: Vec::new(),
             process_id,
             secret,
+            encrypts: false,
+            insists: false,
         }
+    }
+
+    /// This connection is on a door that can encrypt.
+    ///
+    /// `insisting` makes it a door that will not serve a client which never asked.
+    #[must_use]
+    pub const fn on_an_encrypted_door(mut self, insisting: bool) -> Self {
+        self.encrypts = true;
+        self.insists = insisting;
+        self
     }
 
     /// What state this connection is in.
@@ -200,13 +221,51 @@ impl Connection {
         match (self.phase, message) {
             (Phase::Startup, FrontendMessage::SslRequest) => {
                 // A single byte, outside the ordinary framing: 'N' declines, 'S' accepts.
-                // Declining is correct while there is no TLS to offer, and every client
-                // knows how to proceed after an 'N'.
+                // Every client knows how to proceed after an 'N', which is why declining is
+                // an answer rather than a silence.
+                if self.encrypts {
+                    output.extend_from_slice(b"S");
+                    self.phase = Phase::Handshaking;
+                } else {
+                    output.extend_from_slice(b"N");
+                }
+            }
+            (Phase::Startup, FrontendMessage::GssEncRequest) => {
+                // Answered rather than ignored. `psql` with `gssencmode=prefer` — the
+                // default on several distributions — asks this before anything else, and a
+                // server that says nothing leaves it waiting on somebody's timeout.
                 output.extend_from_slice(b"N");
             }
             (Phase::Startup, FrontendMessage::CancelRequest { .. }) => {
                 // Cancellation arrives on its own connection and gets no reply at all —
                 // the server acts and closes. Replying would be a protocol violation.
+                self.phase = Phase::Closed;
+            }
+            (Phase::Startup, FrontendMessage::Startup { parameters }) if self.insists => {
+                // The client reached its startup message without ever asking about TLS, so
+                // this connection is in the clear and about to carry a password.
+                //
+                // Refused here rather than after authentication, and with a message rather
+                // than a closed socket: a silent close is reported by every client as a
+                // network fault, and the operator goes to look at the network. `28000` and
+                // a sentence naming the cause is the difference between changing one
+                // connection string and reading a packet capture.
+                self.parameters = parameters;
+                encode(
+                    &BackendMessage::ErrorResponse {
+                        sqlstate: "28000".to_owned(),
+                        message: "this server requires TLS and this connection is not \
+                                  encrypted"
+                            .to_owned(),
+                        detail: Some(
+                            "connect with sslmode=require or stronger. The refusal is \
+                             before authentication because a password sent to discover \
+                             this would already have crossed the wire in the clear"
+                                .to_owned(),
+                        ),
+                    },
+                    output,
+                );
                 self.phase = Phase::Closed;
             }
             (Phase::Startup, FrontendMessage::Startup { parameters }) => {

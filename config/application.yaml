@@ -19,6 +19,31 @@ server:
   # Spelled as an opt-*out*, so the insecure choice has to be made deliberately.
   require_password: true
 
+  # Transport security. Both doors --- the wire protocol and Arrow Flight SQL --- present the
+  # certificate configured here. One certificate rather than two: two would be two expiries,
+  # two renewals, and two chances for the pair to disagree about who this server is.
+  #
+  # Unset by default, which means both doors are in the clear and a password crosses the
+  # network as it was typed. That is defensible on a loopback and is credential exposure the
+  # moment a client is somewhere else. The startup line says which one you have, in words,
+  # every time.
+  #
+  # A certificate with no key, or a key with no certificate, **stops startup**. A server that
+  # started in the clear there would be one whose operator believes it is encrypted.
+  #
+  # tls:
+  #   certificate: /etc/sankhya/server.crt
+  #   private_key: /etc/sankhya/server.key
+  #   # Anchors a client's own certificate must chain to. Setting it makes both doors mutual:
+  #   # a client with nothing to show for itself is refused at the handshake, before it can
+  #   # send a password.
+  #   client_ca: /etc/sankhya/clients.pem
+  #   # Whether a wire-protocol client that never asks for TLS is refused. Only that door has
+  #   # the question --- its clients negotiate, so a door can be encrypted and permissive at
+  #   # once. Defaults to true: an operator who configured a certificate did not do it so a
+  #   # client could decline to use it.
+  #   require: true
+
 warehouse:
   # Where published tables live: <path>/<schema>/<table>.
   path: ./warehouse

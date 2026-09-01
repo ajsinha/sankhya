@@ -119,6 +119,7 @@ const UNREACHED: &[(&str, &str)] = &[
     ("sankhya-api-rest", "M8 §12.2, with soak criterion 7. The route table and the size decision are built and tested; serving them needs an HTTP listener, HTTP authentication and a *pre-materialisation* row estimate to decide inline-versus-ticket --- `deliver` refuses to be given a count taken after the rows exist, which is the whole point of it. That is a feature, not hygiene, and it is sized where the rest of criterion 7 lives"),
     ("sankhya-cdc-pg", "M2's carried remainder, not an M8 decision. The slot lifecycle, the lag thresholds and the source-safety ladder are built and tested; what is missing is the *driver* that runs them on a timer, which is exactly what STATUS records as outstanding for M2 --- `the slot lifecycle driver and the snapshot reader`"),
     ("sankhya-ports", "decided in M8 §12.1f: **delete**. Nothing implements a single trait in it, and its own header claims `Clock` and `IdGen` are injected everywhere and enforced by lint, neither of which is true --- a crate whose documentation asserts a property the workspace does not have is worse than an empty one. Listed rather than gone only because the deletion needs an owner's hand on it"),
+    ("sankhya-feed", "M13, in progress. The declaration, its validation and the binder are built and tested; what nothing reaches yet is a *runner* --- the quarantine, the microbatch, and the position committed with the rows, per ADR-0018. This entry comes off the list inside the same milestone rather than being carried, which is the difference between a crate mid-build and one nobody finished"),
     ("sankhya-pack", "M4 §8.6's carried remainder, not an M8 decision. The declarative tier is a *planned* tier --- ARCHITECTURE names it and expects it to express the substantial majority of a real pack --- so deleting it would discard a milestone's work, and the loader that reads a bundle directory into a running server is the piece that was never built"),
 ];
 
@@ -237,7 +238,13 @@ pub(crate) fn reachable_from(root: &Path, start: &str) -> BTreeSet<String> {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
-fn reaching_a_crate_only_from_tests_is_not_reaching_it() {
+    /// A dev-dependency is not a way for a server to reach a SQL surface.
+    ///
+    /// This is the whole point of the check. `sankhya-cube-sql` was reachable from the
+    /// server's *tests* long before it was reachable from the server, and that is precisely
+    /// the state where a capability exists, is tested, and cannot be called.
+    #[test]
+    fn reaching_a_crate_only_from_tests_is_not_reaching_it() {
         let root = tempfile::tempdir().expect("a temporary directory");
         let crates = root.path().join("crates");
         for (name, manifest) in [
@@ -263,7 +270,9 @@ fn reaching_a_crate_only_from_tests_is_not_reaching_it() {
     }
 
 
-fn reaching_is_transitive() {
+    /// Reachability follows the graph, not just the first hop.
+    #[test]
+    fn reaching_is_transitive() {
         let root = tempfile::tempdir().expect("a temporary directory");
         let crates = root.path().join("crates");
         for (name, manifest) in [
@@ -281,7 +290,12 @@ fn reaching_is_transitive() {
     }
 
 
-fn a_surface_no_server_reaches_is_refused() {
+    /// A surface no server reaches fails the check.
+    ///
+    /// Against a synthetic tree, because the real one passes --- and a check that has only
+    /// ever been run against a passing tree is a check nobody has seen work.
+    #[test]
+    fn a_surface_no_server_reaches_is_refused() {
         let root = tempfile::tempdir().expect("a temporary directory");
         let crates = root.path().join("crates");
         for (name, manifest) in [
@@ -311,7 +325,12 @@ fn a_surface_no_server_reaches_is_refused() {
     }
 
 
-fn every_real_sql_surface_is_reachable() {
+    /// The real repository serves every SQL surface it builds.
+    ///
+    /// Run against the actual tree rather than a fixture, because the fixture is what would
+    /// have passed on every one of the four days this was wrong.
+    #[test]
+    fn every_real_sql_surface_is_reachable() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .canonicalize()

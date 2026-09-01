@@ -29,6 +29,14 @@ pub const SSL_REQUEST_CODE: i32 = 80_877_103;
 /// The magic number for a cancellation request on a second connection.
 pub const CANCEL_REQUEST_CODE: i32 = 80_877_102;
 
+/// The magic number a client sends to request GSSAPI encryption.
+///
+/// Decoded so it can be declined. `psql` with `gssencmode=prefer` — the default on several
+/// distributions — sends this before anything else, and an unrecognised code is a decode
+/// error, which would make the most ordinary client on Linux fail to connect for a reason
+/// that reads like corruption.
+pub const GSS_REQUEST_CODE: i32 = 80_877_104;
+
 /// What a client sent.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum FrontendMessage {
@@ -39,6 +47,8 @@ pub enum FrontendMessage {
     },
     /// A request to negotiate TLS before the startup packet.
     SslRequest,
+    /// A request to negotiate GSSAPI encryption before the startup packet.
+    GssEncRequest,
     /// A request to cancel work on another connection.
     CancelRequest {
         /// Which backend.
@@ -308,6 +318,7 @@ pub fn decode_startup(buffer: &[u8]) -> Result<(FrontendMessage, usize), DecodeE
 
     match code {
         SSL_REQUEST_CODE => Ok((FrontendMessage::SslRequest, length)),
+        GSS_REQUEST_CODE => Ok((FrontendMessage::GssEncRequest, length)),
         CANCEL_REQUEST_CODE => {
             if cursor.remaining() < 8 {
                 return Err(DecodeError::Incomplete);

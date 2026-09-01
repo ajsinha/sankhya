@@ -1277,7 +1277,9 @@ exists, and a config that reached storage another way would be the second writer
 
 ### The gate
 
-**An accepted ADR before any implementation**, covering one question that has no obvious answer:
+**An accepted ADR before any implementation.** Written and accepted on 2026-08-31 as
+[ADR-0018](adr/0018-a-record-that-does-not-fit.md), covering one question that has no obvious
+answer:
 
 > **What happens to a record that does not fit the config?**
 
@@ -1296,6 +1298,12 @@ missing key, or accept a document whose keys it has never seen. Each is a way to
 defect into published data that looks fine.
 
 ### Work
+
+Six decisions came out of the ADR, and two of them are work this section did not previously
+name: the quarantine is **a table** rather than a directory beside the warehouse, and a file's
+**position is committed with its rows in one commit**, so a restart is a question with an answer
+rather than a reconciliation exercise. A halted pipeline is also a *state*, which means a command
+surface to see it and to resume it, rather than a flag in a file.
 
 The config model and its validation, reporting every failing rule rather than the first. The
 mapping from a JSON dictionary to typed rows against `sankhya-schema`'s logical types, refusing
@@ -1327,7 +1335,12 @@ the reason the contract matters more than the binding.
 
 Two things, both before implementation.
 
-**`FR-SEC-03` is mandatory and nothing implements it.** *"Authentication SHALL support federated
+**`FR-SEC-03` is mandatory and half of it is now built.** Transport security landed on
+2026-08-31 --- `sankhya-tls`, both doors, the wire protocol's negotiation, and the refusals
+around a half-configured certificate. What follows is the original reasoning for the gate, kept
+because the second half is still open.
+
+**Nothing implements identity.** *"Authentication SHALL support federated
 identity tokens, mutual TLS, and scram authentication on the wire-protocol door."* Neither door
 offers TLS today, so a password crosses an unencrypted socket --- tolerable on a loopback, and
 credential exposure the moment the client is somewhere else.

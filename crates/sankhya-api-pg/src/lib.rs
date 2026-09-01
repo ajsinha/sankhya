@@ -8,7 +8,7 @@ pub mod message;
 pub mod session;
 
 pub use catalog::{answer, recognise, CatalogQuery, CatalogResult, CatalogTable, Unsupported};
-pub use listener::{serve, PgListener};
+pub use listener::{serve, serve_with, Encryption, PgListener};
 pub use message::{
     decode, decode_startup, encode, BackendMessage, DecodeError, FieldDescription, FrontendMessage,
 };

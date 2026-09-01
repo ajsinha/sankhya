@@ -76,6 +76,45 @@ not mislead anyone reading it.
 deliberately — and the startup line prints `NO AUTHENTICATION` in capitals when it is in
 force, so an operator sees it rather than having to check.
 
+### Over TLS
+
+Both doors --- the wire protocol and Arrow Flight SQL --- present one certificate.
+
+```yaml
+# config/application.yaml
+server:
+  tls:
+    certificate: /etc/sankhya/server.crt
+    private_key: /etc/sankhya/server.key
+```
+
+```console
+$ psql "host=127.0.0.1 port=5433 user=you dbname=acme sslmode=require" -c "SELECT 1;"
+```
+
+The startup line names what you actually have, in words, every time:
+
+```
+  wire protocol TLS required
+```
+
+The four postures are `unencrypted`, `TLS offered` (encrypted for clients that ask, plain
+for the rest --- a state to migrate *through* rather than sit in), `TLS required`, and
+`TLS required, and a client certificate with it`. Requiring is the default once a
+certificate is configured: an operator who went to the trouble did not do it so a client
+could decline to use it. `server.tls.require: false` asks out of that by name.
+
+Add `client_ca` to make both doors mutual, and a client with nothing to show for itself is
+refused at the handshake --- before it can send a password.
+
+**A certificate configured without its key stops startup.** A server that fell back to plain
+text there would be one whose operator believes it is encrypted, which is worse than one
+that never started.
+
+**What is not built:** identity. `FR-SEC-03` also asks for federated tokens and scram, and
+neither exists; a connection's principal is still a fixed tenant. Mutual TLS puts the
+client's certificate where the door can see it, and nothing yet derives an identity from it.
+
 ### Catalogue queries
 
 A reporting tool's first act after connecting is a burst of catalogue queries, and it makes

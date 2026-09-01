@@ -48,7 +48,12 @@ delta_kernel  = { version = "=0.27.1", default-features = false, features = ["ar
 
 tokio         = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time", "fs", "process", "io-util", "net"] }
 tokio-util    = { version = "0.7" }
-tonic         = { version = "0.14" }
+# `tls-connect-info` and nothing more. It adds the `Connected` implementation for a
+# TLS stream — which is what lets this server wrap its own acceptor around the columnar
+# door — without pulling tonic's own TLS stack. That matters: certificates are loaded in
+# exactly one place (`sankhya-tls`), so a refusal reads the same on either door, and no
+# second crate gets to decide which crypto provider this process uses.
+tonic         = { version = "0.14", features = ["tls-connect-info"] }
 prost         = { version = "0.14" }
 futures-util  = { version = "0.3" }
 futures       = { version = "0.3" }
@@ -71,6 +76,13 @@ bytes         = { version = "1" }
 parking_lot   = { version = "0.12" }
 dashmap       = { version = "6" }
 rand          = { version = "0.9" }
+
+# TLS on both doors — `FR-SEC-03`, ADR-0017. `ring` rather than `aws-lc-rs`, which is
+# rustls's default: `ring` is already what resolves here through the object-store HTTP
+# client, and two crypto providers in one process is an ambiguity about what a server
+# actually negotiated. `default-features = false` is what makes that choice stick.
+rustls        = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls  = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 rand_chacha   = { version = "0.9" }
 
 # dev
@@ -79,6 +91,9 @@ proptest      = { version = "1" }
 insta         = { version = "1" }
 criterion     = { version = "0.8" }
 tempfile      = { version = "3" }
+# Certificates for tests, generated rather than committed: a private key in a repository
+# is a private key, whatever the file is named. `ring` again, for the reason above.
+rcgen         = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 
 [workspace.lints.rust]
 unsafe_code                   = "forbid"

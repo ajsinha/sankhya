@@ -224,7 +224,9 @@ mod tests {
     use super::{split_artefact, sweep_dir};
     use std::path::Path;
 
-fn artefacts_of_one_crate_are_recognised_as_generations_of_the_same_thing() {
+    /// The hash is the generation; everything either side of it is the identity.
+    #[test]
+    fn artefacts_of_one_crate_are_recognised_as_generations_of_the_same_thing() {
         let first = split_artefact("sankhya_server-9e7713a1be4acc1d").expect("a hashed binary");
         let second = split_artefact("sankhya_server-b5fac89b087a095c").expect("a hashed binary");
         assert_eq!(first, second, "two builds of one test binary must group together, or the sweep keeps every generation of everything and reclaims nothing");
@@ -233,7 +235,9 @@ fn artefacts_of_one_crate_are_recognised_as_generations_of_the_same_thing() {
     }
 
 
-fn a_file_without_a_metadata_hash_is_left_alone() {
+    /// A file whose name it cannot parse is a file it has no business deleting.
+    #[test]
+    fn a_file_without_a_metadata_hash_is_left_alone() {
         assert!(split_artefact("sankhya-server.d").is_none(), "`sankhya-server.d` has no hash, so it is a current output rather than a superseded generation");
         assert!(split_artefact("CACHEDIR.TAG").is_none());
         assert!(split_artefact("build").is_none());
@@ -241,7 +245,12 @@ fn a_file_without_a_metadata_hash_is_left_alone() {
     }
 
 
-fn a_sweep_keeps_the_newest_generations_and_removes_what_they_replaced() {
+    /// The newest generations survive and the superseded ones go.
+    ///
+    /// Written because the sweep deletes files, and the only thing worse than a build tree
+    /// that grows without bound is a cleanup that removes the build you are standing on.
+    #[test]
+    fn a_sweep_keeps_the_newest_generations_and_removes_what_they_replaced() {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let deps = dir.path();
         // Four generations of one binary, oldest first, with distinct modification times.
@@ -268,7 +277,9 @@ fn a_sweep_keeps_the_newest_generations_and_removes_what_they_replaced() {
     }
 
 
-fn a_dry_run_removes_nothing() {
+    /// A dry run reports exactly what a real run would remove, and removes none of it.
+    #[test]
+    fn a_dry_run_removes_nothing() {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let deps = dir.path();
         for hash in ["aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb", "cccccccccccccccc"] {
@@ -280,7 +291,8 @@ fn a_dry_run_removes_nothing() {
     }
 
 
-fn filetime_set(path: &Path, when: std::time::SystemTime) {
+    /// Set a file's modification time, so generation order is stated rather than raced for.
+    fn filetime_set(path: &Path, when: std::time::SystemTime) {
         let file = std::fs::OpenOptions::new().write(true).open(path).expect("an openable artefact");
         file.set_modified(when).expect("a settable modification time");
     }

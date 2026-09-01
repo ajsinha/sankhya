@@ -1,0 +1,24 @@
+[package]
+name         = "sankhya-tls"
+description  = "Transport security: one certificate loader, both doors."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license-file.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 1
+
+[lints]
+workspace = true
+
+[dependencies]
+rustls       = { workspace = true }
+tokio-rustls = { workspace = true }
+tokio        = { workspace = true }
+
+[dev-dependencies]
+sankhya-testkit = { path = "../sankhya-testkit" }
+tempfile = { workspace = true }
+tokio    = { workspace = true, features = ["rt-multi-thread", "macros"] }
