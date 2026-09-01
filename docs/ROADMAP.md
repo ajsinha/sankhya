@@ -177,7 +177,43 @@ The recommended configuration even after release is *archive and verify continuo
 
 ---
 
-### 1.3 — *Domain packs*
+### 1.3 — *Ingest you configure, and a client you install*
+**Theme: the two ends a user actually touches.**
+
+**Available:** config-driven ingest from files, where a configuration names the source, the shape
+of what arrives and the table it lands in · JSON documents mapped to typed columns, refusing what
+cannot round-trip rather than coercing it · microbatch assembly bounded by size and by time · a
+quarantine for what does not fit, with an expiry · **a Python SDK**: connect over TLS, query with
+streaming results, ingest, declare and materialise cubes, clone a table and read its lineage, and
+register an aggregation of your own.
+
+**What it is for:** everything before this release assumes somebody already has data in the
+warehouse and a way to reach it. Both assumptions are doing a great deal of work. A user's first
+question is *how do I get my data in*, and their second is *how do I use it from my own code* ---
+and until both have an answer, every capability behind them is reachable only by somebody willing
+to write SQL over a socket.
+
+**Why the client contract comes before the client.** Python is first and Java and Rust follow, and
+three bindings that each decided for themselves what to validate would produce three subtly
+different products. The rule is that **the SDK contains no logic the server does not also
+enforce**, so a refusal is the same refusal everywhere and "it worked in Python" is not a
+sentence anybody has to debug.
+
+**Gated on a mandatory requirement nobody had met.** `FR-SEC-03` asks for federated identity,
+mutual TLS and scram on the wire-protocol door, and there is no TLS anywhere in the system today.
+On a loopback that is tolerable. For a client whose entire purpose is connecting from somewhere
+else, it is credential exposure, and the SDK ships behind it rather than in front of it.
+
+**Custom aggregations run out of process.** An aggregation supplied by a user is the one part of
+a query this system did not write; in-process it shares an address space with the audit chain and
+with every other tenant. [ADR-0010](adr/0010-external-aggregations.md) already made the
+correctness half of that decision --- an external aggregation is a *contract* rather than a
+function, and the presence of `merge` is what earns it the right to be rolled up --- and the
+runtime half is decided the same way: a sidecar that panics is a sidecar that dies.
+
+---
+
+### 1.4 — *Domain packs*
 **Theme: the mechanism, used in anger.**
 
 **Available:** risk analytics and financial-crime packs, built on the same published extension API available to third parties, using no privileged access.

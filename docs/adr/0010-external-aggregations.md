@@ -9,7 +9,7 @@
 
 # ADR-0010 — External aggregations: a measure may bring its own rule, if it can merge
 
-**Status:** Proposed · **Date:** 2026-08-28 · **Milestone:** M7 or later
+**Status:** Accepted · **Date:** 2026-08-28, amended 2026-08-31 · **Milestone:** built in M14
 **Builds on:** [ADR-0007](0007-the-cube-model.md), [ADR-0008](0008-serving-cubes-under-policy.md)
 
 ## Context
@@ -189,13 +189,26 @@ admits WebAssembly — which would answer the sandboxing question far more convi
 restricted interpreter. Python is the ecosystem people have; WASM is the isolation nobody has
 to trust. Worth planning the contract so that both can satisfy it.
 
-## What this does not decide
+## What this did not decide, and what was decided later
 
 Whether the interpreter is embedded (`pyo3`, in-process, fast, and sharing an address space
 with the audit chain) or out-of-process behind Arrow IPC (slower per call, isolated, killable).
 The second is the safer default and the first is what people will ask for; that is a decision
 to make with a measurement rather than a preference, and the contract above is the same either
 way.
+
+> **Decided 2026-08-31 by owner decision: out of process, behind Arrow IPC**, as `M14`'s
+> aggregation path.
+>
+> The argument is the one this document already makes about correctness, applied to blast
+> radius. An aggregation supplied by a user is the one piece of a query this system did not
+> write, and in-process it shares an address space with the audit chain, with every other
+> tenant's data, and with a runtime whose threads it can stall. A sidecar that panics is a
+> sidecar that dies.
+>
+> **The contract is unchanged, which is what makes the decision reversible.** `accumulate`,
+> `merge`, `finish` and `state` say nothing about where they run, so embedding stays available
+> later — justified, as this section already asked, by a measurement rather than a preference.
 
 ## Sources
 
