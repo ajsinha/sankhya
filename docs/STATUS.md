@@ -2071,6 +2071,52 @@ route, so the soak shows both together and the unit tests show each alone.
 
 Three tests.
 
+### The exit criteria, assessed rather than assumed
+
+Five criteria. Walking them against what actually existed found **two that were not met**, which
+is the point of walking them rather than declaring the soak covered it.
+
+| Criterion | How |
+|---|---|
+| Divergent writes verified independent | the read-path test, and again under maintenance in the soak |
+| Maintenance run to completion, clone reads every row it could | the soak, with its control |
+| The same for orphan collection specifically | `a_file_only_a_clone_still_names_is_not_swept_from_its_origin`, with its control |
+| **A clone at constant cost against a large table** | **was missing** |
+| **Every refused clone path shown to fail closed** | **was missing** |
+
+### Constant cost, proved rather than timed
+
+The tempting demonstration is a stopwatch. That would be a throughput measurement, and this
+repository has just spent a day learning what those cost --- five guards, four failed gate runs,
+and the eventual answer that they must run alone on a quiet machine. **Inventing a sixth would
+have been poor value for a property that is not statistical.**
+
+Because it is not. Decision 1a makes a clone's log hold **no `Add` actions at all**, so its cost
+is one commit whatever the origin holds. That is an exact claim about bytes and files, and
+proving the exact thing exactly beats measuring a proxy badly:
+
+> **1 file, 410 bytes, from origins of 5 and 121 files.**
+
+The first version asserted the two were *identical* and failed by one byte. The lineage records
+the origin version as text, so cloning at version 60 writes one character more than cloning at
+version 2 --- the only thing about a clone that varies with anything, and it varies with the
+number rather than with the table. The assertion bounds the difference and says why.
+
+### Fail closed, as a list rather than a pile of tests
+
+Each refusal already had its own test, and passing all of them is a different claim from the one
+the criterion makes. Individual tests prove each refusal refuses; **only a list proves there is
+no path somebody built and forgot to refuse.** `M9` makes the same argument for its nineteen
+purge refusals.
+
+Twelve refused paths in one test --- five creation refusals, three removal, one read, two from a
+lineage that contradicts itself, and five malformed statements --- and a **control beside it**,
+because every one of those assertions is satisfied by a function that refuses everything, and a
+clone feature that refuses every clone passes the criterion while being useless. So each refused
+shape has its permitted twin.
+
+Six tests across the two.
+
 ## M7, complete
 
 Added 2026-08-27 by owner directive and placed before scale-out: cubes are a stated
@@ -4061,7 +4107,7 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 2,136 tests, none of which needs a database
+cargo test --workspace           # 2,139 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
 python3 tools/mutation-audit.py  # 559 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
