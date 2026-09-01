@@ -31,7 +31,7 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M7** Multidimensional analysis — cubes, slice/dice, roll-up, consolidation | 2026-08-28 | **Complete.** All eight exit criteria pass against a cube hydrated from a published table. Declared complete once before, on 2026-08-27, and retracted the same day: the hydration path did not exist and every criterion passed on cells its own fixture supplied. Both that gap and the write-only materialisation found on 2026-08-28 are closed. See below, and [ADR-0007](adr/0007-the-cube-model.md) |
 | **M8** **Concurrency and data safety** | 2026-08-30 | **Complete on six of eight**, and the other two moved rather than met. S1–S3 and C1–C3 are proven, each concurrency criterion measured against a control taken in the same run. **§12.2 and criteria 7–8 moved whole to M12 on 2026-08-30** by owner decision: both need a second machine, and a recovery objective measured on one host excludes the failures the criterion exists to price. The one item in §12.2 that could not be safely parked — the shard-set seam — was designed first and turned out to be mislabelled; see [ADR-0015](adr/0015-the-shard-set-seam.md). **Rescoped 2026-08-28** by owner directive after an end-to-end audit found a version claim that could lose a commit silently, four files published non-atomically, and three reclamation paths guarding against a proxy rather than against readers. See [ADR-0013](adr/0013-concurrency-and-data-safety.md) |
 | **M9** Tiering | 12–16 ew | **In progress**, started 2026-08-30. **All eleven work items are built and the exit criteria demonstrated** on 2026-08-31 — purge end to end with verification, quarantine and rollback; the anomaly guard halting an intentionally-defective policy; nineteen refusal paths shown to fail closed. **The gate is not cleared and that is not a formality**: criterion 3 needs the attestation drill run against a real non-production archive, which cannot be produced from development. **Gated** on the drills in [`IMPLEMENTATION_PLAN.md` §13](IMPLEMENTATION_PLAN.md): the restore drill exists from M6 §10.3, the archive attestation drill does not. Gate criterion 1 moved to M11 on 2026-08-28, and **destructive purge stays disabled until M11 clears it** — building the purge path and arming it are two decisions |
-| **M10** Zero-copy cloning | 10–14 ew | **In progress**, started 2026-08-31. **The design gate is cleared**: [ADR-0016](adr/0016-zero-copy-cloning.md) decides shared-file lifetime as reachability over the clone family rather than reference counting, because a count that drifts low deletes data a clone is the only reader of — the silent loss the gate exists to prevent — while reachability fails towards leaking disk. No implementation before that ADR, and none yet |
+| **M10** Zero-copy cloning | 10–14 ew | **Complete 2026-08-31.** Design gate cleared by [ADR-0016](adr/0016-zero-copy-cloning.md) before any code; eight work items built; **all five exit criteria met**. Walking the criteria found two that were not — constant cost and the fail-closed enumeration — and both were built rather than reinterpreted. Nothing external holds it: no production deployment, no second machine, no drill against a real archive. |
 | **M11** Production reconciliation | — | **Not schedulable by development.** Needs a production deployment that does not exist. Holds M9's gate criterion 1 and the arming decision for destructive purge |
 | **M12** Scale-out, HA and disaster recovery, then production-like acceptance | 20–26 ew | **Needs a second machine**, which is why it holds M8 §12.2 and criteria 7–8 as of 2026-08-30. The project's exit criteria: 12 h, two machines, 100 GB, 50 readers, 20 writers. `CREATE CUBE` is a blocking dependency here and is **not** hardware-blocked, so it can be built at any point before the run |
 
@@ -2116,6 +2116,49 @@ clone feature that refuses every clone passes the criterion while being useless.
 shape has its permitted twin.
 
 Six tests across the two.
+
+## M10, complete 2026-08-31
+
+Eight work items, five exit criteria, and a design gate cleared before a line of it was written.
+Nothing external holds it --- no production deployment, no second machine, no drill against a
+real archive --- which makes it the first milestone since M8 to close on its own terms.
+
+### What it is
+
+`CREATE TABLE ... CLONE` produces a table reading exactly what its origin read at a version, in
+constant time and constant space, by **referencing the same files rather than copying them**.
+Writes then diverge: each side commits to its own log and neither observes the other.
+
+### The two decisions everything else followed from
+
+**Reference counting was refused.** A count that drifts high loses disk; a count that drifts low
+deletes data a clone is the only reader of --- silently, in a table nobody was touching, which is
+the gate's own sentence. Reachability over the clone family fails towards leaking disk instead,
+and it is a **no-op for every table nobody has cloned**, which is every table that existed.
+
+**A clone's log names none of its origin's files** (Decision 1a, added when building step 1
+exposed the question). An absolute URI is specification-legal and breaks when a warehouse is
+restored elsewhere; a `../` path is a bet on every reader resolving it alike. So the clone
+records an origin and a version, and a read splices. That cost the open-storage claim for clones,
+which the ADR said --- and a read path, which it did not, an omission corrected when planning the
+soak found a clone reading as empty.
+
+### What the gates caught that I did not
+
+Four times, after the tests were green: `check-writers` refused the server becoming a second
+writer to a warehouse; `check-surfaces` reported an "unreached" excuse that had outlived its
+reason; `check-mutations` found two catalogue anchors moved by a refactor; and
+`check-vocabulary` refused a comment arguing *against* inventing a sixth throughput measurement,
+using a word a core crate may not carry.
+
+Two more came from writing tests rather than from reading code: a clone could be created and then
+not acted on, because authorization checked its own name rather than what it references; and
+"is this name taken?" was asked of the policy rather than the warehouse, so a second clone could
+be created over the first.
+
+And a mutation proved the read-path tests were counting the wrong thing --- rows come from the
+log, so a plan naming files that are gone reports the right number, and every test passed against
+a plan that could not open anything.
 
 ## M7, complete
 
