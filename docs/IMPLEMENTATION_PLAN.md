@@ -11,7 +11,7 @@
 
 **Document ID:** SNK-IP-001
 **Version:** 0.1.0 (draft for review)
-**Status:** Implementation — M0–M8, M10 and M13 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14 in progress
+**Status:** Implementation — M0–M8, M10 and M13 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14 and M17 in progress
 **Date:** 2026-08-26
 **Companions:** `REQUIREMENTS.md` (SNK-RD-001), `ARCHITECTURE.md` (SNK-AD-001), `ROADMAP.md`
 
@@ -1646,6 +1646,23 @@ that keeps its files alive --- the same reclamation machinery a clone already us
 **An ADR before any code**, answering: what a snapshot pins when a table is created *after* it;
 what a read of a snapshot that has been reclaimed says; whether a snapshot may be taken of
 tables the caller cannot read; and whether a snapshot expires, given `RSK-35`.
+
+**Written and accepted 2026-09-02** as [ADR-0019](adr/0019-named-snapshots.md). Six decisions.
+A snapshot is a **position, not a table** --- a clone freezes a thing, a snapshot freezes a
+moment. A table created after the snapshot is **refused rather than answered as empty**, because
+a table that did not exist is not a table that was empty, and a join against it would return a
+confident zero. The expiry is **mandatory**, the third mechanism here to carry one after the
+quarantine and the ephemeral cube: anything that keeps data alive on somebody's behalf must say
+for how long. A snapshot is **not a permission cache** --- every read is authorized against the
+reader's own entitlements, so two people reading one snapshot may legitimately see different
+rows. And it is quoted as a **session setting**, because a run reads one instant across many
+statements rather than one.
+
+**Its Decision 6 found a live defect and it is already fixed.** `SET` is accepted as a no-op
+because nothing reads a session setting --- true, until `SET SNAPSHOT`, which would be the first
+setting to change an answer. Accepting it quietly would serve the present to a caller who asked
+for one instant, with no symptom. Settings that would change an answer are now refused by name
+until `M17` honours them, which is `DEC-47`'s rule applied where it was about to be broken.
 
 ---
 

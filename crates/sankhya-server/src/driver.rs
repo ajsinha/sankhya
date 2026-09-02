@@ -41,6 +41,42 @@ pub(crate) fn run_session_statement(
     let compact = sql.trim().trim_end_matches(';').trim().to_uppercase();
     let first = compact.split_whitespace().next().unwrap_or_default();
 
+    // A setting that would change an *answer* is refused, never accepted and ignored.
+    //
+    // The generic `SET` below is a no-op because nothing here reads a session setting, and that
+    // is true --- today. `SET SNAPSHOT` is the first setting that would change what a statement
+    // returns, and accepting it as a no-op would be the worst defect available: a caller who
+    // asked to read one instant, served *now*, with no symptom at all.
+    //
+    // `ADR-0019` Decision 6 names this trap, and `DEC-47`'s rule already covers it: a statement
+    // whose meaning is not implemented is refused, never confirmed and discarded.
+    //
+    // Listed by name rather than matched by a pattern. A pattern broad enough to be safe would
+    // refuse the settings drivers need, and one narrow enough to be convenient would fail open
+    // --- and failing open here is indistinguishable from working.
+    const CHANGES_AN_ANSWER: &[&str] = &["SNAPSHOT", "SANKHYA.SNAPSHOT", "READ_AS_OF"];
+    if matches!(first, "SET" | "RESET") {
+        let named = compact
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or_default()
+            .trim_end_matches('=')
+            .trim_matches('"');
+        if CHANGES_AN_ANSWER.contains(&named) {
+            return Some(Err(refusal(
+                // `0A000`, feature_not_supported: a driver reads that as "never", which is
+                // right until `M17` builds it.
+                "0A000",
+                &format!(
+                    "`{named}` is not a setting this build honours, and it is refused rather \
+                     than accepted quietly because it would change what a statement returns. \
+                     A caller who asked to read one instant and was served the present would \
+                     have no way to tell. Named snapshots are M17; see ADR-0019"
+                ),
+            )));
+        }
+    }
+
     // A transaction of one statement, which is what a read path has.
     let tag = match first {
         "BEGIN" | "START" => "BEGIN",

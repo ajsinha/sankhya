@@ -357,3 +357,53 @@ fn a_statement_that_outruns_its_deadline_is_stopped_rather_than_left_running() {
         3
     );
 }
+
+#[test]
+fn a_setting_that_would_change_an_answer_is_refused_rather_than_accepted_quietly() {
+    // The trap `ADR-0019` Decision 6 names. `SET` is accepted as a no-op because nothing here
+    // reads a session setting --- true today, and `SET SNAPSHOT` is the first one that would
+    // change what a statement returns.
+    //
+    // Accepting it quietly would be the worst defect available: a caller who asked to read one
+    // instant, served the present, with no symptom at all. Refused until M17 honours it.
+    let dir = tempfile::tempdir().expect("a directory");
+    let warehouse = dir.path().join("warehouse");
+    table(&warehouse, "sales", "orders", 3);
+    let server = start(&warehouse, &dir.path().join("data"));
+
+    for sql in [
+        "SET SNAPSHOT = 'eod_2026_09_02'",
+        "SET snapshot = 'x'",
+        "RESET SNAPSHOT",
+        "SET read_as_of = 412",
+    ] {
+        // `expect_err`, not a row count. An accepted `SET` returns zero rows and so does a
+        // refused one, so a test written on the count cannot fail --- which is the same shape
+        // of mistake as the defect it is guarding.
+        let why = query_outcome(server.port, sql)
+            .err()
+            .unwrap_or_else(|| panic!("`{sql}` was accepted, so it was silently ignored"));
+        assert!(why.contains("0A000"), "`{sql}` refused with the wrong code: {why}");
+        assert!(why.contains("ADR-0019"), "the refusal points at the decision: {why}");
+    }
+}
+
+#[test]
+fn the_settings_a_driver_needs_are_still_accepted() {
+    // The other half. A guard broad enough to catch every setting would refuse the ones every
+    // connection pool sends, and this door exists for those clients.
+    let dir = tempfile::tempdir().expect("a directory");
+    let warehouse = dir.path().join("warehouse");
+    table(&warehouse, "sales", "orders", 3);
+    let server = start(&warehouse, &dir.path().join("data"));
+
+    for sql in [
+        "SET extra_float_digits = 3",
+        "SET application_name = 'thing'",
+        "SET DateStyle = 'ISO'",
+        "RESET ALL",
+    ] {
+        query_outcome(server.port, sql)
+            .unwrap_or_else(|why| panic!("`{sql}` must be accepted, and said: {why}"));
+    }
+}
