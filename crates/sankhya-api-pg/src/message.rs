@@ -256,6 +256,12 @@ pub mod oid {
     pub const TIMESTAMPTZ: i32 = 1184;
     /// `numeric`.
     pub const NUMERIC: i32 = 1700;
+    /// `float8[]`, which is `_float8` in PostgreSQL's own naming.
+    ///
+    /// A vector column's type on this wire. Every PostgreSQL driver already decodes it, so
+    /// sending a vector under this OID is the one case where doing the correct thing also
+    /// deletes code from every client --- see `ADR-0021` Decision 3.
+    pub const FLOAT8_ARRAY: i32 = 1022;
 }
 
 /// Why a message could not be read.

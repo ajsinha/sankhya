@@ -22,8 +22,9 @@
 //! A null vector yields a null result, never zero. A cosine similarity of zero is a definite
 //! statement --- "orthogonal" --- and a missing vector is not orthogonal to anything.
 
+use arrow_array::builder::{Float64Builder, ListBuilder};
 use arrow_array::{Array, ArrayRef, FixedSizeListArray, Float64Array, ListArray};
-use arrow_schema::DataType;
+use arrow_schema::{DataType, Field};
 use datafusion::common::{exec_err, Result};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
@@ -38,6 +39,9 @@ use std::sync::Arc;
 /// a query works on one node and fails on another.
 pub fn register(context: &SessionContext) {
     for function in functions() {
+        context.register_udf(function);
+    }
+    for function in series_functions() {
         context.register_udf(function);
     }
 }
@@ -91,6 +95,112 @@ pub fn functions() -> Vec<ScalarUDF> {
         // argument that would have to be a literal for no benefit.
         ScalarUDF::from(VectorFunction::unary("vec_integral", |a| {
             calculus::integrate_trapezoid(a, 1.0)
+        })),
+        // Simpson's rule, which is exact for a cubic where the trapezoid is exact only for a
+        // line. Offered beside the trapezoid rather than replacing it: Simpson needs an even
+        // number of intervals and refuses otherwise, and a function that silently changed
+        // rule to accommodate its input would return two different approximations under one
+        // name.
+        ScalarUDF::from(VectorFunction::unary("vec_integral_simpson", |a| {
+            calculus::integrate_simpson(a, 1.0)
+        })),
+        // The spread of a row's series. Reported as one number --- `max - min` --- because
+        // the two ends are separately available as `vec_min` and `vec_max`, and a caller who
+        // wants them has them.
+        ScalarUDF::from(VectorFunction::unary("vec_range", |a| {
+            stats::range(a)
+                .map(|(low, high)| high - low)
+                .ok_or(vector::VectorError::Empty)
+        })),
+        ScalarUDF::from(VectorFunction::unary("vec_min", |a| {
+            stats::range(a).map(|(low, _)| low).ok_or(vector::VectorError::Empty)
+        })),
+        ScalarUDF::from(VectorFunction::unary("vec_max", |a| {
+            stats::range(a).map(|(_, high)| high).ok_or(vector::VectorError::Empty)
+        })),
+        // Least-squares regression, as three functions rather than one returning a struct.
+        //
+        // A struct return would make the common case --- wanting the slope --- into a field
+        // access on a composite type, which the wire protocol renders as a string a client
+        // then has to parse. Three named scalars compose in a `SELECT` list, and a caller
+        // wanting all three writes all three.
+        ScalarUDF::from(VectorFunction::binary("vec_regression_slope", |a, b| {
+            stats::linear_fit(a, b).map(|fit| fit.slope)
+        })),
+        ScalarUDF::from(VectorFunction::binary("vec_regression_intercept", |a, b| {
+            stats::linear_fit(a, b).map(|fit| fit.intercept)
+        })),
+        ScalarUDF::from(VectorFunction::binary("vec_regression_r2", |a, b| {
+            stats::linear_fit(a, b).map(|fit| fit.r_squared)
+        })),
+        // The population forms, beside the sample ones above. Which divisor a variance uses
+        // is a statement about what the data *is*, not a preference --- a sample variance of
+        // a complete population overstates the spread, and the difference is invisible in
+        // the number. Naming both is what lets somebody choose the one they mean.
+        ScalarUDF::from(VectorFunction::unary("vec_variance_pop", |a| {
+            stats::variance(a, stats::Population::Whole)
+        })),
+        ScalarUDF::from(VectorFunction::unary("vec_stddev_pop", |a| {
+            stats::standard_deviation(a, stats::Population::Whole)
+        })),
+        ScalarUDF::from(VectorFunction::binary("vec_covariance_pop", |a, b| {
+            stats::covariance(a, b, stats::Population::Whole)
+        })),
+        // A quantile of one row's series, by linear interpolation --- the convention most
+        // libraries and spreadsheets use, and so the one somebody means when they have not
+        // said. `vec_median` is the same kernel at `q = 0.5` and keeps its own name because
+        // that is what people write.
+        ScalarUDF::from(VectorFunction::binary("vec_quantile", |a, q| {
+            let Some(&probability) = q.first() else {
+                return Err(vector::VectorError::Empty);
+            };
+            let mut values = a.to_vec();
+            sankhya_math::quantile(
+                &mut values,
+                probability,
+                sankhya_math::Convention::LinearInterpolation,
+            )
+            .map_err(|_| vector::VectorError::Empty)
+        })),
+    ]
+}
+
+/// Every function that takes a series and returns a series.
+///
+/// Separate from [`functions`] only because the return type differs; they register together
+/// and a session has both or neither.
+#[must_use]
+pub fn series_functions() -> Vec<ScalarUDF> {
+    vec![
+        // Element-wise arithmetic between two rows' series --- adding two yield curves,
+        // netting two exposures, differencing two readings.
+        ScalarUDF::from(SeriesFunction::binary("vec_add", vector::add)),
+        ScalarUDF::from(SeriesFunction::binary("vec_subtract", vector::subtract)),
+        ScalarUDF::from(SeriesFunction::binary("vec_multiply", vector::multiply)),
+        ScalarUDF::from(SeriesFunction::binary("vec_divide", vector::divide)),
+        ScalarUDF::from(SeriesFunction::scaled("vec_scale", |a, by| {
+            Ok(vector::scale(a, by))
+        })),
+        // Calculus over a sampled series. Unit spacing, as `vec_integral` uses: a caller
+        // wanting another spacing scales the result, which is exact --- rather than this
+        // taking a spacing argument that would have to be a literal for no benefit.
+        ScalarUDF::from(SeriesFunction::unary("vec_differences", calculus::differences)),
+        ScalarUDF::from(SeriesFunction::unary("vec_derivative", |a| {
+            calculus::derivative(a, 1.0)
+        })),
+        ScalarUDF::from(SeriesFunction::unary("vec_second_derivative", |a| {
+            calculus::second_derivative(a, 1.0)
+        })),
+        ScalarUDF::from(SeriesFunction::unary("vec_cumulative_sum", |a| {
+            Ok(calculus::cumulative_sum(a))
+        })),
+        ScalarUDF::from(SeriesFunction::unary("vec_cumulative_integral", |a| {
+            calculus::cumulative_integral(a, 1.0)
+        })),
+        // Centre and scale to unit variance, so two series measured in different units can
+        // be compared. The sample form, matching `vec_stddev`.
+        ScalarUDF::from(SeriesFunction::unary("vec_standardise", |a| {
+            stats::standardise(a, stats::Population::Sample)
         })),
     ]
 }
@@ -293,4 +403,211 @@ fn vector_at(array: &ArrayRef, row: usize) -> Result<Option<Vec<f64>>> {
         );
     }
     Ok(Some(doubles.values().to_vec()))
+}
+
+// ---------------------------------------------------------------------------
+
+/// A kernel that turns one row's series into another series.
+///
+/// The shape [`VectorFunction`] cannot express. A derivative, a running total, a
+/// standardisation and an element-wise sum all take vectors and **return a vector**, and the
+/// scalar wrapper returns one number --- which is why twelve tested kernels sat in
+/// `sankhya-math` with no name on any surface until `check-kernels` began failing the build
+/// for it.
+type SeriesKernel =
+    Arc<dyn Fn(&[&[f64]], f64) -> std::result::Result<Vec<f64>, vector::VectorError> + Send + Sync>;
+
+/// One series function, wired to the planner.
+///
+/// # Why the result is a `List` and not a `FixedSizeList`
+///
+/// A `FixedSizeList` carries its width in its type, and these kernels change it: a first
+/// difference of `n` values has `n - 1`. Declaring a fixed width would make the return type a
+/// function of the argument's width, and a `differences` of a 384-dimensional embedding would
+/// have to be a different function from a `differences` of a 3-dimensional one.
+///
+/// A `List` costs an offsets buffer and accepts every width, and every vector function here
+/// reads both --- so a series result composes with the rest of the catalogue.
+pub struct SeriesFunction {
+    name: &'static str,
+    arity: usize,
+    /// A trailing scalar argument, such as the factor `vec_scale` multiplies by.
+    scalar: bool,
+    kernel: SeriesKernel,
+    signature: Signature,
+}
+
+impl std::fmt::Debug for SeriesFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SeriesFunction")
+            .field("name", &self.name)
+            .field("arity", &self.arity)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SeriesFunction {
+    /// One vector in, one vector out.
+    fn unary(
+        name: &'static str,
+        kernel: impl Fn(&[f64]) -> std::result::Result<Vec<f64>, vector::VectorError>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        Self {
+            name,
+            arity: 1,
+            scalar: false,
+            kernel: Arc::new(move |operands, _| {
+                let a = operands.first().copied().unwrap_or(&[]);
+                kernel(a)
+            }),
+            signature: Signature::variadic_any(Volatility::Immutable),
+        }
+    }
+
+    /// Two vectors in, one vector out.
+    fn binary(
+        name: &'static str,
+        kernel: impl Fn(&[f64], &[f64]) -> std::result::Result<Vec<f64>, vector::VectorError>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        Self {
+            name,
+            arity: 2,
+            scalar: false,
+            kernel: Arc::new(move |operands, _| {
+                let a = operands.first().copied().unwrap_or(&[]);
+                let b = operands.get(1).copied().unwrap_or(&[]);
+                kernel(a, b)
+            }),
+            signature: Signature::variadic_any(Volatility::Immutable),
+        }
+    }
+
+    /// One vector and one number in, one vector out.
+    fn scaled(
+        name: &'static str,
+        kernel: impl Fn(&[f64], f64) -> std::result::Result<Vec<f64>, vector::VectorError>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        Self {
+            name,
+            arity: 1,
+            scalar: true,
+            kernel: Arc::new(move |operands, by| {
+                let a = operands.first().copied().unwrap_or(&[]);
+                kernel(a, by)
+            }),
+            signature: Signature::variadic_any(Volatility::Immutable),
+        }
+    }
+}
+
+impl PartialEq for SeriesFunction {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.arity == other.arity && self.scalar == other.scalar
+    }
+}
+
+impl Eq for SeriesFunction {}
+
+impl std::hash::Hash for SeriesFunction {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+        self.arity.hash(state);
+        self.scalar.hash(state);
+    }
+}
+
+impl ScalarUDFImpl for SeriesFunction {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arguments: &[DataType]) -> Result<DataType> {
+        Ok(DataType::List(Arc::new(Field::new(
+            "item",
+            DataType::Float64,
+            true,
+        ))))
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        let expected = self.arity + usize::from(self.scalar);
+        let arrays = to_arrays(&args.args, expected)?;
+        let rows = arrays.iter().map(|a| a.len()).max().unwrap_or(0);
+
+        let mut builder = ListBuilder::new(Float64Builder::new());
+        for row in 0..rows {
+            let mut operands: Vec<Vec<f64>> = Vec::with_capacity(self.arity);
+            let mut any_null = false;
+            for array in arrays.iter().take(self.arity) {
+                match vector_at(array, row)? {
+                    // A null vector gives a null series, never an empty one. An empty series
+                    // is a definite statement --- "nothing was measured" --- and a missing
+                    // vector is not that.
+                    None => {
+                        any_null = true;
+                        break;
+                    }
+                    Some(values) => operands.push(values),
+                }
+            }
+            let by = if self.scalar {
+                match arrays.get(self.arity).map(|a| number_at(a, row)) {
+                    Some(Ok(Some(value))) => value,
+                    Some(Ok(None)) => {
+                        any_null = true;
+                        0.0
+                    }
+                    Some(Err(error)) => return Err(error),
+                    None => 0.0,
+                }
+            } else {
+                0.0
+            };
+            if any_null {
+                builder.append_null();
+                continue;
+            }
+            let borrowed: Vec<&[f64]> = operands.iter().map(Vec::as_slice).collect();
+            match (self.kernel)(&borrowed, by) {
+                Ok(values) => {
+                    builder.values().append_slice(&values);
+                    builder.append(true);
+                }
+                Err(reason) => return exec_err!("{}: {reason}", self.name),
+            }
+        }
+        Ok(ColumnarValue::Array(Arc::new(builder.finish())))
+    }
+}
+
+/// A plain number at one row, for a scalar argument that is broadcast across a column.
+fn number_at(array: &ArrayRef, row: usize) -> Result<Option<f64>> {
+    if array.is_null(row) {
+        return Ok(None);
+    }
+    if let Some(doubles) = array.as_any().downcast_ref::<Float64Array>() {
+        return Ok(Some(doubles.value(row)));
+    }
+    if let Some(ints) = array.as_any().downcast_ref::<arrow_array::Int64Array>() {
+        #[allow(clippy::cast_precision_loss)]
+        return Ok(Some(ints.value(row) as f64));
+    }
+    exec_err!(
+        "this argument must be a number, and it is {}. Refused rather than coerced: a \
+         coercion here computes a real number from the wrong thing",
+        array.data_type()
+    )
 }

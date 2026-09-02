@@ -3647,6 +3647,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sankhya-functions"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "datafusion",
+ "sankhya-error",
+ "sankhya-math",
+ "sankhya-olap",
+ "tokio",
+]
+
+[[package]]
 name = "sankhya-governor"
 version = "0.1.0"
 dependencies = [
@@ -3907,6 +3920,7 @@ dependencies = [
  "sankhya-diagnostic",
  "sankhya-error",
  "sankhya-feed",
+ "sankhya-functions",
  "sankhya-governor",
  "sankhya-graph",
  "sankhya-graph-sql",
@@ -3914,6 +3928,7 @@ dependencies = [
  "sankhya-maintenance",
  "sankhya-metrics",
  "sankhya-olap",
+ "sankhya-oltp-pg",
  "sankhya-plan",
  "sankhya-publish",
  "sankhya-readpath",

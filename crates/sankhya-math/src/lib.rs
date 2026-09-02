@@ -49,15 +49,21 @@
 #![doc(html_root_url = "https://docs.rs/sankhya-math")]
 
 pub mod calculus;
+pub mod decompose;
+pub mod inference;
+pub mod distribution;
+pub mod special;
 pub mod matrix;
 mod quantile;
+pub mod regression;
 mod reduce;
 pub mod stats;
 pub mod vector;
 
+pub use special::DomainError;
 pub use matrix::MatrixError;
 pub use quantile::{quantile, quantile_of_sum, Convention, QuantileError};
-pub use reduce::{combine_partials, deterministic_sum, Exact};
+pub use reduce::{combine_partials, deterministic_sum, exact_sum, Exact};
 pub use stats::{LinearFit, Population};
 pub use vector::{
     add, cosine_distance, cosine_similarity, divide, dot, euclidean, matvec, mean, multiply,

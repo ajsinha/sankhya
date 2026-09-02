@@ -224,6 +224,10 @@ class Sankhya:
     """
 
     def __init__(self, connection: Connection) -> None:
+        # Read once, on first use. A server's function list does not change while a connection
+        # is open, and asking per call would put a round trip in front of every arithmetic
+        # operation.
+        self._functions = None
         self._connection = connection
 
     # -- the raw door -------------------------------------------------------
@@ -601,6 +605,61 @@ class Sankhya:
     def read_the_present_of(self, table: str) -> None:
         """Stop reading one table at a version."""
         self.sql(f"RESET VERSION OF {table}")
+
+    # -- the built-in function catalogue -------------------------------------
+
+    @property
+    def fn(self):
+        """Every built-in this server offers, as a method.
+
+        ::
+
+            db.fn.norm_inv(0.975)
+            db.fn.vec_cosine_similarity([0.1, 0.9], [0.2, 0.8])
+            db.fn.mat_cholesky([4, 12, -16, 12, 37, -43, -16, -43, 98])
+
+        Driven by the server's own ``functions()`` catalogue rather than by a stub per
+        function. A hundred and twenty-eight hand-written stubs would be two thousand lines
+        whose only job is to agree with the server, and they would stop agreeing the first
+        time one was added and a stub was not --- silently, because a missing method is not an
+        error until somebody calls it.
+        """
+        if self._functions is None:
+            from .functions import Catalogue
+
+            self._functions = Catalogue(self)
+        return self._functions
+
+    def functions(self, category: str | None = None) -> list:
+        """Every function this server offers, as :class:`~sankhya.functions.Function`.
+
+        ``category`` narrows it: ``"distribution"``, ``"linear algebra"``, ``"inference"``,
+        ``"regression"``, ``"vector"``, ``"calculus"``, ``"statistics"``, ``"graph"``,
+        ``"cube"``, ``"special"``.
+
+        This exists for the reason ``cubes()`` does: **a capability nobody can enumerate is a
+        reference manual nobody reads**, and a client that cannot list the catalogue cannot
+        offer it in a picker.
+        """
+        from .functions import Function
+
+        where = ""
+        if category is not None:
+            where = f" WHERE category = '{_quote(category)}'"
+        return [
+            Function(
+                name=row["function"] or "",
+                category=row["category"] or "",
+                arity=int(row["arity"] or 0),
+                takes=row["takes"] or "",
+                gives=row["gives"] or "",
+                about=row["about"] or "",
+            )
+            for row in self.rows(
+                "SELECT function, category, arity, takes, gives, about "
+                f"FROM functions(){where} ORDER BY category, function"
+            )
+        ]
 
     # -- feeds and quarantine -----------------------------------------------
 

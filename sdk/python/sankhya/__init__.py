@@ -28,6 +28,7 @@ from .client import (
     Table,
     open,
 )
+from .functions import Catalogue, Function
 from .wire import Connection, Refusal, Result, WireError, connect
 
 __all__ = [
@@ -42,6 +43,8 @@ __all__ = [
     "Sankhya",
     "SnapshotInfo",
     "Change",
+    "Function",
+    "Catalogue",
     "Table",
     "WireError",
     "connect",

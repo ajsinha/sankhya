@@ -449,6 +449,26 @@ pub(crate) fn query_outcome(port: u16, sql: &str) -> Result<usize, String> {
 ///
 /// A `NULL` value is `None`; anything else is its text as the server sent it.
 pub(crate) fn text_rows(port: u16, sql: &str) -> Vec<Vec<Option<String>>> {
+    let buffer = exchange(port, sql);
+    // A refused statement returns no rows, so a caller reading the rows alone cannot tell a
+    // typo in a column name from a table that is legitimately empty. This panics with what
+    // the server said instead, because every caller here wants the statement to succeed.
+    assert!(
+        count_tags(&buffer, b'E') == 0,
+        "`{sql}` was refused: {}",
+        buffer
+            .iter()
+            .map(|byte| if byte.is_ascii_graphic() || *byte == b' ' { *byte as char } else { ' ' })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<&str>>()
+            .join(" ")
+    );
+    data_rows(&buffer)
+}
+
+/// Connect, send one simple query, and return everything the server said.
+fn exchange(port: u16, sql: &str) -> Vec<u8> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connecting");
     stream.set_nodelay(true).ok();
 
@@ -472,21 +492,47 @@ pub(crate) fn text_rows(port: u16, sql: &str) -> Vec<Vec<Option<String>>> {
 
     buffer.clear();
     read_until_ready(&mut stream, &mut buffer);
-    // A refused statement returns no rows, so a caller reading the rows alone cannot tell a
-    // typo in a column name from a table that is legitimately empty. This panics with what
-    // the server said instead, because every caller here wants the statement to succeed.
-    assert!(
-        count_tags(&buffer, b'E') == 0,
-        "`{sql}` was refused: {}",
-        buffer
-            .iter()
-            .map(|byte| if byte.is_ascii_graphic() || *byte == b' ' { *byte as char } else { ' ' })
-            .collect::<String>()
-            .split_whitespace()
-            .collect::<Vec<&str>>()
-            .join(" ")
-    );
-    data_rows(&buffer)
+    buffer
+}
+
+/// The type OID a statement's first column is described with.
+///
+/// # Why a test reads this at all
+///
+/// The OID is the contract a *driver* dispatches on, and it is invisible in the rendered
+/// value: a column sent as `text` and a column sent as `float8[]` can carry identical bytes
+/// and mean different things to the client. A test asserting only the rendering passes while
+/// the type is wrong --- which is exactly what happened, and why this exists.
+pub(crate) fn first_column_oid(port: u16, sql: &str) -> Option<i32> {
+    let buffer = exchange(port, sql);
+    let mut at = 0usize;
+    while at + 5 <= buffer.len() {
+        let length = i32::from_be_bytes([
+            buffer[at + 1],
+            buffer[at + 2],
+            buffer[at + 3],
+            buffer[at + 4],
+        ]);
+        let length = usize::try_from(length).ok()?;
+        if length < 4 || at + 1 + length > buffer.len() {
+            return None;
+        }
+        // `T`, the row description: a field count, then per field a name, a table OID, a
+        // column number, and the type OID.
+        if buffer[at] == b'T' {
+            let body = &buffer[at + 5..at + 1 + length];
+            let end = body.iter().skip(2).position(|byte| *byte == 0)? + 2;
+            let type_at = end + 1 + 4 + 2;
+            return Some(i32::from_be_bytes([
+                *body.get(type_at)?,
+                *body.get(type_at + 1)?,
+                *body.get(type_at + 2)?,
+                *body.get(type_at + 3)?,
+            ]));
+        }
+        at += 1 + length;
+    }
+    None
 }
 
 /// The `DataRow` messages in a buffer, decoded to text.

@@ -41,6 +41,7 @@ sankhya-clone       = { path = "../sankhya-clone" }
 # has one write path. It was a dev-dependency until then because the server had never written
 # to a warehouse --- which is why `check-writers` noticed the moment it started.
 sankhya-publish     = { path = "../sankhya-publish" }
+sankhya-functions = { path = "../sankhya-functions" }
 sankhya-olap        = { path = "../sankhya-olap" }
 sankhya-graph-sql   = { path = "../sankhya-graph-sql" }
 sankhya-plan     = { path = "../sankhya-plan" }
@@ -62,7 +63,10 @@ tracing-subscriber = { workspace = true }
 parquet = { workspace = true }
 sankhya-cube-algo = { path = "../sankhya-cube-algo" }
 sankhya-publish = { path = "../sankhya-publish" }
-sankhya-diagnostic = { path = "../sankhya-diagnostic" }
+# The soak asks whether a transactional tier is available and reports that it is not, rather
+# than skipping silently. A dev-dependency: nothing in the server wires it yet.
+sankhya-oltp-pg = { path = "../sankhya-oltp-pg" }
+sankhya-functions = { path = "../sankhya-functions" }
 sankhya-graph = { path = "../sankhya-graph" }
 sankhya-api-pg = { path = "../sankhya-api-pg" }
 arrow-array = { workspace = true }

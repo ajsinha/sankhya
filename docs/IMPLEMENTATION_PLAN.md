@@ -1694,6 +1694,70 @@ statement had never once worked over a socket.
 
 ---
 
+## 13g-b. M21 — The built-in function catalogue
+
+**Owner directive 2026-09-02:** the catalogue must be *very wide and very expansive* — linear
+algebra, matrices, calculus, statistics, mathematics, vector mathematics, Excel-style functions,
+graph functions — reachable from **both** the SQL surface and every SDK, and vectorized.
+
+Decided in [ADR-0020](adr/0020-the-built-in-function-catalogue.md).
+
+### Why breadth is the point
+
+A user who has to leave the warehouse to do arithmetic has left the warehouse: they pull the
+rows into pandas, and from that moment this is a file server. Every function that exists here is
+a reason for the computation to happen where the data already is, which is the only place it is
+cheap.
+
+### What was found on the first look
+
+**Twelve kernels were already written, tested, and unreachable from SQL** — all five
+element-wise vector operations, both quantile kernels, the whole of the calculus module bar one
+integrator, `standardise`, `range` and `linear_fit`, the last being linear regression. This is
+the failure this repository keeps finding: a surface built, unit-tested, mutation-tested, and
+never given a front door.
+
+**Closed 2026-09-02, and the recurrence made a build failure.** `check-kernels` reads every
+`pub fn` in `sankhya-math` and requires that some crate outside it name the kernel, or that an
+`INTERNAL_KERNELS` entry say why a user would never call it. "We will expose it later" is not
+an accepted reason: that is what this section is for, and a kernel awaiting exposure should
+fail the gate until it has a name.
+
+The check has its own test, on a fixture where a stranded kernel is planted and the check must
+fail — because a gate nobody has watched fail is the same defect it exists to catch, one level
+up.
+
+**And the reductions were the wrong shape.** Every vector function reduced through a sum that
+sorted its input by magnitude, once per row. That is fixed — see ADR-0020 Decision 3, and the
+`exact_sum` written for it, which is bit-identical, order-independent by construction, and 1.3×
+to 3.6× faster through the shipping kernels.
+
+### The work
+
+1. **Expose what exists.** The ten kernels above, named and documented on the SQL surface.
+2. **A crate of its own**, `sankhya-functions`, with one registration point and a `functions()`
+   table function so a client can enumerate the catalogue — for the reason `cubes()` exists: a
+   capability nobody can list is a reference manual nobody reads.
+3. **Widen it.** Linear algebra beyond `solve` and `inverse` — decompositions, eigenvalues,
+   rank, pseudo-inverse, norms. Statistics beyond the descriptive — regression with diagnostics,
+   distributions, hypothesis tests, rank correlation. Calculus beyond the trapezoid —
+   interpolation, root finding, smoothing. Time series and financial. **Excel-compatible**
+   functions, under Decision 6's rule: agreeing with Excel including where Excel is arguably
+   wrong, or named differently and saying why.
+4. **Every function reachable from every binding**, with runnable examples, gated as tests.
+5. **A benchmark per category**, because ADR-0020 Decision 3 requires a number rather than a
+   claim.
+
+The list of functions is deliberately **not** fixed here. Enumerating it in the plan would make
+every addition a plan amendment; what is fixed is the shape, the guarantees and the two-surface
+obligation.
+
+### The gate
+
+The ADR, accepted 2026-09-02, before any implementation.
+
+---
+
 ## 13g-a. M20 — What changed between two versions
 
 **Deferred here by owner directive 2026-09-02**, when `SHOW HISTORY OF` and `AS OF VERSION` were
