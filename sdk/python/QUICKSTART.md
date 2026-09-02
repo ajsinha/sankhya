@@ -63,7 +63,35 @@ The bare name stops resolving the day a second schema grows a table of that name
 refusal then **names both candidates** rather than choosing one. Scripts that will outlive
 today's warehouse should qualify.
 
-## 4. Refusals arrive as data
+## 4. The contract, checked at connection
+
+This binding declares which **client contract** it speaks, and a server speaking a different
+one refuses at connection, naming both:
+
+```python
+>>> sankhya.open(port=5432, user="you")
+sankhya.Refusal: [08004] this client speaks contract 99 and this server speaks contract 1.
+                 Refused here rather than eleven calls from now, when a field turns out to be
+                 missing
+```
+
+The refusal carries both versions as data — `refused.subjects == ['client=99', 'server=1']` —
+and a remediation naming which side to move.
+
+A binding is installed independently of the server: a package index, a container image and a
+deployment each move at their own pace, so the two *will* disagree. The only question is
+whether it surfaces where somebody can act, or eleven calls later as a missing field.
+
+The server's own contract is readable before you ask it anything:
+
+```python
+db.connection.contract     # 1, or None if this is not a SANKHYA
+```
+
+`None` means something else is speaking the PostgreSQL wire protocol — which this binding can
+talk to, and should not pretend otherwise.
+
+## 5. Refusals arrive as data
 
 ```python
 try:
@@ -72,13 +100,18 @@ except sankhya.Refusal as refused:
     print(refused.sqlstate)     # what a generic driver branches on
     print(refused.message)      # what happened
     print(refused.detail)       # what to do about it
+    print(refused.subjects)     # the NAMES it cites: ['sales.q3_audit']
 ```
 
 A refusal is **not** a sentence this package parses. [ADR-0017](../../docs/adr/0017-the-client-contract.md)
 Decision 2 makes it structured on the wire so that a client dispatching on it never has to match
 on prose — because a message a client parses becomes an API nobody may reword.
 
-## 5. What this cannot do yet
+`subjects` is the one that matters most: the **names** a refusal cites — the clones that would
+break, the two tables an ambiguous name could mean. Without it, showing *"three clones read
+this table"* means parsing the sentence.
+
+## 6. What this cannot do yet
 
 Named rather than half-implemented, because a client that silently downgrades is worse than one
 that says it cannot:
@@ -88,8 +121,13 @@ that says it cannot:
 | TLS | the connection is in the clear; fine on a loopback, not off it |
 | Arrow / columnar results | large results come back as text rows, which is slower and larger |
 | Streaming | `execute` collects; a result larger than memory will not fit |
-| The extended query protocol | no parameter binding, so no server-side prepared statements |
-| Ingest | M14; streaming ingest is M15 |
+| Ingest from the client | M14; streaming ingest is M15 |
+
+The **extended query protocol** — parameter binding, prepared statements — is served by the
+server as of 2026-09-02, and this binding does not use it yet. It sends the simple query flow,
+so values are quoted into the statement rather than bound. That is stated rather than hidden:
+it is the one place this package handles a value, and it goes away when the binding moves to
+the extended flow.
 
 ---
 

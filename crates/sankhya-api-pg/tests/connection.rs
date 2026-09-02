@@ -167,7 +167,24 @@ impl Client {
     ///
     /// Reading to a marker rather than a fixed count, because the number of messages the
     /// server sends is not something a client should have to predict.
+    /// Read messages until one carries `tag`, the connection closes, or the deadline passes.
+    ///
+    /// # Why there is a deadline
+    ///
+    /// There was not, and it cost twenty minutes to find out. A mutation that removed the
+    /// contract check meant no `ErrorResponse` ever arrived, and a test waiting for one
+    /// **hung** --- so the mutation audit stalled instead of reporting a survivor, and the
+    /// build would have stalled with it.
+    ///
+    /// A hang is strictly worse than a failure: it takes the run with it and reports nothing.
+    /// This repository has been bitten by exactly this three times before, which is why its
+    /// rule is that every wait goes through one bounded helper rather than a timeout somebody
+    /// has to remember at each call site.
     async fn read_until(&mut self, tag: u8) -> Vec<(u8, Vec<u8>)> {
+        // Generous: the server does no I/O to answer any of these, so anything approaching
+        // this is a hang rather than a slow machine.
+        const DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+        let until = std::time::Instant::now() + DEADLINE;
         let mut messages = Vec::new();
         let mut chunk = vec![0u8; 4096];
         loop {
@@ -191,7 +208,23 @@ impl Client {
                     return messages;
                 }
             }
-            let read = self.stream.read(&mut chunk).await.expect("reading");
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            assert!(
+                !left.is_zero(),
+                "no `{}` arrived within {}s; the messages seen were {:?}",
+                tag as char,
+                DEADLINE.as_secs(),
+                messages.iter().map(|(kind, _)| *kind as char).collect::<Vec<char>>()
+            );
+            let read = match tokio::time::timeout(left, self.stream.read(&mut chunk)).await {
+                Ok(read) => read.expect("reading"),
+                Err(_) => panic!(
+                    "no `{}` arrived within {}s; the messages seen were {:?}",
+                    tag as char,
+                    DEADLINE.as_secs(),
+                    messages.iter().map(|(kind, _)| *kind as char).collect::<Vec<char>>()
+                ),
+            };
             if read == 0 {
                 return messages;
             }
@@ -651,4 +684,98 @@ async fn executing_a_portal_nobody_bound_is_refused_without_closing_the_connecti
         tags(&client.read_until(b'Z').await).contains(&'T'),
         "the connection did not survive the refusal"
     );
+}
+
+#[tokio::test]
+async fn a_client_speaking_a_contract_this_server_does_not_is_refused_at_connection() {
+    // `ADR-0017` Decision 5. A binding is installed independently of the server --- a package
+    // index, a container image and a deployment all move at their own pace --- so the two will
+    // disagree, and the only question is where.
+    //
+    // Unchecked, it surfaces eleven calls later as a field that is missing. Checked here, it
+    // surfaces where somebody can act, naming both versions.
+    let address = start(Fixture::open()).await;
+    let mut client = Client::connect(address).await;
+
+    let mut body = 196_608i32.to_be_bytes().to_vec();
+    body.extend_from_slice(b"user\0ana\0");
+    body.extend_from_slice(b"sankhya_contract\0999\0\0");
+    let mut startup = Vec::new();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    startup.extend_from_slice(&((body.len() + 4) as i32).to_be_bytes());
+    startup.extend_from_slice(&body);
+    client.send_raw(&startup).await;
+
+    let result = client.read_until(b'E').await;
+    let (_, said) = result.iter().find(|(tag, _)| *tag == b'E').expect("a refusal");
+    let text = String::from_utf8_lossy(said);
+    assert!(text.contains("08004"), "the code for a declined connection: {text}");
+    assert!(text.contains("999"), "the refusal names the client's version: {text}");
+    assert!(text.contains("client=999"), "and carries both as data: {text}");
+    assert!(text.contains("server=1"), "{text}");
+}
+
+#[tokio::test]
+async fn a_client_that_claims_no_contract_is_served_as_a_generic_driver() {
+    // The other half, and the one that matters more often. `psql`, JDBC and every ordinary
+    // PostgreSQL driver send no contract version because they have none --- refusing them
+    // would refuse the whole ecosystem this door exists for.
+    let address = start(Fixture::open()).await;
+    let mut client = Client::connect(address).await;
+    client.startup("ana").await;
+
+    let result = client.read_until(b'Z').await;
+    assert!(
+        !tags(&result).contains(&'E'),
+        "a client with no contract was refused: {:?}",
+        tags(&result)
+    );
+}
+
+#[tokio::test]
+async fn a_client_speaking_this_server_s_contract_is_served() {
+    let address = start(Fixture::open()).await;
+    let mut client = Client::connect(address).await;
+
+    let mut body = 196_608i32.to_be_bytes().to_vec();
+    body.extend_from_slice(b"user\0ana\0");
+    body.extend_from_slice(b"sankhya_contract\01\0\0");
+    let mut startup = Vec::new();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    startup.extend_from_slice(&((body.len() + 4) as i32).to_be_bytes());
+    startup.extend_from_slice(&body);
+    client.send_raw(&startup).await;
+
+    let result = client.read_until(b'Z').await;
+    assert!(!tags(&result).contains(&'E'), "{:?}", tags(&result));
+
+    // And the server announced its own, so a client can tell what it is talking to before it
+    // asks for anything.
+    let announced: String = result
+        .iter()
+        .filter(|(tag, _)| *tag == b'S')
+        .map(|(_, body)| String::from_utf8_lossy(body).into_owned())
+        .collect();
+    assert!(announced.contains("sankhya_contract"), "{announced}");
+}
+
+#[tokio::test]
+async fn a_contract_that_is_not_a_number_is_refused_rather_than_ignored() {
+    // Ignoring it would serve a client whose declaration nobody read --- which is the same as
+    // having no handshake, with the appearance of one.
+    let address = start(Fixture::open()).await;
+    let mut client = Client::connect(address).await;
+
+    let mut body = 196_608i32.to_be_bytes().to_vec();
+    body.extend_from_slice(b"user\0ana\0");
+    body.extend_from_slice(b"sankhya_contract\0soon\0\0");
+    let mut startup = Vec::new();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    startup.extend_from_slice(&((body.len() + 4) as i32).to_be_bytes());
+    startup.extend_from_slice(&body);
+    client.send_raw(&startup).await;
+
+    let result = client.read_until(b'E').await;
+    let (_, said) = result.iter().find(|(tag, _)| *tag == b'E').expect("a refusal");
+    assert!(String::from_utf8_lossy(said).contains("08004"));
 }

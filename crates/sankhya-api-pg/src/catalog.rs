@@ -391,6 +391,7 @@ fn setting_value(name: &str, server_version: &str) -> String {
         "standard_conforming_strings" => "on".to_string(),
         "application_name" => String::new(),
         "sankhya_version" => server_version.to_string(),
+        "sankhya_contract" => crate::session::CONTRACT_VERSION.to_string(),
         _ => String::new(),
     }
 }
@@ -423,6 +424,12 @@ pub fn known_types() -> Vec<(i32, &'static str)> {
 #[must_use]
 pub fn startup_parameters(server_version: &str) -> Vec<(String, String)> {
     [
+        // The client contract's own version, announced so a binding can tell what it is
+        // talking to *before* it asks for anything. `ADR-0017` Decision 5.
+        //
+        // Safe to send to a generic driver: the protocol says a client ignores parameters it
+        // does not know, and every mainstream one does.
+        "sankhya_contract",
         "server_version",
         "server_encoding",
         "client_encoding",

@@ -29,6 +29,15 @@ from typing import Iterator
 #: The protocol version this speaks: 3.0, as every PostgreSQL since 7.4.
 PROTOCOL_VERSION = 196608
 
+#: The client contract this binding speaks.
+#:
+#: Declared at connection, so a server speaking a different one refuses **there**, naming both
+#: versions, rather than eleven calls later when a field turns out to be missing (``ADR-0017``
+#: Decision 5). A binding is installed independently of the server --- a package index, a
+#: container image and a deployment all move at their own pace --- so the two will disagree,
+#: and the only question is where.
+CONTRACT_VERSION = 1
+
 #: How long to wait for the server on any single read, in seconds.
 #:
 #: Bounded, and the bound is part of the contract rather than a precaution. An unbounded read
@@ -108,7 +117,13 @@ class Connection:
 
     def _startup(self, user: str, database: str, password: str | None) -> None:
         body = struct.pack("!i", PROTOCOL_VERSION)
-        for key, value in (("user", user), ("database", database)):
+        for key, value in (
+            ("user", user),
+            ("database", database),
+            # Declared, so a server speaking another contract refuses at connection rather
+            # than serving a client that will misread its answers later.
+            ("sankhya_contract", str(CONTRACT_VERSION)),
+        ):
             body += key.encode() + b"\0" + value.encode() + b"\0"
         body += b"\0"
         self._socket.sendall(struct.pack("!i", len(body) + 4) + body)
@@ -137,6 +152,21 @@ class Connection:
     def parameters(self) -> dict:
         """What the server announced about itself at startup."""
         return dict(self._parameters)
+
+    @property
+    def contract(self) -> int | None:
+        """The client contract the server speaks, or ``None`` if it announced none.
+
+        ``None`` means this is not a SANKHYA --- something else speaking the PostgreSQL wire
+        protocol, which is a thing this binding can talk to and should not pretend otherwise.
+        """
+        announced = self._parameters.get("sankhya_contract")
+        if announced is None:
+            return None
+        try:
+            return int(announced)
+        except ValueError:
+            return None
 
     # -- running statements -------------------------------------------------
 

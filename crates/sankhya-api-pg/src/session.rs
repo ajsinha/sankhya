@@ -83,6 +83,98 @@ pub struct QueryFailure {
     pub subjects: Vec<String>,
 }
 
+/// The version of the **client contract** this server speaks.
+///
+/// # Why a client's version is checked at connection
+///
+/// `ADR-0017` Decision 5. A binding is installed independently of the server --- a package
+/// index, a container image and a deployment all move at their own pace --- so the two *will*
+/// disagree, and the question is only where the disagreement surfaces.
+///
+/// Unchecked, it surfaces eleven calls later as a field that is missing, a column that moved,
+/// or a refusal whose shape the client does not recognise. Checked here, it surfaces where
+/// somebody can act, naming both versions. Same reasoning `sankhya-version` applies to
+/// artefacts: fail where a person can do something, not where the absence is noticed.
+pub const CONTRACT_VERSION: u32 = 1;
+
+/// The oldest contract this server still serves.
+///
+/// Equal to [`CONTRACT_VERSION`] today because there has only ever been one. It exists as its
+/// own constant so that widening the range later is a value change rather than a redesign ---
+/// and so the refusal below can say *"this server speaks 3 to 5"* rather than one number.
+pub const OLDEST_CONTRACT: u32 = 1;
+
+/// The startup parameter a binding declares its contract version in.
+///
+/// A name of ours, in a namespace of ours. The protocol carries unknown startup parameters to
+/// the server and unknown `ParameterStatus` messages to the client, which is what lets a
+/// contract ride alongside a protocol neither party invented.
+pub const CONTRACT_PARAMETER: &str = "sankhya_contract";
+
+/// Whether a client claiming `claimed` may be served.
+///
+/// `Ok` for a client that claims nothing: a generic PostgreSQL driver has no contract version
+/// and is not a SANKHYA binding, and refusing it would refuse `psql`. Only a client that
+/// **says** which contract it speaks is held to it.
+///
+/// # Errors
+///
+/// [`QueryFailure`] naming both versions, with SQLSTATE `08004` --- the code for a server
+/// declining to establish a connection, which is exactly what this is.
+pub fn admits_contract(parameters: &[(String, String)]) -> Result<(), QueryFailure> {
+    let Some((_, claimed)) = parameters
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(CONTRACT_PARAMETER))
+    else {
+        return Ok(());
+    };
+    let range = if OLDEST_CONTRACT == CONTRACT_VERSION {
+        format!("contract {CONTRACT_VERSION}")
+    } else {
+        format!("contracts {OLDEST_CONTRACT} to {CONTRACT_VERSION}")
+    };
+    let Ok(claimed) = claimed.trim().parse::<u32>() else {
+        return Err(QueryFailure {
+            sqlstate: "08004".to_owned(),
+            message: format!(
+                "this client declares its contract version as `{claimed}`, which is not a \
+                 version. This server speaks {range}"
+            ),
+            detail: Some(
+                "A client that declares a contract must declare a number. Omit the parameter \
+                 entirely to connect as a generic PostgreSQL client instead."
+                    .to_owned(),
+            ),
+            subjects: Vec::new(),
+        });
+    };
+    if (OLDEST_CONTRACT..=CONTRACT_VERSION).contains(&claimed) {
+        return Ok(());
+    }
+    Err(QueryFailure {
+        sqlstate: "08004".to_owned(),
+        message: format!(
+            "this client speaks contract {claimed} and this server speaks {range}. Refused \
+             here rather than eleven calls from now, when a field turns out to be missing"
+        ),
+        detail: Some(if claimed > CONTRACT_VERSION {
+            format!(
+                "The client is newer than the server. Upgrade the server to one speaking \
+                 contract {claimed}, or install a client for contract {CONTRACT_VERSION}."
+            )
+        } else {
+            format!(
+                "The client is older than this server serves. Upgrade the client to one \
+                 speaking contract {OLDEST_CONTRACT} or later."
+            )
+        }),
+        subjects: vec![
+            format!("client={claimed}"),
+            format!("server={CONTRACT_VERSION}"),
+        ],
+    })
+}
+
 /// Whatever actually answers queries.
 pub trait Handler: Send + Sync {
     /// Authenticate a client. `None` for the parameters means the startup packet had none.
@@ -349,6 +441,19 @@ impl Connection {
             }
             (Phase::Startup, FrontendMessage::Startup { parameters }) => {
                 self.parameters = parameters;
+                // The contract, before authentication.
+                //
+                // Before, because a client whose contract this server does not speak cannot
+                // usefully do anything after authenticating either --- and because the refusal
+                // is more useful than a password prompt it will fail at eleven calls later.
+                //
+                // A client claiming nothing is not refused: a generic PostgreSQL driver has no
+                // contract version and is not a SANKHYA binding, and refusing it would refuse
+                // `psql`.
+                if let Err(failure) = admits_contract(&self.parameters) {
+                    self.refuse(&failure, output);
+                    return;
+                }
                 if handler.requires_password(&self.parameters) {
                     self.phase = Phase::Authenticating;
                     encode(&BackendMessage::AuthenticationCleartextPassword, output);

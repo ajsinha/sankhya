@@ -128,6 +128,16 @@ surfacing eleven calls later when a field turns out to be missing.
 Same reasoning as `sankhya-version` on artefacts: fail where a person can act, not where the
 absence happens to be noticed.
 
+**Built 2026-09-02.** The version rides in a startup parameter, `sankhya_contract`, and the
+server announces its own the same way. A client that declares one outside the served range is
+refused with `08004` --- the code for a server declining to establish a connection --- naming
+both versions in the message and carrying them as `subjects`.
+
+**A client that declares nothing is not refused**, and that is the load-bearing half. `psql`,
+JDBC and every ordinary PostgreSQL driver have no contract version because they are not
+SANKHYA bindings, and refusing them would refuse the ecosystem this door exists for. Only a
+client that *says* which contract it speaks is held to it.
+
 ## Decision 6 — The session is a permission's context, never its cache
 
 A connection carries a `Principal`, and every statement is authorized at the choke point exactly

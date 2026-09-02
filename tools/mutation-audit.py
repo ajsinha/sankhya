@@ -3975,6 +3975,19 @@ CATALOGUE = [
      "    let batches = match tokio::time::timeout(std::time::Duration::from_secs(86_400), frame.collect()).await {",
      "sankhya-server"),
 
+    # `ADR-0017` Decision 5: version skew is a connection-time refusal.
+    ("wire: serve a client whose contract this server does not speak",
+     "crates/sankhya-api-pg/src/session.rs",
+     "                if let Err(failure) = admits_contract(&self.parameters) {",
+     "                if let Err(failure) = Ok::<(), QueryFailure>(()) {",
+     "sankhya-api-pg"),
+
+    ("wire: refuse a generic driver, which declares no contract at all",
+     "crates/sankhya-api-pg/src/session.rs",
+     "    else {\n        return Ok(());\n    };",
+     "    else {\n        return Err(QueryFailure { sqlstate: \"08004\".to_owned(), message: String::new(), detail: None, subjects: Vec::new() });\n    };",
+     "sankhya-api-pg"),
+
     ("server: accept a feed cadence of zero, which is a loop with no sleep in it",
      "crates/sankhya-server/src/main.rs",
      "            Ok(0) | Err(_) => {",
