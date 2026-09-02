@@ -98,6 +98,30 @@ pub fn session_for(
     policy: &PolicySet,
     tables: &[ServableTable],
 ) -> Result<(SessionContext, usize), QueryFailure> {
+    session_and_contested(principal, policy, tables).map(|built| (built.0, built.1))
+}
+
+/// [`session_for`], and the bare names it deliberately did not register.
+///
+/// # Why the caller is told
+///
+/// A contested bare name registers nowhere, so the planner answers *"table not found"* --- and
+/// that is true and useless. A user cannot tell a typo from a name that needs qualifying, and
+/// the second is fixed by typing four more characters while the first sends them looking for a
+/// table that is right there.
+///
+/// So the names are returned, and a statement that fails to plan while mentioning one gets a
+/// refusal that says which two tables it could have meant. The outcome does not change --- it
+/// is still refused --- only whether the person can act on it.
+///
+/// # Errors
+///
+/// As [`session_for`].
+pub fn session_and_contested(
+    principal: &Principal,
+    policy: &PolicySet,
+    tables: &[ServableTable],
+) -> Result<(SessionContext, usize, BTreeMap<String, Vec<String>>), QueryFailure> {
     let context = SessionContext::new();
 
     // The analytical functions the guide documents in its own sections.
@@ -209,7 +233,21 @@ pub fn session_for(
         }
         registered = registered.saturating_add(1);
     }
-    Ok((context, registered))
+
+    // The bare names two or more schemas claim, each with the qualified names it could mean.
+    // Built from the same `claims` count the registration decision used, so the two cannot
+    // disagree about which names are contested.
+    let mut contested: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for table in tables {
+        let bare = table.reference.table.as_str();
+        if claims.get(bare).copied().unwrap_or(0) > 1 {
+            contested
+                .entry(bare.to_owned())
+                .or_default()
+                .push(format!("{}.{bare}", table.reference.schema));
+        }
+    }
+    Ok((context, registered, contested))
 }
 
 /// The schema of this name in the session's catalogue, created if it is not there yet.
