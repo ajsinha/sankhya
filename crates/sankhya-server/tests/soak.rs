@@ -38,6 +38,8 @@ use std::time::Instant;
 mod execute;
 #[path = "../src/warehouse.rs"]
 mod warehouse;
+#[path = "../src/adopt.rs"]
+mod adopt;
 #[path = "../src/clones.rs"]
 mod clones;
 #[path = "../src/wiring.rs"]

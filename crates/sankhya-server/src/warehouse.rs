@@ -37,6 +37,20 @@ pub struct FoundTable {
     pub root: PathBuf,
     /// Its columns, read from its own log.
     pub schema: Arc<Schema>,
+    /// What it inherits from the table it was cloned from, if it is a clone.
+    ///
+    /// # Why reading a clone needs this
+    ///
+    /// `ADR-0016` Decision 1a: a clone's log names **none** of its origin's files. It records an
+    /// origin and a version, and reading it means reading two logs --- the origin's as it stood
+    /// at that version, and the clone's own.
+    ///
+    /// `resolve_clone_cached` does exactly that and **nothing called it but its own tests**. So
+    /// the server resolved a clone through the ordinary path, found a log naming no files, and
+    /// served it as a table with no rows: a silently empty answer where a whole table should
+    /// have been. Cloning was built, library-tested, and never connected to the thing that
+    /// reads tables.
+    pub inherited: Option<sankhya_readpath::Inherited>,
 }
 
 /// Resolve any table whose log has moved since its provider was built.
@@ -71,14 +85,30 @@ pub fn refresh(tables: &mut [ServableTable], target: Lsn, cache: &LogCache) -> u
         // A table that will not resolve keeps the provider it has. The old one may fail on a
         // retired file, and the new one failed outright --- serving the stale reader is the
         // better of two bad answers, and the next attempt tries again.
-        if let Ok(provider) = sankhya_readpath::resolve_cached(
-            Arc::clone(&table.schema),
-            &table.root,
-            coverage,
-            None,
-            target,
-            cache,
-        ) {
+        //
+        // A clone is re-resolved through the **clone** path. Through the ordinary one it would
+        // resolve a log naming no files and replace a working provider with an empty one: a
+        // table that answered correctly until its origin next committed, and silently emptied
+        // afterwards.
+        let resolved = match &table.inherited {
+            Some(inherited) => sankhya_readpath::resolve_clone_cached(
+                Arc::clone(&table.schema),
+                &table.root,
+                inherited,
+                coverage,
+                target,
+                cache,
+            ),
+            None => sankhya_readpath::resolve_cached(
+                Arc::clone(&table.schema),
+                &table.root,
+                coverage,
+                None,
+                target,
+                cache,
+            ),
+        };
+        if let Ok(provider) = resolved {
             table.provider = Arc::new(provider);
             // Recorded so the next statement can tell this table has not moved. Forgetting
             // it costs a log read per query rather than a wrong answer, which is why no test
@@ -148,16 +178,86 @@ pub fn discover(warehouse: &Path) -> (Vec<FoundTable>, Vec<(PathBuf, String)>) {
                 continue;
             };
             match open(&table_dir) {
-                Ok(schema) => found.push(FoundTable {
-                    reference: TableRef::new(schema_name, table_name),
-                    root: table_dir,
-                    schema,
-                }),
+                Ok(schema) => {
+                    let inherited = inherited_by(warehouse, &table_dir);
+                    found.push(FoundTable {
+                        reference: TableRef::new(schema_name, table_name),
+                        root: table_dir,
+                        schema,
+                        inherited,
+                    });
+                }
                 Err(reason) => refused.push((table_dir, reason)),
             }
         }
     }
     (found, refused)
+}
+
+/// What a table inherits from the table it was cloned from, if it is a clone.
+///
+/// `None` for an ordinary table, which is every table until somebody clones one --- and the
+/// reason the whole mechanism costs nothing until then.
+///
+/// A lineage that cannot be **read** yields `None` as well, and that is the conservative
+/// answer rather than a hole: the clone then resolves through the ordinary path, finds a log
+/// naming no files, and is served as empty --- which is visible --- instead of being spliced
+/// against an origin nobody could identify.
+fn inherited_by(warehouse: &Path, table_root: &Path) -> Option<sankhya_readpath::Inherited> {
+    let lineage = lineage_at(table_root)?;
+    let mut origin_root = match resolve(warehouse, &lineage.origin) {
+        Resolved::One(root) => root,
+        Resolved::Absent | Resolved::Ambiguous(_) => return None,
+    };
+    let mut version = lineage.version;
+
+    // Walk to where the **files** are.
+    //
+    // `Inherited` splices one origin at one version, and a clone of a clone would otherwise
+    // splice against a log that names no files --- so the second level read as **empty**, which
+    // is the silent wrong answer this system exists to prevent. A chain of three read as three
+    // hundred rows, nothing, and nothing.
+    //
+    // Flattening is correct here because **a clone never gains files of its own**: this server
+    // is a read path, nothing writes into a clone, and the clone's log holds a lineage and no
+    // `add` actions from the moment it is created. The walk stops at the first ancestor that is
+    // not itself a clone, and that ancestor's log is where every file in the family lives.
+    //
+    // The day a clone becomes writable this stops being true, and the walk must accumulate each
+    // intermediate's own files instead of skipping past them. `a_clone_holds_no_files_of_its_own`
+    // is the test that fails on that day rather than letting rows go quietly missing.
+    let mut seen = 1usize;
+    while let Some(above) = lineage_at(&origin_root) {
+        // Bounded, because lineage records can form a cycle by editing table properties even
+        // though cloning cannot create one. A read that loops takes the connection with it.
+        seen = seen.saturating_add(1);
+        if seen > MAX_CLONE_DEPTH {
+            return None;
+        }
+        origin_root = match resolve(warehouse, &above.origin) {
+            Resolved::One(root) => root,
+            Resolved::Absent | Resolved::Ambiguous(_) => return None,
+        };
+        version = above.version;
+    }
+    Some(sankhya_readpath::Inherited { origin_root, version })
+}
+
+/// How deep a chain of clones may be before a read refuses to follow it.
+///
+/// Not a capacity limit: lineage records can form a cycle by editing a table's properties, and
+/// a read that follows one loops forever and takes the connection with it. A chain deeper than
+/// this is either a cycle or a warehouse nobody meant to build.
+const MAX_CLONE_DEPTH: usize = 64;
+
+/// The lineage recorded in a table's log, if it is a clone.
+fn lineage_at(table_root: &Path) -> Option<sankhya_clone::Lineage> {
+    let actions: Vec<sankhya_table_delta::Action> = sankhya_table_delta::read_actions(table_root)
+        .ok()?
+        .into_iter()
+        .map(|(_, action)| action)
+        .collect();
+    sankhya_clone::lineage_of(&actions)?.ok()
 }
 
 /// Read a table's schema out of its log.
@@ -378,16 +478,31 @@ pub fn servable(
     let coverage = sankhya_types::LsnRange::new(sankhya_types::Lsn::new(0), target);
 
     for table in tables {
-        match sankhya_readpath::resolve_cached(
-            Arc::clone(&table.schema),
-            &table.root,
-            coverage,
-            None,
-            target,
-            cache,
-        ) {
+        let resolved = match &table.inherited {
+            // A clone: two logs, the origin's at the cloned version and the clone's own.
+            Some(inherited) => sankhya_readpath::resolve_clone_cached(
+                Arc::clone(&table.schema),
+                &table.root,
+                inherited,
+                coverage,
+                target,
+                cache,
+            ),
+            None => sankhya_readpath::resolve_cached(
+                Arc::clone(&table.schema),
+                &table.root,
+                coverage,
+                None,
+                target,
+                cache,
+            ),
+        };
+        match resolved {
             Ok(provider) => open.push(ServableTable {
                 reference: table.reference.clone(),
+                // Filled in by the caller, which is the only thing that has read the lineage.
+                authorize_as: None,
+                inherited: table.inherited.clone(),
                 root: table.root.clone(),
                 provider: Arc::new(provider),
                 schema: Arc::clone(&table.schema),

@@ -79,6 +79,12 @@ pub enum FrontendMessage {
         portal: String,
         /// The statement to bind.
         statement: String,
+        /// The parameter values, in order. `None` is SQL `NULL`.
+        ///
+        /// Decoded rather than skipped. They used to be dropped on the floor, which was
+        /// survivable only because nothing ever ran a bound portal --- and the moment
+        /// `Execute` did anything, a query with parameters would have run without them.
+        parameters: Vec<Option<Vec<u8>>>,
     },
     /// Ask what a prepared statement or portal looks like.
     Describe {
@@ -385,8 +391,38 @@ pub fn decode(buffer: &[u8]) -> Result<(FrontendMessage, usize), DecodeError> {
         }
         b'B' => {
             let (portal, rest) = read_cstring(body)?;
-            let (statement, _) = read_cstring(rest)?;
-            FrontendMessage::Bind { portal, statement }
+            let (statement, rest) = read_cstring(rest)?;
+            let mut tail = rest;
+            // The format codes come first and are skipped: everything this server sends and
+            // accepts is text, and a client asking for binary is refused at `Execute` with a
+            // sentence rather than served a wrong encoding here.
+            let formats = read_count(&mut tail)?;
+            for _ in 0..formats {
+                if tail.remaining() < 2 {
+                    return Err(DecodeError::Incomplete);
+                }
+                let _ = tail.get_i16();
+            }
+            let count = read_count(&mut tail)?;
+            let mut parameters = Vec::with_capacity(count);
+            for _ in 0..count {
+                if tail.remaining() < 4 {
+                    return Err(DecodeError::Incomplete);
+                }
+                let length = tail.get_i32();
+                if length < 0 {
+                    // -1 is SQL `NULL`, which is not the empty string. Conflating them is a
+                    // wrong answer rather than a formatting slip.
+                    parameters.push(None);
+                    continue;
+                }
+                let length = usize::try_from(length).map_err(|_| DecodeError::Incomplete)?;
+                if tail.remaining() < length {
+                    return Err(DecodeError::Incomplete);
+                }
+                parameters.push(Some(tail.copy_to_bytes(length).to_vec()));
+            }
+            FrontendMessage::Bind { portal, statement, parameters }
         }
         b'D' => {
             let kind = *body.first().ok_or(DecodeError::Incomplete)?;
@@ -416,6 +452,17 @@ pub fn decode(buffer: &[u8]) -> Result<(FrontendMessage, usize), DecodeError> {
 }
 
 /// Read a null-terminated string, returning it and what follows.
+/// A 16-bit count, as the protocol writes every list length.
+///
+/// Refused rather than clamped when it is negative: a negative count is a malformed message,
+/// and reading it as zero would accept a frame the sender did not mean to send.
+fn read_count(tail: &mut &[u8]) -> Result<usize, DecodeError> {
+    if tail.remaining() < 2 {
+        return Err(DecodeError::Incomplete);
+    }
+    usize::try_from(tail.get_i16()).map_err(|_| DecodeError::Incomplete)
+}
+
 fn read_cstring(bytes: &[u8]) -> Result<(String, &[u8]), DecodeError> {
     let end = bytes
         .iter()

@@ -42,6 +42,7 @@ static ALLOCATOR: sankhya_alloc::Counting<std::alloc::System> =
 mod backup;
 mod doctor;
 mod execute;
+mod adopt;
 mod clones;
 mod feeds;
 mod flight;

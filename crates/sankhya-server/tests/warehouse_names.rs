@@ -27,6 +27,8 @@ use std::sync::Arc;
 // the alternative of never testing it.
 #[path = "../src/execute.rs"]
 mod execute;
+#[path = "../src/adopt.rs"]
+mod adopt;
 #[path = "../src/clones.rs"]
 mod clones;
 #[path = "../src/wiring.rs"]

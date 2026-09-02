@@ -760,9 +760,16 @@ measure. A cube whose measures have not been thought about should not become a c
 | **Declared** | yes | no | nothing | it is dropped |
 | **Maintained** | yes | yes | the warehouse | it is dropped |
 
-**Ephemeral is the default**, deliberately. Exploring should not require deciding whether a
-question deserves to be durable, and a warehouse should not accumulate a definition per
-abandoned question. Persisting is the deliberate act.
+**Ephemeral is the intended default**, and it is **not what a plain `CREATE CUBE` does today**:
+that persists a definition under the warehouse's `_cubes/`, visible to every other connection.
+There is no syntax yet for asking for an ephemeral one, so on a shared server a reader who
+believes this paragraph publishes their exploration to everybody.
+
+The reasoning stands and the mechanism does not exist. Exploring should not require deciding
+whether a question deserves to be durable, and a warehouse should not accumulate a definition
+per abandoned question — so persisting should be the deliberate act. `M14` builds the ephemeral
+lifetime with the **mandatory expiry** that `RSK-35` requires; until then, drop what you
+declare.
 
 A **Declared** cube costs one small file and computes on demand. It is the right choice for a
 cube asked about occasionally, and for any cube whose readers have different permissions — a
@@ -865,8 +872,12 @@ cube served from storage still says how much of the fact table it saw.
 
 ### What is not here
 
-MDX, deliberately — see [ADR-0007](adr/0007-the-cube-model.md). And a cube is registered
-against a warehouse rather than written in SQL: `CREATE CUBE` is not a statement yet.
+MDX, deliberately — see [ADR-0007](adr/0007-the-cube-model.md).
+
+*(This section used to say `CREATE CUBE` was not a statement yet. It has been one since M7, and
+this document has documented it two sections above ever since — so the sentence contradicted its
+own file. An adversarial review found it on 2026-09-01. A document that describes an intention
+in the present tense lies to the person least able to tell.)*
 
 ---
 
@@ -1414,7 +1425,7 @@ admits less. [`STATUS.md`](STATUS.md) is the authoritative version.
 | **Ingest on a timer** | Not built. Capture, apply and publication all work and none of them is driven by a running process, so everything the server serves is already published |
 | **Graph hydration on a timer** | Not built. An epoch is built when something builds it |
 | **The pack loader in the server** | Not built. Packs load into a registry; nothing in the running process does that |
-| **Partitioning, bloom filters, the result cache** | Not built. The date axis and its declaration exist; nothing yet writes partitioned directories |
+| **Bloom filters, the result cache** | Not built. **Partitioning is** --- every published table writes `sank_data_date=YYYY-MM-DD/` directories and the log's `add` paths carry them. This row claimed otherwise until an adversarial review checked it on 2026-09-01, contradicting §4 of this same document |
 | **Most of `FR-OPS-16`'s checks** | Not built. `doctor` covers compaction debt end to end, reports how long a backup has been unproven, and — for a deployment that archives anything — how long its write-once controls have gone unattested; storage headroom and replication lag exist as checks with nothing feeding them |
 | **Lifecycle tiering, and purge from the source** | Not built, and **gated**. `sankhya-tiering` is deliberately empty; M9 is in progress and its first piece — an attestation drill that proves a write-once store still refuses writes — exists. **Destructive purge stays disabled until reconciliation has run clean in production**, which is a separate milestone. Building the purge path and arming it are two decisions |
 | **Multi-node: leader election, executor scale-out, failover, replication** | Not built, and not reachable here. All of it moved to M12 on 2026-08-30, because proving it needs a second machine and a recovery objective measured on one host would exclude the failures the criterion exists to price |

@@ -224,9 +224,10 @@ client sees carries a permanent code and the catalogue's own remediation.
 columns are dimensions, which are measures, and — the part that decides whether an answer is
 correct — **how each measure may be combined along each dimension**. Summing a closing balance
 across twelve months gives a number of the right magnitude, the right sign and no meaning; a
-cube refuses it. Slice, dice, roll-up and drill-down are SQL table functions with no cube-build
-step preceding the query, every row carries the completeness it was computed under, and
-`CREATE CUBE` / `DROP CUBE` are statements a client can send.
+cube refuses it. Roll-up and slice are SQL table functions with no cube-build step preceding
+the query — dice and drill-down are the two navigations still to come — every row carries the
+completeness it was computed under, and `CREATE CUBE` / `DROP CUBE` are statements a client can
+send.
 
 **Concurrency is measured against a control rather than asserted.** Every concurrency claim is
 taken twice in the same run on the same machine — once as the code stands, once with the same

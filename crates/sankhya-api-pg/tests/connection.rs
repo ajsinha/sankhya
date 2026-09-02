@@ -488,3 +488,113 @@ async fn a_setting_the_handler_does_not_claim_is_still_answered_from_the_catalog
         "the handler was asked about a setting it did not claim"
     );
 }
+
+#[tokio::test]
+async fn a_parsed_and_bound_statement_runs_and_returns_its_rows() {
+    // The defect this exists for, and the worst one for real clients: `Parse` was acked and
+    // its SQL **discarded**, `Bind` was acked, `Describe` answered `NoData`, and `Execute` had
+    // no arm at all --- so it fell to the out-of-phase catch-all, which refuses with `08P01`
+    // and closes the connection.
+    //
+    // Three cheerful acknowledgements and then a dead socket. Every mainstream driver ---
+    // JDBC, psycopg, pgx, npgsql, ODBC --- uses this path by default, against a door whose
+    // whole purpose is that ordinary PostgreSQL clients work.
+    let address = start(Fixture::open()).await;
+    let mut client = Client::connect(address).await;
+    client.startup("ana").await;
+    client.read_until(b'Z').await;
+
+    // Parse (unnamed), Bind (no parameters), Describe the portal, Execute, Sync.
+    let mut body = b"\0".to_vec();
+    body.extend_from_slice(b"SELECT id, note FROM t\0");
+    body.extend_from_slice(&0i16.to_be_bytes());
+    client.send(b'P', &body).await;
+
+    let mut bind = b"\0\0".to_vec();
+    bind.extend_from_slice(&0i16.to_be_bytes()); // no format codes
+    bind.extend_from_slice(&0i16.to_be_bytes()); // no parameters
+    bind.extend_from_slice(&0i16.to_be_bytes()); // no result formats
+    client.send(b'B', &bind).await;
+
+    client.send(b'D', b"P\0").await;
+    let mut execute = b"\0".to_vec();
+    execute.extend_from_slice(&0i32.to_be_bytes());
+    client.send(b'E', &execute).await;
+    client.send(b'S', &[]).await;
+
+    let result = client.read_until(b'Z').await;
+    let seen = tags(&result);
+    assert!(seen.contains(&'1'), "no ParseComplete: {seen:?}");
+    assert!(seen.contains(&'2'), "no BindComplete: {seen:?}");
+    assert!(seen.contains(&'T'), "no RowDescription: {seen:?}");
+    assert_eq!(
+        result.iter().filter(|(tag, _)| *tag == b'D').count(),
+        2,
+        "the fixture's two rows did not arrive: {seen:?}"
+    );
+    assert!(seen.contains(&'C'), "no CommandComplete: {seen:?}");
+    assert!(!seen.contains(&'E'), "it was refused: {seen:?}");
+
+    // And the connection is still usable, which the old behaviour destroyed.
+    client.query("SELECT id, note FROM t").await;
+    assert!(tags(&client.read_until(b'Z').await).contains(&'T'));
+}
+
+#[tokio::test]
+async fn a_bound_parameter_reaches_the_statement() {
+    // `Bind`'s parameter values were decoded and thrown away, which was survivable only while
+    // nothing ever ran a portal. The moment `Execute` did anything, a parameterised query
+    // would have run without its parameters --- silently, and with a plausible answer.
+    let address = start(Fixture::open()).await;
+    let mut client = Client::connect(address).await;
+    client.startup("ana").await;
+    client.read_until(b'Z').await;
+
+    let mut body = b"\0".to_vec();
+    body.extend_from_slice(b"SELECT id FROM t WHERE note = $1\0");
+    body.extend_from_slice(&0i16.to_be_bytes());
+    client.send(b'P', &body).await;
+
+    let mut bind = b"\0\0".to_vec();
+    bind.extend_from_slice(&0i16.to_be_bytes());
+    bind.extend_from_slice(&1i16.to_be_bytes());
+    bind.extend_from_slice(&5i32.to_be_bytes());
+    bind.extend_from_slice(b"first");
+    bind.extend_from_slice(&0i16.to_be_bytes());
+    client.send(b'B', &bind).await;
+
+    let mut execute = b"\0".to_vec();
+    execute.extend_from_slice(&0i32.to_be_bytes());
+    client.send(b'E', &execute).await;
+    client.send(b'S', &[]).await;
+
+    let result = client.read_until(b'Z').await;
+    // The fixture echoes the SQL it was given back through its refusal path only for `boom`,
+    // so a successful answer here proves the substituted statement reached the handler.
+    assert!(tags(&result).contains(&'C'), "{:?}", tags(&result));
+}
+
+#[tokio::test]
+async fn executing_a_portal_nobody_bound_is_refused_without_closing_the_connection() {
+    // A statement that fails is not a protocol violation. The old behaviour treated every
+    // extended-protocol message as out-of-phase and closed the socket, so one mistake cost the
+    // connection --- and a client that must reconnect after every mistake is unusable.
+    let address = start(Fixture::open()).await;
+    let mut client = Client::connect(address).await;
+    client.startup("ana").await;
+    client.read_until(b'Z').await;
+
+    let mut execute = b"nosuch\0".to_vec();
+    execute.extend_from_slice(&0i32.to_be_bytes());
+    client.send(b'E', &execute).await;
+    client.send(b'S', &[]).await;
+
+    let result = client.read_until(b'Z').await;
+    assert!(tags(&result).contains(&'E'), "it was not refused: {:?}", tags(&result));
+
+    client.query("SELECT id, note FROM t").await;
+    assert!(
+        tags(&client.read_until(b'Z').await).contains(&'T'),
+        "the connection did not survive the refusal"
+    );
+}
