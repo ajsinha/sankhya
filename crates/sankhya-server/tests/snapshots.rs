@@ -395,3 +395,203 @@ fn a_snapshot_setting_with_no_name_says_what_the_statement_reads() {
     assert!(refused.contains("needs the name of a snapshot"), "{refused}");
     assert!(refused.contains("RESET SNAPSHOT"), "it names the way back: {refused}");
 }
+
+// --- history, and reading one table at a version ---------------------------
+
+#[test]
+fn a_tables_history_lists_its_commits_and_what_each_did() {
+    // The surface that makes pinning legible. Without it a person cannot see which versions
+    // exist in order to reason about which to keep --- and "which to keep" is the whole of the
+    // snapshot decision.
+    let (_dir, server) = running();
+
+    let history = text_rows(server.port, "SHOW HISTORY OF sales.orders");
+    assert!(history.len() >= 5, "the fixture has several commits: {history:?}");
+    assert_eq!(history[0][0].as_deref(), Some("0"), "oldest first");
+    assert_eq!(history[0][1].as_deref(), Some("created"), "the first commit declares a schema");
+    assert!(
+        history.iter().any(|row| row[1].as_deref() == Some("appended")),
+        "no commit was reported as an append: {history:?}"
+    );
+
+    // The column that keeps this honest: a commit in the log is not data on disk.
+    assert!(
+        history[0].len() >= 8,
+        "the history must say what is keeping a version alive: {history:?}"
+    );
+}
+
+#[test]
+fn a_history_says_which_versions_something_is_keeping_alive() {
+    // A commit remaining in the log is **not** the same as its data remaining on disk.
+    // Retirement deletes what a merge replaced once nothing references it, so a history that
+    // did not say what is pinned would invite somebody to read a version that is gone.
+    let (_dir, server) = running();
+
+    let before = text_rows(server.port, "SHOW HISTORY OF sales.orders");
+    assert!(
+        before.iter().all(|row| row[7].as_deref() == Some("")),
+        "nothing is pinned yet: {before:?}"
+    );
+
+    query_outcome(server.port, "CREATE SNAPSHOT eod EXPIRE AFTER 30 DAYS").expect("taking");
+
+    let after = text_rows(server.port, "SHOW HISTORY OF sales.orders");
+    // **By name.** The column once said the word `snapshot`, which is true and useless: a
+    // person reading it is deciding what to drop to release the storage, and on a warehouse
+    // with a dozen snapshots that answer sends them to `SHOW SNAPSHOTS` to work out which.
+    assert!(
+        after.iter().any(|row| row[7].as_deref() == Some("eod")),
+        "the snapshot pinned a version and the history does not name it: {after:?}"
+    );
+
+    // And a clone keeps a version alive exactly as a snapshot does --- reclamation asks one
+    // question and both answer yes, so both appear in one column.
+    query_outcome(server.port, "CREATE TABLE sales.frozen CLONE sales.orders").expect("cloning");
+    let cloned = text_rows(server.port, "SHOW HISTORY OF sales.orders");
+    assert!(
+        cloned
+            .iter()
+            .any(|row| row[7].as_deref().is_some_and(|kept| kept.contains("sales.frozen"))),
+        "a clone keeps a version alive and the history does not name it: {cloned:?}"
+    );
+}
+
+#[test]
+fn a_history_of_a_table_that_does_not_exist_is_refused_by_name() {
+    let (_dir, server) = running();
+    let refused = query_outcome(server.port, "SHOW HISTORY OF nosuch").expect_err("refused");
+    assert!(refused.contains("42P01"), "{refused}");
+    assert!(refused.contains("nosuch"), "{refused}");
+}
+
+#[test]
+fn one_table_can_be_read_at_a_version_without_a_snapshot() {
+    // The other half of what a person means by "look at the past": a version, not a tag. Only
+    // the table named is resolved differently --- everything else reads the present, because
+    // that is what the session asked for.
+    let (_dir, server) = running();
+
+    let mut session = Session::open(server.port);
+    let now = session.run("SELECT id FROM sales.orders").expect("reads");
+
+    session
+        .run("SET VERSION OF sales.orders = 2")
+        .expect("a version whose files are still there");
+    let older = session.run("SELECT id FROM sales.orders").expect("reads");
+    assert!(
+        older < now,
+        "reading at version 2 saw as much as the present: {older} against {now}"
+    );
+
+    session.run("RESET VERSION OF sales.orders").expect("resetting");
+    assert_eq!(session.run("SELECT id FROM sales.orders").expect("reads"), now);
+}
+
+#[test]
+fn a_version_the_table_does_not_have_is_refused_rather_than_answered_with_the_newest() {
+    let (_dir, server) = running();
+
+    let mut session = Session::open(server.port);
+    // A version beyond the log. `live_files_at` replays *up to* a version and stops, so this
+    // silently answered with the newest --- a version nobody has, served as though they had it.
+    let refused = session
+        .run("SET VERSION OF sales.orders = 9999")
+        .expect_err("a version this table does not have");
+    assert!(refused.contains("42704"), "{refused}");
+    assert!(refused.contains("no version 9999"), "{refused}");
+    assert!(
+        refused.contains("SHOW HISTORY OF"),
+        "the refusal names how to see what it does have: {refused}"
+    );
+
+    // And the session was not changed by a statement that was refused.
+    session
+        .run("SELECT id FROM sales.orders")
+        .expect("a refused SET must leave the session reading the present");
+}
+
+#[test]
+fn a_version_whose_files_were_reclaimed_is_refused_rather_than_answered_short() {
+    // The rule a user must understand: **history is readable only where something is keeping
+    // it alive.** Retirement deletes the files a merge replaced, so a version still listed in
+    // the log may name files that are gone --- and resolving it anyway would answer a
+    // historical query silently missing whatever had been reclaimed. The wrong answer that
+    // looks most like a right one, because it has rows in it.
+    // Staged **before the server starts**, and with the log primitive rather than the
+    // maintainer: a test that ran a real compaction against a live table would be a second
+    // writer, which is how a disk was once filled. Here the fixture is finished before
+    // anything is serving it.
+    let dir = tempfile::tempdir().expect("a directory");
+    let warehouse = dir.path().join("warehouse");
+    write_warehouse(&warehouse);
+    let root = warehouse.join("sales").join("orders");
+
+    // A commit that lets a file go, exactly as a merge's removal half does --- after which
+    // the present does not name it and version 1 still does.
+    let now = sankhya_table_delta::live_files(&root).expect("the present resolves");
+    let version = now.version.expect("a version") + 1;
+    let released = now.files.first().expect("a file to release").path.clone();
+    sankhya_table_delta::commit(
+        &root,
+        version,
+        &[sankhya_table_delta::Action::Remove(
+            sankhya_table_delta::RemoveFile::rewritten(released.clone(), 1),
+        )],
+    )
+    .expect("releasing a file");
+
+    // And then retirement takes it off the disk, which is the state this refusal is about.
+    std::fs::remove_file(root.join(&released)).expect("reclaiming");
+
+    let server = start(&warehouse, &dir.path().join("data"));
+    let mut session = Session::open(server.port);
+    let refused = session
+        .run("SET VERSION OF sales.orders = 1")
+        .expect_err("a version whose data is gone");
+    assert!(refused.contains("42704"), "{refused}");
+    assert!(
+        refused.contains("is in the log and its data is not"),
+        "the refusal separates the two --- the commit is there, the files are not: {refused}"
+    );
+    assert!(
+        refused.contains("snapshot") || refused.contains("clone"),
+        "and it names what would have kept it alive: {refused}"
+    );
+
+    // The present is unaffected. Retirement took an old version's files, not the table.
+    session.run("SELECT id FROM sales.orders").expect("the present still reads");
+}
+
+#[test]
+fn a_leading_comment_does_not_hide_a_statement_this_server_implements() {
+    // Every statement this server defines itself --- `SHOW FEEDS`, `CREATE SNAPSHOT`,
+    // `SHOW HISTORY OF`, `CREATE TABLE ... CLONE`, `CREATE CUBE`, `SET VERSION OF` --- is
+    // recognised by matching the start of the text, because none of them is SQL and nothing
+    // downstream will accept them. Matched against the *raw* text, one `--` line made the
+    // server fail to recognise its own statement and answer with a syntax error.
+    //
+    // Commenting a statement is not exotic. Every example this repository ships does it, every
+    // migration tool does it, and a person explaining a `CREATE CUBE` does it. The feature
+    // worked only for somebody who did not write down what they were doing.
+    let (_dir, server) = running();
+    let mut session = Session::open(server.port);
+
+    for sql in [
+        "-- take one\nCREATE SNAPSHOT commented EXPIRE AFTER 7 DAYS",
+        "-- what is there\nSHOW SNAPSHOTS",
+        "/* a block comment */ SHOW HISTORY OF sales.orders",
+        "-- one\n-- two\nSHOW FEEDS",
+        "/* a /* nested */ comment */ SHOW SNAPSHOTS",
+        "\t  \n-- indented, after a blank line\nSHOW LINEAGE OF sales.orders",
+        "-- and away\nDROP SNAPSHOT commented",
+    ] {
+        session
+            .run(sql)
+            .unwrap_or_else(|refused| panic!("`{sql}` was refused: {refused}"));
+    }
+
+    // A comment and nothing else is still nothing to run, and says so rather than being
+    // claimed by whichever handler happens to match an empty string.
+    assert!(session.run("-- only a comment").is_err());
+}

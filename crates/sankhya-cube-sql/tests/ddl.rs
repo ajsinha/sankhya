@@ -391,3 +391,54 @@ fn whitespace_and_line_breaks_do_not_change_what_was_read() {
 
     assert_eq!(created(compact), created(spread));
 }
+
+#[test]
+fn a_cube_can_name_a_table_in_a_schema() {
+    // The lexer stops an unquoted word at a `.`, so `sales.orders` arrived as three tokens and
+    // the statement failed with *"expected at least one DIMENSION"* --- a message about the
+    // wrong half of the statement, which is how this survived. The bare form was no better: it
+    // resolved only while one schema claimed the name, and every warehouse with two schemas
+    // that both hold an `orders` could not build a cube at all.
+    let definition = created(
+        "CREATE CUBE sales FROM sales.orders \
+         DIMENSION geography FROM reference.regions ON region_id (LEVEL region = region_name) \
+         MEASURE amount (SUM ALONG geography)",
+    );
+
+    assert_eq!(definition.fact_table, "sales.orders");
+    assert_eq!(definition.dimensions[0].table, "reference.regions");
+    definition.validate().expect("a qualified cube is still a usable cube");
+}
+
+#[test]
+fn a_bare_name_is_still_a_name() {
+    // The form every existing definition on disk uses. Qualifying had to be an addition rather
+    // than a replacement, or reading a catalogue written last month would stop working.
+    let definition = created(
+        "CREATE CUBE sales FROM orders \
+         DIMENSION geography FROM regions ON region_id (LEVEL region = region_name) \
+         MEASURE amount (SUM ALONG geography)",
+    );
+    assert_eq!(definition.fact_table, "orders");
+    assert_eq!(definition.dimensions[0].table, "regions");
+}
+
+#[test]
+fn a_dot_where_a_table_name_does_not_belong_is_still_refused() {
+    // Only the two table positions take a qualified name. A dimension name, a level name and a
+    // column name are not qualified, and accepting a dot in one would parse a typo into a name
+    // nothing resolves --- a definition that saves cleanly and hydrates to nothing.
+    for sql in [
+        "CREATE CUBE sales FROM orders \
+         DIMENSION geo.graphy FROM regions ON region_id (LEVEL region = region_name) \
+         MEASURE amount (SUM ALONG geography)",
+        "CREATE CUBE sales FROM orders \
+         DIMENSION geography FROM regions ON tbl.region_id (LEVEL region = region_name) \
+         MEASURE amount (SUM ALONG geography)",
+    ] {
+        assert!(
+            matches!(parse(sql), Some(Err(_))),
+            "a dot outside a table position was accepted: {sql}"
+        );
+    }
+}

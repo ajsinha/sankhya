@@ -54,7 +54,7 @@ psql -h 127.0.0.1 -p 5432 -U you -d sankhya -f examples/01-connect-and-discover.
 | [`05-feeds.sql`](examples/05-feeds.sql) | declared ingest, quarantine, and resuming a halted feed |
 | [`06-refusals.sql`](examples/06-refusals.sql) | one refusal per path, with what each one tells you |
 | [`07-analytics.sql`](examples/07-analytics.sql) | the vector, matrix and statistical surface |
-| [`08-snapshots.sql`](examples/08-snapshots.sql) | naming one instant across many tables, and reading as of it |
+| [`08-snapshots.sql`](examples/08-snapshots.sql) | naming one instant across many tables, reading as of it, and the log underneath |
 
 The examples assume the sample warehouse from the repository's
 [`QUICKSTART.md`](../../docs/QUICKSTART.md). Where one needs a table it creates itself, it
@@ -87,3 +87,17 @@ Both are properties of the *client*, not of the server.
 ---
 
 <p align="center"><sub>SANKHYA — to count is to make completely known.</sub></p>
+
+## These are tests
+
+Every file here runs in CI against a live server, statement by statement, from
+`crates/sankhya-server/tests/sql_examples.rs`. A statement preceded by a `-- REFUSES` line must
+fail; every other statement must succeed. **Both** directions are checked, because a
+demonstration of a refusal that quietly starts succeeding is a rule that has been removed and a
+document that still claims it.
+
+This was not always true, and the cost of that shows: two of these files shipped statements that
+could never have run — a cube navigation with the dimension in the measure's place, and a set of
+vector functions under names that do not exist. Both had been reviewed. A `psql` script with
+`ON_ERROR_STOP off` prints its errors and keeps going, so a wall of output reads as success;
+only something that reads the exit of each statement can tell.

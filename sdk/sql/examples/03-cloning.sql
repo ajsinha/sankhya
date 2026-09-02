@@ -46,6 +46,7 @@ SHOW DEPENDENTS OF sales.orders;
 
 \echo ''
 \echo '== the drop that refuses, and names what would break =='
+-- REFUSES
 DROP TABLE sales.q3_frozen;
 
 \echo ''

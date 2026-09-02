@@ -86,7 +86,39 @@ pub(crate) fn write_warehouse(root: &std::path::Path) {
             .expect("publishing");
     }
 
+    write_the_dimension_table(root);
     declare_the_sample_cube(root);
+}
+
+/// The member table a dimension hangs on.
+///
+/// # Why the fixture grew one
+///
+/// The shipped `CREATE CUBE` example joins a dimension to a `regions` table, because that is
+/// what a cube over a real warehouse does --- the fact table holds a key and the member names,
+/// levels and hierarchy live beside it. The fixture had only the fact table, so the example
+/// could not run here, and *"the example needs a table this fixture does not have"* is the
+/// same defect as a fixture whose shape is not the product's shape: it tests the fixture.
+fn write_the_dimension_table(root: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("region", DataType::Utf8, false),
+        Field::new("area", DataType::Utf8, false),
+    ]));
+    let table_root = root.join("sales").join("regions");
+    let publication = Publication::external(&table_root, "regions");
+    publication.create(&schema).expect("creating the dimension table");
+
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(StringArray::from(vec!["north", "south"])),
+            Arc::new(StringArray::from(vec!["north", "south"])),
+        ],
+    )
+    .expect("a valid batch");
+    publication
+        .append(1, "part-0000.parquet", &batch, Lsn::new(1))
+        .expect("publishing the members");
 }
 
 /// The cube a first-time user is shown, declared into the warehouse's catalogue.

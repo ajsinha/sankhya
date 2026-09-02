@@ -19,7 +19,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
-use sankhya_table_delta::{commit, Action, AddFile, CommitError};
+use sankhya_table_delta::{commit, Action, AddFile, CommitError, RemoveFile};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Barrier};
 
@@ -201,4 +201,27 @@ fn writers_that_rebase_all_land_exactly_once() {
     let mut expected: Vec<String> = (1..=WRITERS).map(|w| format!("part-{w:05}.parquet")).collect();
     expected.sort();
     assert_eq!(landed, expected, "every writer landed exactly once, and none was overwritten");
+}
+
+#[test]
+fn both_halves_of_a_compaction_declare_that_no_rows_changed() {
+    // `RemoveFile::rewritten` has said so since it was written, and its comment gives the
+    // reason: a reader streaming changes would otherwise see every compacted row as a deletion
+    // followed by a re-insertion --- a stream of spurious changes proportional to how well
+    // maintenance is working, which is a perverse thing to punish.
+    //
+    // The **addition** declared `dataChange: true` anyway, so the stream was spurious in one
+    // direction instead of two. Invisible until `SHOW HISTORY OF` printed a compaction as a
+    // data change.
+    let statistics = sankhya_table_delta::FileStatistics::default();
+    let added = AddFile::rewritten("part-merged.parquet", 100, 0, &statistics);
+    let removed = RemoveFile::rewritten("part-0000.parquet", 0);
+
+    assert!(!added.data_change, "the merged file claimed to change rows");
+    assert!(!removed.data_change);
+
+    // And an ordinary append still declares that it does, or nothing downstream would ever
+    // see a real change.
+    let appended = AddFile::with_statistics("part-0001.parquet", 100, 0, &statistics);
+    assert!(appended.data_change, "an append must declare a data change");
 }

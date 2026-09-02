@@ -680,7 +680,19 @@ impl Connection {
         let Some(named) = words.next() else {
             return;
         };
-        let named = named.trim_end_matches('=').trim_matches('"').to_lowercase();
+        // `SET VERSION OF <table> = <n>` names two words before the value, so the setting's
+        // name is `version of <table>` rather than `version`. Kept general rather than special:
+        // a name that ends at the first word would make every `... OF <x>` setting the same
+        // setting, and the last one written would win.
+        let mut named = named.trim_end_matches('=').trim_matches('"').to_lowercase();
+        if named == "version" {
+            let mut rest = compact.split_whitespace().skip(2);
+            if rest.next().is_some_and(|word| word.eq_ignore_ascii_case("OF")) {
+                if let Some(table) = rest.next() {
+                    named = format!("version of {}", table.to_lowercase());
+                }
+            }
+        }
         if verb == "RESET" {
             if named == "all" {
                 self.settings.clear();
@@ -692,7 +704,10 @@ impl Connection {
         // `SET name = value` and `SET name value` and `SET name TO value` are all spellings a
         // client sends. The value is whatever follows, with its quoting removed.
         let value: String = words
-            .filter(|word| *word != "=" && !word.eq_ignore_ascii_case("TO"))
+            .filter(|word| {
+                *word != "=" && !word.eq_ignore_ascii_case("TO") && !word.eq_ignore_ascii_case("OF")
+            })
+            .skip(usize::from(named.starts_with("version of ")))
             .collect::<Vec<&str>>()
             .join(" ");
         let value = value.trim_start_matches('=').trim();

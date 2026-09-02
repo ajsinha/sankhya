@@ -5,7 +5,7 @@
 -- Creates and drops its own cube. Safe to re-run.
 
 \set ON_ERROR_STOP off
-DROP CUBE sales_by_region;
+DROP CUBE IF EXISTS sales_by_region;
 
 \echo '== what cubes exist =='
 -- Answers with no rows on a warehouse that has none, rather than failing. "None yet" and
@@ -18,8 +18,8 @@ SELECT * FROM cubes();
 -- point: a measure that cannot be derived from its parts -- a ratio, a percentile -- must say
 -- so, and the server then refuses to roll it up rather than summing it into a plausible wrong
 -- number nobody notices.
-CREATE CUBE sales_by_region FROM orders
-  DIMENSION region FROM regions ON region (LEVEL area = region)
+CREATE CUBE sales_by_region FROM sales.orders
+  DIMENSION region FROM sales.regions ON region (LEVEL area = region)
   MEASURE amount (SUM ALONG region);
 
 \echo ''
@@ -33,15 +33,20 @@ SELECT * FROM cube_measures('sales_by_region');
 -- Read `completeness` and `withheld`. A roll-up over a dimension with null members leaves
 -- those rows out, and those two columns are how you learn that value is missing from an
 -- otherwise plausible total.
-SELECT * FROM cube_rollup('sales_by_region', 'region');
+-- The second argument is the MEASURE, not the dimension: a cube holds many measures and a
+-- cell holds one measure's values, so naming a dimension here asks for cells that do not
+-- exist. The dimension to keep is `by=`.
+SELECT * FROM cube_rollup('sales_by_region', 'amount', 'by=region');
 
 \echo ''
 \echo '== the grand total: every dimension rolled away =='
-SELECT * FROM cube_rollup('sales_by_region');
+SELECT * FROM cube_rollup('sales_by_region', 'amount');
 
 \echo ''
 \echo '== slice: fix a member and look at the rest =='
-SELECT * FROM cube_slice('sales_by_region', 'region');
+-- `where=` is required, spelled `dimension:member`. A slice with nothing fixed is a roll-up,
+-- and answering it as one would give the right number to the wrong question.
+SELECT * FROM cube_slice('sales_by_region', 'amount', 'where=region:north');
 
 \echo ''
 \echo '== and it goes away cleanly =='

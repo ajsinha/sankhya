@@ -135,6 +135,42 @@ class SnapshotInfo:
 
 
 @dataclass(frozen=True)
+class Change:
+    """One commit in a table's log, as :meth:`Sankhya.history` reports it.
+
+    A *summary*, not a diff. The log records file-level adds and removes: it knows a file
+    arrived and another left, and it cannot know which rows differ.
+    """
+
+    version: int
+    #: ``created``, ``appended``, ``removed``, ``compacted``, ``rewritten`` or ``metadata``.
+    what: str
+    #: When, in milliseconds from the epoch, or ``None`` for a commit that touched no file and
+    #: so recorded no time. Reporting zero here would put the event in 1970 and present it as
+    #: a fact --- so the two stay different, as they do everywhere else in this binding.
+    at: int | None
+    files_added: int
+    files_removed: int
+    bytes_added: int
+    #: Whether the commit changed **data**, as the writer declared it --- not a guess from the
+    #: file counts. ``False`` for a compaction, which rewrites files and changes not one row.
+    changed_data: bool
+    #: The snapshot or clone holding this version alive, or ``None`` for a version nothing is
+    #: keeping. That ``None`` is the important part: retirement deletes the files a merge
+    #: replaced, so the commit outlives its data.
+    kept_by: str | None
+
+    @property
+    def is_readable(self) -> bool:
+        """Whether something is keeping this version's files alive.
+
+        A version with no keeper may still be readable --- nothing has swept it *yet* --- so
+        this is a guarantee, not a prediction. Only ``True`` is worth relying on.
+        """
+        return self.kept_by is not None
+
+
+@dataclass(frozen=True)
 class Feed:
     """A declared feed, and what it is doing."""
 
@@ -422,20 +458,33 @@ class Sankhya:
         """The measures of a cube and how each composes along each dimension."""
         return self.sql(f"SELECT * FROM cube_measures('{_quote(cube)}')")
 
-    def rollup(self, cube: str, by: str | None = None, **options) -> Result:
+    def rollup(self, cube: str, measure: str, by: str | None = None, **options) -> Result:
         """Roll a cube up --- aggregate a dimension **away**.
 
-        ``by`` names the dimension to keep. Omitted, the answer is the grand total.
+        ``measure`` is which measure to report; ``by`` is the dimension to keep, and omitting
+        it gives the grand total. The two are different arguments because a cube holds many
+        measures and cells hold one measure's values each --- naming a dimension where the
+        measure goes asks for cells that do not exist, which is what this binding did until
+        the argument was named.
+
+        ``**options`` are passed as the server spells them, ``key=value``, unaltered.
 
         The result carries `completeness` and `withheld` columns. **Read them.** A roll-up over
         a dimension with null members leaves those rows out, and those two columns are how you
         learn that a third of the value is missing from an otherwise plausible total.
         """
-        return self.sql(_cube_call("cube_rollup", cube, by, options))
+        return self.sql(_cube_call("cube_rollup", cube, measure, by, options))
 
-    def slice(self, cube: str, by: str | None = None, **options) -> Result:
-        """Slice a cube --- fix one dimension's member and look at the rest."""
-        return self.sql(_cube_call("cube_slice", cube, by, options))
+    def slice(self, cube: str, measure: str, where: str, **options) -> Result:
+        """Slice a cube --- fix one dimension's member and look at the rest.
+
+        ``where`` is the member to slice to, spelled ``dimension:member`` as the server spells
+        it --- ``"region:north"``. It is required, and deliberately: a slice with nothing fixed
+        is a roll-up, and answering it as one would give the right number to the wrong question.
+        """
+        return self.sql(
+            _cube_call("cube_slice", cube, measure, None, {"where": where, **options})
+        )
 
     def drop_cube(self, name: str) -> None:
         """Remove a cube, and the cuboids materialised for it."""
@@ -499,6 +548,60 @@ class Sankhya:
         """Stop reading as of a snapshot."""
         self.sql("RESET SNAPSHOT")
 
+    # -- history and versions ------------------------------------------------
+
+    def history(self, table: str) -> list:
+        """Every commit a table's log holds, oldest first, as :class:`Change`.
+
+        A snapshot is a *tag*; this is the log underneath it. Two fields carry the meaning:
+        ``changed_data``, which is the writer's own declaration and is ``False`` for a
+        compaction; and ``kept_by``, which is ``None`` for a version nothing is keeping alive.
+
+        **History is readable only where something is keeping it alive.** Retirement deletes
+        the files a merge replaced. The commit stays in the log forever; its data does not.
+
+        This is not version control. There is no diff between two versions and no way to
+        restore one, because the log records files rather than rows --- a compaction replaces
+        every file and changes nothing, so a file-level diff would report a maintenance job as
+        a total rewrite.
+        """
+        return [
+            Change(
+                version=_int(row.get("version")) or 0,
+                what=row.get("what") or "",
+                at=_int(row.get("at")),
+                files_added=_int(row.get("files_added")) or 0,
+                files_removed=_int(row.get("files_removed")) or 0,
+                bytes_added=_int(row.get("bytes_added")) or 0,
+                changed_data=(row.get("changed_data") or "") == "yes",
+                kept_by=row.get("kept_by") or None,
+            )
+            for row in self.rows(f"SHOW HISTORY OF {table}")
+        ]
+
+    def read_version(self, table: str, version: int) -> None:
+        """Read one table at one version, for the rest of this connection.
+
+        Per table and per session, and independent of :meth:`read_as_of` --- this answers
+        *"what did this table look like then"*, where a snapshot answers *"what did everything
+        look like then"*. Use a snapshot when more than one table has to agree.
+
+        Raises :class:`~sankhya.wire.Refusal` **here** rather than at the next query:
+
+        * ``42704`` when the table has no such version. The refusal names the newest it does
+          have. Replaying a log stops at its end, so this once handed back the newest version
+          --- one nobody has, served as though they had it.
+        * ``42704`` when the version is in the log and its data is not, because retirement
+          took the files. Answering would return whichever rows happened to survive: a
+          historical query silently missing whatever was compacted.
+        * ``42P01`` when there is no such table.
+        """
+        self.sql(f"SET VERSION OF {table} = {int(version)}")
+
+    def read_the_present_of(self, table: str) -> None:
+        """Stop reading one table at a version."""
+        self.sql(f"RESET VERSION OF {table}")
+
     # -- feeds and quarantine -----------------------------------------------
 
     def feeds(self) -> list:
@@ -549,20 +652,29 @@ class Sankhya:
     # -- the temporal graph -------------------------------------------------
 
     def reachable(self, graph: str, start: str, **options) -> Result:
-        """What is reachable from a node."""
-        return self.sql(_graph_call("graph_reachable", graph, start, options))
+        """What is reachable from a node.
 
-    def shortest_path(self, graph: str, start: str, **options) -> Result:
-        """The shortest path from a node."""
-        return self.sql(_graph_call("graph_shortest_path", graph, start, options))
+        ``**options`` are the server's own, as ``key=value``: ``max_depth``, ``max_results``,
+        and the edge mask.
+        """
+        return self.sql(_graph_call("graph_reachable", graph, [start], options))
+
+    def shortest_path(self, graph: str, start: str, to: str, **options) -> Result:
+        """The cheapest route from one node to another.
+
+        ``to`` is a **positional** argument of the server's function, not an option --- it was
+        once passed as a keyword whose name was discarded, so it worked only while it happened
+        to be the first keyword given and any other option silently took its place.
+        """
+        return self.sql(_graph_call("graph_shortest_path", graph, [start, to], options))
 
     def cycles(self, graph: str, **options) -> Result:
         """Cycles in a graph."""
-        return self.sql(_graph_call("graph_cycles", graph, None, options))
+        return self.sql(_graph_call("graph_cycles", graph, [], options))
 
     def influence(self, graph: str, start: str, **options) -> Result:
         """Influence from a node."""
-        return self.sql(_graph_call("graph_influence", graph, start, options))
+        return self.sql(_graph_call("graph_influence", graph, [start], options))
 
     def time_respecting(self, graph: str, start: str, **options) -> Result:
         """Paths that respect the order edges appeared in.
@@ -570,30 +682,40 @@ class Sankhya:
         The property a plain reachability query cannot express: a route through a graph is only
         a route if its edges existed in the order you traverse them.
         """
-        return self.sql(_graph_call("graph_time_respecting", graph, start, options))
+        return self.sql(_graph_call("graph_time_respecting", graph, [start], options))
 
 
-def _cube_call(function: str, cube: str, by: str | None, options: dict) -> str:
-    """Build a cube navigation call.
+def _cube_call(
+    function: str, cube: str, measure: str, by: str | None, options: dict
+) -> str:
+    """Build a cube navigation call: ``function(cube, measure, 'by=…', 'key=value'…)``.
 
-    Named arguments are passed as the server spells them, unaltered. A binding that translated
-    them would be inventing a second name for each, and the two would drift.
+    Named arguments are passed as the server spells them, unaltered --- including ``by``,
+    which is one of them. A binding that translated them would be inventing a second name for
+    each, and the two would drift.
     """
-    arguments = [f"'{_quote(cube)}'"]
+    arguments = [f"'{_quote(cube)}'", f"'{_quote(measure)}'"]
     if by is not None:
-        arguments.append(f"'{_quote(by)}'")
+        arguments.append(f"'by={_quote(by)}'")
     for key, value in options.items():
-        arguments.append(f"'{_quote(str(value))}'" if isinstance(value, str) else str(value))
+        arguments.append(f"'{_quote(key)}={_quote(str(value))}'")
     return f"SELECT * FROM {function}({', '.join(arguments)})"
 
 
-def _graph_call(function: str, graph: str, start: str | None, options: dict) -> str:
-    """Build a graph call, on the same principle as [`_cube_call`]."""
+def _graph_call(
+    function: str, graph: str, positional: list, options: dict
+) -> str:
+    """Build a graph call: ``function(graph, <positional…>, 'key=value'…)``.
+
+    Options are `key=value` strings, which is how the server reads them --- an earlier version
+    passed only the *values* and discarded every name, so `max_depth=3` reached the server as a
+    bare `3` in whatever position it happened to fall. A parameter that accepted anything and
+    meant nothing.
+    """
     arguments = [f"'{_quote(graph)}'"]
-    if start is not None:
-        arguments.append(f"'{_quote(start)}'")
-    for value in options.values():
-        arguments.append(f"'{_quote(str(value))}'" if isinstance(value, str) else str(value))
+    arguments.extend(f"'{_quote(str(value))}'" for value in positional if value is not None)
+    for key, value in options.items():
+        arguments.append(f"'{_quote(key)}={_quote(str(value))}'")
     return f"SELECT * FROM {function}({', '.join(arguments)})"
 
 

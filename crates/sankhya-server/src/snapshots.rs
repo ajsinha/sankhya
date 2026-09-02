@@ -251,6 +251,8 @@ pub(crate) fn describe(statement: &Statement) -> &'static str {
         Statement::Create { .. } => "CREATE SNAPSHOT",
         Statement::Show => "SHOW SNAPSHOTS",
         Statement::Drop { .. } => "DROP SNAPSHOT",
+        Statement::History { .. } => "SHOW HISTORY",
+        Statement::ReadVersion { .. } => "SET VERSION",
     }
 }
 
@@ -302,6 +304,13 @@ pub(crate) fn run_statement(
         }
         Statement::Drop { name, if_exists } => {
             drop_it(warehouse, &name, if_exists)
+        }
+        Statement::History { table } => history_of(server, &table, principal),
+        // Answered as an acknowledgement; the session remembers it and the read path consults
+        // it, exactly as `SET SNAPSHOT` does. Checked here so that a version this table can no
+        // longer produce is refused at the `SET` rather than at the next query.
+        Statement::ReadVersion { table, version } => {
+            read_version(server, &table, version, principal)
         }
         Statement::Create { name, expiry } => {
             // Every table this principal may read, at the version it stands at *now*. Read
@@ -383,6 +392,48 @@ pub(crate) fn still_reading(server: &crate::wiring::Server) -> sankhya_maintenan
     }
 }
 
+/// What is keeping each version of `root` alive, named.
+///
+/// # Why both kinds are in one map
+///
+/// Reclamation asks exactly one question --- *"does anything still read this?"* --- and a
+/// snapshot and a clone are two ways of answering yes. Reporting them in two columns would
+/// invite a reader to treat one as more binding than the other, and the sweeper does not.
+fn keepers_of(
+    server: &crate::wiring::Server,
+    root: &std::path::Path,
+) -> BTreeMap<u64, std::collections::BTreeSet<String>> {
+    let mut keepers: BTreeMap<u64, std::collections::BTreeSet<String>> = BTreeMap::new();
+
+    let (snapshots, _complaints) = load(server.warehouse_path());
+    let today = server.today();
+    for snapshot in &snapshots {
+        if standing(snapshot, today) == Standing::Expired {
+            continue;
+        }
+        for (table, at) in &snapshot.tables {
+            // Resolved to a root rather than compared by name: the snapshot records a
+            // qualified name and the caller may have asked by a bare one, and a column that
+            // only worked for one spelling is a column that is wrong half the time.
+            if let crate::warehouse::Resolved::One(pinned_root) =
+                crate::warehouse::resolve(server.warehouse_path(), table)
+            {
+                if pinned_root == root {
+                    keepers.entry(at.version).or_default().insert(snapshot.name.clone());
+                }
+            }
+        }
+    }
+
+    if let Some(qualified) = crate::warehouse::qualified_name(server.warehouse_path(), root) {
+        for (version, clones) in server.lineages().keepers_of(&qualified) {
+            keepers.entry(version).or_default().extend(clones);
+        }
+    }
+
+    keepers
+}
+
 /// The tables this session sees, when it has asked to read as of a named snapshot.
 ///
 /// `None` when it has not, which is every session until somebody says so --- and the reason
@@ -406,10 +457,11 @@ pub(crate) fn as_of(
     caller: &sankhya_api_pg::session::Caller<'_>,
 ) -> Result<Option<std::sync::Arc<Vec<crate::execute::ServableTable>>>, QueryFailure> {
     let Some(named) = caller.setting("snapshot") else {
-        return Ok(None);
+        // No snapshot, but perhaps a version pinned for one table.
+        return at_versions(server, caller);
     };
     if named.is_empty() {
-        return Ok(None);
+        return at_versions(server, caller);
     }
 
     let (snapshots, complaints) = load(server.warehouse_path());
@@ -546,4 +598,261 @@ pub(crate) fn check_setting(
         )));
     }
     Some(Ok(acknowledged("SET")))
+}
+
+/// Answer `SHOW HISTORY OF <table>`.
+///
+/// # Why there is a column saying what is keeping a version alive
+///
+/// Because a commit remaining in the log is **not** the same as its data remaining on disk.
+/// Retirement deletes the files a merge replaced once nothing references them, so an old
+/// version listed here may no longer be readable --- and a history that did not say so would
+/// invite somebody to read a version that is gone and be told only at that point.
+///
+/// Only a snapshot or a clone keeps a version alive. This column is where that becomes visible.
+fn history_of(
+    server: &crate::wiring::Server,
+    table: &str,
+    principal: &Principal,
+) -> Result<QueryResult, QueryFailure> {
+    use sankhya_api_pg::message::{oid, FieldDescription};
+
+    // Indistinguishable from a table that exists and may not be read, which is the right
+    // answer: saying "you may not ask about that" confirms it is there.
+    let absent = || {
+        refusal(
+            "42P01",
+            &format!("there is no table called `{table}` on this server"),
+        )
+    };
+    let Some(root) = server.root_of(table) else {
+        return Err(absent());
+    };
+    if !server.readable_by(principal, table) {
+        return Err(absent());
+    }
+
+    let changes = sankhya_table_delta::history(&root).map_err(|error| {
+        refusal(
+            sankhya_error::protocol::sqlstate::DATA_EXCEPTION.as_str(),
+            &format!(
+                "the log of `{table}` could not be read: {error}. Refused rather than \
+                 summarised as empty --- a table with no history and a history nobody can \
+                 read lead to opposite actions"
+            ),
+        )
+    })?;
+
+    // Which versions something is keeping alive, **and what**. The column says *pinned*, which
+    // is knowable, rather than *readable*, which is not: a version nothing pins may still be
+    // there because nothing has swept yet, and promising that would be a promise nobody keeps.
+    //
+    // Naming the keeper rather than its kind, because the person reading this column is
+    // deciding what to drop to release the storage --- and a column that said only
+    // `"snapshot"` sends them to `SHOW SNAPSHOTS` to work out which one, on a warehouse where
+    // there may be dozens.
+    let keepers = keepers_of(server, &root);
+
+    let rows = changes
+        .iter()
+        .map(|change| {
+            vec![
+                Some(change.version.to_string()),
+                Some(sankhya_table_delta::describe(change).to_owned()),
+                change.at.map(|at| at.to_string()),
+                Some(change.added.to_string()),
+                Some(change.removed.to_string()),
+                Some(change.bytes_added.to_string()),
+                Some(if change.changed_data { "yes" } else { "no" }.to_owned()),
+                Some(
+                    keepers
+                        .get(&change.version)
+                        .map(|names| {
+                            names.iter().cloned().collect::<Vec<_>>().join(", ")
+                        })
+                        .unwrap_or_default(),
+                ),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let tag = format!("SELECT {}", rows.len());
+    Ok(QueryResult {
+        fields: vec![
+            FieldDescription::text("version", oid::INT8, 8),
+            FieldDescription::text("what", oid::TEXT, -1),
+            FieldDescription::text("at", oid::INT8, 8),
+            FieldDescription::text("files_added", oid::INT8, 8),
+            FieldDescription::text("files_removed", oid::INT8, 8),
+            FieldDescription::text("bytes_added", oid::INT8, 8),
+            FieldDescription::text("changed_data", oid::TEXT, -1),
+            FieldDescription::text("kept_by", oid::TEXT, -1),
+        ],
+        rows,
+        tag,
+    })
+}
+
+/// Check a `SET VERSION OF <table> = <n>` before the session remembers it.
+///
+/// # Why the version is checked now rather than at the next query
+///
+/// Because the log surviving is not the same as the data surviving. A version whose files
+/// retirement has reclaimed resolves to a file list naming files that are gone, and the read
+/// would fail at the *next* statement --- which is the wrong place to learn it. Checked here,
+/// the refusal says the files were reclaimed and that only pinned points survive.
+fn read_version(
+    server: &crate::wiring::Server,
+    table: &str,
+    version: Option<u64>,
+    principal: &Principal,
+) -> Result<QueryResult, QueryFailure> {
+    let absent = || {
+        refusal(
+            "42P01",
+            &format!("there is no table called `{table}` on this server"),
+        )
+    };
+    let Some(root) = server.root_of(table) else {
+        return Err(absent());
+    };
+    if !server.readable_by(principal, table) {
+        return Err(absent());
+    }
+    let Some(version) = version else {
+        // `RESET VERSION OF` needs nothing checked: reading the present always works.
+        return Ok(acknowledged("SET"));
+    };
+
+    // The version must **exist**. `live_files_at` replays up to a version and stops, so asking
+    // for one beyond the log silently answers with the newest --- a version nobody has, served
+    // as though they had it. Refused instead, naming what the table does have.
+    let commits = sankhya_table_delta::commits(&root).map_err(|error| {
+        refusal(
+            sankhya_error::protocol::sqlstate::DATA_EXCEPTION.as_str(),
+            &format!("the log of `{table}` could not be read: {error}"),
+        )
+    })?;
+    let newest = commits.iter().map(|(at, _)| *at).max();
+    if !commits.iter().any(|(at, _)| *at == version) {
+        return Err(refusal(
+            "42704",
+            &format!(
+                "`{table}` has no version {version}. Its newest is {}. `SHOW HISTORY OF \
+                 {table}` lists every version it has, and which are pinned",
+                newest.map_or_else(|| "none".to_owned(), |at| at.to_string())
+            ),
+        ));
+    }
+
+    let live = sankhya_table_delta::live_files_at(&root, version).map_err(|error| {
+        refusal(
+            sankhya_error::protocol::sqlstate::DATA_EXCEPTION.as_str(),
+            &format!("version {version} of `{table}` could not be resolved: {error}"),
+        )
+    })?;
+    // Every file that version names must still be there. A version whose files are gone is
+    // refused rather than answered short: a historical query silently missing whatever had
+    // been compacted is the wrong answer that looks most like a right one.
+    let missing = live
+        .files
+        .iter()
+        .filter(|file| !root.join(&file.path).exists())
+        .count();
+    if missing > 0 {
+        return Err(refusal(
+            "42704",
+            &format!(
+                "version {version} of `{table}` is in the log and its data is not: {missing} \
+                 of its {} file(s) have been reclaimed. A version survives only while a \
+                 snapshot or a clone keeps it, and nothing kept this one. `SHOW HISTORY OF \
+                 {table}` shows which versions are pinned",
+                live.files.len()
+            ),
+        ));
+    }
+    Ok(acknowledged("SET"))
+}
+
+/// The key a session stores a per-table version under.
+///
+/// Namespaced so it cannot collide with a setting a driver sends, and lower-cased because that
+/// is how the session stores every setting name.
+fn version_key(table: &str) -> String {
+    format!("version of {}", table.to_lowercase())
+}
+
+/// The setting name for `SET VERSION OF <table>`, for the session to record.
+#[must_use]
+pub(crate) fn version_setting(table: &str) -> String {
+    version_key(table)
+}
+
+/// The tables this session sees when it has pinned one or more of them to a version.
+///
+/// # Why this is separate from a snapshot
+///
+/// A snapshot is a set somebody curated and **pinned**; a version is one table at one number,
+/// pinned by nothing. They are different acts --- *"the instant I named"* against *"that
+/// version, whatever else has moved"* --- and answering both from one setting would let a query
+/// mix a curated instant with an arbitrary one and call the result a snapshot.
+///
+/// Only the tables named are resolved differently. Everything else reads the present, because
+/// that is what the session asked for.
+fn at_versions(
+    server: &crate::wiring::Server,
+    caller: &sankhya_api_pg::session::Caller<'_>,
+) -> Result<Option<std::sync::Arc<Vec<crate::execute::ServableTable>>>, QueryFailure> {
+    let current = server.servable_now();
+    let mut pinned: Vec<crate::execute::ServableTable> = Vec::new();
+    let mut changed = false;
+
+    for table in current.iter() {
+        let Some(qualified) =
+            crate::warehouse::qualified_name(server.warehouse_path(), &table.root)
+        else {
+            pinned.push(table.clone());
+            continue;
+        };
+        // Both spellings, because a person may have said either and the session recorded what
+        // they typed.
+        let asked = caller
+            .setting(&version_key(&qualified))
+            .or_else(|| caller.setting(&version_key(&table.reference.table)));
+        let Some(asked) = asked.and_then(|value| value.parse::<u64>().ok()) else {
+            pinned.push(table.clone());
+            continue;
+        };
+
+        let resolved = sankhya_readpath::resolve_as_of(
+            std::sync::Arc::clone(&table.schema),
+            &table.root,
+            asked,
+            sankhya_types::LsnRange::new(sankhya_types::Lsn::new(0), server.read_as_of()),
+            server.read_as_of(),
+        )
+        .map_err(|error| {
+            refusal(
+                sankhya_error::protocol::sqlstate::DATA_EXCEPTION.as_str(),
+                &format!("`{qualified}` could not be read at version {asked}: {error}"),
+            )
+        })?;
+        pinned.push(crate::execute::ServableTable {
+            reference: table.reference.clone(),
+            authorize_as: table.authorize_as.clone(),
+            inherited: table.inherited.clone(),
+            root: table.root.clone(),
+            provider: std::sync::Arc::new(resolved),
+            schema: std::sync::Arc::clone(&table.schema),
+            resolved_at: asked,
+        });
+        changed = true;
+    }
+
+    // Nothing pinned: hand back the session the server already built, rather than an identical
+    // copy. A statement that pins nothing must cost nothing.
+    if changed {
+        Ok(Some(std::sync::Arc::new(pinned)))
+    } else {
+        Ok(None)
+    }
 }

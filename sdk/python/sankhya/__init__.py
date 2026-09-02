@@ -24,6 +24,7 @@ from .client import (
     Feed,
     Sankhya,
     SnapshotInfo,
+    Change,
     Table,
     open,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "Result",
     "Sankhya",
     "SnapshotInfo",
+    "Change",
     "Table",
     "WireError",
     "connect",

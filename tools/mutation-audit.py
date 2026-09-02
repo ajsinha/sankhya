@@ -612,7 +612,7 @@ CATALOGUE = [
 
     ("driver: commit a merge without the bounds it computed",
      "crates/sankhya-maintenance/src/driver.rs",
-     "        actions.push(Action::Add(AddFile::with_statistics(\n            name(&outcome.output),\n            outcome.bytes,\n            now,\n            &statistics,\n        )));",
+     "        actions.push(Action::Add(AddFile::rewritten(\n            name(&outcome.output),\n            outcome.bytes,\n            now,\n            &statistics,\n        )));",
      "        actions.push(Action::Add(AddFile::with_rows(\n            name(&outcome.output),\n            outcome.bytes,\n            now,\n            outcome.rows,\n        )));",
      "sankhya-maintenance"),
 
@@ -1595,8 +1595,8 @@ CATALOGUE = [
 
     ("server: leave CREATE TABLE ... CLONE unreachable from a client",
      "crates/sankhya-server/src/wiring.rs",
-     "        if let Some(statement) = sankhya_clone::parse_ddl(sql) {",
-     "        if let Some(statement) = None.map(|()| unreachable!()).or(sankhya_clone::parse_ddl(sql)).filter(|_| false) {",
+     "        if let Some(statement) = sankhya_clone::parse_ddl(dispatch) {",
+     "        if let Some(statement) = None.map(|()| unreachable!()).or(sankhya_clone::parse_ddl(dispatch)).filter(|_| false) {",
      "sankhya-server"),
 
     ("server: clone a table the principal may not read",
@@ -3904,7 +3904,7 @@ CATALOGUE = [
 
     ("server: refuse the statements a driver sends around a query",
      "crates/sankhya-server/src/wiring.rs",
-     "        if let Some(answer) = crate::driver::run_session_statement(sql) {",
+     "        if let Some(answer) = crate::driver::run_session_statement(dispatch) {",
      "        if let Some(answer) = None::<Result<QueryResult, QueryFailure>> {",
      "sankhya-server"),
 
@@ -4103,6 +4103,104 @@ CATALOGUE = [
      "        let Some(at) = snapshot.pins(&qualified) else {\n            // Not named by this snapshot: it did not exist when the snapshot was taken, so it\n            // is left out and a statement naming it fails to resolve.\n            continue;\n        };",
      "        let Some(at) = snapshot.pins(&qualified) else {\n            pinned.push(table.clone());\n            continue;\n        };",
      "sankhya-server"),
+
+    # A single leading `--` made the server fail to recognise its own statements, and every
+    # script this repository ships as an example comments its statements.
+    ("wire: dispatch on the raw text, so a leading comment hides the statement",
+     "crates/sankhya-server/src/wiring.rs",
+     "        let dispatch = sankhya_api_pg::catalog::without_leading_comments(sql);",
+     "        let dispatch = sql;",
+     "sankhya-server"),
+
+    ("wire: stop at the first `*/`, so a nested block comment leaks its tail",
+     "crates/sankhya-api-pg/src/catalog.rs",
+     "                    (b'/', b'*') => {\n                        depth += 1;\n                        at += 2;\n                    }",
+     "                    (b'/', b'*') => at += 2,",
+     "sankhya-server"),
+
+    # No entry for "treat an unterminated block comment as though it ended". The guard is there
+    # and is correct --- an unterminated comment swallows the whole statement, so there is
+    # nothing to dispatch on --- but it is **unobservable**, and an entry claiming otherwise
+    # would be worse than none.
+    #
+    # Without it, the scan leaves the last one or two characters of the text as the dispatch
+    # view: a fragment no handler claims, so the statement reaches the engine, whose tokenizer
+    # reports the unterminated comment in its own words. With it, the view is empty and the
+    # statement reaches the engine, which says the same thing. The engine sees the original
+    # text on both paths, which is the whole point of this being a recogniser's view.
+    #
+    # The guard stays because a fragment offered to a future handler is a bug waiting for a
+    # handler that matches short strings. It is defence, not behaviour, and the catalogue says
+    # so rather than pretending a test covers it.
+
+    # The cube surface could not name a table in a schema AT ALL: the qualified form failed to
+    # parse and the bare form resolved only while one schema claimed the name.
+    ("cube: read a table name as one word, so a schema cannot be named",
+     "crates/sankhya-cube-sql/src/ddl.rs",
+     "        let first = self.name(what)?;\n        if self.peek().map(|spanned| &spanned.token) != Some(&Token::Punct('.')) {\n            return Ok(first);\n        }\n        self.next += 1;\n        let second = self.name(what)?;\n        Ok(format!(\"{first}.{second}\"))",
+     "        self.name(what)",
+     "sankhya-cube-sql"),
+
+    ("cube: accept a dot anywhere a name is read, not only in a table position",
+     "crates/sankhya-cube-sql/src/ddl.rs",
+     "        let name = self.name(\"a dimension name\")?;",
+     "        let name = self.qualified_name(\"a dimension name\")?;",
+     "sankhya-cube-sql"),
+
+    # M17, items 1 and 2 --- the git-tag half. Every one of these was a live defect before the
+    # test that names it, and three of them answered *something* rather than failing.
+    # `kept_by` said the word `snapshot`, which is true and useless --- and it never mentioned
+    # a clone at all, though a clone keeps a version alive in exactly the same way.
+    ("server: report that something keeps a version without naming what",
+     "crates/sankhya-server/src/snapshots.rs",
+     "                    keepers\n                        .get(&change.version)\n                        .map(|names| {\n                            names.iter().cloned().collect::<Vec<_>>().join(\", \")\n                        })\n                        .unwrap_or_default(),",
+     "                    if keepers.contains_key(&change.version) { \"snapshot\" } else { \"\" }\n                        .to_owned(),",
+     "sankhya-server"),
+
+    ("server: forget that a clone keeps a version alive too",
+     "crates/sankhya-server/src/snapshots.rs",
+     "        for (version, clones) in server.lineages().keepers_of(&qualified) {\n            keepers.entry(version).or_default().extend(clones);\n        }",
+     "        let _ = qualified;",
+     "sankhya-server"),
+
+    ("server: serve the newest version when a caller asked for one the table does not have",
+     "crates/sankhya-server/src/snapshots.rs",
+     "    if !commits.iter().any(|(at, _)| *at == version) {",
+     "    if false {",
+     "sankhya-server"),
+
+    ("server: answer a version whose files retirement has already taken",
+     "crates/sankhya-server/src/snapshots.rs",
+     "    if missing > 0 {",
+     "    if false {",
+     "sankhya-server"),
+
+    # The dispatch order itself. `SET VERSION OF <table> = <n>` is a `SET`, and the generic
+    # session handler accepts any `SET` as a no-op --- so ordered the other way this was
+    # swallowed and the caller was served the present with no symptom at all.
+    ("server: let the generic SET handler see a version statement first",
+     "crates/sankhya-server/src/wiring.rs",
+     "        if let Some(statement) = sankhya_snapshot::parse(dispatch) {\n            return crate::snapshots::run_statement(self, statement, &principal);\n        }\n\n        if let Some(answer) = crate::driver::run_session_statement(dispatch) {",
+     "        if let Some(answer) = crate::driver::run_session_statement(dispatch) {",
+     "sankhya-server"),
+
+    ("delta: let a compaction declare that it changed rows",
+     "crates/sankhya-table-delta/src/log.rs",
+     "        Self {\n            data_change: false,\n            ..Self::with_statistics(path, size, modification_time, stats)\n        }",
+     "        Self::with_statistics(path, size, modification_time, stats)",
+     "sankhya-table-delta"),
+
+    ("delta: report a metadata-only commit as having happened at the epoch",
+     "crates/sankhya-table-delta/src/history.rs",
+     "                    at: None,",
+     "                    at: Some(0),",
+     "sankhya-table-delta"),
+
+    ("delta: describe a compaction as an ordinary rewrite",
+     "crates/sankhya-table-delta/src/history.rs",
+     "    } else if !change.changed_data && change.added > 0 && change.removed > 0 {",
+     "    } else if false {",
+     "sankhya-table-delta"),
 
     ("server: read as of a snapshot that has expired",
      "crates/sankhya-server/src/snapshots.rs",

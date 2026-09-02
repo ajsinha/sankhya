@@ -170,7 +170,20 @@ CREATE CUBE quarterly FROM orders
 ```
 
 Read it as: the facts are in `orders`; `region` takes its members from `orders` itself, joined on
-the fact table's `region` column; and `amount` adds along both dimensions. Levels are declared
+the fact table's `region` column; and `amount` adds along both dimensions.
+
+Both table positions — the fact table and each dimension's member table — accept a **qualified**
+name, `sales.orders`. Nowhere else in the statement does: a dimension name, a level name and a
+column name are not qualified, and accepting a dot in one of those would parse a typo into a name
+nothing resolves, giving a definition that saves cleanly and hydrates to nothing.
+
+> **This did not work until 2026-09-02.** The statement's lexer stops an unquoted word at a `.`,
+> so `sales.orders` arrived as three tokens and the parser failed with *"expected at least one
+> `DIMENSION`"* — a message about the wrong half of the statement, which is how it survived. The
+> bare form was no better: it resolved only while a single schema claimed the name, so on any
+> warehouse where two schemas both held an `orders`, a cube could not be declared at all. Unit
+> tests, mutation tests and a green gate all passed throughout. It was found by writing a
+> *runnable example* — see §20.8. Levels are declared
 coarse to fine, which is the order a drill-down walks. A parent-child hierarchy is
 `PARENT employee_id TO manager_id`; an alternate roll-up is `ROLLUP emea TO world`; and two
 optional clauses follow — `MAINTAINED WITHIN 5 VERSIONS` and `PINNED (geography)`.

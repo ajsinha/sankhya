@@ -205,6 +205,65 @@ fn normalised_compact(normalised: &str) -> String {
 /// An unterminated quote consumes the rest of the statement. That is the conservative reading:
 /// text after an unclosed quote is not structure this can rely on, and treating it as structure
 /// is how a quote becomes a way to choose the handler.
+/// A statement with its **leading** comments and whitespace removed.
+///
+/// # The defect this closes
+///
+/// Every statement this server implements itself --- `SHOW FEEDS`, `CREATE SNAPSHOT`,
+/// `SHOW HISTORY OF`, `CREATE TABLE ... CLONE`, `CREATE CUBE`, `SET VERSION OF` --- is
+/// recognised by matching the start of the text, because none of them is SQL and no parser
+/// downstream will accept them. Matching the *raw* text meant a single leading `--` comment
+/// made the server fail to recognise its own statement, and it arrived as a syntax error for a
+/// statement the server implements.
+///
+/// Commenting a statement is not exotic. Every script this repository ships as an example does
+/// it, every migration tool does it, and a person explaining a `CREATE CUBE` does it. The
+/// feature worked only for somebody who did not write down what they were doing.
+///
+/// # Why only leading
+///
+/// This is a *recogniser's* view, not a rewriter's. The statement that runs is always the
+/// original --- the engine handles comments perfectly well, and stripping them everywhere
+/// would mean the text that executes is not the text the client sent, which is a much larger
+/// promise than this needs to make.
+#[must_use]
+pub fn without_leading_comments(sql: &str) -> &str {
+    let mut rest = sql.trim_start();
+    loop {
+        if let Some(after) = rest.strip_prefix("--") {
+            // To the end of the line, or to the end of the statement if there is no more.
+            rest = after.find('\n').map_or("", |at| &after[at..]).trim_start();
+        } else if let Some(after) = rest.strip_prefix("/*") {
+            // Nesting, because PostgreSQL's block comments nest and a non-nesting scan would
+            // stop at the first `*/` and hand the parser the tail of a comment.
+            let mut depth = 1usize;
+            let bytes = after.as_bytes();
+            let mut at = 0usize;
+            while depth > 0 {
+                let (Some(&here), Some(&next)) = (bytes.get(at), bytes.get(at + 1)) else {
+                    break;
+                };
+                match (here, next) {
+                    (b'/', b'*') => {
+                        depth += 1;
+                        at += 2;
+                    }
+                    (b'*', b'/') => {
+                        depth -= 1;
+                        at += 2;
+                    }
+                    _ => at += 1,
+                }
+            }
+            // An unterminated comment leaves nothing to dispatch on, which is right: the
+            // whole statement is inside it.
+            rest = if depth == 0 { after[at..].trim_start() } else { "" };
+        } else {
+            return rest;
+        }
+    }
+}
+
 fn without_literals(sql: &str) -> String {
     let mut out = String::with_capacity(sql.len());
     let mut characters = sql.chars().peekable();

@@ -374,6 +374,85 @@ beats failing where the consequence happens to be noticed.
 See [ADR-0019](../../adr/0019-named-snapshots.md) for the reasoning, and Chapter 12 for how this
 differs from cloning.
 
+## 19.7b History, and one table at one version
+
+A snapshot is a **tag**. `SHOW HISTORY OF` is the log underneath it.
+
+```sql
+SHOW HISTORY OF sales.orders;
+```
+
+```
+ version |   what    |      at       | files_added | files_removed | bytes_added | changed_data |         kept_by
+---------+-----------+---------------+-------------+---------------+-------------+--------------+-------------------------
+       0 | created   |               |           0 |             0 |           0 | no           |
+       1 | appended  | 1756545242000 |           4 |             0 |     8912344 | yes          |
+       2 | appended  | 1756631575000 |           4 |             0 |     9014112 | yes          | eod_2026_08_31
+       3 | compacted | 1756609211000 |           1 |             8 |    17800004 | no           | eod_2026_08_31, q3_frozen
+```
+
+`at` is milliseconds from the epoch, as every timestamp on this surface is, and is **empty**
+rather than zero for a commit that touched no file: a commit that only declared a schema has
+nothing to take a time from, and a date in 1970 presented as a fact is worse than a blank.
+
+`what` is one of `created`, `appended`, `removed`, `compacted`, `rewritten` and `metadata` —
+derived from the commit rather than stored in it, because the log records facts and this is a
+*reading* of them, and a reading that lived in the log would be one more thing a writer could
+get wrong.
+
+Two columns carry most of the meaning.
+
+**`changed_data`** is the writer's own declaration — `dataChange` on every add and remove — not
+an inference from the file counts. A compaction rewrites files and changes not one row, so it
+reports `f`. This was wrong when the column was first written: the *removals* declared
+`dataChange: false` and the *addition* declared `true`, so a compaction was a data change in one
+direction and not the other. Invisible until something printed it. A column that reports
+maintenance as a change is worse than no column, because it trains a reader to ignore it.
+
+**`kept_by`** names the snapshots and clones holding that version alive --- **by name**, and
+all of them, because somebody reading this column is deciding what to drop to release the
+storage and a column that said only `"snapshot"` would send them to `SHOW SNAPSHOTS` to work
+out which one. It is **empty** for a version nothing is keeping. That emptiness is the important half:
+
+> **The rule.** *History is readable only where something is keeping it alive.* Retirement
+> deletes the files a merge replaced once nothing references them. The commit stays in the log
+> forever; its data does not. A version with an empty `kept_by` may still be readable — nothing
+> has swept it *yet* — so only a non-empty `kept_by` is a guarantee.
+
+### Reading one table at a version
+
+```sql
+SET VERSION OF sales.orders = 2;
+SELECT count(*) FROM sales.orders;
+RESET VERSION OF sales.orders;
+```
+
+Per table and per session, and independent of `SET SNAPSHOT`. This answers *"what did **this**
+table look like then"*; a snapshot answers *"what did **everything** look like then"*. Reach for
+this to check one table against yesterday, and for a snapshot when more than one table has to
+agree.
+
+Three refusals, each of which was a wrong answer before it was a refusal:
+
+| What you asked | Code | Why it is refused |
+|---|---|---|
+| A version the table does not have | `42704` | Replaying a log stops at its end, so version 9999 of a five-version table resolved to version 5 — a version nobody has, served as though they had it. The refusal names the newest it does have. |
+| A version whose files retirement has taken | `42704` | The commit is in the log and its data is not. Answering it would return whichever rows happened to survive: a historical query silently missing whatever was compacted. |
+| A table that does not exist | `42P01` | At the `SET`, not at the next query. |
+
+The middle one is the whole reason the feature is shaped this way. It is the wrong answer that
+looks most like a right one, because it has rows in it — and nothing about it is distinguishable
+from a correct historical read except the number at the bottom.
+
+> **What this is not.** Not version control. There is no diff between two versions and no way to
+> restore one, and neither is an oversight. The log records **files**, not rows: a compaction
+> replaces every file and changes nothing, so a file-level diff would report a maintenance job as
+> a total rewrite — a diff that is worse than no diff, because it looks like an answer. A
+> row-level difference needs a decision before it needs code, and that decision is `M20`'s.
+>
+> What you have is closer to a **tag** than a branch: name a moment, read it back, and know that
+> the naming is what keeps it readable.
+
 ## 19.8 Vectors
 
 A column can hold a vector per row — an embedding, a factor vector, a window of readings — stored as
