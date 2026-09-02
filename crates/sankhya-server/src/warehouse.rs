@@ -180,6 +180,176 @@ fn open(table_root: &Path) -> Result<Arc<Schema>, String> {
     Ok(Arc::new(schema))
 }
 
+/// Where a table's log lives, for a name a client used.
+///
+/// # Why this exists, and what was broken without it
+///
+/// Discovery reads `<schema>/<table>/`, and a session registers each table under its **bare**
+/// name --- so a client says `orders` and means `sales/orders`. Cloning resolved the same name
+/// as `warehouse/orders`, one level up, which is a directory that does not exist in any
+/// deployment laid out the way discovery expects.
+///
+/// The consequence was that `CREATE TABLE ... CLONE` could only name a table the server does
+/// not serve. It was tested against a warehouse whose tables sat at the root, so every test
+/// passed, and the feature had never worked against a table anybody could query.
+///
+/// Two names resolve here. A qualified `sales.orders` names its schema; a bare `orders` is
+/// searched for across schemas, which is what a client has after registration flattened them.
+///
+/// # Ambiguity is refused rather than ordered
+///
+/// Two schemas may hold a table of the same name. Picking one --- the first alphabetically,
+/// say --- would clone the wrong table on a warehouse that grew a second `orders`, and it would
+/// do it silently and correctly-looking. So [`Resolved::Ambiguous`] carries both and the caller
+/// refuses with them named.
+#[must_use]
+pub fn resolve(warehouse: &Path, name: &str) -> Resolved {
+    if let Some((schema, table)) = name.split_once('.') {
+        let root = warehouse.join(schema).join(table);
+        return if sankhya_publish::is_table(&root) {
+            Resolved::One(root)
+        } else {
+            Resolved::Absent
+        };
+    }
+
+    let mut found: Vec<PathBuf> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(warehouse) else {
+        return Resolved::Absent;
+    };
+    let mut schemas: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    // Sorted, so an ambiguity is reported in the same order twice and a test can name it.
+    schemas.sort();
+    for schema in schemas {
+        // `_`-prefixed schemas hold the warehouse's own bookkeeping and are not user tables,
+        // exactly as `discover` treats them. A clone of a materialised cuboid is not a thing.
+        if schema
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with('_'))
+        {
+            continue;
+        }
+        let root = schema.join(name);
+        if sankhya_publish::is_table(&root) {
+            found.push(root);
+        }
+    }
+
+    match found.len() {
+        0 => Resolved::Absent,
+        1 => found.pop().map_or(Resolved::Absent, Resolved::One),
+        _ => Resolved::Ambiguous(
+            found
+                .iter()
+                .filter_map(|root| qualified_name(warehouse, root))
+                .collect(),
+        ),
+    }
+}
+
+/// Where a **new** clone of this name goes, given where its origin lives.
+///
+/// # A clone stays in its origin's schema
+///
+/// Always, and a qualified name that says otherwise is refused rather than obeyed.
+///
+/// `ADR-0016` makes a clone a *reference* to its origin's files rather than a copy, and the
+/// right to read it derives from the right to read what it references --- which is why
+/// authorization resolves a clone through its root. Putting the clone under another schema
+/// would put its **name** under one schema's policy while its **data** stays governed by
+/// another's, and nobody could then say which rule applies to it.
+///
+/// It is also what anybody expects. The first thing done with a clone is to compare it with
+/// what it came from, and a clone that landed somewhere its origin is not makes that a hunt.
+///
+/// A bare name therefore lands beside its origin, and a qualified one is accepted only when it
+/// names the schema its origin is already in.
+pub fn place_beside(warehouse: &Path, name: &str, origin_root: &Path) -> Result<PathBuf, Misplaced> {
+    let origin_schema = origin_root.parent();
+    match name.split_once('.') {
+        None => origin_schema
+            .map(|schema| schema.join(name))
+            .ok_or(Misplaced::NoSchema),
+        Some((schema, table)) => {
+            let asked = warehouse.join(schema);
+            if origin_schema.is_some_and(|origin| origin == asked) {
+                Ok(asked.join(table))
+            } else {
+                Err(Misplaced::OtherSchema {
+                    asked: schema.to_owned(),
+                    origin: origin_schema
+                        .and_then(|origin| origin.file_name())
+                        .and_then(|name| name.to_str())
+                        .unwrap_or_default()
+                        .to_owned(),
+                })
+            }
+        }
+    }
+}
+
+/// Why a clone cannot go where the statement asked.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Misplaced {
+    /// A schema was named, and it is not the origin's.
+    OtherSchema {
+        /// The schema the statement asked for.
+        asked: String,
+        /// The schema the origin is in, which is the only one available.
+        origin: String,
+    },
+    /// The origin is not in a schema at all, so there is nowhere to put a clone beside it.
+    NoSchema,
+}
+
+impl std::fmt::Display for Misplaced {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OtherSchema { asked, origin } => write!(
+                f,
+                "a clone stays in its origin's schema, and `{origin}` is not `{asked}`. A \
+                 clone is a reference to its origin's files and is authorized through them, \
+                 so one placed under another schema would have its name governed by one \
+                 policy and its data by another"
+            ),
+            Self::NoSchema => write!(
+                f,
+                "the table to clone is not in a schema, so there is nowhere to put a clone \
+                 beside it"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for Misplaced {}
+
+/// A table root rendered as `schema.table`, for a message that has to be unambiguous.
+#[must_use]
+pub fn qualified_name(warehouse: &Path, root: &Path) -> Option<String> {
+    let table = root.file_name()?.to_str()?;
+    let schema = root.parent()?;
+    if schema == warehouse {
+        return Some(table.to_owned());
+    }
+    Some(format!("{}.{table}", schema.file_name()?.to_str()?))
+}
+
+/// What a name resolved to.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Resolved {
+    /// Exactly one table.
+    One(PathBuf),
+    /// No table of that name.
+    Absent,
+    /// Several, named as `schema.table` so the caller can say which.
+    Ambiguous(Vec<String>),
+}
+
 /// Open every discovered table for reading at `target`.
 ///
 /// `target` is the position to read as of. Everything published up to it is visible and

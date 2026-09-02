@@ -18,6 +18,8 @@ mod execute;
 mod scrape;
 #[path = "../src/warehouse.rs"]
 mod warehouse;
+#[path = "../src/clones.rs"]
+mod clones;
 #[path = "../src/wiring.rs"]
 mod wiring;
 

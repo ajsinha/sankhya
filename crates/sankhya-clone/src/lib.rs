@@ -33,12 +33,14 @@
 #![doc(html_root_url = "https://docs.rs/sankhya-clone")]
 
 pub mod action;
+pub mod ask;
 pub mod ddl;
 pub mod family;
 pub mod lineage;
 pub mod refuse;
 
 pub use action::{clone_table, lineage_of};
+pub use ask::{parse as parse_question, NotAQuestion, Question};
 pub use ddl::{parse as parse_ddl, DdlError, Statement};
 pub use family::{Cycle, Lineages};
 pub use refuse::Refused;

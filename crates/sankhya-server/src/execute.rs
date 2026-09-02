@@ -21,7 +21,8 @@
 
 use arrow_array::{Array, RecordBatch};
 use arrow_schema::{DataType, SchemaRef, TimeUnit};
-use datafusion::catalog::TableProvider;
+use datafusion::catalog::{SchemaProvider, TableProvider};
+use datafusion::catalog::memory::MemorySchemaProvider;
 use datafusion::prelude::SessionContext;
 use sankhya_api_pg::message::{oid, FieldDescription};
 use sankhya_api_pg::session::{QueryFailure, QueryResult};
@@ -31,6 +32,7 @@ use sankhya_catalog::guard::Guard;
 use sankhya_catalog::secured::SecuredTable;
 use sankhya_error::protocol::{sqlstate, statuses_for};
 use sankhya_error::Classify;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// A table this server can serve, and the provider behind it.
@@ -129,6 +131,35 @@ pub fn session_for(
 
     let mut registered = 0usize;
 
+    // Which bare names more than one table would claim.
+    //
+    // # Why this is counted before anything is registered
+    //
+    // Registration used to file every table under its **bare** name and nothing else. Two
+    // tables of the same name in different schemas therefore registered twice under one key,
+    // and the second silently replaced the first --- so one of them became unreachable, with
+    // the catalogue still listing it and nothing said. A client cannot work around a table
+    // that is present in `information_schema` and absent from the planner.
+    //
+    // It also meant `sales.orders` did not resolve at all, because the schema was discarded at
+    // the moment of registration. `information_schema.tables` reported it correctly, so the
+    // catalogue said the table existed and the planner said it did not.
+    // Read rather than assumed to be `public`: it is a session setting, and a constant here
+    // would be right until somebody changed it and then wrong in a way nothing would report.
+    let default_schema = context
+        .state()
+        .config()
+        .options()
+        .catalog
+        .default_schema
+        .clone();
+    let default_schema = default_schema.as_str();
+
+    let mut claims: BTreeMap<&str, usize> = BTreeMap::new();
+    for table in tables {
+        *claims.entry(table.reference.table.as_str()).or_insert(0) += 1;
+    }
+
     for table in tables {
         // No guard, no registration. A table the caller may not read is not present in the
         // session at all, so a query naming it fails to resolve rather than planning and
@@ -137,14 +168,74 @@ pub fn session_for(
         else {
             continue;
         };
-        let secured = SecuredTable::new(Arc::clone(&table.provider), guard, &context.state())
-            .map_err(|error| failure(sqlstate::INTERNAL_ERROR.as_str(), &error.to_string()))?;
-        context
-            .register_table(table.reference.table.as_str(), Arc::new(secured))
-            .map_err(|error| failure(sqlstate::INTERNAL_ERROR.as_str(), &error.to_string()))?;
+        let secured: Arc<dyn TableProvider> = Arc::new(
+            SecuredTable::new(Arc::clone(&table.provider), guard, &context.state())
+                .map_err(|error| failure(sqlstate::INTERNAL_ERROR.as_str(), &error.to_string()))?,
+        );
+
+        // Under its own schema, so `sales.orders` means what it says.
+        let schema = table.reference.schema.as_str();
+        // A table whose schema *is* the session's default schema is already reachable by both
+        // names after one registration, and registering it twice is an error rather than a
+        // duplicate --- which is how this first went wrong, on a fixture whose tables live in
+        // `public`.
+        let in_the_default_schema = schema == default_schema;
+        if !schema.is_empty() && !in_the_default_schema {
+            schema_provider(&context, schema)?
+                .register_table(table.reference.table.to_string(), Arc::clone(&secured))
+                .map_err(|error| {
+                    failure(sqlstate::INTERNAL_ERROR.as_str(), &error.to_string())
+                })?;
+        }
+
+        // And under its bare name, when only one table claims it.
+        //
+        // Not for convenience. Every statement this server has ever answered used the bare
+        // name --- it is what a session registered and what the guide's examples type --- and
+        // dropping it would break every one of them to fix the qualified case.
+        //
+        // A **contested** bare name registers nowhere. Refusing to resolve it is the answer
+        // that cannot be wrong: a client is told to qualify, rather than being given one of the
+        // two tables on a rule nobody wrote down.
+        if claims.get(table.reference.table.as_str()).copied().unwrap_or(0) == 1
+            || schema.is_empty()
+            || in_the_default_schema
+        {
+            context
+                .register_table(table.reference.table.as_str(), Arc::clone(&secured))
+                .map_err(|error| {
+                    failure(sqlstate::INTERNAL_ERROR.as_str(), &error.to_string())
+                })?;
+        }
         registered = registered.saturating_add(1);
     }
     Ok((context, registered))
+}
+
+/// The schema of this name in the session's catalogue, created if it is not there yet.
+///
+/// # Errors
+///
+/// [`QueryFailure`] when the session has no default catalogue to put a schema in, which would
+/// mean the context was built differently from the one line above that builds it.
+fn schema_provider(
+    context: &SessionContext,
+    name: &str,
+) -> Result<Arc<dyn SchemaProvider>, QueryFailure> {
+    let catalogue = context.catalog("datafusion").ok_or_else(|| {
+        failure(
+            sqlstate::INTERNAL_ERROR.as_str(),
+            "the session has no default catalogue",
+        )
+    })?;
+    if let Some(existing) = catalogue.schema(name) {
+        return Ok(existing);
+    }
+    let created: Arc<dyn SchemaProvider> = Arc::new(MemorySchemaProvider::new());
+    catalogue
+        .register_schema(name, Arc::clone(&created))
+        .map_err(|error| failure(sqlstate::INTERNAL_ERROR.as_str(), &error.to_string()))?;
+    Ok(created)
 }
 
 /// Run a statement and render its result for the wire.
