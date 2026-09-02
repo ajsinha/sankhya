@@ -1601,8 +1601,8 @@ CATALOGUE = [
 
     ("server: clone a table the principal may not read",
      "crates/sankhya-server/src/wiring.rs",
-     "        if !self.readable(principal, &statement.origin, &lineages) {",
-     "        if self.readable(principal, &statement.origin, &lineages) && false {",
+     "        if !self.readable(principal, &origin, &lineages) {",
+     "        if self.readable(principal, &origin, &lineages) && false {",
      "sankhya-server"),
 
     ("server: clone a version whose data files have been retired",
@@ -1631,8 +1631,8 @@ CATALOGUE = [
 
     ("server: clone over a name the warehouse already holds",
      "crates/sankhya-server/src/wiring.rs",
-     "        if self.settings.warehouse.join(&statement.table).exists() {",
-     "        if !self.settings.warehouse.join(&statement.table).exists() && false {",
+     "        if table_root.exists() {",
+     "        if !table_root.exists() && false {",
      "sankhya-server"),
 
     ("backup: record a backup of a clone whose origin it does not contain",
@@ -3839,6 +3839,58 @@ CATALOGUE = [
      "            Ok(0) | Err(_) => {",
      "            Err(_) => {",
      "sankhya-server"),
+
+    # M14. A session registered every table under its bare name and discarded the schema, so
+    # `sales.orders` did not resolve and two tables of one name silently replaced each other.
+    ("server: register a table under its bare name only, losing its schema",
+     "crates/sankhya-server/src/execute.rs",
+     "        if !schema.is_empty() && !in_the_default_schema {",
+     "        if false {",
+     "sankhya-server"),
+
+    ("server: resolve a bare name two schemas claim to whichever came first",
+     "crates/sankhya-server/src/execute.rs",
+     "        if claims.get(table.reference.table.as_str()).copied().unwrap_or(0) == 1\n            || schema.is_empty()\n            || in_the_default_schema\n        {",
+     "        if true {",
+     "sankhya-server"),
+
+    ("server: authorize a bare name two schemas claim against the first rule found",
+     "crates/sankhya-server/src/wiring.rs",
+     "        if matching.len() > 1 {\n            return None;\n        }",
+     "        if false {\n            return None;\n        }",
+     "sankhya-server"),
+
+    # Cloning resolved `warehouse/<name>`, one level above where tables live, so it could only
+    # ever name a table this server does not serve.
+    ("server: resolve a clone's origin at the warehouse root rather than in a schema",
+     "crates/sankhya-server/src/warehouse.rs",
+     "    if let Some((schema, table)) = name.split_once('.') {\n        let root = warehouse.join(schema).join(table);",
+     "    if let Some((_schema, table)) = name.split_once('.') {\n        let root = warehouse.join(table);",
+     "sankhya-server"),
+
+    ("server: put a clone in whatever schema its name asked for",
+     "crates/sankhya-server/src/warehouse.rs",
+     "            if origin_schema.is_some_and(|origin| origin == asked) {",
+     "            if true {",
+     "sankhya-server"),
+
+    ("server: file a lineage under a name a second schema could later claim",
+     "crates/sankhya-server/src/wiring.rs",
+     "            let Some(name) = crate::warehouse::qualified_name(&self.settings.warehouse, &table.root)",
+     "            let Some(name) = Some(table.reference.table.to_string())",
+     "sankhya-server"),
+
+    ("clone: claim every SHOW statement rather than the two this answers",
+     "crates/sankhya-clone/src/ask.rs",
+     "        } else {\n            return None;\n        };",
+     "        } else {\n            (\"LINEAGE\", |table| Question::Lineage { table })\n        };",
+     "sankhya-clone"),
+
+    ("clone: hand back a question with no table instead of refusing it",
+     "crates/sankhya-clone/src/ask.rs",
+     "        None => return Some(Err(NotAQuestion::NoTableNamed { question: named })),",
+     "        None => return None,",
+     "sankhya-clone"),
 
 ]
 

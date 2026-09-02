@@ -1510,6 +1510,12 @@ do not exist, and none of them is client work.
 Only then the binding, which is thin by construction --- and thin is what makes three of them
 agree.
 
+**Where it lives**, by owner directive 2026-09-01: `sdk/python/` at the repository root, beside
+`sdk/java/` and `sdk/rust/` when `M16` builds them, each with **its own quickstart**. Not under
+`crates/`, which is a Cargo workspace and would be a lie about what builds two of the three; not
+three repositories, which would be three release cadences and three chances for a binding to
+fall behind the server it is thin over. Recorded as `ADR-0017` Decision 7a.
+
 ### Work
 
 TLS on both doors. The client contract and its ADR. The Python package: connect, discover, query
@@ -1542,15 +1548,48 @@ executes.
 
 ---
 
-## 13f. M15 — Ingest from Kafka
+## 13f. M15 — Ingest without a file: Kafka, and streaming from a client
 
-**After M14.** Added 2026-08-31 by owner directive.
+**After M14.** Added 2026-08-31 by owner directive. **Streaming ingest from the SDK added
+2026-09-01 by owner directive**, and put here rather than in `M14` because it is the same
+problem as Kafka wearing different clothes.
 
 ### What it is
 
-The same config-driven ingest as `M13`, sourced from a topic rather than a directory. A config
-names the topic, the messages are JSON dictionaries, and everything downstream is `M13`'s ---
-which is the point of doing files first.
+The same config-driven ingest as `M13`, from two sources that are not a directory of files. A
+config names a topic; a client opens a stream. Everything downstream is `M13`'s --- which is
+the point of having done files first.
+
+### Why the two belong together
+
+`M13`'s position is a **high-water mark over source names**, read in order, committed with the
+rows. That is what makes a restart neither duplicate nor skip, and **neither of these sources
+has a source name**. A topic has partitions and offsets; a client stream has nothing at all
+until this decides what it has.
+
+So both need the same three answers, and answering them once for one source and again for the
+other is how two ingest paths come to disagree about what "already ingested" means:
+
+1. **What a position is** when there is no file to anchor it to. An offset per partition is the
+   obvious answer for Kafka and no answer at all for a client, which may reconnect as somebody
+   else.
+2. **What back-pressure means** when the producer is not a directory that waits patiently. A
+   client that outruns the write path must be slowed rather than buffered, and a consumer that
+   falls behind must be visible rather than merely slow.
+3. **What a stop is** when there is nothing to stop reading. `ADR-0018` stops a feed and waits
+   for a person; a client holding an open stream has to be *told*, in the refusal, rather than
+   discovering it by writing into nothing.
+
+### The client stream, specifically
+
+Arrow Flight's `DoPut` is the mechanism and the columnar door already speaks it, so there is no
+new transport. What is new is that the producer is a **caller** rather than a file: refusals go
+back to somebody who is still connected and can fix the batch, which is the one thing a file
+feed can never do --- and the reason a quarantine is not the whole answer here.
+
+`ADR-0018` needs an amendment rather than a replacement: a record that does not fit is still
+quarantined whole, and a client that is still on the line is also *told*, in the same statement,
+which of its rows did not land.
 
 ### The gate
 

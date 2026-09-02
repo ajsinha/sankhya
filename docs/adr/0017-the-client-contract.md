@@ -154,6 +154,32 @@ enough.**
 This is reversible in the direction that costs least: a compiled fast path may be added later
 for a measured bottleneck, behind the same contract.
 
+## Decision 7a — Where the bindings live
+
+**Owner directive, 2026-09-01.** One `sdk/` directory at the repository root, one subdirectory
+per language:
+
+```
+sdk/
+  python/     M14
+  java/       M16
+  rust/       M16
+```
+
+Not inside `crates/`, because only one of the three is a Rust crate and putting the other two
+under a Cargo workspace directory would be a lie about what builds them. Not one repository per
+binding, because Decision 1 makes the *contract* the thing that must not diverge, and three
+repositories are three release cadences and three chances for one of them to fall behind the
+server it is thin over.
+
+**Each subdirectory carries its own quickstart.** A user who arrives at `sdk/python/` — from a
+package index, from a link, from a colleague — needs to get to a working query without first
+reading the warehouse's documentation. The root `QUICKSTART.md` starts a server; `sdk/python/`
+assumes one is running and starts from `pip install`.
+
+That is a duplication, and a deliberate one: the alternative is a binding whose documentation
+lives somewhere its user is not.
+
 ## Decision 8 — Examples are gated artefacts
 
 The binding ships a runnable example per capability, and the gate executes them against a real

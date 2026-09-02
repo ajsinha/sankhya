@@ -34,8 +34,8 @@ neither tells you what runs today. Where the two disagree, this one is right.
 | **M10** Zero-copy cloning | 10–14 ew | **Complete 2026-08-31.** Design gate cleared by [ADR-0016](adr/0016-zero-copy-cloning.md) before any code; eight work items built; **all five exit criteria met**. Walking the criteria found two that were not — constant cost and the fail-closed enumeration — and both were built rather than reinterpreted. Nothing external holds it: no production deployment, no second machine, no drill against a real archive. |
 | **M11** Production reconciliation | — | **Not schedulable by development.** Needs a production deployment that does not exist. Holds M9's gate criterion 1 and the arming decision for destructive purge |
 | **M13** Config-driven ingest, from files | — | **Schedulable now**, added 2026-08-31 by owner directive. A config declares the source, the shape of what arrives, and where it lands. **Design gate met 2026-08-31**: [ADR-0018](adr/0018-a-record-that-does-not-fit.md) answers what happens to a record that does not fit --- quarantined whole into a *table* with a mandatory expiry, one bad record an incident and a rate of them an outage that stops the pipeline and waits for a person, and a file's position committed with its rows so a restart cannot duplicate or skip. **Substantially built 2026-08-31**: declaration, validation, binder, stop control, quarantine, position, source reader and runner, wired into the server, which loads `config/feeds/*.yaml` and runs each feed on its own cadence. `sankhya-feed` is off the `UNREACHED` list, which is the mechanical statement that it is reached rather than merely built. Quarantine expiry is built as **partition detach** rather than row deletion --- `DEC-23` gets no exception, and a detach stays reversible until retirement's grace period runs. The soak has an ingest arm whose statement is exact rather than statistical: every document it writes is known, so the published and quarantined counts must *equal* the sound and malformed ones. **Complete 2026-09-01**: the maintenance tick calls the expiry job, and a halted feed is now visible and resumable from a client --- `SHOW FEEDS` and `RESUME FEED <name>` read a registry that keeps the halt count across a resume, because a feed that halted twice for the same reason is not the same situation as one that halted once. **All five exit criteria demonstrated 2026-09-01** through the real binary and the real wire protocol, which is how it was found that `SHOW FEEDS` had never worked over a socket at all |
-| **M14** The client contract and the Python SDK | — | **In progress**, added 2026-08-31. Python first; Java and Rust in M16, which is why the *contract* matters more than the binding. **Transport security built 2026-08-31** --- one certificate, both doors, the wire protocol's own negotiation in front of it, and a startup line naming the posture in words. `FR-SEC-03`'s other half, federated identity, is still unbuilt: a `Principal` is a fixed tenant, and mutual TLS puts a client's certificate where a door can see it without anything yet deriving an identity from it. Also where [ADR-0010](adr/0010-external-aggregations.md) is built, its open question decided **out-of-process** by owner decision. The contract is decided in [ADR-0017](adr/0017-the-client-contract.md) and placed in [ARCHITECTURE](ARCHITECTURE.md) §11a |
-| **M15** Ingest from Kafka | — | After M14. Gated on a pin-set decision under [ADR-0001](adr/0001-dependency-pin-set.md) and on deciding how a consumer is tested without a broker — a fake is the easy answer and the one that proves least |
+| **M14** The client contract and the Python SDK | — | **In progress**, added 2026-08-31. Python first; Java and Rust in M16, which is why the *contract* matters more than the binding. **Transport security built 2026-08-31** --- one certificate, both doors, the wire protocol's own negotiation in front of it, and a startup line naming the posture in words. `FR-SEC-03`'s other half, federated identity, is still unbuilt: a `Principal` is a fixed tenant, and mutual TLS puts a client's certificate where a door can see it without anything yet deriving an identity from it. Also where [ADR-0010](adr/0010-external-aggregations.md) is built, its open question decided **out-of-process** by owner decision. The contract is decided in [ADR-0017](adr/0017-the-client-contract.md) and placed in [ARCHITECTURE](ARCHITECTURE.md) §11a. **Two of the four server-side prerequisites built 2026-09-01**: `SHOW LINEAGE OF <table>` and `SHOW DEPENDENTS OF <table>`, so a client can ask what a clone came from and what still reads a table *before* a drop refuses. Building them found that schema names were discarded at registration, that two tables of one name silently replaced each other, and that cloning had never worked against a table this server serves |
+| **M15** Ingest without a file | — | After M14. **Streaming ingest from the SDK added 2026-09-01 by owner directive**, and placed here rather than in M14 because it is Kafka's problem in different clothes: `M13`'s position is a high-water mark over *source names*, and neither a topic nor a client stream has one. Answering "what is a position, what is back-pressure, what is a stop" once for both is what keeps two ingest paths from disagreeing about what *already ingested* means. Gated on a pin-set decision under [ADR-0001](adr/0001-dependency-pin-set.md) and on deciding how a consumer is tested without a broker — a fake is the easy answer and the one that proves least |
 | **M16** The Java and Rust SDKs | — | After M14. Named now so M14's contract is written for three bindings rather than retrofitted to them |
 | **M12** Scale-out, HA and disaster recovery, then production-like acceptance | 20–26 ew | **Needs a second machine**, which is why it holds M8 §12.2 and criteria 7–8 as of 2026-08-30. The project's exit criteria: 12 h, two machines, 100 GB, 50 readers, 20 writers. `CREATE CUBE` is a blocking dependency here and is **not** hardware-blocked, so it can be built at any point before the run |
 
@@ -3638,7 +3638,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 600 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 608 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -3806,6 +3806,51 @@ serialized arm has produced and far above anything the free one reaches by accid
 The primary assertions are untouched: the free reader still has to hold four tenths of its idle
 rate, and its p99 still has to stay within four times idle. Only the control changed, and it
 changed from a proxy to the thing itself.
+
+---
+
+## A schema is a name, and half the system had thrown it away
+
+**2026-09-01.** `M14`'s first work item --- making a clone's lineage askable from a client ---
+turned into three defects, each of which had passing tests.
+
+**`sales.orders` did not resolve.** A session registered every table under its **bare** name and
+discarded the schema, so `information_schema.tables` reported `sales.orders` and the planner
+answered *"table not found"*. The catalogue advertised a table no client could reach.
+
+**Two tables of one name silently became one.** Both registered under a single key, and the
+second replaced the first. One table disappeared from the planner, stayed in the catalogue, and
+nothing said so. There is no client-side workaround for a table that is present in the
+catalogue and absent from the planner.
+
+**Cloning had never worked against a table this server serves.** Clone DDL resolved a name as
+`warehouse/<name>`; discovery reads `warehouse/<schema>/<table>`. So `CREATE TABLE q3 CLONE
+orders` on any real deployment answered *"the table to clone declares no schema"* --- the
+directory it looked in does not exist. Thirteen tests passed because the fixture put its tables
+at the warehouse **root**, a layout no deployment has.
+
+That last one is the lesson worth keeping. **A fixture whose shape is not the product's shape
+tests the fixture.** It is the same failure as a mock, arrived at by a different road: the
+fixture was built through the product's own writer --- which is the rule that was supposed to
+prevent exactly this --- and it still encoded a layout the product does not use. Writing through
+the real path is necessary and not sufficient; the *shape* has to be real too.
+
+### What the fix decided
+
+Tables register into real schemas, so `sales.orders` resolves. The bare name still resolves
+**while only one schema claims it**, and stops the day a second one does --- refused rather than
+answered from whichever registered first, because a name that means two things has no right
+answer and picking one hands back a table the caller cannot identify.
+
+A **lineage records the qualified name**, because a lineage outlives the moment a bare name was
+unambiguous. And a **clone stays in its origin's schema**, refused otherwise: a clone is a
+reference to its origin's files and is authorized through them, so one placed under another
+schema would have its name governed by one policy and its data by another.
+
+Authorization got the same treatment, and that is where it matters most. An ambiguous bare name
+authorizes **nothing** --- guessing on the authorization side is worse than guessing on the
+resolution side, and a cube declared on an ambiguous fact table would answer with a *number*,
+which is the wrong answer nobody notices.
 
 ---
 
@@ -4299,9 +4344,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 2,265 tests, none of which needs a database
+cargo test --workspace           # 2,301 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 600 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 608 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

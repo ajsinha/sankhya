@@ -314,6 +314,58 @@ See [ADR-0018](adr/0018-a-record-that-does-not-fit.md) for the reasoning.
 
 ---
 
+## 3b. Naming a table
+
+A warehouse is `<schema>/<table>/`, and a table has two names that both work:
+
+```sql
+SELECT id FROM sales.orders;
+SELECT id FROM orders;
+```
+
+The qualified name always resolves. The bare one resolves **while only one schema holds a table
+of that name** — and stops resolving the day a second one does, rather than quietly answering
+from whichever was registered first. That is the only behaviour that cannot be wrong: a name
+that means two things has no right answer, and picking one would hand back a table the caller
+had no way to identify.
+
+So a script that will outlive today's warehouse should qualify. `information_schema.tables`
+prints both parts:
+
+```sql
+SELECT table_schema, table_name FROM information_schema.tables;
+```
+
+### A clone stays in its origin's schema
+
+```sql
+CREATE TABLE q3_frozen CLONE sales.orders;
+```
+
+It lands in `sales`, beside what it was cloned from. Saying so explicitly —
+`CREATE TABLE sales.q3_frozen CLONE sales.orders` — is the same statement. Naming any other
+schema, `CREATE TABLE archive.q3_frozen CLONE sales.orders`, is **refused**.
+
+Not a convention. A clone is a **reference** to its origin's files rather than a copy of them
+([ADR-0016](adr/0016-zero-copy-cloning.md)), and the right to read it derives from the right to
+read what it references — which is why authorization resolves a clone through its root. A clone
+under another schema would have its *name* governed by one policy and its *data* by another,
+and nobody could say which rule applied to it.
+
+Lineage records the qualified name for the same reason a script should use it: a lineage
+outlives the moment a bare name was unambiguous.
+
+```sql
+SHOW LINEAGE OF q3_frozen;      -- what it is a clone of, nearest first
+SHOW DEPENDENTS OF sales.orders; -- what still reads it, before you try to drop anything
+```
+
+`SHOW DEPENDENTS` answers the question a refusal used to answer too late. Dropping a table that
+a clone still reads is refused and names the clones — which is no use to somebody who had no
+way to ask first.
+
+---
+
 ## 4. The date axis
 
 Every table carries **`sank_data_date`**, of type `DATE`, and is partitioned on it. That one

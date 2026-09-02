@@ -28,6 +28,8 @@ use sankhya_authz::principal::{Role, TenantId};
 mod execute;
 #[path = "../src/warehouse.rs"]
 mod warehouse;
+#[path = "../src/clones.rs"]
+mod clones;
 #[path = "../src/wiring.rs"]
 mod wiring;
 

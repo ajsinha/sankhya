@@ -101,6 +101,21 @@ pub struct Settings {
     pub transport_security: Option<TransportSecurity>,
 }
 
+/// What the name a client used turned out to name.
+///
+/// Its own type rather than `warehouse::Resolved` because the callers here want the *name*
+/// --- it is what a lineage records and an authorization is checked against --- and carrying
+/// the root beside it saves resolving the same name twice.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) enum Qualified {
+    /// One table: its `schema.table` name, and where its log lives.
+    One(String, std::path::PathBuf),
+    /// No table of that name.
+    Absent,
+    /// Several, named so the caller can say which.
+    Ambiguous(Vec<String>),
+}
+
 /// What an operator configured about encryption.
 ///
 /// # Why a half-configured door refuses to start
@@ -863,6 +878,7 @@ impl Handler for Server {
     /// and answering it in two places is how the next one comes to be shadowed silently.
     fn claims(&self, sql: &str) -> bool {
         sankhya_feed::parse_command(sql).is_some()
+            || sankhya_clone::parse_question(sql).is_some()
             || sankhya_cube_sql::parse_ddl(sql).is_some()
             || sankhya_clone::parse_ddl(sql).is_some()
     }
@@ -1637,14 +1653,64 @@ impl Server {
     /// What this principal may see of a table, as a value.
     ///
     /// `None` when they may not read it at all.
+    /// The name a client used, as the qualified `schema.table` everything else records.
+    ///
+    /// # Why there is a single internal form
+    ///
+    /// A lineage, a dependency and an authorization all outlive the statement that created
+    /// them, and a bare name is unambiguous only until a second schema grows a table of that
+    /// name. Resolving once, at the edge, is what keeps ambiguity somewhere it can still be
+    /// reported to a person who can qualify it.
+    pub(crate) fn qualify(&self, name: &str) -> Qualified {
+        match crate::warehouse::resolve(&self.settings.warehouse, name) {
+            crate::warehouse::Resolved::One(root) => {
+                crate::warehouse::qualified_name(&self.settings.warehouse, &root)
+                    .map_or(Qualified::Absent, |qualified| Qualified::One(qualified, root))
+            }
+            crate::warehouse::Resolved::Absent => Qualified::Absent,
+            crate::warehouse::Resolved::Ambiguous(candidates) => Qualified::Ambiguous(candidates),
+        }
+    }
+
     fn scope_for(&self, principal: &Principal, table: &str) -> Option<u64> {
-        let reference = self
-            .servable
-            .read()
-            .iter()
-            .find(|servable| servable.reference.table == table)
-            .map(|servable| servable.reference.clone())
-            .unwrap_or_else(|| TableRef::new("", table));
+        // Either name form, because both are names a client legitimately has: the catalogue
+        // prints `sales.orders` and a session registers `orders`, and a statement may use
+        // whichever it was given. Matching only the bare one meant a qualified name authorized
+        // against `TableRef::new("", "sales.orders")` --- a table no policy has ever granted,
+        // so every qualified statement was refused as though the table did not exist.
+        let matching: Vec<TableRef> = {
+            let servable = self.servable.read();
+            match table.split_once('.') {
+                Some((schema, name)) => servable
+                    .iter()
+                    .filter(|entry| {
+                        entry.reference.schema == schema && entry.reference.table == name
+                    })
+                    .map(|entry| entry.reference.clone())
+                    .collect(),
+                None => servable
+                    .iter()
+                    .filter(|entry| entry.reference.table == table)
+                    .map(|entry| entry.reference.clone())
+                    .collect(),
+            }
+        };
+        // A bare name two schemas claim authorizes nothing. The query path refuses to resolve
+        // it for the same reason, and granting the first match here would decide on a rule
+        // nobody wrote down --- on the authorization side, which is the worse place to guess.
+        if matching.len() > 1 {
+            return None;
+        }
+        // With no servable table of that name, the reference is built from the name itself.
+        // A qualified name splits into the pair a policy rule is keyed by; a bare one has no
+        // schema to offer and stays as it is, which is what every rule written before schemas
+        // were resolvable expects.
+        let reference = matching.into_iter().next().unwrap_or_else(|| {
+            table.split_once('.').map_or_else(
+                || TableRef::new("", table),
+                |(schema, name)| TableRef::new(schema, name),
+            )
+        });
         Guard::authorize(&self.policy, principal, &reference, Action::Read)
             .map(|guard| guard.scope_digest())
     }
@@ -1698,7 +1764,7 @@ impl Server {
     /// Resolved to the **root** rather than one step, because a clone of a clone references the
     /// root's files just as surely. `ancestors` refuses a lineage cycle, and a table whose
     /// ancestry cannot be resolved is refused rather than granted.
-    fn readable(
+    pub(crate) fn readable(
         &self,
         principal: &Principal,
         table: &str,
@@ -1737,10 +1803,16 @@ impl Server {
     ) -> Option<Result<QueryResult, QueryFailure>> {
         use sankhya_error::protocol::sqlstate;
 
-        let root = self.settings.warehouse.join(table);
+        // Resolved to the qualified form everything else records, for the reason `qualify`
+        // gives: the name a client has may be bare, and a record must not be.
+        let (qualified, root) = match self.qualify(table) {
+            Qualified::One(name, root) => (name, Some(root)),
+            Qualified::Absent | Qualified::Ambiguous(_) => (table.to_owned(), None),
+        };
+        let table = qualified.as_str();
         let lineages = self.lineages();
         if lineages.of(table).is_none() {
-            if if_exists && !root.exists() {
+            if if_exists && root.is_none() {
                 // Nothing by that name and the statement said it might not be there. Answering
                 // here rather than passing it on, because the engine would refuse a statement
                 // that asked for nothing.
@@ -1776,6 +1848,18 @@ impl Server {
             )));
         }
 
+        // A clone whose lineage is recorded but whose directory cannot be resolved is refused
+        // rather than reported as dropped. There is nothing to remove and something is wrong,
+        // and answering "done" would leave a lineage record pointing at nothing.
+        let Some(root) = root else {
+            return Some(Err(refusal(
+                sqlstate::DATA_EXCEPTION.as_str(),
+                &format!(
+                    "`{table}` is recorded as a clone and its table could not be found in \
+                     this warehouse"
+                ),
+            )));
+        };
         if let Err(error) = std::fs::remove_dir_all(&root) {
             return Some(Err(refusal(
                 sqlstate::DATA_EXCEPTION.as_str(),
@@ -1792,19 +1876,28 @@ impl Server {
     /// ago must be visible to this one, and a cache that lagged would let a drop proceed against
     /// an origin whose newest clone it had not heard of --- which is the deletion this is all
     /// gated on, arriving through a stale read.
-    fn lineages(&self) -> sankhya_clone::Lineages {
+    pub(crate) fn lineages(&self) -> sankhya_clone::Lineages {
         let mut lineages = sankhya_clone::Lineages::new();
-        let Ok(entries) = std::fs::read_dir(&self.settings.warehouse) else {
-            return lineages;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        // Keyed by the **qualified** name, `schema.table`.
+        //
+        // Not the bare one, and not the directory a level up --- which is what this used, so
+        // the lineage of `sales/orders` was filed under `sales` and no question about `orders`
+        // ever found it.
+        //
+        // Qualified rather than bare because a lineage is a *record*, and it outlives the
+        // moment it was written. A bare `orders` is unambiguous until a second schema grows an
+        // `orders`, and on that day every clone in the warehouse would silently point at
+        // whichever one the walk found first. The name a client types is resolved to this form
+        // at the edge, which is the one place ambiguity can still be reported to somebody who
+        // can do something about it.
+        let (found, _) = crate::warehouse::discover(&self.settings.warehouse);
+        for table in found {
+            let Some(name) = crate::warehouse::qualified_name(&self.settings.warehouse, &table.root)
+            else {
                 continue;
             };
+            let name = name.as_str();
+            let path = table.root.clone();
             let found = sankhya_table_delta::read_actions(&path).ok().and_then(|actions| {
                 let actions: Vec<sankhya_table_delta::Action> =
                     actions.into_iter().map(|(_, action)| action).collect();
@@ -1835,16 +1928,54 @@ impl Server {
         use sankhya_error::protocol::sqlstate;
 
         let lineages = self.lineages();
-        if !self.readable(principal, &statement.origin, &lineages) {
+        // Resolved before it is authorized, so that a name two schemas claim gets the refusal
+        // that tells somebody what to do about it rather than the one that says the table does
+        // not exist. Both refuse; only one of them is any use.
+        //
+        // Resolved the way a *read* of the same name is. A client says `orders` and means the
+        // table a session registered under that name; resolving it as a directory at the
+        // warehouse root meant naming something no deployment has, so a clone could only ever
+        // be made of a table this server does not serve.
+        let (origin, origin_root) = match self.qualify(&statement.origin) {
+            Qualified::One(name, root) => (name, root),
+            Qualified::Absent => {
+                return Err(refusal(
+                    sqlstate::DATA_EXCEPTION.as_str(),
+                    &format!("there is no table `{}` to clone", statement.origin),
+                ))
+            }
+            Qualified::Ambiguous(candidates) => {
+                return Err(refusal(
+                    sqlstate::DATA_EXCEPTION.as_str(),
+                    &format!(
+                        "`{}` names more than one table: {}. Qualify it with its schema \
+                         --- choosing one here would clone the wrong table silently",
+                        statement.origin,
+                        candidates.join(", ")
+                    ),
+                ))
+            }
+        };
+
+        if !self.readable(principal, &origin, &lineages) {
             return Err(refusal(
                 sqlstate::DATA_EXCEPTION.as_str(),
                 &format!("there is no table `{}` to clone", statement.origin),
             ));
         }
+
         // A name in use is asked of the **warehouse**, not of the policy. A clone has no policy
         // rule of its own, so asking the policy would report every clone as absent and let a
         // second one be created over it --- discovered only when the commit refused.
-        if self.settings.warehouse.join(&statement.table).exists() {
+        let table_root = crate::warehouse::place_beside(
+            &self.settings.warehouse,
+            &statement.table,
+            &origin_root,
+        )
+        .map_err(|misplaced| {
+            refusal(sqlstate::DATA_EXCEPTION.as_str(), &misplaced.to_string())
+        })?;
+        if table_root.exists() {
             return Err(refusal(
                 sqlstate::DATA_EXCEPTION.as_str(),
                 &format!(
@@ -1855,7 +1986,6 @@ impl Server {
             ));
         }
 
-        let origin_root = self.settings.warehouse.join(&statement.origin);
         let facts = self.origin_facts(&origin_root, statement.version)?;
         let version = statement.version.unwrap_or(facts.latest_version);
 
@@ -1865,7 +1995,7 @@ impl Server {
             // rather than skipped, so the refusal exists and is tested before the day they
             // stop agreeing --- which is when nobody will think to add it.
             tenant: self.settings.tenant.to_string(),
-            origin: statement.origin.clone(),
+            origin: origin.clone(),
             origin_tenant: self.settings.tenant.to_string(),
             version,
         };
@@ -1873,13 +2003,8 @@ impl Server {
             refusal(sqlstate::DATA_EXCEPTION.as_str(), &refused.to_string())
         })?;
 
-        self.write_clone(&statement.table, &statement.origin, version, &origin_root)?;
-        self.record(
-            principal,
-            TableRef::new("", &statement.origin),
-            Action::Read,
-            true,
-        );
+        self.write_clone(&statement.table, &table_root, &origin, version, &origin_root)?;
+        self.record(principal, TableRef::new("", &origin), Action::Read, true);
         Ok(acknowledged("CREATE TABLE"))
     }
 
@@ -1946,6 +2071,7 @@ impl Server {
     fn write_clone(
         &self,
         table: &str,
+        table_root: &std::path::Path,
         origin: &str,
         version: u64,
         origin_root: &std::path::Path,
@@ -1980,8 +2106,7 @@ impl Server {
         // draft of this committing directly and it was right to: the point of that rule is
         // that table state has one write path, and a clone's creating commit is table state.
         // Widening the allowlist would have been the easy answer and the wrong one.
-        let root = self.settings.warehouse.join(table);
-        sankhya_publish::Publication::external(&root, table)
+        sankhya_publish::Publication::external(table_root, table)
             .create_clone(&schema, &lineage.to_properties())
             .map_err(|error| {
                 refusal(
@@ -2219,6 +2344,13 @@ impl Server {
             return self.run_feed_command(command);
         }
 
+        // The two questions about a clone, for the same reason and at the same point.
+        // `parse_question` returns `None` for every other `SHOW`, including the several a
+        // catalogue-browsing client sends on connection.
+        if let Some(question) = sankhya_clone::parse_question(sql) {
+            return crate::clones::answer(self, question, &principal);
+        }
+
         if let Some(statement) = sankhya_clone::parse_ddl(sql) {
             // `None` means the statement turned out not to be this server's business after all
             // --- a `DROP TABLE` of something that is not a clone --- and it goes on to the
@@ -2347,7 +2479,7 @@ fn acknowledged(tag: &str) -> QueryResult {
     QueryResult { fields: Vec::new(), rows: Vec::new(), tag: tag.to_string() }
 }
 
-fn refusal(sqlstate: &str, message: &str) -> QueryFailure {
+pub(crate) fn refusal(sqlstate: &str, message: &str) -> QueryFailure {
     QueryFailure {
         sqlstate: sqlstate.to_string(),
         message: message.to_string(),

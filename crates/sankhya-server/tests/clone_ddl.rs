@@ -30,6 +30,8 @@ use std::sync::Arc;
 mod execute;
 #[path = "../src/warehouse.rs"]
 mod warehouse;
+#[path = "../src/clones.rs"]
+mod clones;
 #[path = "../src/wiring.rs"]
 mod wiring;
 
@@ -56,8 +58,32 @@ fn settings(warehouse: &std::path::Path) -> Settings {
     }
 }
 
+/// A catalogue entry naming the schema its table is actually in.
+///
+/// Empty, once. That made the fixture's own catalogue disagree with the fixture's own
+/// warehouse --- discovery would have said `records.entries`, and this said `entries` under no
+/// schema at all --- and it is the same class of mistake as putting the tables at the
+/// warehouse root: a fixture whose shape is not the product's shape tests the fixture.
 fn table(name: &str) -> CatalogTable {
-    CatalogTable { schema: String::new(), name: name.to_string(), columns: Vec::new() }
+    CatalogTable { schema: SCHEMA.to_string(), name: name.to_string(), columns: Vec::new() }
+}
+
+/// The schema every table in this fixture lives under.
+///
+/// # Why this is not the warehouse root, which is where it used to be
+///
+/// Discovery reads `<schema>/<table>/` and a session registers each table under its bare name.
+/// This fixture put `entries` at the warehouse *root*, which is a layout no deployment has ---
+/// and cloning resolved names the same way, so every test here passed against a warehouse the
+/// server could not have served. `CREATE TABLE ... CLONE` had never worked against a table
+/// anybody could query, and nothing in this file could see it.
+///
+/// A fixture whose shape is not the product's shape tests the fixture.
+const SCHEMA: &str = "records";
+
+/// Where a table of this name lives in this fixture.
+fn table_root(root: &std::path::Path, name: &str) -> std::path::PathBuf {
+    root.join(SCHEMA).join(name)
 }
 
 /// A warehouse holding `entries`, whose version 1 names one file and version 2 another.
@@ -69,7 +95,7 @@ fn table(name: &str) -> CatalogTable {
 /// write path's bug is testing less than it looks like it is.
 fn warehouse_with_entries(root: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-    let table_root = root.join("entries");
+    let table_root = table_root(root, "entries");
     let publication = Publication::external(&table_root, "entries");
     publication.create(&schema).expect("creating");
 
@@ -94,9 +120,9 @@ fn warehouse_with_entries(root: &std::path::Path) {
 
 /// A file the table's log named at `version` and no longer names.
 fn a_file_of(root: &std::path::Path, version: u64) -> std::path::PathBuf {
-    let live = sankhya_table_delta::live_files_at(&root.join("entries"), version)
+    let live = sankhya_table_delta::live_files_at(&table_root(root, "entries"), version)
         .expect("that version resolves");
-    root.join("entries").join(&live.files.first().expect("a file").path)
+    table_root(root, "entries").join(&live.files.first().expect("a file").path)
 }
 
 fn server_over(root: &std::path::Path) -> Server {
@@ -108,7 +134,8 @@ fn server_over(root: &std::path::Path) -> Server {
 }
 
 fn lineage_of(root: &std::path::Path, table: &str) -> sankhya_clone::Lineage {
-    let actions = sankhya_table_delta::read_actions(&root.join(table)).expect("the clone's log");
+    let actions =
+        sankhya_table_delta::read_actions(&table_root(root, table)).expect("the clone's log");
     let actions: Vec<Action> = actions.into_iter().map(|(_, action)| action).collect();
     sankhya_clone::lineage_of(&actions)
         .expect("it is a clone")
@@ -126,9 +153,15 @@ async fn a_clone_created_from_sql_exists_afterwards_and_records_where_it_came_fr
         .expect("the statement is accepted");
     assert_eq!(result.tag, "CREATE TABLE");
 
-    assert!(dir.path().join("staging/_delta_log").exists(), "the clone was committed");
+    assert!(
+        table_root(dir.path(), "staging").join("_delta_log").exists(),
+        "the clone was committed beside the table it was cloned from"
+    );
     let lineage = lineage_of(dir.path(), "staging");
-    assert_eq!(lineage.origin, "entries");
+    // Qualified, because a lineage is a *record* and outlives the statement that wrote it. A
+    // bare `entries` is unambiguous until a second schema grows one, and on that day every
+    // clone in the warehouse would silently point at whichever the walk found first.
+    assert_eq!(lineage.origin, format!("{SCHEMA}.entries"));
     assert_eq!(lineage.version, 1);
 }
 
@@ -142,10 +175,10 @@ async fn a_clone_adds_no_files_of_its_own() {
         .query("CREATE TABLE staging CLONE entries")
         .expect("cloning");
 
-    let live = sankhya_table_delta::live_files(&dir.path().join("staging")).expect("its log");
+    let live = sankhya_table_delta::live_files(&table_root(dir.path(), "staging")).expect("its log");
     assert!(live.files.is_empty(), "a clone that adds files is a copy");
 
-    let parquet = std::fs::read_dir(dir.path().join("staging"))
+    let parquet = std::fs::read_dir(table_root(dir.path(), "staging"))
         .expect("the clone's directory")
         .flatten()
         .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "parquet"))
@@ -179,6 +212,36 @@ async fn cloning_a_table_that_does_not_exist_says_what_the_query_path_says() {
         .query("CREATE TABLE staging CLONE payroll")
         .expect_err("no such table");
     assert!(format!("{refused:?}").contains("payroll"), "{refused:?}");
+}
+
+#[tokio::test]
+async fn cloning_a_table_that_exists_and_may_not_be_read_is_refused_by_the_same_sentence() {
+    // The test above says "no such table" and proves only that. `payroll` is not in that
+    // warehouse at all, so the statement is refused when the *name* fails to resolve and the
+    // authorization check is never reached --- which a mutation showed by surviving its
+    // removal.
+    //
+    // This is the case the check exists for: the table is really there, and this principal has
+    // no rule granting it. A clone is a read (`ADR-0016` makes it a reference to the origin's
+    // files), so cloning what you may not read *is* reading it.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    warehouse_with_entries(dir.path());
+
+    // Present in the warehouse and absent from the catalogue this server was built with, so
+    // `permissive_policy` wrote no rule for it.
+    let columns = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    Publication::external(table_root(dir.path(), "payroll"), "payroll")
+        .create(&columns)
+        .expect("creating payroll");
+
+    let refused = server_over(dir.path())
+        .query("CREATE TABLE staging CLONE payroll")
+        .expect_err("a table this principal may not read");
+    assert!(format!("{refused:?}").contains("payroll"), "{refused:?}");
+    assert!(
+        !table_root(dir.path(), "staging").exists(),
+        "and nothing was created from a table the caller may not read"
+    );
 }
 
 #[tokio::test]
@@ -267,11 +330,11 @@ async fn a_clone_is_dropped_and_its_directory_goes_with_it() {
     warehouse_with_entries(dir.path());
     let server = server_over(dir.path());
     server.query("CREATE TABLE staging CLONE entries").expect("cloning");
-    assert!(dir.path().join("staging/_delta_log").exists());
+    assert!(table_root(dir.path(), "staging").join("_delta_log").exists());
 
     let result = server.query("DROP TABLE staging").expect("dropping it");
     assert_eq!(result.tag, "DROP TABLE");
-    assert!(!dir.path().join("staging").exists(), "and it is gone from disk");
+    assert!(!table_root(dir.path(), "staging").exists(), "and it is gone from disk");
 }
 
 // Multi-threaded because one of its statements is handed back to the engine, and `query` uses
@@ -289,7 +352,7 @@ async fn dropping_an_origin_a_clone_still_reads_is_refused() {
     // standing refusal answers it — which is also a refusal, and for a reason that would still
     // hold if cloning did not exist.
     let refused = server.query("DROP TABLE entries").expect_err("refused either way");
-    assert!(dir.path().join("entries/_delta_log").exists(), "and it is still there");
+    assert!(table_root(dir.path(), "entries").join("_delta_log").exists(), "and it is still there");
     let _ = refused;
 
     // A clone of a clone is the case where the refusal is this one rather than that one.
@@ -303,7 +366,7 @@ async fn dropping_an_origin_a_clone_still_reads_is_refused() {
     assert!(said.contains("scratch"), "the refusal names what would break: {said}");
     assert!(said.contains("materialise"), "{said}");
     assert!(
-        dir.path().join("staging/_delta_log").exists(),
+        table_root(dir.path(), "staging").join("_delta_log").exists(),
         "and nothing was removed"
     );
 }
@@ -320,8 +383,8 @@ async fn dropping_the_leaf_first_then_its_origin_works() {
 
     server.query("DROP TABLE scratch").expect("the leaf drops");
     server.query("DROP TABLE staging").expect("and then its origin does");
-    assert!(!dir.path().join("staging").exists());
-    assert!(dir.path().join("entries/_delta_log").exists(), "the real table is untouched");
+    assert!(!table_root(dir.path(), "staging").exists());
+    assert!(table_root(dir.path(), "entries").join("_delta_log").exists(), "the real table is untouched");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

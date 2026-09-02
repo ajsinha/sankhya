@@ -118,18 +118,18 @@ impl Deployment {
             .expect("a declaration");
     }
 
-    /// Declare the `ledger` feed these criteria use.
+    /// Declare the `postings` feed these criteria use.
     ///
     /// `stop_above` is 0.5 rather than the reference document's 0.2, so that a source of two
     /// sound records and one bad one does **not** stop the feed. That is the case criterion 2
     /// is about — one malformed record is an incident and not an outage — and a threshold low
     /// enough to trip on it would make criteria 2 and 3 the same test.
-    fn declare_the_ledger(&self) {
+    fn declare_the_postings(&self) {
         let body = format!(
-            "name: ledger\n\
+            "name: postings\n\
              from: {}\n\
              schema: sales\n\
-             table: ledger\n\
+             table: postings\n\
              date: ingest\n\
              unknown: refuse\n\
              columns:\n\
@@ -146,7 +146,7 @@ impl Deployment {
              \x20 stop_above: 0.5\n",
             self.spool().display()
         );
-        self.declare("ledger.yaml", &body);
+        self.declare("postings.yaml", &body);
     }
 
     /// Every feed this deployment's configuration declares, as the server loads it.
@@ -154,22 +154,22 @@ impl Deployment {
         feeds::load(&self.config())
     }
 
-    /// Create `sales.ledger` with the schema the loaded declaration implies.
+    /// Create `sales.postings` with the schema the loaded declaration implies.
     ///
     /// The schema comes from `shape::table_schema` — the same function the runner shapes its
     /// batches with — rather than being spelled out here. Two hand-written schemas that must
     /// agree are two things that will one day not.
-    fn create_the_ledger_table(&self) {
+    fn create_the_postings_table(&self) {
         let (declared, complaints) = self.loaded();
         assert!(complaints.is_empty(), "{complaints:?}");
         let feed = &declared
             .iter()
-            .find(|declared| declared.feed.name() == "ledger")
-            .expect("the ledger feed is declared")
+            .find(|declared| declared.feed.name() == "postings")
+            .expect("the postings feed is declared")
             .feed;
-        Publication::external(self.warehouse().join("sales").join("ledger"), "ledger")
+        Publication::external(self.warehouse().join("sales").join("postings"), "postings")
             .create(&sankhya_feed::shape::table_schema(feed))
-            .expect("creating sales.ledger");
+            .expect("creating sales.postings");
     }
 
     /// Put a source file in the spool, written whole and then moved into place.
@@ -201,11 +201,11 @@ impl Deployment {
     }
 }
 
-/// A deployment with the `ledger` feed declared and its table created.
+/// A deployment with the `postings` feed declared and its table created.
 fn ready() -> Deployment {
     let it = Deployment::new();
-    it.declare_the_ledger();
-    it.create_the_ledger_table();
+    it.declare_the_postings();
+    it.create_the_postings_table();
     it
 }
 
@@ -278,17 +278,17 @@ fn a_file_becomes_an_answer() {
         ],
     );
 
-    wait_for_rows(&server, "SELECT id FROM ledger", 3);
+    wait_for_rows(&server, "SELECT id FROM postings", 3);
 
     // The *values*, not merely three of something. A count alone passes against a feed that
     // published three empty rows, which is the failure this criterion is meant to exclude.
-    let above = query_outcome(server.port, "SELECT id FROM ledger WHERE amount > 15")
+    let above = query_outcome(server.port, "SELECT id FROM postings WHERE amount > 15")
         .expect("the query runs");
     assert_eq!(above, 2, "two of the three records are above 15");
 
     // And an aggregate, because "an OLAP answer" is the criterion's word: this is the read
     // path planning over what a feed published, not a scan of what a test wrote.
-    let summed = text_rows(server.port, "SELECT sum(amount) AS total FROM ledger");
+    let summed = text_rows(server.port, "SELECT sum(amount) AS total FROM postings");
     assert_eq!(
         summed.first().and_then(|row| row.first()).and_then(Clone::clone).as_deref(),
         Some("60.50"),
@@ -315,7 +315,7 @@ fn a_record_that_does_not_fit_is_quarantined_and_the_others_still_land() {
     );
 
     // Not dropped, and not coerced: two rows in the table, one row in the quarantine.
-    wait_for_rows(&server, "SELECT id FROM ledger", 2);
+    wait_for_rows(&server, "SELECT id FROM postings", 2);
     wait_for_rows(
         &server,
         &format!("SELECT feed FROM {}", sankhya_feed::quarantine::TABLE),
@@ -334,7 +334,7 @@ fn a_record_that_does_not_fit_is_quarantined_and_the_others_still_land() {
         ),
     );
     assert_eq!(refused.len(), 1);
-    assert_eq!(refused[0][0].as_deref(), Some("ledger"), "the feed that refused it");
+    assert_eq!(refused[0][0].as_deref(), Some("postings"), "the feed that refused it");
     assert!(
         refused[0][1].as_ref().is_some_and(|code| !code.is_empty()),
         "a code saying why, rather than the fact of refusal alone"
@@ -346,7 +346,7 @@ fn a_record_that_does_not_fit_is_quarantined_and_the_others_still_land() {
     );
 
     // The feed is still running. One record that does not fit is an incident, not an outage.
-    let row = standing(server.port, "ledger");
+    let row = standing(server.port, "postings");
     assert_eq!(row[1].as_deref(), Some("running"));
     assert_eq!(row[6].as_deref(), Some("1"), "one quarantined");
 }
@@ -369,7 +369,7 @@ fn a_source_of_nothing_usable_stops_the_feed_loudly_and_it_stays_stopped() {
         ],
     );
 
-    let halted = wait_for_state(&server, "ledger", "halted");
+    let halted = wait_for_state(&server, "postings", "halted");
     assert!(
         halted[3].as_ref().is_some_and(|reason| !reason.is_empty()),
         "and it says why, an hour later, to somebody who never saw the log line"
@@ -380,7 +380,7 @@ fn a_source_of_nothing_usable_stops_the_feed_loudly_and_it_stays_stopped() {
     assert!(
         server.wait_until_said("STOPPED", WITHIN),
         "the server never said the feed stopped; it said: {:?}",
-        server.said_matching("feed `ledger`").collect::<Vec<_>>()
+        server.said_matching("feed `postings`").collect::<Vec<_>>()
     );
 
     // Stopped means stopped. A sound source arriving afterwards is *not* ingested, because
@@ -388,18 +388,18 @@ fn a_source_of_nothing_usable_stops_the_feed_loudly_and_it_stays_stopped() {
     it.arrives("002.json", &[r#"{"id": 3, "amount": "3.00"}"#]);
     std::thread::sleep(Duration::from_secs(3));
     assert_eq!(
-        query_outcome(server.port, "SELECT id FROM ledger").expect("the query runs"),
+        query_outcome(server.port, "SELECT id FROM postings").expect("the query runs"),
         0,
         "a halted feed does not quietly start again on the next tick"
     );
 
     // And resuming is a statement somebody makes, after which the waiting source lands.
-    query_outcome(server.port, "RESUME FEED ledger").expect("resuming");
-    wait_for_rows(&server, "SELECT id FROM ledger", 1);
+    query_outcome(server.port, "RESUME FEED postings").expect("resuming");
+    wait_for_rows(&server, "SELECT id FROM postings", 1);
 
     // Resuming does not forget. A feed that halted, was resumed and halted again is not in
     // the situation a feed that halted once is in, and the count is how anybody can tell.
-    let resumed = standing(server.port, "ledger");
+    let resumed = standing(server.port, "postings");
     assert_eq!(resumed[1].as_deref(), Some("running"));
     assert_eq!(resumed[8].as_deref(), Some("1"), "the halt is remembered across the resume");
 }
@@ -409,14 +409,14 @@ fn a_source_of_nothing_usable_stops_the_feed_loudly_and_it_stays_stopped() {
 #[test]
 fn a_declaration_that_does_not_validate_lands_nothing() {
     let it = Deployment::new();
-    it.declare_the_ledger();
-    it.create_the_ledger_table();
+    it.declare_the_postings();
+    it.create_the_postings_table();
     // A second feed that names no date axis. `DEC-34` requires the date to be declared per
     // table and never defaulted, so this is refused rather than given one.
     it.declare(
         "broken.yaml",
         &format!(
-            "name: broken\nfrom: {}\nschema: sales\ntable: ledger\n\
+            "name: broken\nfrom: {}\nschema: sales\ntable: postings\n\
              columns:\n\x20 - name: id\n\x20   type: int64\n",
             it.spool().display()
         ),
@@ -432,23 +432,23 @@ fn a_declaration_that_does_not_validate_lands_nothing() {
         "the refused declaration is reported at startup"
     );
     it.arrives("001.json", &[r#"{"id": 1, "amount": "1.00"}"#]);
-    wait_for_rows(&server, "SELECT id FROM ledger", 1);
+    wait_for_rows(&server, "SELECT id FROM postings", 1);
 
     let listed = text_rows(server.port, "SHOW FEEDS");
     assert_eq!(listed.len(), 1, "only the feed that validated is a feed at all");
-    assert_eq!(listed[0][0].as_deref(), Some("ledger"));
+    assert_eq!(listed[0][0].as_deref(), Some("postings"));
 }
 
 #[test]
 fn a_feed_whose_table_does_not_exist_is_refused_rather_than_creating_one() {
-    // The quarantine is created; `sales.ledger` deliberately is not.
+    // The quarantine is created; `sales.postings` deliberately is not.
     let it = Deployment::new();
-    it.declare_the_ledger();
+    it.declare_the_postings();
 
     let server = it.start();
     it.arrives("001.json", &[r#"{"id": 1, "amount": "1.00"}"#]);
 
-    let halted = wait_for_state(&server, "ledger", "halted");
+    let halted = wait_for_state(&server, "postings", "halted");
     assert!(
         halted[3].as_ref().is_some_and(|reason| reason.contains("not a table")),
         "the refusal names what is missing, rather than reporting a failure: {:?}",
@@ -459,7 +459,7 @@ fn a_feed_whose_table_does_not_exist_is_refused_rather_than_creating_one() {
     // a decision with a date axis, a class and a partitioning in it, and inferring one from
     // the first feed to mention it is how a warehouse acquires tables nobody designed.
     assert!(
-        !it.warehouse().join("sales").join("ledger").exists(),
+        !it.warehouse().join("sales").join("postings").exists(),
         "a refused feed created its own target table"
     );
 }
@@ -524,7 +524,7 @@ fn the_tick_attempts_expiry_without_being_asked() {
     let server = it.start();
 
     it.arrives("001.json", &[r#"{"id": 1, "amount": "1.00"}"#]);
-    wait_for_rows(&server, "SELECT id FROM ledger", 1);
+    wait_for_rows(&server, "SELECT id FROM postings", 1);
 
     // The tick ran — the feed on it published — and expiry, which shares the tick, neither
     // detached a partition written minutes ago nor failed trying.
