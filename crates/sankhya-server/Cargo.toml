@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 sankhya-feed  = { path = "../sankhya-feed" }
+sankhya-snapshot = { path = "../sankhya-snapshot" }
 sankhya-tls   = { path = "../sankhya-tls" }
 sankhya-api-flight = { path = "../sankhya-api-flight" }
 sankhya-api-grpc   = { path = "../sankhya-api-grpc" }

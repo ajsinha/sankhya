@@ -69,6 +69,8 @@ mod clones;
 mod driver;
 #[path = "../src/warehouse.rs"]
 mod warehouse;
+#[path = "../src/snapshots.rs"]
+mod snapshots;
 #[path = "../src/wiring.rs"]
 mod wiring;
 #[path = "../src/feeds.rs"]

@@ -515,6 +515,21 @@ impl Server {
     pub fn feeds(&self) -> Arc<sankhya_feed::state::Feeds> {
         Arc::clone(&self.feeds)
     }
+    /// Today, as days from the epoch.
+    pub(crate) fn today(&self) -> i32 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        i32::try_from(now / 86_400).unwrap_or(0)
+    }
+
+    /// Now, in microseconds from the epoch.
+    pub(crate) fn now_micros(&self) -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| i64::try_from(since.as_micros()).unwrap_or(i64::MAX))
+    }
+
     /// The columnar door's acceptor, if this server encrypts.
     #[must_use]
     pub fn columnar_acceptor(&self) -> Option<sankhya_tls::Acceptor> {
@@ -720,7 +735,7 @@ impl Server {
     /// The clock advances by one per record rather than being read from the system. A
     /// component that reads a clock cannot be replayed, and the audit is the one thing that
     /// must reproduce exactly. A real deployment supplies wall-clock time here.
-    fn record(&self, principal: &Principal, table: TableRef, action: Action, allowed: bool) {
+    pub(crate) fn record(&self, principal: &Principal, table: TableRef, action: Action, allowed: bool) {
         let at = {
             let mut clock = self.clock.lock();
             *clock += 1;
@@ -785,6 +800,7 @@ impl Handler for Server {
     /// and answering it in two places is how the next one comes to be shadowed silently.
     fn claims(&self, sql: &str) -> bool {
         crate::driver::run_session_statement(sql).is_some()
+            || sankhya_snapshot::parse(sql).is_some()
             || sankhya_feed::parse_command(sql).is_some()
             || sankhya_clone::parse_question(sql).is_some()
             || sankhya_cube_sql::parse_ddl(sql).is_some()
@@ -2319,6 +2335,13 @@ impl Server {
 
         if let Some(command) = sankhya_feed::parse_command(sql) {
             return crate::feeds::run_command(&self.feeds, command);
+        }
+
+        // Snapshot statements, before the engine sees them. `parse` returns `None` for every
+        // other `SHOW`, `CREATE` and `DROP`, including the several a catalogue-browsing client
+        // sends on connection.
+        if let Some(statement) = sankhya_snapshot::parse(sql) {
+            return crate::snapshots::run_statement(self, statement, &principal);
         }
 
         // The two questions about a clone, for the same reason and at the same point.

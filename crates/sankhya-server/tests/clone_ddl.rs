@@ -39,6 +39,8 @@ mod clones;
 mod feeds;
 #[path = "../src/driver.rs"]
 mod driver;
+#[path = "../src/snapshots.rs"]
+mod snapshots;
 #[path = "../src/wiring.rs"]
 mod wiring;
 
