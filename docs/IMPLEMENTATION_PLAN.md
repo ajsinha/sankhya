@@ -1664,6 +1664,34 @@ setting to change an answer. Accepting it quietly would serve the present to a c
 for one instant, with no symptom. Settings that would change an answer are now refused by name
 until `M17` honours them, which is `DEC-47`'s rule applied where it was about to be broken.
 
+**Decision 7 was added 2026-09-02 by owner directive**, after the question *"is this a git-like
+view of history?"*. A snapshot is a **tag**, not a log: `SHOW HISTORY OF` and `SET VERSION OF`
+are in scope, and a **row-level diff is deferred to `M20`** rather than attempted.
+
+### Exit criteria
+
+Each is demonstrated **through the front door a user has** --- the shipped binary and the wire
+protocol --- rather than through the library the criterion is about. That distinction is not
+pedantry: it is what caught `SHOW FEEDS` in `M13`, where every unit test passed and the
+statement had never once worked over a socket.
+
+1. **A snapshot is taken, listed and dropped from a client**, and `SHOW SNAPSHOTS` reports what
+   each pins and **who took it** --- a cost with no visible owner is one nobody reclaims.
+2. **A read as of a snapshot answers the past across more than one table in one session.** More
+   than one, because a snapshot that pinned each table at its own moment would be a clone with
+   extra steps, and one table cannot show the difference.
+3. **A table the snapshot does not name is refused**, in the same words as a table that does not
+   exist, and never answered as empty.
+4. **What a snapshot pins reaches the sweeper, and survives a restart.** A snapshot that pins
+   nothing is a promise the system does not keep: the report it exists to reproduce stops
+   reproducing when the files it read are reclaimed.
+5. **A table's history is readable, says what is keeping each version alive by name, and refuses
+   a version it cannot honour** --- both a version the log does not contain and a version whose
+   files retirement has taken. Answering either would be a historical query silently missing
+   what was compacted.
+6. **The expiry cannot be omitted or evaded.** No default, no unbounded form, and a lifetime
+   longer than this system will hold storage for is refused at the statement.
+
 ---
 
 ## 13g-a. M20 — What changed between two versions
