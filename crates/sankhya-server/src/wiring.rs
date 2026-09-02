@@ -515,6 +515,18 @@ impl Server {
     pub fn feeds(&self) -> Arc<sankhya_feed::state::Feeds> {
         Arc::clone(&self.feeds)
     }
+    /// The tables this session sees when it has asked to read as of a named snapshot.
+    ///
+    /// # Errors
+    ///
+    /// As `snapshots::as_of`.
+    fn as_of_snapshot(
+        &self,
+        caller: &sankhya_api_pg::session::Caller<'_>,
+    ) -> Result<Option<Arc<Vec<ServableTable>>>, QueryFailure> {
+        crate::snapshots::as_of(self, caller)
+    }
+
     /// Today, as days from the epoch.
     pub(crate) fn today(&self) -> i32 {
         let now = std::time::SystemTime::now()
@@ -800,6 +812,7 @@ impl Handler for Server {
     /// and answering it in two places is how the next one comes to be shadowed silently.
     fn claims(&self, sql: &str) -> bool {
         crate::driver::run_session_statement(sql).is_some()
+            || sql.trim().to_uppercase().starts_with("SET SNAPSHOT")
             || sankhya_snapshot::parse(sql).is_some()
             || sankhya_feed::parse_command(sql).is_some()
             || sankhya_clone::parse_question(sql).is_some()
@@ -813,7 +826,7 @@ impl Handler for Server {
         caller: &sankhya_api_pg::session::Caller<'_>,
     ) -> Result<QueryResult, QueryFailure> {
         let started = std::time::Instant::now();
-        let outcome = self.run_statement(sql, caller.user());
+        let outcome = self.run_statement(sql, caller);
 
         // Recorded on every path out, including the refusals above the query path. A
         // duration histogram that only sees successes describes a system that never fails,
@@ -2256,7 +2269,12 @@ impl Server {
     /// the statement, including the two refusals that never reach the query path. A
     /// duration histogram fed only by the successful path describes a system that never
     /// fails, and the tail an operator goes looking for is made of failures.
-    fn run_statement(&self, sql: &str, user: &str) -> Result<QueryResult, QueryFailure> {
+    fn run_statement(
+        &self,
+        sql: &str,
+        caller: &sankhya_api_pg::session::Caller<'_>,
+    ) -> Result<QueryResult, QueryFailure> {
+        let user = caller.user();
         // Announced for as long as this statement runs.
         //
         // Taken here rather than around the scan, because the window that matters opens when
@@ -2329,6 +2347,13 @@ impl Server {
         // silently accepting a statement whose meaning we do not implement --- so `ROLLBACK`
         // is refused, because a client that rolls back and is told it worked has been lied to
         // about the one thing it asked.
+        // `SET SNAPSHOT` first, because it is the one setting whose *value* must be checked
+        // --- and checked here rather than at the next statement, which is where somebody would
+        // otherwise learn their snapshot does not exist.
+        if let Some(answer) = crate::snapshots::check_setting(self, sql) {
+            return answer;
+        }
+
         if let Some(answer) = crate::driver::run_session_statement(sql) {
             return answer;
         }
@@ -2375,6 +2400,17 @@ impl Server {
         //
         // Checked per statement, through the log cache, so an unmoved table costs a stat.
         let servable = self.refreshed_servable();
+        // As of a named snapshot, when the session asked for one.
+        //
+        // Every table it names is resolved at the version it recorded, so four tables read at
+        // four moments become four tables read at one. A table the snapshot does not name is
+        // **left out of the session entirely**, so a statement naming it fails to resolve
+        // rather than being answered from the present --- `ADR-0019` Decision 2, enforced by
+        // absence rather than by a check somebody has to remember.
+        let servable = match self.as_of_snapshot(caller)? {
+            None => servable,
+            Some(pinned) => pinned,
+        };
         let (context, registered, contested) =
             session_and_contested(&principal, &self.policy, &servable)?;
         if registered == 0 && !servable.is_empty() {

@@ -326,6 +326,54 @@ the only actual remedy. Chapter 9, *Capture and ingest*, covers what gets quaran
 On a server with no feeds declared, `SHOW FEEDS` returns no rows and `sank_quarantine` is empty —
 which is the correct answer rather than an error.
 
+## 19.7a Snapshots
+
+A **snapshot** names one instant across many tables. A clone freezes a *thing*; a snapshot
+freezes a *moment*.
+
+```sql
+CREATE SNAPSHOT eod_2026_09_02 EXPIRE AFTER 90 DAYS;
+SHOW SNAPSHOTS;
+
+SET SNAPSHOT = 'eod_2026_09_02';
+SELECT region, sum(amount) FROM sales.orders GROUP BY region;   -- as of that instant
+RESET SNAPSHOT;
+
+DROP SNAPSHOT eod_2026_09_02;
+```
+
+`SHOW SNAPSHOTS` reports the name, whether it is `live` or `expired`, who took it, when, the day
+it expires, how many tables it pins and their qualified names.
+
+> **Key idea** — A calculation that reads a population of records, a set of rates, a set of
+> curves and the hierarchy they roll up through must read all four **as of one instant**.
+> Otherwise the reconciliation problem this system exists to remove reappears *inside a single
+> query*: four tables, four moments, one number that reconciles to nothing.
+
+Nothing is copied. A snapshot records a version per table and pins those files against
+reclamation, which is the same machinery a clone uses.
+
+**The expiry is required and there is no `EXPIRE NEVER`.** A snapshot pins files; one that never
+expired would hold a whole warehouse's versions alive, and `RSK-35` — the accumulation nobody is
+responsible for — would arrive at warehouse scale rather than table scale. The upper bound is
+730 days, and the refusal says the limit is not technical: it bounds how far ahead one person
+may commit storage somebody else will pay for.
+
+> **Pitfall** — A table created *after* a snapshot is **not there** when you read as of it, and
+> naming it fails to resolve exactly as a table that does not exist does. It is deliberately not
+> answered as empty: a table that did not exist is not a table that was empty, and a join
+> against one returns the rows surviving an inner join with nothing — a confident zero, reported
+> as success. This means a query that worked in March may refuse in June because the schema
+> grew. That is the feature; the alternative is a query whose meaning quietly changes.
+
+`SET SNAPSHOT` is a **session** setting, because a run reads one instant across many statements.
+Another connection is unaffected. Naming a snapshot that does not exist, or one that has
+expired, is refused at the `SET` rather than at the next query — failing where a person can act
+beats failing where the consequence happens to be noticed.
+
+See [ADR-0019](../../adr/0019-named-snapshots.md) for the reasoning, and Chapter 12 for how this
+differs from cloning.
+
 ## 19.8 Vectors
 
 A column can hold a vector per row — an embedding, a factor vector, a window of readings — stored as

@@ -281,8 +281,10 @@ freezes a *moment*.
 
 ```sql
 CREATE SNAPSHOT eod_2026_09_02 EXPIRE AFTER 90 DAYS;
+```
+
+```sql
 SHOW SNAPSHOTS;
-DROP SNAPSHOT eod_2026_09_02;
 ```
 
 It records the version every table you may read stood at, and pins those files so they survive
@@ -297,13 +299,38 @@ Why a run needs this: a market-risk calculation reads the trade population, the 
 curves and the hierarchy. If those four are read at four moments, the reconciliation problem
 this system exists to remove reappears *inside a single query*.
 
-> **Reading as of a snapshot is not built yet.** `SET SNAPSHOT` is **refused**, not ignored —
-> accepting it quietly would serve you the present when you asked for one instant, and nothing
-> in the answer would say so. See [ADR-0019](adr/0019-named-snapshots.md).
+### Reading as of one
 
-A table created *after* a snapshot will be **refused** rather than answered as empty, when
-reading as of one lands. A table that did not exist is not a table that was empty, and a join
-against it would return a confident zero.
+```sql
+SET SNAPSHOT = 'eod_2026_09_02';
+```
+
+```sql
+SELECT region, round(sum(amount)) AS total FROM orders GROUP BY region ORDER BY region;
+```
+
+```sql
+RESET SNAPSHOT;
+```
+
+```sql
+DROP SNAPSHOT eod_2026_09_02;
+```
+
+It is a **session** setting, because a run reads one instant across many statements rather than
+one. Another connection is unaffected.
+
+Every table the snapshot names is resolved at the version it recorded — so four tables read at
+four moments become four tables read at one, which is the whole point.
+
+**A table created after the snapshot is not there**, and a statement naming it fails to resolve
+exactly as a table that does not exist does. It is not answered as empty: a table that did not
+exist is not a table that was empty, and a join against one returns the rows surviving an inner
+join with nothing — a confident zero, reported as success.
+
+`SET SNAPSHOT` to a name that does not exist, or to one that has expired, is refused **at the
+`SET`** rather than at the next query. Failing where a person can act beats failing where the
+consequence happens to be noticed.
 
 ---
 

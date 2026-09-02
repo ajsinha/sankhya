@@ -91,7 +91,34 @@ db.connection.contract     # 1, or None if this is not a SANKHYA
 `None` means something else is speaking the PostgreSQL wire protocol — which this binding can
 talk to, and should not pretend otherwise.
 
-## 5. Refusals arrive as data
+## 5. Reading one instant across many tables
+
+```python
+db.take_snapshot("eod_2026_09_02", expire_after_days=90)
+
+db.read_as_of("eod_2026_09_02")     # a session setting: this connection, from here on
+db.sql("SELECT region, sum(amount) FROM sales.orders GROUP BY region")
+db.read_the_present()               # back to now
+
+for held in db.snapshots():
+    print(held.name, held.state, held.tables, held.taken_by)
+db.drop_snapshot("eod_2026_09_02")
+```
+
+A clone freezes a *thing*; a snapshot freezes a *moment*. A calculation reading a population of
+records, a set of rates, a set of curves and the hierarchy they roll up through must read all
+four **as of one instant**, or the reconciliation problem this system exists to remove reappears
+inside a single query.
+
+`expire_after_days` is **required** and there is no unbounded form — a snapshot pins files, so
+one that never expired would hold a whole warehouse's versions alive and the cost would fall on
+somebody who did not ask for it.
+
+A table created *after* the snapshot is **not there**, and naming it fails to resolve exactly as
+a table that does not exist does. It is deliberately not answered as empty: a table that did not
+exist is not a table that was empty, and a join against one returns a confident zero.
+
+## 6. Refusals arrive as data
 
 ```python
 try:
@@ -111,7 +138,7 @@ on prose — because a message a client parses becomes an API nobody may reword.
 break, the two tables an ambiguous name could mean. Without it, showing *"three clones read
 this table"* means parsing the sentence.
 
-## 6. What this cannot do yet
+## 7. What this cannot do yet
 
 Named rather than half-implemented, because a client that silently downgrades is worse than one
 that says it cannot:

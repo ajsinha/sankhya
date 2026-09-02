@@ -285,6 +285,30 @@ The exit criteria had the same problem in miniature. Walking them found that **t
 entirely** — *a clone at constant cost against a large table*, and *every refused clone path shown
 to fail closed*. Both were then built. A criterion nobody wrote is a criterion that cannot fail.
 
+## 12.9 A clone is not a snapshot
+
+The distinction is worth stating because the two are easy to confuse and answer different
+questions.
+
+| | Clone | Snapshot |
+|---|---|---|
+| Pins | one table, one version | many tables, one consistent position |
+| Appears as | a table in the catalogue | a name a query quotes |
+| Read by | its own name | any table's name, *as of* it |
+| Cost | one log with no files | one small document |
+| Dropping it | a schema change | not |
+
+A clone freezes a **thing**. A snapshot freezes a **moment**. Somebody comparing two quarters
+wants clones; somebody who needs four tables to agree wants a snapshot.
+
+They share the reclamation machinery, and deliberately so. Reclamation asks exactly one
+question — *"does anything still read this?"* — and both can answer yes. They are unioned into
+one input rather than becoming two rules, because two rules disagree eventually and the one that
+loses deletes a file somebody is reading.
+
+Snapshots are Chapter 19 §19.7a and [ADR-0019](../../adr/0019-named-snapshots.md).
+
+
 ## 12.10 Status, and what would reopen this
 
 Cloning is **complete**: its design gate was cleared before any code was written, and all five

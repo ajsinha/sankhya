@@ -54,7 +54,9 @@ pub(crate) fn run_session_statement(
     // Listed by name rather than matched by a pattern. A pattern broad enough to be safe would
     // refuse the settings drivers need, and one narrow enough to be convenient would fail open
     // --- and failing open here is indistinguishable from working.
-    const CHANGES_AN_ANSWER: &[&str] = &["SNAPSHOT", "SANKHYA.SNAPSHOT", "READ_AS_OF"];
+    // `SNAPSHOT` is no longer here: it is **honoured** now rather than refused, which is the
+    // only other acceptable answer. `READ_AS_OF` stays, because nothing reads it.
+    const CHANGES_AN_ANSWER: &[&str] = &["READ_AS_OF"];
     if matches!(first, "SET" | "RESET") {
         let named = compact
             .split_whitespace()
