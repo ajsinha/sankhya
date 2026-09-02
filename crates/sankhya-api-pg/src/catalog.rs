@@ -65,6 +65,12 @@ pub enum CatalogQuery {
     },
     /// The columns of a table.
     Columns {
+        /// The schema named in the `WHERE` clause, if one was.
+        ///
+        /// Read as well as the table, because `orders` may exist in several schemas and a
+        /// client that asked about one of them must not be handed every one's columns
+        /// interleaved --- which is a wrong answer, not a wide one.
+        schema: Option<String>,
         /// Which table, if the query named one.
         table: Option<String>,
     },
@@ -104,10 +110,33 @@ pub struct CatalogColumn {
 /// these programmatically and no two produce identical text. Matching literally would work
 /// for the client it was written against and fail for the next one, which is the failure
 /// mode this whole module exists to avoid.
+///
+/// # Why the matching ignores string literals
+///
+/// It did not, and the consequence was a **wrong answer reported as a correct one**. This
+/// recognises a catalogue query by looking for a catalogue name anywhere in the text, and a
+/// catalogue name can appear in the text as *data*:
+///
+/// ```sql
+/// SELECT count(*) FROM orders WHERE note = 'pg_class'
+/// ```
+///
+/// That is an ordinary query over a user's table. It was answered with the list of tables, with
+/// no error, and the client had no way to tell. A refusal would have been recoverable; a wrong
+/// answer presented as a right one is the failure this whole system is built to avoid.
+///
+/// So the *structure* is matched against the statement with its literals removed, while the
+/// values a catalogue query needs --- `table_name = 'orders'` --- are still read from the
+/// original. Structure and data are different things, and this module had been treating them
+/// as one string.
 #[must_use]
 pub fn recognise(sql: &str) -> Option<CatalogQuery> {
     let normalised = sql.trim().trim_end_matches(';').to_lowercase();
     let compact = normalised.split_whitespace().collect::<Vec<_>>().join(" ");
+    // What the statement says, with everything the user *quoted* taken out. A catalogue name
+    // inside quotes is a value, and a value must never decide which handler answers.
+    let structure = without_literals(&compact);
+    let compact = structure.as_str();
 
     if compact == "select 1" {
         return Some(CatalogQuery::Ping);
@@ -121,7 +150,7 @@ pub fn recognise(sql: &str) -> Option<CatalogQuery> {
         });
     }
     if compact.contains("current_setting(") {
-        let name = between(&compact, "current_setting(", ")")
+        let name = between(&normalised_compact(&normalised), "current_setting(", ")")
             .unwrap_or_default()
             .trim_matches(|c| c == '\'' || c == '"')
             .to_string();
@@ -139,13 +168,15 @@ pub fn recognise(sql: &str) -> Option<CatalogQuery> {
     // The rule is specific-to-general: a query naming a relation catalogue is asking about
     // relations, whatever else it joins to.
     if compact.contains("pg_attribute") || compact.contains("information_schema.columns") {
+        let text = normalised_compact(&normalised);
         return Some(CatalogQuery::Columns {
-            table: literal_after(&compact, "table_name"),
+            schema: literal_after(&text, "table_schema"),
+            table: literal_after(&text, "table_name"),
         });
     }
     if compact.contains("pg_class") || compact.contains("information_schema.tables") {
         return Some(CatalogQuery::Tables {
-            schema: literal_after(&compact, "table_schema"),
+            schema: literal_after(&normalised_compact(&normalised), "table_schema"),
         });
     }
     if compact.contains("pg_namespace") || compact.contains("information_schema.schemata") {
@@ -157,6 +188,47 @@ pub fn recognise(sql: &str) -> Option<CatalogQuery> {
     None
 }
 
+/// The statement with its whitespace collapsed, literals intact.
+///
+/// The values a catalogue query carries --- `table_name = 'orders'` --- live in its literals,
+/// so the extractors read this while the *recogniser* reads [`without_literals`].
+fn normalised_compact(normalised: &str) -> String {
+    normalised.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The statement with every single-quoted literal replaced by an empty one.
+///
+/// `''` inside a literal is an escaped quote, not the end of it --- the standard SQL escape ---
+/// so `'it''s'` is one literal and not two. Getting that wrong would leave the second half of
+/// such a value in the structure, which is the same defect one level down.
+///
+/// An unterminated quote consumes the rest of the statement. That is the conservative reading:
+/// text after an unclosed quote is not structure this can rely on, and treating it as structure
+/// is how a quote becomes a way to choose the handler.
+fn without_literals(sql: &str) -> String {
+    let mut out = String::with_capacity(sql.len());
+    let mut characters = sql.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character != '\'' {
+            out.push(character);
+            continue;
+        }
+        out.push_str("''");
+        while let Some(inside) = characters.next() {
+            if inside != '\'' {
+                continue;
+            }
+            // A doubled quote is an escaped one: consume it and stay inside the literal.
+            if characters.peek() == Some(&'\'') {
+                characters.next();
+                continue;
+            }
+            break;
+        }
+    }
+    out
+}
+
 /// The text between two markers.
 fn between<'a>(text: &'a str, open: &str, close: &str) -> Option<&'a str> {
     let start = text.find(open)? + open.len();
@@ -166,13 +238,39 @@ fn between<'a>(text: &'a str, open: &str, close: &str) -> Option<&'a str> {
 }
 
 /// The quoted literal following `column =` in a `WHERE` clause.
+///
+/// # Why every occurrence is tried, not the first
+///
+/// It took the first, and the first occurrence of `table_schema` in
+/// `SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema = 'sales'`
+/// is in the **projection**, where the next character is a comma. So the filter was silently
+/// dropped and every table in the warehouse came back --- for a client that had asked for one
+/// schema and had no way to tell it had been given all of them.
+///
+/// That is the disclosure shape this module is otherwise careful about, arriving as a
+/// convenience: a tool narrowing to `current_schema()` was shown every schema there is.
 fn literal_after(text: &str, column: &str) -> Option<String> {
-    let at = text.find(column)? + column.len();
-    let rest = text.get(at..)?.trim_start();
-    let rest = rest.strip_prefix('=')?.trim_start();
-    let rest = rest.strip_prefix('\'')?;
-    let end = rest.find('\'')?;
-    rest.get(..end).map(str::to_string)
+    let mut from = 0usize;
+    while let Some(found) = text.get(from..)?.find(column) {
+        let at = from + found + column.len();
+        from = at;
+        let Some(rest) = text.get(at..) else {
+            return None;
+        };
+        let rest = rest.trim_start();
+        let Some(rest) = rest.strip_prefix('=') else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let Some(rest) = rest.strip_prefix('\'') else {
+            continue;
+        };
+        let Some(end) = rest.find('\'') else {
+            continue;
+        };
+        return rest.get(..end).map(str::to_string);
+    }
+    None
 }
 
 /// Answer a catalogue query from this server's own tables.
@@ -233,7 +331,7 @@ pub fn answer(
                 })
                 .collect(),
         },
-        CatalogQuery::Columns { table } => CatalogResult {
+        CatalogQuery::Columns { schema, table } => CatalogResult {
             fields: vec![
                 FieldDescription::text("table_schema", oid::TEXT, -1),
                 FieldDescription::text("table_name", oid::TEXT, -1),
@@ -245,6 +343,7 @@ pub fn answer(
             rows: tables
                 .iter()
                 .filter(|t| table.as_ref().is_none_or(|name| &t.name == name))
+                .filter(|t| schema.as_ref().is_none_or(|named| &t.schema == named))
                 .flat_map(|t| {
                     t.columns.iter().enumerate().map(move |(index, column)| {
                         vec![

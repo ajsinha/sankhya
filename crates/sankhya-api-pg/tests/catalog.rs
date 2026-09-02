@@ -301,3 +301,116 @@ fn a_setting_this_server_does_not_have_returns_empty_rather_than_failing() {
     let result = ask("SHOW some_extension_setting");
     assert_eq!(cell(&result, 0, 0), Some(String::new()));
 }
+
+#[test]
+fn a_catalogue_name_inside_a_literal_is_data_and_not_a_catalogue_query() {
+    // The defect the adversarial review found, and the worst class there is: a **wrong answer
+    // reported as a correct one**. `SELECT count(*) FROM orders WHERE note = 'pg_class'` is an
+    // ordinary query over a user's table, and it was answered with the list of tables --- no
+    // error, no way for the client to tell.
+    //
+    // A refusal would have been recoverable. A wrong answer presented as a right one is what
+    // this system exists to make impossible.
+    for sql in [
+        "SELECT count(*) FROM orders WHERE note = 'pg_class'",
+        "SELECT id FROM orders WHERE note = 'pg_type' LIMIT 2",
+        "SELECT id FROM orders WHERE note = 'information_schema.tables'",
+        "SELECT id FROM orders WHERE note = 'version()'",
+        "SELECT id FROM orders WHERE note = 'current_schema'",
+        "SELECT id FROM orders WHERE note = 'pg_attribute'",
+        "SELECT id FROM orders WHERE note = 'pg_namespace'",
+    ] {
+        assert!(
+            recognise(sql).is_none(),
+            "a value decided which handler answered: {sql}"
+        );
+    }
+}
+
+#[test]
+fn an_escaped_quote_does_not_end_the_literal_it_is_inside() {
+    // `''` inside a literal is one escaped quote, not the end of one. Reading it as the end
+    // leaves the rest of the value in the structure, which is the same defect one level down:
+    // the second half of a user's text would choose the handler.
+    assert!(
+        recognise("SELECT id FROM orders WHERE note = 'it''s pg_class'").is_none(),
+        "the tail of an escaped literal was read as structure"
+    );
+}
+
+#[test]
+fn a_real_catalogue_query_is_still_recognised_with_its_literal_intact() {
+    // The other half. Removing literals must not remove the *values* a catalogue query
+    // carries --- `table_name = 'orders'` is how a client says which table it means.
+    let recognised = recognise(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'orders'",
+    );
+    assert_eq!(
+        recognised,
+        Some(CatalogQuery::Columns { schema: None, table: Some("orders".to_string()) })
+    );
+
+    let recognised = recognise(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = 'sales'",
+    );
+    assert_eq!(
+        recognised,
+        Some(CatalogQuery::Tables { schema: Some("sales".to_string()) })
+    );
+}
+
+#[test]
+fn an_unterminated_quote_does_not_let_a_value_choose_the_handler() {
+    // Conservative on purpose: text after an unclosed quote is not structure anything can rely
+    // on, so it is all treated as inside the literal. The alternative lets a single quote
+    // character decide which handler answers.
+    assert!(recognise("SELECT id FROM orders WHERE note = 'pg_class").is_none());
+}
+
+#[test]
+fn a_filter_is_read_from_the_where_clause_and_not_from_the_projection() {
+    // The first occurrence of `table_schema` in this statement is in the SELECT list, where
+    // the next character is a comma --- so taking the first occurrence dropped the filter and
+    // returned every table in the warehouse. The client had asked for one schema and had no
+    // way to tell it had been given all of them.
+    assert_eq!(
+        recognise(
+            "SELECT table_schema, table_name FROM information_schema.tables \
+             WHERE table_schema = 'sales'"
+        ),
+        Some(CatalogQuery::Tables { schema: Some("sales".to_string()) })
+    );
+    assert_eq!(
+        recognise(
+            "SELECT table_name, column_name FROM information_schema.columns \
+             WHERE table_name = 'orders'"
+        ),
+        Some(CatalogQuery::Columns { schema: None, table: Some("orders".to_string()) })
+    );
+}
+
+#[test]
+fn a_query_with_no_filter_narrows_to_nothing_rather_than_guessing() {
+    // The other half: no `=` anywhere means no filter, not the first name that appeared.
+    assert_eq!(
+        recognise("SELECT table_schema, table_name FROM information_schema.tables"),
+        Some(CatalogQuery::Tables { schema: None })
+    );
+}
+
+#[test]
+fn a_column_query_that_names_a_schema_is_narrowed_to_it() {
+    // `orders` may exist in several schemas. A client that asked about one of them and got
+    // every one's columns interleaved has a wrong answer, not a wide one --- and no way to
+    // tell which rows belong to the table it meant.
+    assert_eq!(
+        recognise(
+            "SELECT column_name FROM information_schema.columns \
+             WHERE table_schema = 'sales' AND table_name = 'orders'"
+        ),
+        Some(CatalogQuery::Columns {
+            schema: Some("sales".to_string()),
+            table: Some("orders".to_string()),
+        })
+    );
+}

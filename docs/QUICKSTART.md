@@ -88,7 +88,7 @@ availability event.
 ## 3. Run the tests
 
 ```bash
-cargo test --workspace          # 2,301 tests, none of which needs a database
+cargo test --workspace          # 2,311 tests, none of which needs a database
 ```
 
 Everything here runs without a database, in well under a minute. Nothing is mocked: the
@@ -229,8 +229,8 @@ $ psql ... -c "SELECT region, count(*) AS n, round(sum(amount)) AS total
  region |  n  | total
 --------+-----+--------
  north  | 334 | 250250
- south  | 361 | 249251
-        | 361 | 249750
+ south  | 333 | 249251
+        | 333 | 249750
 (3 rows)
 ```
 

@@ -948,9 +948,19 @@ impl Server {
     /// planning against a registered catalogue when the surface grows a resolver of its own.
     fn register_cubes(&self, context: &SessionContext, principal: &Principal, sql: &str) {
         let cubes = self.cubes();
-        if cubes.is_empty() {
-            return;
-        }
+        // No early return on an empty set, and the omission was not free.
+        //
+        // This used to give up here, which skipped `describe::register` below --- so on a
+        // warehouse with no cubes, `SELECT * FROM cubes()` answered *"table function 'cubes'
+        // not found"*. A client could not tell **"no cubes yet"** from **"this server does not
+        // do cubes"**, which are opposite facts with opposite responses, on the one warehouse
+        // where the question is most likely to be asked: a new one.
+        //
+        // It is the same defect as a projected query over an empty table, one level up. A
+        // surface that exists only once it has something to say is a surface nobody can build
+        // a picker on. Registering a catalogue whose contents are empty is not pretending ---
+        // the graph functions do exactly this, deliberately, and say so.
+        //
         // Describing a cube reads no data, so it is registered whatever the statement says.
         // Hydration is the expensive half and only that is gated on the statement naming a
         // navigation function --- a client listing cubes must not pay for reading one.
@@ -1581,7 +1591,8 @@ impl Server {
         let mut candidate = (*current).clone();
         let moved =
             crate::warehouse::refresh(&mut candidate, self.settings.read_as_of, &self.log_cache);
-        if moved == 0 {
+        let arrived = crate::adopt::new_tables(self, &mut candidate);
+        if moved == 0 && arrived == 0 {
             // The ordinary case: nothing has committed since the last statement, so there is
             // nothing to publish and no reason to take the write lock at all.
             return current;
@@ -1589,6 +1600,24 @@ impl Server {
         let replacement = Arc::new(candidate);
         *self.servable.write() = Arc::clone(&replacement);
         replacement
+    }
+
+    /// Where this server's warehouse is, for the modules that walk it.
+    #[must_use]
+    pub(crate) fn warehouse_path(&self) -> &std::path::Path {
+        &self.settings.warehouse
+    }
+
+    /// The published position this server reads as of.
+    #[must_use]
+    pub(crate) fn read_as_of(&self) -> sankhya_types::Lsn {
+        self.settings.read_as_of
+    }
+
+    /// The shared log cache, so a second reader does not re-read what the first just did.
+    #[must_use]
+    pub(crate) fn log_cache(&self) -> &sankhya_table_delta::LogCache {
+        &self.log_cache
     }
 
     /// The principal a Flight request acts as.

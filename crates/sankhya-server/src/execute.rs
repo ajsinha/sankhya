@@ -40,6 +40,27 @@ use std::sync::Arc;
 pub struct ServableTable {
     /// Where it lives.
     pub reference: TableRef,
+    /// The table whose read right this one's derives from, when that is not itself.
+    ///
+    /// # Why a clone is authorized as something else
+    ///
+    /// `ADR-0016` makes a clone a **reference** to its origin's files rather than a copy, so
+    /// the right to read it *is* the right to read what it references. A clone created a
+    /// moment ago has no policy rule of its own, so authorizing it by its own name refuses it
+    /// --- a table you can create and cannot read.
+    ///
+    /// That rule already existed in `Server::readable`, which resolves a clone through its
+    /// root before asking the policy. Carrying it here puts the same rule in front of session
+    /// registration, so a clone becomes queryable the moment it exists rather than at the next
+    /// restart --- which is what it did, and what made cloning unusable.
+    pub authorize_as: Option<TableRef>,
+    /// What it inherits from the table it was cloned from, if it is a clone.
+    ///
+    /// Carried so that **re-resolving** a clone keeps the splice. Refreshing it through the
+    /// ordinary path would resolve a log that names no files and quietly replace a working
+    /// provider with an empty one --- a table that answered correctly until the first time its
+    /// origin committed, and silently emptied afterwards.
+    pub inherited: Option<sankhya_readpath::Inherited>,
     /// Where the filesystem holds it.
     ///
     /// Carried alongside the provider because a provider answers scans and deliberately
@@ -188,8 +209,10 @@ pub fn session_and_contested(
         // No guard, no registration. A table the caller may not read is not present in the
         // session at all, so a query naming it fails to resolve rather than planning and
         // then returning nothing — which would be indistinguishable from an empty table.
-        let Some(guard) = Guard::authorize(policy, principal, &table.reference, Action::Read)
-        else {
+        // Authorized as whatever this table's read right derives from --- itself for an
+        // ordinary table, its root for a clone.
+        let authority = table.authorize_as.as_ref().unwrap_or(&table.reference);
+        let Some(guard) = Guard::authorize(policy, principal, authority, Action::Read) else {
             continue;
         };
         let secured: Arc<dyn TableProvider> = Arc::new(

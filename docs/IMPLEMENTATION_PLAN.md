@@ -1616,7 +1616,142 @@ demonstrated rather than claimed.
 
 ---
 
-## 13g. M16 — The Java and Rust SDKs
+## 13g. M17 — Named snapshots
+
+**Immediately after M14**, by owner directive 2026-09-01. Ahead of `M15` and `M16`, which is a
+deliberate reordering: these four sections are what makes the system usable for the analysis it
+was built for, and a Kafka consumer does not help anybody who cannot pin a consistent read.
+
+### What it is
+
+A **name** for a consistent position across many tables, pinned so the files it references stay
+alive, and quotable by a query or a run.
+
+### Why it is not a clone
+
+A clone pins **one table at one version**. A market-risk run reads the trade population, the FX
+rates, the curves and the hierarchy, and it must read all of them **as of one instant** ---
+otherwise the reconciliation problem this system exists to remove reappears *inside a single
+query*.
+
+The machinery is already there and has no surface: the read path takes a target position and
+splices tiers against it, and `read_as_of` is that position read once at startup. What is
+missing is a way to name a position, keep it, and hand the name to something.
+
+Nearly free, because nothing is copied: a snapshot is a label on a consistent point plus a rule
+that keeps its files alive --- the same reclamation machinery a clone already uses.
+
+### The gate
+
+**An ADR before any code**, answering: what a snapshot pins when a table is created *after* it;
+what a read of a snapshot that has been reclaimed says; whether a snapshot may be taken of
+tables the caller cannot read; and whether a snapshot expires, given `RSK-35`.
+
+---
+
+## 13h. M18 — Derived results: materialised queries and user merge functions
+
+**After M17.** Two capabilities that share one body of machinery, which is why they are one
+milestone rather than two.
+
+### Materialised ordinary queries
+
+[ADR-0014](adr/0014-materialized-views-and-the-cube-lifetime.md) has been **Proposed since
+2026-08-28** and this closes it. A maintained cube is already a materialized view in every
+respect that costs engineering effort --- declaration, versioning, a staleness target that is
+checked rather than estimated, refresh with no caller, reclamation of superseded results,
+serving under policy with completeness carried through.
+
+What a cube cannot express is a derived result that is **not an aggregate**: a denormalising
+join produces rows, not cells, and has no measures and no additivity. It therefore cannot answer
+a coarser question from a finer stored one --- every query either matches the view or does not.
+That is a real difference in what *refresh* and *serve* mean, and it is why "reuse the cube
+lifetime" is nearly right and therefore dangerous.
+
+### User-supplied merge functions
+
+**Owner directive 2026-09-01.** A measure's composition rule becomes extensible: `Sum`, `Count`,
+`Min`, `Max`, `First` and `Last` remain the arithmetic defaults, chosen explicitly and never
+defaulted, and a measure may instead name a **user-supplied merge function**. Python first, then
+Rust, then C++ and Java --- each through the same contract.
+
+This runs through [ADR-0010](adr/0010-external-aggregations.md)'s decided mechanism: **out of
+process, behind Arrow IPC**, killable. A looping or panicking merge is a sidecar that dies, not
+a query engine that takes the audit chain and every other tenant with it.
+
+**The contract is the author's.** A merge function must be associative and commutative where the
+lattice composes in an order the planner chooses, and *by owner decision the author guarantees
+that* --- the server does not verify it as a precondition. That is a deliberate trade: the
+alternative refuses useful functions it cannot prove things about.
+
+**What the server owes in return is visibility.** A cube composes a coarse answer from finer
+cuboids in whatever order the plan picks, so a merge that is not associative returns different
+numbers on different days, each individually plausible. So:
+
+1. The rule is **declared and readable** --- it appears in `cube_measures()` and in the audit,
+   never inferred.
+2. A **diagnostic** composes a sample of real cuboids in several orders and reports disagreement.
+   It reports; it does not block. An author who wants the check has it, and one who knows their
+   function is fine pays nothing.
+3. A merge that **fails** --- the sidecar dies, the call times out --- is a refusal, never a
+   silent fall back to `Sum`. Falling back would answer with arithmetic the author explicitly
+   rejected.
+
+### Why it is worth the risk
+
+The prize is composability for measures that have none today. A variance composes from
+(count, sum, sum-of-squares); a P&L attribution or a netting rule composes by a rule only its
+author knows. Without this each is `Rule::None` --- correct, and meaning *"rescan the base"*,
+which is the cost the whole cuboid mechanism exists to avoid.
+
+---
+
+## 13i. M19 — The data lifecycle policy
+
+**After M18.** Owner directive 2026-09-01.
+
+### What it is
+
+One declaration governing how data ages across **both** tiers: rows older than a stated age leave
+the transactional store, a whole table can be pushed across on demand, and compaction, tiering
+and expiry are hooks on the same policy rather than separate schedules.
+
+### The reframe that makes it safe
+
+**Nothing moves.** Capture already publishes every transactional row into the analytical tier, so
+*"move rows older than N days to OLAP"* is really: **release** them on the transactional side,
+because the analytical copy already exists.
+
+That changes the risk completely. A move is a copy plus a delete with a window where both or
+neither exist. A release is a deletion **gated on proof** that the data is already elsewhere ---
+and reconciliation, a shipped command and a live metric, is what produces that proof.
+
+### The four properties
+
+1. **Release is gated on proof, never on a timer.** A partition leaves when reconciliation says
+   every row of it is published and verified. Products that move on schedule and reconcile never
+   are how an estate acquires a permanent function whose only output explains why two systems
+   disagree on a row count.
+2. **Release is a partition detach, never a `DELETE`.** `DEC-23` earns no exception on the
+   transactional side either. Detached is reversible for a grace period, exactly as quarantine
+   expiry is.
+3. **A read of released data is refused by name.** *"That range moved to the analytical tier on
+   2026-04-01"* --- never a short answer presented as complete. This is the one nearly every
+   product gets wrong: data ages out, the application returns fewer rows, the query looks fine
+   and nobody notices for a quarter.
+4. **One document governs both tiers.** Today an estate keeps transactional retention in one
+   team's cron and analytical retention in another's, and they drift. No vendor ships this
+   because no vendor owns both halves.
+
+### The gate
+
+**An ADR before any code.** The question with no obvious answer is the third property: what a
+query asking for released data is told, and whether a policy may instead make the two tiers
+answer as one.
+
+---
+
+## 13j. M16 — The Java and Rust SDKs
 
 **After M14.** Named here so that `M14`'s contract is written for three bindings rather than
 retrofitted to them. Each is a binding over the contract `M14` specifies, and neither may carry
