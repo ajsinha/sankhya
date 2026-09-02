@@ -290,25 +290,17 @@ fn two_snapshots_pinning_one_table_contribute_both_versions() {
 
 // --- reading as of one -----------------------------------------------------
 
-#[test]
-fn reading_as_of_a_snapshot_reads_the_past_and_not_the_present() {
-    // The property the whole feature exists for, and the only test that can tell the two
-    // apart: the table must **change** after the snapshot is taken. A test over an unchanging
-    // warehouse passes whether the snapshot is honoured or ignored.
+/// Publish `rows` more orders, through the product's own writer.
+///
+/// A commit written by hand would encode the storage layout into the fixture and go on
+/// encoding the *old* layout after it changed --- so a test whose fixture cannot have the
+/// write path's bug is testing less than it looks like it is.
+fn append_orders(warehouse: &std::path::Path, rows: i64) {
     use arrow_array::{Float64Array, Int64Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use sankhya_publish::Publication;
     use std::sync::Arc;
 
-    let dir = tempfile::tempdir().expect("a directory");
-    let warehouse = dir.path().join("warehouse");
-    write_warehouse(&warehouse);
-    let server = start(&warehouse, &dir.path().join("data"));
-
-    let before: usize = query_outcome(server.port, "SELECT id FROM sales.orders").expect("reads");
-    query_outcome(server.port, "CREATE SNAPSHOT eod EXPIRE AFTER 90 DAYS").expect("taking");
-
-    // A commit *after* the snapshot, written through the product's own writer.
     let columns = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("region", DataType::Utf8, true),
@@ -317,7 +309,7 @@ fn reading_as_of_a_snapshot_reads_the_past_and_not_the_present() {
         Field::new("margin_pct", DataType::Float64, false),
     ]));
     let publication = Publication::external(warehouse.join("sales").join("orders"), "orders");
-    let ids: Vec<i64> = (10_000..10_050).collect();
+    let ids: Vec<i64> = (10_000..10_000 + rows).collect();
     #[allow(clippy::cast_precision_loss)]
     let amounts: Vec<f64> = ids.iter().map(|id| *id as f64).collect();
     let batch = RecordBatch::try_new(
@@ -331,14 +323,32 @@ fn reading_as_of_a_snapshot_reads_the_past_and_not_the_present() {
         ],
     )
     .expect("a batch");
+    let version = publication.next_version();
     publication
         .append(
-            publication.next_version(),
-            "part-0004.parquet",
+            version,
+            &format!("part-{version:04}.parquet"),
             &batch,
-            sankhya_types::Lsn::new(5_000),
+            sankhya_types::Lsn::new(5_000 + u64::try_from(rows).unwrap_or(0)),
         )
         .expect("publishing after the snapshot");
+}
+
+#[test]
+fn reading_as_of_a_snapshot_reads_the_past_and_not_the_present() {
+    // The property the whole feature exists for, and the only test that can tell the two
+    // apart: the table must **change** after the snapshot is taken. A test over an unchanging
+    // warehouse passes whether the snapshot is honoured or ignored.
+    let dir = tempfile::tempdir().expect("a directory");
+    let warehouse = dir.path().join("warehouse");
+    write_warehouse(&warehouse);
+    let server = start(&warehouse, &dir.path().join("data"));
+
+    let before: usize = query_outcome(server.port, "SELECT id FROM sales.orders").expect("reads");
+    query_outcome(server.port, "CREATE SNAPSHOT eod EXPIRE AFTER 90 DAYS").expect("taking");
+
+    // A commit *after* the snapshot, written through the product's own writer.
+    append_orders(&warehouse, 50);
 
     let after: usize = query_outcome(server.port, "SELECT id FROM sales.orders").expect("reads");
     assert!(after > before, "the fixture did not change: {before} then {after}");
@@ -363,6 +373,96 @@ fn reading_as_of_a_snapshot_reads_the_past_and_not_the_present() {
         after,
         "a session setting leaked to another connection"
     );
+}
+
+#[test]
+fn one_snapshot_holds_two_tables_at_one_instant_while_both_move_on() {
+    // **The property that makes a snapshot not a clone**, and nothing demonstrated it. The
+    // test above moves *one* table, which proves the setting is honoured and says nothing
+    // about the thing the feature exists for: a run that reads a population, a set of rates,
+    // a set of curves and a hierarchy must read all of them as of one instant, or the
+    // reconciliation problem this system exists to remove reappears inside a single query.
+    //
+    // A snapshot that pinned each table at whatever version it happened to reach would be a
+    // clone with extra steps, and one table cannot tell the two apart.
+    use arrow_array::{RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+    use sankhya_publish::Publication;
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().expect("a directory");
+    let warehouse = dir.path().join("warehouse");
+    write_warehouse(&warehouse);
+    let server = start(&warehouse, &dir.path().join("data"));
+
+    let orders_before = query_outcome(server.port, "SELECT id FROM sales.orders").expect("reads");
+    let regions_before =
+        query_outcome(server.port, "SELECT region FROM sales.regions").expect("reads");
+    query_outcome(server.port, "CREATE SNAPSHOT eod EXPIRE AFTER 90 DAYS").expect("taking");
+
+    // **Both** tables move after it, and by different amounts, so a reader that answered one
+    // from the past and one from the present is visible in the numbers rather than only in a
+    // total that happens to match.
+    append_orders(&warehouse, 60);
+    let members = Arc::new(Schema::new(vec![
+        Field::new("region", DataType::Utf8, false),
+        Field::new("area", DataType::Utf8, false),
+    ]));
+    let regions = Publication::external(warehouse.join("sales").join("regions"), "regions");
+    let batch = RecordBatch::try_new(
+        Arc::clone(&members),
+        vec![
+            Arc::new(StringArray::from(vec!["east", "west"])),
+            Arc::new(StringArray::from(vec!["east", "west"])),
+        ],
+    )
+    .expect("a batch");
+    regions
+        .append(
+            regions.next_version(),
+            "part-0001.parquet",
+            &batch,
+            sankhya_types::Lsn::new(9_000),
+        )
+        .expect("publishing members after the snapshot");
+
+    let orders_now = query_outcome(server.port, "SELECT id FROM sales.orders").expect("reads");
+    let regions_now =
+        query_outcome(server.port, "SELECT region FROM sales.regions").expect("reads");
+    assert!(orders_now > orders_before, "the fact table did not move");
+    assert!(regions_now > regions_before, "the dimension table did not move");
+
+    // One connection, one setting, two tables.
+    let mut session = Session::open(server.port);
+    session.run("SET SNAPSHOT = 'eod'").expect("setting");
+    assert_eq!(
+        session.run("SELECT id FROM sales.orders").expect("reads"),
+        orders_before,
+        "the fact table was answered from the present"
+    );
+    assert_eq!(
+        session.run("SELECT region FROM sales.regions").expect("reads"),
+        regions_before,
+        "the dimension table was answered from the present --- which is the failure a snapshot \
+         exists to prevent, arriving through the mechanism meant to prevent it"
+    );
+
+    // And a join across the two, which is where a mixed instant does its real damage: it
+    // returns rows, and they look like an answer.
+    assert_eq!(
+        session
+            .run(
+                "SELECT o.id FROM sales.orders o JOIN sales.regions r ON o.region = r.region"
+            )
+            .expect("reads"),
+        session
+            .run("SELECT id FROM sales.orders WHERE region IN ('north', 'south')")
+            .expect("reads"),
+        "the join saw members that did not exist when the snapshot was taken"
+    );
+
+    session.run("RESET SNAPSHOT").expect("resetting");
+    assert_eq!(session.run("SELECT id FROM sales.orders").expect("reads"), orders_now);
 }
 
 #[test]

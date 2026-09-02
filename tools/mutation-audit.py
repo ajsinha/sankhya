@@ -4098,6 +4098,15 @@ CATALOGUE = [
      "    let Some(named) = None::<&str> else {",
      "sankhya-server"),
 
+    # The property that makes a snapshot not a clone, and nothing demonstrated it until
+    # 2026-09-02: the test that read as of one moved a single table, which proves the setting
+    # is honoured and says nothing about many tables sharing one instant.
+    ("server: pin each table at its own version rather than at the snapshot's",
+     "crates/sankhya-server/src/snapshots.rs",
+     "        let Some(at) = snapshot.pins(&qualified) else {",
+     "        let Some(at) = snapshot.pins(&qualified).map(|_| Pinned { version: u64::MAX }) else {",
+     "sankhya-server"),
+
     ("server: answer a table the snapshot does not name from the present",
      "crates/sankhya-server/src/snapshots.rs",
      "        let Some(at) = snapshot.pins(&qualified) else {\n            // Not named by this snapshot: it did not exist when the snapshot was taken, so it\n            // is left out and a statement naming it fails to resolve.\n            continue;\n        };",
