@@ -1,0 +1,28 @@
+[package]
+name         = "sankhya-functions"
+description  = "The built-in function catalogue: every kernel, named on the SQL surface."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 3
+
+[lints]
+workspace = true
+
+[dependencies]
+sankhya-math  = { path = "../sankhya-math" }
+sankhya-error = { path = "../sankhya-error" }
+arrow-array   = { workspace = true }
+arrow-schema  = { workspace = true }
+datafusion    = { workspace = true }
+
+[dev-dependencies]
+# For `vec_of`, which builds an array in a statement. A dev-dependency rather than a real
+# one: this crate must not depend on the session layer, and a test needs a way to write a
+# matrix down.
+sankhya-olap = { path = "../sankhya-olap" }
+tokio = { workspace = true }

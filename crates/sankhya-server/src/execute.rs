@@ -158,6 +158,15 @@ pub fn session_and_contested(
     sankhya_olap::register_constructors(&context);
     sankhya_olap::register_vector_functions(&context);
     sankhya_olap::register_matrix_functions(&context);
+    // The wider catalogue: distributions, the special functions, and the decompositions.
+    // One call, so a session has all of it or none --- a partially registered set means a
+    // query works on one node and fails on another, and the difference is invisible until
+    // somebody runs the same statement twice.
+    sankhya_functions::register(&context);
+    // The catalogue over **everything** this session has, not only the distributions: a
+    // `functions()` that listed one crate's would be a catalogue that is wrong about the
+    // thing it exists to describe.
+    sankhya_functions::describe::register(&context, sankhya_functions::catalogue::everything());
 
     // The graph functions, against an empty catalogue.
     //
@@ -462,6 +471,19 @@ fn pg_type(arrow: &DataType) -> (i32, i16) {
         DataType::Timestamp(_, Some(_)) => (oid::TIMESTAMPTZ, 8),
         DataType::Timestamp(_, None) => (oid::TIMESTAMP, 8),
         DataType::Binary | DataType::LargeBinary => (oid::BYTEA, -1),
+        // A vector is an array of doubles, and PostgreSQL has had a type for that for
+        // decades. Sent as `text` --- which it was --- a client receives the eight characters
+        // `[1.0, 2.0]` and has to parse them, and will get it wrong on a null element, on a
+        // locale that renders a decimal comma, and on an empty array against a null one.
+        //
+        // The rendering in `render_row` changes with this and must stay with it: a client
+        // told a value is `_float8` will decode PostgreSQL's array syntax, so announcing the
+        // OID while sending Arrow's rendering would be worse than sending text.
+        DataType::List(item) | DataType::LargeList(item) | DataType::FixedSizeList(item, _)
+            if matches!(item.data_type(), DataType::Float64 | DataType::Float32) =>
+        {
+            (oid::FLOAT8_ARRAY, -1)
+        }
         // Everything else is rendered as text. Honest rather than clever: a client told a
         // value is text treats it as text, which is what it is going to receive.
         _ => (oid::TEXT, -1),
@@ -525,6 +547,16 @@ fn render_value(array: &dyn Array, row: usize) -> String {
             .as_primitive::<types::TimestampMicrosecondType>()
             .value(row)
             .to_string(),
+        // An array of doubles, in PostgreSQL's own text syntax rather than Arrow's.
+        //
+        // `{1,2,3}`, not `[1.0, 2.0, 3.0]`. This travels with the `_float8` OID in `pg_type`
+        // and neither is correct without the other: a client told a value is an array will
+        // decode it as one, and Arrow's brackets are not that syntax.
+        DataType::List(item) | DataType::LargeList(item) | DataType::FixedSizeList(item, _)
+            if matches!(item.data_type(), DataType::Float64 | DataType::Float32) =>
+        {
+            render_double_array(array, row)
+        }
         // The generic path. Arrow's own display is used rather than a hand-written one,
         // because a hand-written renderer for every type is a long list of places to be
         // subtly wrong about a format nobody checks.
@@ -535,6 +567,43 @@ fn render_value(array: &dyn Array, row: usize) -> String {
                 .unwrap_or_default()
         }
     }
+}
+
+/// One row's array of doubles, in PostgreSQL's array syntax.
+///
+/// `{1,2,3}`, with a null element written as the bare word `NULL` --- which is how PostgreSQL
+/// distinguishes it from the string `"NULL"`, and why an element is not quoted.
+fn render_double_array(array: &dyn datafusion::arrow::array::Array, row: usize) -> String {
+    use datafusion::arrow::array::AsArray;
+    use arrow_array::types;
+
+    let values: Option<datafusion::arrow::array::ArrayRef> = match array.data_type() {
+        DataType::List(_) => Some(array.as_list::<i32>().value(row)),
+        DataType::LargeList(_) => Some(array.as_list::<i64>().value(row)),
+        DataType::FixedSizeList(_, _) => Some(array.as_fixed_size_list().value(row)),
+        _ => None,
+    };
+    let Some(values) = values else {
+        return String::new();
+    };
+
+    let mut rendered = String::from("{");
+    for index in 0..values.len() {
+        if index > 0 {
+            rendered.push(',');
+        }
+        if values.is_null(index) {
+            rendered.push_str("NULL");
+        } else if let Some(doubles) = values.as_primitive_opt::<types::Float64Type>() {
+            rendered.push_str(&doubles.value(index).to_string());
+        } else if let Some(floats) = values.as_primitive_opt::<types::Float32Type>() {
+            rendered.push_str(&floats.value(index).to_string());
+        } else {
+            rendered.push_str("NULL");
+        }
+    }
+    rendered.push('}');
+    rendered
 }
 
 /// A failure in the shape the wire wants.

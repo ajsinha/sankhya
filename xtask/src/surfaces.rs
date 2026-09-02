@@ -102,7 +102,182 @@ pub fn check(root: &Path) -> bool {
     if ok {
         println!("   {checked} SQL surface(s) registered, and every one is reachable");
     }
-    ok && every_crate_is_reachable_or_owned(root, &served)
+    let reachable = every_crate_is_reachable_or_owned(root, &served);
+    let named = every_kernel_has_a_name(root);
+    ok && reachable && named
+}
+
+/// A computational kernel that no SQL name calls, with the reason it is allowed to exist.
+///
+/// # Why this list is short and hard to add to
+///
+/// Everything here is a kernel a **user cannot invoke**. That is the failure this whole module
+/// exists for, applied one level down: `check` catches a crate that nothing reaches, and until
+/// 2026-09-02 nothing caught a *function* that nothing reaches --- so thirteen tested kernels
+/// sat in `sankhya-math` with no name on any surface, including linear regression and both
+/// quantile kernels. Written, tested, mutation-tested, and unusable.
+///
+/// An entry here must say why the kernel is **not** something a user would call. "We will
+/// expose it later" is not a reason; that is what the milestone in `IMPLEMENTATION_PLAN.md` is
+/// for, and a kernel awaiting exposure should fail this check until it has a name.
+const INTERNAL_KERNELS: &[(&str, &str)] = &[
+    ("reduce::deterministic_sum", "the reduction every other kernel is built on. Not a function anybody calls on a column --- SQL's own `sum` is that --- and exposing it would offer two spellings of one operation"),
+    ("reduce::exact_sum", "the fixed-point route inside `deterministic_sum`, and an implementation detail of it. A user choosing between them would be choosing an algorithm, not an answer: they return the same bits"),
+    ("reduce::combine_partials", "combines partial sums from a parallel reduction. Reachable only from a planner that partitioned the work, which is not something a statement expresses"),
+    ("vector::row_of", "reads one row out of a flat buffer. A layout helper, not an operation on data"),
+    ("vector::matvec", "the kernel behind `mat_vec`, which is its name on the surface"),
+    ("stats::mean", "the kernel behind `vec_mean`. `vector::mean` is the one the surface calls; this is the statistics module's own, and the two agree by construction"),
+    ("quantile::quantile_of_sum", "quantiles of a *running total* rather than of values, used by the cube's consolidation. It answers a question a statement cannot currently pose, and inventing a spelling for it before anything asks would be guessing at the shape"),
+];
+
+/// Every public kernel is callable by name from SQL, or listed with the reason it is not.
+///
+/// # What this catches that nothing else did
+///
+/// A crate can be reachable, its functions covered by unit tests, its behaviour pinned by
+/// mutation entries, its documentation accurate --- and the function can still be impossible
+/// to call. Every existing check passes in that state, because every existing check looks at
+/// the code rather than at the surface.
+///
+/// The reachability test is textual: a kernel is reached when some crate outside
+/// `sankhya-math` names it as `module::function`. Textual rather than semantic because the
+/// registration is textual --- a name string paired with a closure --- and a check that
+/// resolved types would be a compiler for the sake of a list.
+fn every_kernel_has_a_name(root: &Path) -> bool {
+    println!("== check-kernels ==");
+    let math = root.join("crates").join("sankhya-math").join("src");
+    let Ok(modules) = std::fs::read_dir(&math) else {
+        eprintln!("  UNREADABLE   {} could not be listed", math.display());
+        return false;
+    };
+
+    // Everything any crate but `sankhya-math` says, in one string. A kernel is reached when
+    // its qualified name appears in it.
+    let mut callers = String::new();
+    for entry in walk(&root.join("crates")) {
+        if entry.starts_with(&math) {
+            continue;
+        }
+        if entry.extension().is_some_and(|e| e == "rs") {
+            if let Ok(text) = std::fs::read_to_string(&entry) {
+                callers.push_str(&text);
+            }
+        }
+    }
+
+    let mut stranded: Vec<String> = Vec::new();
+    let mut named = 0usize;
+    let mut excused = 0usize;
+
+    for module in modules.flatten() {
+        let path = module.path();
+        if path.extension().is_none_or(|e| e != "rs") {
+            continue;
+        }
+        let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if name == "lib" {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in text.lines() {
+            let Some(rest) = line.strip_prefix("pub fn ") else {
+                continue;
+            };
+            let kernel: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if kernel.is_empty() {
+                continue;
+            }
+            let qualified = format!("{name}::{kernel}");
+            // A **call**, however the module was spelled at the call site. Requiring the
+            // module's own name reported thirty reachable kernels as stranded the first time
+            // a caller wrote `use sankhya_math::distribution as d`, and a check that cries
+            // wolf is one somebody silences.
+            //
+            // Two modules exporting one name share a match, which is why `stats::mean` carries
+            // an entry below rather than relying on this.
+            if INTERNAL_KERNELS.iter().any(|(listed, _)| *listed == qualified) {
+                excused += 1;
+            } else if is_named(&callers, &kernel) {
+                named += 1;
+            } else {
+                stranded.push(qualified);
+            }
+        }
+    }
+
+    for kernel in &stranded {
+        eprintln!(
+            "  NO SQL NAME  `sankhya_math::{kernel}` is written and tested and nothing calls
+             {:16}it. Give it a name on a surface, or list it in `INTERNAL_KERNELS` with the
+             {:16}reason a user would never call it. A kernel nobody can invoke is work that
+             {:16}was half done and looks finished.",
+            "", "", ""
+        );
+    }
+
+    if stranded.is_empty() {
+        println!("   {named} kernel(s) reachable by name, {excused} listed as internal");
+    }
+    stranded.is_empty()
+}
+
+/// Whether any caller mentions `::<kernel>` as a path.
+///
+/// # Why this is not a substring search for the call
+///
+/// A kernel reaches the surface two ways, and both had to be learned the hard way. It can be
+/// **called** --- `stats::variance(a, p)` --- or **passed** as a function reference, which is
+/// how half of them are registered: `VectorFunction::unary("vec_median", stats::median)`. A
+/// search for `::median(` finds the first and misses the second, and reported eleven reachable
+/// kernels as stranded.
+///
+/// The boundary check is what keeps `mean` from matching `meanwhile`. Without it a kernel
+/// could be reported as reachable because an unrelated identifier happened to start with its
+/// name, which is the one failure mode worse than a false alarm here: a stranded kernel that
+/// the check says is fine.
+fn is_named(callers: &str, kernel: &str) -> bool {
+    let needle = format!("::{kernel}");
+    let mut from = 0usize;
+    while let Some(at) = callers[from..].find(&needle) {
+        let start = from + at;
+        let after = start + needle.len();
+        let boundary = callers[after..]
+            .chars()
+            .next()
+            .is_none_or(|next| !next.is_alphanumeric() && next != '_');
+        if boundary {
+            return true;
+        }
+        from = after;
+    }
+    false
+}
+
+/// Every `.rs` file under a directory.
+fn walk(at: &Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![at.to_path_buf()];
+    while let Some(next) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&next) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                found.push(path);
+            }
+        }
+    }
+    found
 }
 
 /// A crate that nothing reaches, with the reason it is allowed to exist anyway.
@@ -323,6 +498,55 @@ mod tests {
         );
     }
 
+
+    /// A kernel with no name on any surface fails the build.
+    ///
+    /// The check that would have caught twelve of them, tested on a fixture where the answer
+    /// is known --- because a check nobody has watched fail is a check nobody knows works,
+    /// which is the same defect it exists to catch, one level up.
+    #[test]
+    fn a_kernel_nothing_can_call_fails_the_check() {
+        let root = tempfile::tempdir().expect("a directory");
+        let math = root.path().join("crates").join("sankhya-math").join("src");
+        std::fs::create_dir_all(&math).expect("creating the math crate");
+        std::fs::write(
+            math.join("vector.rs"),
+            "pub fn reachable(a: f64) -> f64 { a }\npub fn stranded(a: f64) -> f64 { a }\n",
+        )
+        .expect("writing kernels");
+
+        // A crate that names one of them and not the other.
+        let caller = root.path().join("crates").join("sankhya-olap").join("src");
+        std::fs::create_dir_all(&caller).expect("creating the caller");
+        std::fs::write(caller.join("lib.rs"), "fn x() { vector::reachable(1.0); }\n")
+            .expect("writing the caller");
+
+        assert!(
+            !super::every_kernel_has_a_name(root.path()),
+            "a kernel no surface names must fail the check"
+        );
+
+        // And naming it is what fixes it --- not deleting the check.
+        std::fs::write(
+            caller.join("lib.rs"),
+            "fn x() { vector::reachable(1.0); vector::stranded(2.0); }\n",
+        )
+        .expect("writing the caller");
+        assert!(super::every_kernel_has_a_name(root.path()));
+    }
+
+    /// The real repository can call every kernel it has written.
+    ///
+    /// Run against the actual tree, because a fixture is what passed on every one of the days
+    /// twelve tested kernels had no name.
+    #[test]
+    fn every_real_kernel_has_a_name() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .canonicalize()
+            .expect("the workspace root");
+        assert!(super::every_kernel_has_a_name(&root));
+    }
 
     /// The real repository serves every SQL surface it builds.
     ///

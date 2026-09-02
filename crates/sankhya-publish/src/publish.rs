@@ -104,6 +104,20 @@ pub struct Publication {
     /// Shared across clones, because two clones of one publication are two views of one
     /// table and there is nothing for them to disagree about.
     seen: Arc<AtomicU64>,
+    /// The schema this table declared, read once.
+    ///
+    /// # Why once, and not on every append
+    ///
+    /// Reading it costs a replay of the whole log, and a check that did that per append would
+    /// make the write path **quadratic in the table's own history** --- the defect this
+    /// repository has already been bitten by once, and which showed up here as a concurrency
+    /// test that stopped meeting its floor within an hour of the check being written.
+    ///
+    /// Once is also the right semantics rather than merely the cheap one. The check exists to
+    /// catch a **writer** sending the wrong shape, which is a property of the writer and not
+    /// of the log's latest state; a schema that evolves under a live writer is a different
+    /// event, and one this writer's next commit conflict is the honest place to discover.
+    declared: Arc<std::sync::OnceLock<Option<Schema>>>,
 }
 
 impl Publication {
@@ -123,6 +137,7 @@ impl Publication {
             date_axis: DateAxis::ingest_date(),
             writer: WriterConfig::default(),
             seen: Arc::new(AtomicU64::new(0)),
+            declared: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -501,6 +516,77 @@ impl Publication {
         })
     }
 
+    /// Refuse a batch that contradicts what the table has declared.
+    ///
+    /// # Why this was missing, and what it let through
+    ///
+    /// [`publish_table`] compares a batch against the schema **it was handed**, which is the
+    /// easy case: the caller already had the schema. `append` is the path everything actually
+    /// uses --- feeds, compaction, every test --- and it read the batch's schema from the
+    /// batch and never looked at the table's. So a table declaring `id, amount` accepted a
+    /// batch of two entirely different columns, and a vector column of width three accepted a
+    /// vector of width four.
+    ///
+    /// The second is the one that does real damage quietly. A cosine similarity between a
+    /// 384-dimensional embedding and a 512-dimensional one is not a near miss --- it is a
+    /// different question --- and a column that silently held both would answer it.
+    ///
+    /// # The rule, from `ARCHITECTURE` §6.6
+    ///
+    /// *Additive and compatible changes apply automatically; incompatible ones are refused.*
+    /// So:
+    ///
+    /// - A column the table already declares must keep its **type**. A width change on a
+    ///   fixed-size list is a type change, which is the point of the width being in the type.
+    /// - A **new** column is additive and passes. That is evolution working, not a hole.
+    /// - Every declared column that cannot be null must be **present**, because a batch that
+    ///   omits one is not adding to the table --- it is producing rows the table's own schema
+    ///   says cannot exist.
+    ///
+    /// A table with no metadata yet is not checked: it is being created, and there is nothing
+    /// to contradict.
+    fn batch_agrees_with_the_table(&self, batch: &RecordBatch) -> Result<(), PublishError> {
+        let declared = self.declared.get_or_init(|| {
+            let metadata = self.current_metadata().ok()?;
+            sankhya_table_delta::schema_from_string(&metadata.schema_string).ok()
+        });
+        // A table with no readable metadata is being created, and there is nothing to
+        // contradict yet.
+        let Some(declared) = declared else {
+            return Ok(());
+        };
+
+        let offered = batch.schema();
+        for field in declared.fields() {
+            // The date column is stamped on after this check, from the partition value, so a
+            // batch legitimately arrives without it.
+            if field.name() == DATA_DATE_COLUMN {
+                continue;
+            }
+            match offered.column_with_name(field.name()) {
+                Some((_, supplied)) if !same_to_the_format(field, supplied) => {
+                    return Err(PublishError::ContradictsSchema {
+                        column: field.name().clone(),
+                        declared: field.data_type().to_string(),
+                        offered: supplied.data_type().to_string(),
+                    })
+                }
+                None if !field.is_nullable() => {
+                    return Err(PublishError::MissingColumn {
+                        column: field.name().clone(),
+                        offered: offered
+                            .fields()
+                            .iter()
+                            .map(|f| f.name().clone())
+                            .collect(),
+                    })
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     /// One of the table's properties, as it stands.
     ///
     /// `None` for a table with no such property **and** for a table whose log cannot be read
@@ -557,6 +643,8 @@ impl Publication {
                 name: file_name.to_string(),
             });
         }
+
+        self.batch_agrees_with_the_table(batch)?;
 
         let mut written = Vec::new();
         let mut actions = Vec::new();
@@ -871,6 +959,36 @@ pub struct Published {
     pub version: u64,
 }
 
+/// Whether two fields are the same type **as the table format records it**.
+///
+/// # Why this is not `==` on the Arrow types
+///
+/// The declared schema is not the schema somebody wrote --- it is that schema after a round
+/// trip through the format's own string, which is lossy on purpose. A `Timestamp(µs, "UTC")`
+/// and a `Timestamp(µs)` both render as `timestamp`, because the protocol's timestamps are
+/// UTC-normalised and there is nowhere to put the zone.
+///
+/// So comparing Arrow types directly reports a contradiction for every type richer than the
+/// format can express, and the first thing it caught was the quarantine table writing
+/// UTC-aware timestamps into a column its own metadata calls naive --- a difference no reader
+/// can observe, because the round trip erases it before anybody sees it.
+///
+/// Comparing the *rendered* forms asks the question that matters: **would a reader see two
+/// different columns?** A fixed-size list carries its width into the string, so a width change
+/// still differs, which is the case this check exists for.
+fn same_to_the_format(declared: &Field, offered: &Field) -> bool {
+    let render = |field: &Field| {
+        sankhya_table_delta::schema_string(&Schema::new(vec![field.clone()])).ok()
+    };
+    match (render(declared), render(offered)) {
+        (Some(left), Some(right)) => left == right,
+        // A type the format cannot represent at all is refused elsewhere, by `create`. Here it
+        // is not this check's question, and guessing would turn an unrelated failure into a
+        // schema contradiction.
+        _ => true,
+    }
+}
+
 /// Publish a whole table in one call: create it, write every batch, commit.
 ///
 /// The convenience form, and the one most publishers want. Each batch becomes one file,
@@ -951,6 +1069,22 @@ pub enum PublishError {
         /// Which batch.
         batch: usize,
     },
+    /// A batch gives a declared column a different type.
+    ContradictsSchema {
+        /// The column.
+        column: String,
+        /// What the table says it is.
+        declared: String,
+        /// What the batch offered.
+        offered: String,
+    },
+    /// A batch leaves out a column the table says cannot be null.
+    MissingColumn {
+        /// The column.
+        column: String,
+        /// What the batch did carry.
+        offered: Vec<String>,
+    },
     /// Writing a file failed.
     Write {
         /// Which file.
@@ -1001,6 +1135,22 @@ impl fmt::Display for PublishError {
                 "'{name}' is not a safe file name: it becomes a path relative to the table \
                  root, and a separator writes outside the table while '..' writes outside \
                  the warehouse"
+            ),
+            Self::ContradictsSchema { column, declared, offered } => write!(
+                f,
+                "the column `{column}` is `{declared}` in this table and the batch offers \
+                 `{offered}`. Refused rather than written: a reader combining the two files \
+                 would find one column with two types, and for a vector a change of width is \
+                 a change of question --- a similarity between a 384-dimensional embedding \
+                 and a 512-dimensional one is not a near miss. An additive change is applied \
+                 automatically; this one is not additive"
+            ),
+            Self::MissingColumn { column, offered } => write!(
+                f,
+                "this table declares `{column}` and says it cannot be null, and the batch \
+                 carries {offered:?}. A batch that leaves out a required column is not adding \
+                 to the table --- it is producing rows the table's own schema says cannot \
+                 exist"
             ),
             Self::SchemaMismatch { batch } => write!(
                 f,

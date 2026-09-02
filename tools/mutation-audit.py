@@ -4142,6 +4142,287 @@ CATALOGUE = [
     # handler that matches short strings. It is defence, not behaviour, and the catalogue says
     # so rather than pretending a test covers it.
 
+    # M21. A vector was sent as `text`, so a client received `[1.0, 2.0]` and had to parse it.
+    ("server: send a vector as text rather than as an array of doubles",
+     "crates/sankhya-server/src/execute.rs",
+     "        DataType::List(item) | DataType::LargeList(item) | DataType::FixedSizeList(item, _)\n            if matches!(item.data_type(), DataType::Float64 | DataType::Float32) =>\n        {\n            (oid::FLOAT8_ARRAY, -1)\n        }",
+     "",
+     "sankhya-server"),
+
+    ("server: announce an array type and send Arrow's rendering under it",
+     "crates/sankhya-server/src/execute.rs",
+     "            render_double_array(array, row)",
+     "            format!(\"{:?}\", array.data_type())",
+     "sankhya-server"),
+
+    # M21. `publish_table` compared a batch against the schema it was HANDED; `append` --- the
+    # path feeds, compaction and every test use --- compared nothing at all.
+    ("publish: write a batch without checking it against the table's own schema",
+     "crates/sankhya-publish/src/publish.rs",
+     "        self.batch_agrees_with_the_table(batch)?;",
+     "",
+     "sankhya-publish"),
+
+    ("publish: accept a vector of a width the column did not declare",
+     "crates/sankhya-publish/src/publish.rs",
+     "                Some((_, supplied)) if !same_to_the_format(field, supplied) => {",
+     "                if false {",
+     "sankhya-publish"),
+
+    ("publish: accept a batch that omits a column the table says cannot be null",
+     "crates/sankhya-publish/src/publish.rs",
+     "                None if !field.is_nullable() => {",
+     "                None if false => {",
+     "sankhya-publish"),
+
+    # Named against `sankhya-feed`: comparing raw Arrow types instead of rendered ones reports
+    # a contradiction for every type richer than the format can express, and the quarantine
+    # table --- which writes UTC-aware timestamps into a column its metadata calls naive --- is
+    # what notices.
+    ("publish: compare Arrow types rather than what the format records",
+     "crates/sankhya-publish/src/publish.rs",
+     "    match (render(declared), render(offered)) {\n        (Some(left), Some(right)) => left == right,",
+     "    match (render(declared), render(offered)) {\n        (Some(_), Some(_)) => declared.data_type() == offered.data_type(),",
+     "sankhya-feed"),
+
+    # The schema check made the write path read the whole log per append --- quadratic in a
+    # table's own history, which is the defect this repository was bitten by once already. It
+    # showed up as `check-concurrency` failing its throughput floor within an hour.
+    # No entry for "read the declared schema on every append rather than once". The caching is
+    # **not observable in behaviour** --- both routes validate against the same schema and
+    # every assertion passes either way. What differs is cost: reading the log per append is
+    # quadratic in the table's own history.
+    #
+    # The property is held by `check-concurrency`, which is where it was caught: the throughput
+    # floor stopped being met within an hour of the check being written. That measurement is
+    # `#[ignore]`d in an ordinary test run --- deliberately, since a throughput number taken
+    # while the workspace suite saturates the machine describes the machine --- so no crate's
+    # default run notices, and a catalogue entry claiming otherwise would be false.
+
+    # M21. The catalogue and the routing. Every one of these is a function a user is told
+    # exists and cannot call, or a statement sent to a tier that cannot answer it.
+    ("functions: match a bare name, so a column called `erf` routes a lookup analytically",
+     "crates/sankhya-functions/src/routing.rs",
+     "        let after = lowered[end..].trim_start();\n        let after_ok = after.starts_with('(');",
+     "        let after_ok = true;",
+     "sankhya-functions"),
+
+    ("functions: match without a left boundary, so `my_erf(x)` is a call to `erf`",
+     "crates/sankhya-functions/src/routing.rs",
+     "        let before_ok = start == 0\n            || lowered[..start]\n                .chars()\n                .next_back()\n                .is_none_or(|c| !c.is_alphanumeric() && c != '_');",
+     "        let before_ok = true;",
+     "sankhya-functions"),
+
+    ("functions: require the parenthesis to be adjacent, so `norm_cdf (x)` routes wrongly",
+     "crates/sankhya-functions/src/routing.rs",
+     "        let after = lowered[end..].trim_start();",
+     "        let after = &lowered[end..];",
+     "sankhya-functions"),
+
+    ("functions: serve the catalogue unsorted, so two readings disagree",
+     "crates/sankhya-functions/src/describe.rs",
+     "        entries.sort_by_key(|entry| entry.name);",
+     "",
+     "sankhya-server"),
+
+    # M21. Inference and regression. Every one of these is a wrong number that a person acts
+    # on --- a p-value below a threshold, a slope reported as a finding.
+    ("math: pool the variances, so unequal spreads reject too often",
+     "crates/sankhya-math/src/inference.rs",
+     "    let freedom = (se_left + se_right).powi(2)\n        / (se_left * se_left / (n_left - 1.0) + se_right * se_right / (n_right - 1.0));",
+     "    let freedom = n_left + n_right - 2.0;",
+     "sankhya-math"),
+
+    ("math: pair two samples of different lengths by truncating to the shorter",
+     "crates/sankhya-math/src/inference.rs",
+     "    if left.len() != right.len() {\n        return Err(InferenceError::Unpaired { left: left.len(), right: right.len() });\n    }\n    let differences: Vec<f64> = left.iter().zip(right).map(|(a, b)| a - b).collect();",
+     "    let differences: Vec<f64> = left.iter().zip(right).map(|(a, b)| a - b).collect();",
+     "sankhya-math"),
+
+    ("math: report only the upper tail of an F test, halving a small variance's p-value",
+     "crates/sankhya-math/src/inference.rs",
+     "    let p_value = (2.0 * upper.min(1.0 - upper)).min(1.0);",
+     "    let p_value = upper;",
+     "sankhya-math"),
+
+    ("math: divide a chi-squared term by an expected count of zero",
+     "crates/sankhya-math/src/inference.rs",
+     "        if *e == 0.0 {\n            return Err(InferenceError::ZeroExpected { at });\n        }",
+     "        if false {\n            return Err(InferenceError::ZeroExpected { at });\n        }",
+     "sankhya-math"),
+
+    # No entry for "solve the normal equations instead of QR". A mutation of it would have to
+    # replace the whole solve --- form `XᵀX`, invert it, substitute --- which is a rewrite
+    # rather than a mutation, and an entry whose `replace` is a no-op (the first attempt here
+    # added `let _ = &q;` and changed nothing) is a catalogue entry that claims coverage it
+    # does not have.
+    #
+    # The property is held by a **test** instead: `a_regression_on_a_badly_conditioned_design`
+    # fits a design whose condition number the normal equations could not survive, and checks
+    # the coefficients against the ones written down. That guards the property whatever the
+    # implementation, which is the stronger thing to have.
+
+    ("math: report plain R-squared as the adjusted one, rewarding a useless predictor",
+     "crates/sankhya-math/src/regression.rs",
+     "        1.0 - (rss / freedom) / (tss / (n - 1.0))",
+     "        1.0 - rss / tss",
+     "sankhya-math"),
+
+    ("math: fit a model with more parameters than observations",
+     "crates/sankhya-math/src/regression.rs",
+     "    if rows <= predictors {\n        return Err(InferenceError::TooFew { given: rows, needs: predictors + 1 });\n    }",
+     "    if false {\n        return Err(InferenceError::TooFew { given: rows, needs: predictors + 1 });\n    }",
+     "sankhya-math"),
+
+    ("math: report the ridge penalty's own rows as unexplained variance",
+     "crates/sankhya-math/src/regression.rs",
+     "    let residuals = fit.residuals.into_iter().take(rows).collect();",
+     "    let residuals = fit.residuals;",
+     "sankhya-math"),
+
+    ("math: accept a negative ridge penalty, rewarding large coefficients",
+     "crates/sankhya-math/src/regression.rs",
+     "    if penalty < 0.0 || !penalty.is_finite() {",
+     "    if false {",
+     "sankhya-math"),
+
+    # M21. The distributions. Each of these is a wrong number rather than a failure, and the
+    # wrong number is a critical value somebody compares a test statistic against.
+    ("math: compute the error function by subtraction, losing the small tail",
+     "crates/sankhya-math/src/special.rs",
+     "    if x >= 0.0 {\n        gamma_p(0.5, square).unwrap_or(1.0)\n    } else {\n        -gamma_p(0.5, square).unwrap_or(1.0)\n    }",
+     "    let value = 1.0 - erfc(x.abs());\n    if x >= 0.0 { value } else { -value }",
+     "sankhya-math"),
+
+    ("math: skip the Halley refinement on the normal quantile",
+     "crates/sankhya-math/src/distribution.rs",
+     "    let error = norm_cdf(x) - p;\n    let density = norm_pdf(x);",
+     "    let error = 0.0;\n    let density = norm_pdf(x);",
+     "sankhya-math"),
+
+    ("math: take the upper tail by subtracting the lower one",
+     "crates/sankhya-math/src/special.rs",
+     "    if x < a + 1.0 {\n        Ok(1.0 - gamma_series(a, x))\n    } else {\n        Ok(gamma_continued(a, x))\n    }",
+     "    Ok(1.0 - gamma_p(a, x)?)",
+     "sankhya-math"),
+
+    ("math: use the series everywhere instead of switching at the crossover",
+     "crates/sankhya-math/src/special.rs",
+     "    if x < a + 1.0 {\n        Ok(gamma_series(a, x))\n    } else {\n        Ok(1.0 - gamma_continued(a, x))\n    }",
+     "    Ok(gamma_series(a, x))",
+     "sankhya-math"),
+
+    ("math: reflect the incomplete beta on the wrong side of its crossover",
+     "crates/sankhya-math/src/special.rs",
+     "    if x < (a + 1.0) / (a + b + 2.0) {",
+     "    if x < 0.5 {",
+     "sankhya-math"),
+
+    # Not overflow --- `binomial_pmf` already works in logarithms, so the sum arrives. It
+    # arrives having accumulated five hundred roundings, and after five hundred evaluations
+    # where the identity needs one.
+    ("math: sum a binomial cumulative term by term instead of using the identity",
+     "crates/sankhya-math/src/distribution.rs",
+     "    beta_i(n - k, k + 1.0, 1.0 - probability)",
+     "    let mut total = 0.0;\n    for i in 0..=successes {\n        total += binomial_pmf(i, trials, probability)?;\n    }\n    Ok(total)",
+     "sankhya-math"),
+
+    ("math: lose a small exponential probability by subtracting from one",
+     "crates/sankhya-math/src/distribution.rs",
+     "    Ok(-(-rate * x).exp_m1())",
+     "    Ok(1.0 - (-rate * x).exp())",
+     "sankhya-math"),
+
+    # The decompositions. A factor that is subtly wrong satisfies no identity, so these are
+    # caught by the identity tests rather than by a table of expected entries.
+    ("math: symmetrise a matrix rather than refusing an asymmetric one",
+     "crates/sankhya-math/src/decompose.rs",
+     "    if !is_symmetric(values, size) {\n        return Err(MatrixError::NotSquare { rows: size, columns: size });\n    }\n\n    let mut a = values.to_vec();",
+     "    let mut a = values.to_vec();",
+     "sankhya-math"),
+
+    ("math: accept a non-positive Cholesky pivot, so an impossible matrix factors",
+     "crates/sankhya-math/src/decompose.rs",
+     "                if sum <= 0.0 {\n                    return Err(MatrixError::Singular);\n                }",
+     "                if false {\n                    return Err(MatrixError::Singular);\n                }",
+     "sankhya-math"),
+
+    ("math: choose the Householder sign toward the head, cancelling the subtraction",
+     "crates/sankhya-math/src/decompose.rs",
+     "        let alpha = if head >= 0.0 { -norm } else { norm };",
+     "        let alpha = if head >= 0.0 { norm } else { -norm };",
+     "sankhya-math"),
+
+    ("math: leave an eigenvector's sign to the arithmetic that produced it",
+     "crates/sankhya-math/src/decompose.rs",
+     "            put(&mut sorted, size, row, column, sign * at(&vectors, size, row, source));",
+     "            put(&mut sorted, size, row, column, at(&vectors, size, row, source));",
+     "sankhya-math"),
+
+    ("math: sort eigenvalues without carrying their eigenvectors along",
+     "crates/sankhya-math/src/decompose.rs",
+     "    for (column, &source) in order.iter().enumerate() {",
+     "    for (column, &source) in (0..size).collect::<Vec<_>>().iter().enumerate() {",
+     "sankhya-math"),
+
+    ("math: take the smaller Jacobi root in the form that cancels",
+     "crates/sankhya-math/src/decompose.rs",
+     "                let t = if theta >= 0.0 {\n                    1.0 / (theta + (1.0 + theta * theta).sqrt())\n                } else {\n                    -1.0 / (-theta + (1.0 + theta * theta).sqrt())\n                };",
+     "                let t = 1.0 / (theta + (1.0 + theta * theta).sqrt());",
+     "sankhya-math"),
+
+    ("functions: round a fractional count rather than refusing it",
+     "crates/sankhya-functions/src/distributions.rs",
+     "    if value < 0.0 || value.fract() != 0.0 || !value.is_finite() {",
+     "    if false {",
+     "sankhya-functions"),
+
+    # M21. Twelve kernels were written, tested and unreachable. These hold the surface, which
+    # is the half that was missing --- the kernels themselves were never the problem.
+    ("olap: register the scalar vector functions and not the series ones",
+     "crates/sankhya-olap/src/vectors.rs",
+     "    for function in series_functions() {\n        context.register_udf(function);\n    }",
+     "",
+     "sankhya-olap"),
+
+    ("olap: give a null vector an empty series rather than a null one",
+     "crates/sankhya-olap/src/vectors.rs",
+     "                    None => {\n                        any_null = true;\n                        break;\n                    }\n                    Some(values) => operands.push(values),\n                }\n            }\n            let by = if self.scalar {",
+     "                    None => break,\n                    Some(values) => operands.push(values),\n                }\n            }\n            let by = if self.scalar {",
+     "sankhya-olap"),
+
+    ("olap: return a fixed width from a kernel that changes the width",
+     "crates/sankhya-olap/src/vectors.rs",
+     "        Ok(DataType::List(Arc::new(Field::new(\n            \"item\",\n            DataType::Float64,\n            true,\n        ))))",
+     "        Ok(DataType::FixedSizeList(\n            Arc::new(Field::new(\"item\", DataType::Float64, true)),\n            1,\n        ))",
+     "sankhya-olap"),
+
+    # M21. Every figure this system produces reduces through here, so a fixed-point route that
+    # disagreed with the sorted one by a bit would move all of them at once.
+    ("math: accumulate in floating point, losing the associativity the fixed point buys",
+     "crates/sankhya-math/src/reduce.rs",
+     "    let mut total: i128 = 0;\n    for &value in values {\n        let scaled = value * scale;\n        if !scaled.is_finite() {\n            return None;\n        }",
+     "    let mut total: f64 = 0.0;\n    for &value in values {\n        let scaled = value * scale;\n        if !scaled.is_finite() {\n            return None;\n        }",
+     "sankhya-math"),
+
+    ("math: keep fewer bits below the largest term than the answer can express",
+     "crates/sankhya-math/src/reduce.rs",
+     "const BELOW_THE_TOP: i32 = 100;",
+     "const BELOW_THE_TOP: i32 = 20;",
+     "sankhya-math"),
+
+    # No entry for "approximate rather than decline when a term is not finite". The guard is
+    # correct and **unobservable**, because a second guard downstream catches the same inputs.
+    #
+    # Remove the first and a `NaN` still declines: `NaN.abs() > largest` is false, so `largest`
+    # stays finite, and the scaled term is `NaN`, which the `!scaled.is_finite()` check refuses.
+    # An infinity declines a step earlier still --- it becomes `largest`, and its exponent puts
+    # the scale outside the representable range.
+    #
+    # The guard stays because reading `largest` off a slice containing a `NaN` and reasoning
+    # about what `>` does to it is not something a later reader should have to do. It is
+    # clarity, not behaviour, and the catalogue says so rather than claiming a test covers it.
+
     # The cube surface could not name a table in a schema AT ALL: the qualified form failed to
     # parse and the bare form resolved only while one schema claimed the name.
     ("cube: read a table name as one word, so a schema cannot be named",

@@ -45,6 +45,7 @@
 //! two crates with one each.
 
 pub mod judge;
+pub mod kernels;
 pub mod measure;
 pub mod report;
 pub mod sample;
