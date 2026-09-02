@@ -33,7 +33,7 @@ use std::sync::Arc;
 
 use sankhya_catalog::guard::Guard;
 use datafusion::prelude::SessionContext;
-use crate::execute::{run, session_for, ServableTable};
+use crate::execute::{run, session_and_contested, session_for, ServableTable};
 
 /// How the server was configured.
 #[derive(Clone, Debug)]
@@ -2375,7 +2375,8 @@ impl Server {
         //
         // Checked per statement, through the log cache, so an unmoved table costs a stat.
         let servable = self.refreshed_servable();
-        let (context, registered) = session_for(&principal, &self.policy, &servable)?;
+        let (context, registered, contested) =
+            session_and_contested(&principal, &self.policy, &servable)?;
         if registered == 0 && !servable.is_empty() {
             return Err(refusal(
                 statuses_for_denied().sqlstate.as_str(),
@@ -2400,6 +2401,11 @@ impl Server {
             self.runtime
                 .block_on(run(&context, sql, Self::MAX_RESULT_ROWS))
         });
+
+        // A statement that failed to plan while naming a contested table said something true
+        // and useless: "table not found", about a table that is found twice. Saying which two
+        // is the difference between a typo somebody hunts for and four characters they type.
+        let outcome = outcome.map_err(|failure| explain_contested(failure, &contested));
 
         // Audited whichever way it went. A log that records only successes cannot show an
         // attempt to reach something forbidden, which is the pattern an investigation is
@@ -2477,6 +2483,38 @@ fn statement_shape(sql: &str) -> String {
 /// happened.
 fn acknowledged(tag: &str) -> QueryResult {
     QueryResult { fields: Vec::new(), rows: Vec::new(), tag: tag.to_string() }
+}
+
+/// Turn *"table not found"* about a contested name into a refusal that names the candidates.
+///
+/// Only the **detail** changes. The statement is still refused and the SQLSTATE is untouched,
+/// because a client dispatches on that and a message is not an API. What changes is whether the
+/// person reading it can act: `orders` resolving to nothing when two schemas hold one is a
+/// four-character fix that reads, without this, as a table that has gone missing.
+fn explain_contested(
+    failure: QueryFailure,
+    contested: &std::collections::BTreeMap<String, Vec<String>>,
+) -> QueryFailure {
+    // Matched on the message rather than on the statement, because the planner knows which
+    // name it could not resolve and a second parser here would sometimes disagree with it.
+    let named = contested.iter().find(|(bare, _)| {
+        failure
+            .message
+            .contains(&format!("'{}'", bare.as_str()))
+            || failure.message.contains(&format!(".{}'", bare.as_str()))
+    });
+    let Some((bare, candidates)) = named else {
+        return failure;
+    };
+    QueryFailure {
+        detail: Some(format!(
+            "`{bare}` names more than one table in this warehouse: {}. It is registered under \
+             neither, because answering with one of them would hand back a table you had no \
+             way to identify. Qualify it with its schema.",
+            candidates.join(", ")
+        )),
+        ..failure
+    }
 }
 
 pub(crate) fn refusal(sqlstate: &str, message: &str) -> QueryFailure {
