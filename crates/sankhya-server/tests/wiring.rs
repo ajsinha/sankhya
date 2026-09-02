@@ -17,6 +17,7 @@
     clippy::float_cmp
 )]
 
+use sankhya_api_pg::session::Caller;
 use sankhya_api_pg::session::Handler;
 use sankhya_authz::policy::{Action, PolicySet, Rule, TableRef};
 use sankhya_authz::principal::{Role, TenantId};
@@ -218,11 +219,11 @@ async fn the_catalogue_lists_only_tables_the_policy_permits() {
     // A schema browser is a back door to the same disclosure the policy component refuses
     // everywhere else: a table name says what a business does.
     let (permitted, _warehouse) = server_over(|tables| permissive_policy(&tenant(), tables));
-    assert_eq!(permitted.visible_tables().len(), 1);
+    assert_eq!(permitted.visible_tables(&Caller::new(&anyone())).len(), 1);
 
     let (nothing_granted, _w2) = server(PolicySet::new());
     assert!(
-        nothing_granted.visible_tables().is_empty(),
+        nothing_granted.visible_tables(&Caller::new(&anyone())).is_empty(),
         "a table nobody was granted must not appear in a schema listing"
     );
 }
@@ -236,7 +237,7 @@ async fn a_table_granted_to_another_tenant_is_not_listed() {
         TableRef::new("public", "example"),
         Action::Read,
     ));
-    assert!(server(policy).0.visible_tables().is_empty());
+    assert!(server(policy).0.visible_tables(&Caller::new(&anyone())).is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -245,9 +246,9 @@ async fn everything_that_happens_is_audited_and_the_chain_verifies() {
     assert_eq!(server.audit_len(), 0);
     let empty_head = server.audit_head();
 
-    server.query("SELECT id FROM example").ok();
-    server.visible_tables();
-    server.query("SELECT 1").ok();
+    server.query("SELECT id FROM example", &Caller::new(&anyone())).ok();
+    server.visible_tables(&Caller::new(&anyone()));
+    server.query("SELECT 1", &Caller::new(&anyone())).ok();
 
     assert_eq!(server.audit_len(), 3, "refusals are audited too");
     assert!(server.audit_intact(), "the chain must verify");
@@ -265,7 +266,7 @@ async fn the_audit_records_the_shape_of_a_statement_and_not_its_values() {
     // retention and different access control from the table it came from.
     let (server, _warehouse) = server_over(|tables| permissive_policy(&tenant(), tables));
     server
-        .query("SELECT id FROM example WHERE national_id = '123-45-6789'")
+        .query("SELECT id FROM example WHERE national_id = '123-45-6789'", &Caller::new(&anyone()))
         .ok();
 
     let head = server.audit_head();
@@ -297,7 +298,7 @@ async fn a_statement_executes_and_returns_rows() {
     // against a policy-wrapped provider, executed, and rendered back for the wire.
     let (server, _warehouse) = server_over(|tables| permissive_policy(&tenant(), tables));
     let result = server
-        .query("SELECT id, label FROM example ORDER BY id")
+        .query("SELECT id, label FROM example ORDER BY id", &Caller::new(&anyone()))
         .expect("the table is granted and the query is valid");
 
     assert_eq!(result.rows.len(), 3);
@@ -320,7 +321,7 @@ async fn a_null_stays_null_all_the_way_out() {
     // earlier, and one nobody could see.
     let (server, _warehouse) = server_over(|tables| permissive_policy(&tenant(), tables));
     let result = server
-        .query("SELECT label FROM example ORDER BY id")
+        .query("SELECT label FROM example ORDER BY id", &Caller::new(&anyone()))
         .expect("valid");
     assert_eq!(
         result.rows.get(1).and_then(|r| r.first().cloned()),
@@ -335,7 +336,7 @@ async fn a_table_the_principal_may_not_read_does_not_resolve() {
     // a table that does not exist, which is the right answer rather than an accident.
     // Saying "you may not read that" would confirm it exists.
     let (server, _warehouse) = server(PolicySet::new());
-    let Err(failure) = server.query("SELECT id FROM example") else {
+    let Err(failure) = server.query("SELECT id FROM example", &Caller::new(&anyone())) else {
         panic!("a table nobody granted must not be queryable");
     };
     assert!(
@@ -362,7 +363,7 @@ async fn a_policy_row_filter_is_enforced_through_the_front_door() {
     );
     let (server, _warehouse) = server_over(move |_| policy.clone());
 
-    let result = server.query("SELECT id FROM example").expect("valid");
+    let result = server.query("SELECT id FROM example", &Caller::new(&anyone())).expect("valid");
     assert_eq!(
         result.rows.len(),
         1,
@@ -389,7 +390,7 @@ async fn a_query_cannot_widen_its_own_policy_filter() {
     let (server, _warehouse) = server_over(move |_| policy.clone());
 
     let result = server
-        .query("SELECT id FROM example WHERE id > 0 OR 1 = 1")
+        .query("SELECT id FROM example WHERE id > 0 OR 1 = 1", &Caller::new(&anyone()))
         .expect("valid");
     assert_eq!(
         result.rows.len(),
@@ -401,9 +402,9 @@ async fn a_query_cannot_widen_its_own_policy_filter() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_syntactically_invalid_statement_is_refused_without_taking_the_server_down() {
     let (server, _warehouse) = server_over(|tables| permissive_policy(&tenant(), tables));
-    assert!(server.query("SELECT FROM WHERE").is_err());
+    assert!(server.query("SELECT FROM WHERE", &Caller::new(&anyone())).is_err());
     // And the next statement still works.
-    assert!(server.query("SELECT id FROM example").is_ok());
+    assert!(server.query("SELECT id FROM example", &Caller::new(&anyone())).is_ok());
 }
 
 /// A feed's standing, over the wire the operator uses.
@@ -419,7 +420,7 @@ async fn showing_feeds_reports_every_declared_feed_and_its_state() {
     feeds.declare("sessions");
     feeds.halted("sessions", "not one of this source's 40 records fitted", 1_756_000_000_000_000);
 
-    let result = server.query("SHOW FEEDS").expect("a feed command is answered");
+    let result = server.query("SHOW FEEDS", &Caller::new(&anyone())).expect("a feed command is answered");
 
     assert_eq!(result.rows.len(), 2);
     let names: Vec<&str> = result
@@ -448,13 +449,13 @@ async fn resuming_a_feed_sets_it_running_and_resuming_a_typo_is_refused() {
     server.feeds().halted("orders", "a reason", 1);
     assert!(!server.feeds().should_run("orders"));
 
-    server.query("RESUME FEED orders").expect("resuming a declared feed");
+    server.query("RESUME FEED orders", &Caller::new(&anyone())).expect("resuming a declared feed");
     assert!(server.feeds().should_run("orders"), "it runs again on the next tick");
 
     // Named rather than reported as success. An operator who mistypes and is told it resumed
     // will go away believing it did.
     let refused = server
-        .query("RESUME FEED odrers")
+        .query("RESUME FEED odrers", &Caller::new(&anyone()))
         .expect_err("no feed by that name");
     assert!(refused.message.contains("odrers"), "{}", refused.message);
     assert!(refused.message.contains("SHOW FEEDS"), "{}", refused.message);
@@ -467,10 +468,75 @@ async fn a_statement_that_merely_begins_like_a_feed_command_reaches_the_engine()
     // reporting a refusal about feeds.
     let (server, _dir) = server_over(|tables| permissive_policy(&tenant(), tables));
 
-    let version = server.query("SHOW server_version_num");
+    let version = server.query("SHOW server_version_num", &Caller::new(&anyone()));
     let refused = version.err().map(|failure| failure.message).unwrap_or_default();
     assert!(
         !refused.contains("feed"),
         "whatever answers this, it is not the feed parser: {refused}"
+    );
+}
+
+/// The caller a test means when it does not care who is asking.
+///
+/// Its own helper rather than an inline literal at forty call sites: when a test *does* care,
+/// it should be visibly different from one that does not.
+#[allow(dead_code)]
+fn anyone() -> Vec<(String, String)> {
+    vec![("user".to_string(), "quickstart".to_string())]
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_user_a_connection_authenticated_as_reaches_authorization_and_audit() {
+    // `FR-SEC-02` asks that a principal be carried unchanged through planning, execution and
+    // audit. It could not be: `Handler::query` and `Handler::visible_tables` had **no
+    // parameter for one**, so `authenticate` read the user, refused an empty one on the
+    // grounds that an unattributable connection cannot be audited --- and then discarded it.
+    //
+    // Every statement was authorized as `principal("query")`, a literal, and every audit entry
+    // attributed to it. An adversarial review found this on 2026-09-01, and it is the first
+    // thing federated identity would have needed.
+    let (server, _warehouse) = server_over(|tables| {
+        permissive_policy(&sankhya_authz::principal::TenantId::from_uuid(uuid::Uuid::from_u128(1)), tables)
+    });
+
+    // The **audit chain's head** is the test, not the entry count. A chain that grew by one
+    // either way proves only that something was recorded; a head that differs proves *who* was
+    // recorded, because the subject is hashed into it.
+    //
+    // Two servers in the same state, one statement each, different users. If the identity does
+    // not reach the audit, the two heads are identical.
+    let ana = vec![("user".to_string(), "ana".to_string())];
+    let bo = vec![("user".to_string(), "bo".to_string())];
+
+    server.query("SELECT 1", &Caller::new(&ana)).ok();
+    let by_ana = server.audit_head();
+
+    let (second, _warehouse) = server_over(|tables| {
+        permissive_policy(
+            &sankhya_authz::principal::TenantId::from_uuid(uuid::Uuid::from_u128(1)),
+            tables,
+        )
+    });
+    second.query("SELECT 1", &Caller::new(&bo)).ok();
+    let by_bo = second.audit_head();
+
+    assert_ne!(
+        by_ana, by_bo,
+        "the same statement by two users produced the same audit: the identity never arrived"
+    );
+
+    // And a third, by `ana` again against a fresh server, reproduces the first. The chain is
+    // deterministic, so a difference is the subject rather than the clock.
+    let (third, _warehouse) = server_over(|tables| {
+        permissive_policy(
+            &sankhya_authz::principal::TenantId::from_uuid(uuid::Uuid::from_u128(1)),
+            tables,
+        )
+    });
+    third.query("SELECT 1", &Caller::new(&ana)).ok();
+    assert_eq!(
+        third.audit_head(),
+        by_ana,
+        "the audit is not reproducible, so a difference proves nothing"
     );
 }

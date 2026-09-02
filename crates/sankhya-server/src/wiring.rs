@@ -791,9 +791,13 @@ impl Handler for Server {
             || sankhya_clone::parse_ddl(sql).is_some()
     }
 
-    fn query(&self, sql: &str) -> Result<QueryResult, QueryFailure> {
+    fn query(
+        &self,
+        sql: &str,
+        caller: &sankhya_api_pg::session::Caller<'_>,
+    ) -> Result<QueryResult, QueryFailure> {
         let started = std::time::Instant::now();
-        let outcome = self.run_statement(sql);
+        let outcome = self.run_statement(sql, caller.user());
 
         // Recorded on every path out, including the refusals above the query path. A
         // duration histogram that only sees successes describes a system that never fails,
@@ -831,8 +835,8 @@ impl Handler for Server {
             .set(&catalogue::CONNECTIONS_ACTIVE, &[], live as f64);
     }
 
-    fn visible_tables(&self) -> Vec<CatalogTable> {
-        self.list_visible_tables()
+    fn visible_tables(&self, caller: &sankhya_api_pg::session::Caller<'_>) -> Vec<CatalogTable> {
+        self.list_visible_tables(caller.user())
     }
 
     fn server_version(&self) -> String {
@@ -2236,7 +2240,7 @@ impl Server {
     /// the statement, including the two refusals that never reach the query path. A
     /// duration histogram fed only by the successful path describes a system that never
     /// fails, and the tail an operator goes looking for is made of failures.
-    fn run_statement(&self, sql: &str) -> Result<QueryResult, QueryFailure> {
+    fn run_statement(&self, sql: &str, user: &str) -> Result<QueryResult, QueryFailure> {
         // Announced for as long as this statement runs.
         //
         // Taken here rather than around the scan, because the window that matters opens when
@@ -2261,7 +2265,16 @@ impl Server {
             });
         }
 
-        let Some(principal) = self.principal("query") else {
+        // The user this connection authenticated as, not a constant.
+        //
+        // `principal("query")` was a literal, and so were `principal("catalogue")` and
+        // `principal("flight")`. The authenticated user was read by `authenticate`, refused if
+        // empty on the grounds that an unattributable connection cannot be audited --- and then
+        // thrown away, because nothing downstream had a parameter to carry it in.
+        //
+        // `FR-SEC-02` asks that a principal be carried unchanged through planning, execution
+        // and audit. Until now it was carried unchanged and it was the wrong one.
+        let Some(principal) = self.principal(user) else {
             return Err(refusal(
                 statuses_for_unauthenticated().sqlstate.as_str(),
                 "no principal is established for this connection",
@@ -2384,11 +2397,11 @@ impl Server {
     }
 
     /// Everything `visible_tables` does.
-    fn list_visible_tables(&self) -> Vec<CatalogTable> {
+    fn list_visible_tables(&self, user: &str) -> Vec<CatalogTable> {
         // Filtered by policy, because a catalogue that listed tables the caller cannot read
         // would disclose their existence — the leak the policy component refuses to permit
         // anywhere else, arriving through the back door of a schema browser.
-        let Some(principal) = self.principal("catalogue") else {
+        let Some(principal) = self.principal(user) else {
             return Vec::new();
         };
         let visible = self.policy.visible_tables(&principal);

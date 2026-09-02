@@ -8,6 +8,7 @@
     clippy::float_cmp
 )]
 
+use sankhya_api_pg::session::Caller;
 use sankhya_api_pg::session::Handler;
 use sankhya_authz::policy::PolicySet;
 use sankhya_authz::principal::TenantId;
@@ -112,7 +113,7 @@ fn server() -> (Arc<Server>, tempfile::TempDir) {
 async fn a_successful_query_is_counted_timed_and_its_rows_totalled() {
     let (server, _warehouse) = server();
     server
-        .query("SELECT id FROM public.example")
+        .query("SELECT id FROM public.example", &Caller::new(&anyone()))
         .expect("the fixture table is readable");
 
     let metrics = server.metrics();
@@ -130,7 +131,7 @@ async fn a_failing_query_is_counted_and_timed_too() {
     // A duration histogram fed only by the successful path describes a system that never
     // fails, and the tail an operator goes looking for is made of failures.
     let (server, _warehouse) = server();
-    server.query("SELECT * FROM public.no_such_table").unwrap_err();
+    server.query("SELECT * FROM public.no_such_table", &Caller::new(&anyone())).unwrap_err();
 
     let metrics = server.metrics();
     assert_eq!(metrics.value(&QUERIES_TOTAL, &[("outcome", "error")]), Some(1.0));
@@ -171,7 +172,7 @@ async fn a_refusal_is_not_counted_as_an_error() {
     // An empty policy: the principal may read nothing.
     let server = Server::with_tables(settings, PolicySet::new(), warehouse::describe(&found), servable);
 
-    server.query("SELECT 1").unwrap_err();
+    server.query("SELECT 1", &Caller::new(&anyone())).unwrap_err();
     let metrics = server.metrics();
     assert_eq!(
         metrics.value(&QUERIES_TOTAL, &[("outcome", "refused")]),
@@ -219,8 +220,8 @@ async fn the_audit_count_rises_with_the_audit_and_not_with_the_scrape() {
     // stopped recording" and "the scrape stopped running" are distinguishable. Only one of
     // them is an emergency.
     let (server, _warehouse) = server();
-    server.query("SELECT id FROM public.example").expect("readable");
-    server.query("SELECT * FROM public.nope").unwrap_err();
+    server.query("SELECT id FROM public.example", &Caller::new(&anyone())).expect("readable");
+    server.query("SELECT * FROM public.nope", &Caller::new(&anyone())).unwrap_err();
 
     let metrics = server.metrics();
     assert_eq!(
@@ -337,7 +338,7 @@ async fn endpoint(
 #[tokio::test(flavor = "multi_thread")]
 async fn the_endpoint_serves_the_catalogue_in_the_exposition_format() {
     let (server, _warehouse) = server();
-    server.query("SELECT id FROM public.example").expect("readable");
+    server.query("SELECT id FROM public.example", &Caller::new(&anyone())).expect("readable");
     let (address, _stop) = endpoint(Arc::clone(&server)).await;
 
     let response = get(address, "/metrics").await;
@@ -465,7 +466,7 @@ async fn every_declared_metric_appears_in_a_scrape_even_at_zero() {
 
 /// The failure a statement produces, or a panic naming what came back instead.
 fn failure_for(server: &Server, sql: &str) -> sankhya_api_pg::session::QueryFailure {
-    match server.query(sql) {
+    match server.query(sql, &Caller::new(&anyone())) {
         Ok(_) => panic!("`{sql}` was expected to fail and did not"),
         Err(failure) => failure,
     }
@@ -632,6 +633,15 @@ async fn a_read_that_looks_like_a_write_is_still_served() {
     // is unaffected. A keyword check would have refused this.
     let (server, _warehouse) = server();
     server
-        .query("SELECT id AS insert_id FROM public.example WHERE label = 'create table'")
+        .query("SELECT id AS insert_id FROM public.example WHERE label = 'create table'", &Caller::new(&anyone()))
         .expect("a read is a read whatever it is spelled with");
+}
+
+/// The caller a test means when it does not care who is asking.
+///
+/// Its own helper rather than an inline literal at forty call sites: when a test *does* care,
+/// it should be visibly different from one that does not.
+#[allow(dead_code)]
+fn anyone() -> Vec<(String, String)> {
+    vec![("user".to_string(), "quickstart".to_string())]
 }

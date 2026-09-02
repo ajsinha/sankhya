@@ -20,7 +20,7 @@
 use sankhya_api_pg::catalog::{CatalogColumn, CatalogTable};
 use sankhya_api_pg::listener::PgListener;
 use sankhya_api_pg::message::{oid, FieldDescription, PROTOCOL_VERSION};
-use sankhya_api_pg::session::{Handler, QueryFailure, QueryResult};
+use sankhya_api_pg::session::{Caller, Handler, QueryFailure, QueryResult};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -67,7 +67,7 @@ impl Handler for Fixture {
         }
     }
 
-    fn query(&self, sql: &str) -> Result<QueryResult, QueryFailure> {
+    fn query(&self, sql: &str, _caller: &Caller<'_>) -> Result<QueryResult, QueryFailure> {
         // The statement is echoed back as a row, so a test can assert **what reached the
         // handler**. Without it, a bound parameter that never arrived is invisible: the
         // fixture answers the same two rows either way, and the test passes while the
@@ -100,7 +100,7 @@ impl Handler for Fixture {
         })
     }
 
-    fn visible_tables(&self) -> Vec<CatalogTable> {
+    fn visible_tables(&self, _caller: &Caller<'_>) -> Vec<CatalogTable> {
         vec![CatalogTable {
             schema: "sales".to_string(),
             name: "orders".to_string(),

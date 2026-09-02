@@ -22,6 +22,7 @@
 )]
 
 use sankhya_api_pg::catalog::CatalogTable;
+use sankhya_api_pg::session::Caller;
 use sankhya_api_pg::session::Handler;
 
 #[path = "../src/execute.rs"]
@@ -92,7 +93,7 @@ async fn a_cube_created_from_sql_is_served_and_survives_a_restart() {
     let server = server_over(dir.path());
     assert!(server.cubes().is_empty(), "nothing declared this warehouse a cube yet");
 
-    let result = server.query(SALES).expect("the statement is accepted");
+    let result = server.query(SALES, &Caller::new(&anyone())).expect("the statement is accepted");
     assert_eq!(result.tag, "CREATE CUBE");
     assert_eq!(server.cubes().len(), 1, "and it is being served immediately");
     assert_eq!(server.cubes()[0].name(), "sales");
@@ -111,9 +112,9 @@ async fn a_cube_created_from_sql_is_served_and_survives_a_restart() {
 async fn a_cube_is_dropped_from_sql_and_stays_dropped() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let server = server_over(dir.path());
-    server.query(SALES).expect("creating it");
+    server.query(SALES, &Caller::new(&anyone())).expect("creating it");
 
-    let result = server.query("DROP CUBE sales").expect("dropping it");
+    let result = server.query("DROP CUBE sales", &Caller::new(&anyone())).expect("dropping it");
     assert_eq!(result.tag, "DROP CUBE");
     assert!(server.cubes().is_empty(), "it stops being served at once");
 
@@ -133,7 +134,7 @@ async fn dropping_a_cube_reclaims_the_cuboids_nothing_else_ever_would() {
     // purpose, by the one mechanism that could have removed it.
     let dir = tempfile::tempdir().expect("a temporary directory");
     let server = server_over(dir.path());
-    server.query(SALES).expect("creating it");
+    server.query(SALES, &Caller::new(&anyone())).expect("creating it");
 
     // A cuboid directory named the way this cube's cuboids are named, and one belonging to a
     // cube with a similar name that must survive.
@@ -151,7 +152,7 @@ async fn dropping_a_cube_reclaims_the_cuboids_nothing_else_ever_would() {
         std::fs::write(path.join("part-0.parquet"), b"cells").expect("something to reclaim");
     }
 
-    server.query("DROP CUBE sales").expect("dropping it");
+    server.query("DROP CUBE sales", &Caller::new(&anyone())).expect("dropping it");
 
     assert!(!ours.exists(), "the dropped cube's cuboid is reclaimed");
     assert!(
@@ -169,9 +170,9 @@ async fn a_name_already_taken_is_refused_rather_than_replaced() {
     // that silently.
     let dir = tempfile::tempdir().expect("a temporary directory");
     let server = server_over(dir.path());
-    server.query(SALES).expect("creating it");
+    server.query(SALES, &Caller::new(&anyone())).expect("creating it");
 
-    let failure = server.query(SALES).expect_err("the second one is refused");
+    let failure = server.query(SALES, &Caller::new(&anyone())).expect_err("the second one is refused");
     assert!(
         failure.message.contains("already exists"),
         "the message should say what is wrong: {}",
@@ -185,11 +186,11 @@ async fn dropping_a_cube_that_is_not_there_is_an_error_unless_if_exists_was_writ
     let dir = tempfile::tempdir().expect("a temporary directory");
     let server = server_over(dir.path());
 
-    let failure = server.query("DROP CUBE nothing").expect_err("there is no such cube");
+    let failure = server.query("DROP CUBE nothing", &Caller::new(&anyone())).expect_err("there is no such cube");
     assert!(failure.message.contains("nothing"), "{}", failure.message);
 
     let result = server
-        .query("DROP CUBE IF EXISTS nothing")
+        .query("DROP CUBE IF EXISTS nothing", &Caller::new(&anyone()))
         .expect("IF EXISTS makes it a no-op rather than a failure");
     assert_eq!(result.tag, "DROP CUBE");
 }
@@ -207,6 +208,7 @@ async fn a_cube_on_a_table_the_caller_cannot_read_is_refused_without_confirming_
             "CREATE CUBE payroll_cube FROM payroll \
              DIMENSION region FROM regions ON region (LEVEL area = region) \
              MEASURE amount (SUM ALONG region)",
+            &Caller::new(&anyone()),
         )
         .expect_err("payroll is not readable by this principal");
     let absent = server
@@ -214,6 +216,7 @@ async fn a_cube_on_a_table_the_caller_cannot_read_is_refused_without_confirming_
             "CREATE CUBE missing_cube FROM no_such_table \
              DIMENSION region FROM regions ON region (LEVEL area = region) \
              MEASURE amount (SUM ALONG region)",
+            &Caller::new(&anyone()),
         )
         .expect_err("and this table does not exist at all");
 
@@ -238,6 +241,7 @@ async fn a_dimension_table_the_caller_cannot_read_is_refused_too() {
             "CREATE CUBE sales FROM orders \
              DIMENSION region FROM secret_regions ON region (LEVEL area = region) \
              MEASURE amount (SUM ALONG region)",
+            &Caller::new(&anyone()),
         )
         .expect_err("the dimension table is not readable");
     assert!(server.cubes().is_empty());
@@ -256,6 +260,7 @@ async fn a_definition_that_does_not_describe_a_usable_cube_is_refused_with_every
              DIMENSION region FROM regions ON region (LEVEL area = region) \
              DIMENSION period FROM regions ON region (LEVEL month = month) \
              MEASURE amount (SUM ALONG region)",
+            &Caller::new(&anyone()),
         )
         .expect_err("the measure declares no rule along `period`");
     assert!(
@@ -272,7 +277,7 @@ async fn a_syntax_error_is_reported_as_one_rather_than_handed_to_the_engine() {
     let server = server_over(dir.path());
 
     let failure = server
-        .query("CREATE CUBE sales FROM orders DIMENSION")
+        .query("CREATE CUBE sales FROM orders DIMENSION", &Caller::new(&anyone()))
         .expect_err("that is not a statement");
     assert_eq!(failure.sqlstate, "42601", "a syntax error is a syntax error");
 }
@@ -287,7 +292,7 @@ async fn an_ordinary_statement_still_reaches_the_engine() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let server = server_over(dir.path());
 
-    let result = server.query("SELECT 1").expect("ordinary SQL is untouched by the DDL path");
+    let result = server.query("SELECT 1", &Caller::new(&anyone())).expect("ordinary SQL is untouched by the DDL path");
     assert_eq!(result.rows.len(), 1);
     assert_ne!(result.tag, "CREATE CUBE");
 }
@@ -301,10 +306,10 @@ async fn a_cube_created_by_one_statement_is_visible_to_the_next() {
     // property that makes the DDL useful at all rather than a write nobody sees.
     let dir = tempfile::tempdir().expect("a temporary directory");
     let server = server_over(dir.path());
-    server.query(SALES).expect("creating it");
+    server.query(SALES, &Caller::new(&anyone())).expect("creating it");
 
     let result = server
-        .query("SELECT cube FROM cubes()")
+        .query("SELECT cube FROM cubes()", &Caller::new(&anyone()))
         .expect("the catalogue function answers");
     let named: Vec<String> =
         result.rows.iter().filter_map(|row| row[0].clone()).collect();
@@ -312,4 +317,13 @@ async fn a_cube_created_by_one_statement_is_visible_to_the_next() {
         named.contains(&"sales".to_string()),
         "a cube created a statement ago should be listed by the next: {named:?}"
     );
+}
+
+/// The caller a test means when it does not care who is asking.
+///
+/// Its own helper rather than an inline literal at forty call sites: when a test *does* care,
+/// it should be visibly different from one that does not.
+#[allow(dead_code)]
+fn anyone() -> Vec<(String, String)> {
+    vec![("user".to_string(), "quickstart".to_string())]
 }

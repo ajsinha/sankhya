@@ -49,6 +49,7 @@ mod driver;
 #[path = "../src/wiring.rs"]
 mod wiring;
 
+use sankhya_api_pg::session::Caller;
 use sankhya_api_pg::session::Handler;
 use sankhya_authz::principal::TenantId;
 use wiring::{Server, Settings};
@@ -190,7 +191,7 @@ async fn a_short_run_under_concurrent_load_is_judged() {
                 for _ in 0..5 {
                     let server = Arc::clone(&server);
                     let ran = tokio::task::block_in_place(|| {
-                        server.query("SELECT region, count(*) FROM orders GROUP BY region")
+                        server.query("SELECT region, count(*) FROM orders GROUP BY region", &Caller::new(&anyone()))
                     });
                     if ran.is_ok() {
                         queries.fetch_add(1, Ordering::Relaxed);
@@ -275,4 +276,13 @@ async fn a_short_run_under_concurrent_load_is_judged() {
         "the run did not come out clean:\n{}",
         report.describe()
     );
+}
+
+/// The caller a test means when it does not care who is asking.
+///
+/// Its own helper rather than an inline literal at forty call sites: when a test *does* care,
+/// it should be visibly different from one that does not.
+#[allow(dead_code)]
+fn anyone() -> Vec<(String, String)> {
+    vec![("user".to_string(), "quickstart".to_string())]
 }

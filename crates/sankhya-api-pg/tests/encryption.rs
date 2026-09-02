@@ -24,7 +24,7 @@ use sankhya_api_pg::message::{
     oid, FieldDescription, GSS_REQUEST_CODE, PROTOCOL_VERSION, SSL_REQUEST_CODE,
 };
 use sankhya_api_pg::catalog::CatalogTable;
-use sankhya_api_pg::session::{Handler, QueryFailure, QueryResult};
+use sankhya_api_pg::session::{Caller, Handler, QueryFailure, QueryResult};
 use sankhya_testkit::certificates::{self_signed, Pair};
 use sankhya_tls::{Acceptor, Alpn, Material};
 use std::sync::Arc;
@@ -49,11 +49,11 @@ impl Handler for Anything {
         Ok(())
     }
 
-    fn visible_tables(&self) -> Vec<CatalogTable> {
+    fn visible_tables(&self, _caller: &Caller<'_>) -> Vec<CatalogTable> {
         Vec::new()
     }
 
-    fn query(&self, _sql: &str) -> Result<QueryResult, QueryFailure> {
+    fn query(&self, _sql: &str, _caller: &Caller<'_>) -> Result<QueryResult, QueryFailure> {
         Ok(QueryResult {
             fields: vec![FieldDescription::text("counted", oid::INT8, 8)],
             rows: vec![vec![Some("1".to_owned())]],

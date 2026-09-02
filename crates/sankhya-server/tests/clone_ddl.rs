@@ -21,6 +21,7 @@
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use sankhya_api_pg::catalog::CatalogTable;
+use sankhya_api_pg::session::Caller;
 use sankhya_api_pg::session::Handler;
 use sankhya_publish::Publication;
 use sankhya_table_delta::Action;
@@ -155,7 +156,7 @@ async fn a_clone_created_from_sql_exists_afterwards_and_records_where_it_came_fr
     let server = server_over(dir.path());
 
     let result = server
-        .query("CREATE TABLE staging CLONE entries AT VERSION 1")
+        .query("CREATE TABLE staging CLONE entries AT VERSION 1", &Caller::new(&anyone()))
         .expect("the statement is accepted");
     assert_eq!(result.tag, "CREATE TABLE");
 
@@ -178,7 +179,7 @@ async fn a_clone_adds_no_files_of_its_own() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     warehouse_with_entries(dir.path());
     server_over(dir.path())
-        .query("CREATE TABLE staging CLONE entries")
+        .query("CREATE TABLE staging CLONE entries", &Caller::new(&anyone()))
         .expect("cloning");
 
     let live = sankhya_table_delta::live_files(&table_root(dir.path(), "staging")).expect("its log");
@@ -197,7 +198,7 @@ async fn a_clone_with_no_version_takes_the_origin_as_it_stands() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     warehouse_with_entries(dir.path());
     server_over(dir.path())
-        .query("CREATE TABLE staging CLONE entries")
+        .query("CREATE TABLE staging CLONE entries", &Caller::new(&anyone()))
         .expect("cloning");
 
     assert_eq!(
@@ -215,7 +216,7 @@ async fn cloning_a_table_that_does_not_exist_says_what_the_query_path_says() {
     warehouse_with_entries(dir.path());
 
     let refused = server_over(dir.path())
-        .query("CREATE TABLE staging CLONE payroll")
+        .query("CREATE TABLE staging CLONE payroll", &Caller::new(&anyone()))
         .expect_err("no such table");
     assert!(format!("{refused:?}").contains("payroll"), "{refused:?}");
 }
@@ -241,7 +242,7 @@ async fn cloning_a_table_that_exists_and_may_not_be_read_is_refused_by_the_same_
         .expect("creating payroll");
 
     let refused = server_over(dir.path())
-        .query("CREATE TABLE staging CLONE payroll")
+        .query("CREATE TABLE staging CLONE payroll", &Caller::new(&anyone()))
         .expect_err("a table this principal may not read");
     assert!(format!("{refused:?}").contains("payroll"), "{refused:?}");
     assert!(
@@ -257,7 +258,7 @@ async fn cloning_over_a_table_that_already_exists_is_refused() {
     let server = server_over(dir.path());
 
     let refused = server
-        .query("CREATE TABLE entries CLONE entries")
+        .query("CREATE TABLE entries CLONE entries", &Caller::new(&anyone()))
         .expect_err("the name is taken");
     let said = format!("{refused:?}");
     assert!(said.contains("already exists"), "{said}");
@@ -270,7 +271,7 @@ async fn cloning_a_version_the_origin_never_had_is_refused_by_name() {
     warehouse_with_entries(dir.path());
 
     let refused = server_over(dir.path())
-        .query("CREATE TABLE staging CLONE entries AT VERSION 99")
+        .query("CREATE TABLE staging CLONE entries AT VERSION 99", &Caller::new(&anyone()))
         .expect_err("no such version");
     let said = format!("{refused:?}");
     assert!(said.contains("no version 99"), "{said}");
@@ -286,7 +287,7 @@ async fn cloning_a_version_whose_files_are_gone_is_refused() {
     std::fs::remove_file(a_file_of(dir.path(), 1)).expect("retiring it");
 
     let refused = server_over(dir.path())
-        .query("CREATE TABLE staging CLONE entries AT VERSION 1")
+        .query("CREATE TABLE staging CLONE entries AT VERSION 1", &Caller::new(&anyone()))
         .expect_err("its files are gone");
     assert!(
         format!("{refused:?}").contains("empty table wearing the name"),
@@ -300,7 +301,7 @@ async fn a_malformed_clone_statement_is_a_syntax_error_rather_than_a_pass() {
     warehouse_with_entries(dir.path());
 
     let refused = server_over(dir.path())
-        .query("CREATE TABLE staging CLONE entries AT VERSION yesterday")
+        .query("CREATE TABLE staging CLONE entries AT VERSION yesterday", &Caller::new(&anyone()))
         .expect_err("not a version");
     assert!(format!("{refused:?}").contains("yesterday"), "{refused:?}");
 }
@@ -317,11 +318,11 @@ async fn an_ordinary_statement_still_reaches_the_engine() {
     warehouse_with_entries(dir.path());
     let server = server_over(dir.path());
 
-    let result = server.query("SELECT 1 AS one").expect("ordinary SQL is untouched");
+    let result = server.query("SELECT 1 AS one", &Caller::new(&anyone())).expect("ordinary SQL is untouched");
     assert_eq!(result.rows.len(), 1);
 
     // And one that is wrong is wrong in the engine's words, not the pre-filter's.
-    let refused = server.query("SELECT FROM").expect_err("malformed");
+    let refused = server.query("SELECT FROM", &Caller::new(&anyone())).expect_err("malformed");
     let said = format!("{refused:?}");
     assert!(!said.contains("CLONE"), "the pre-filter answered for the engine: {said}");
 }
@@ -335,10 +336,10 @@ async fn a_clone_is_dropped_and_its_directory_goes_with_it() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     warehouse_with_entries(dir.path());
     let server = server_over(dir.path());
-    server.query("CREATE TABLE staging CLONE entries").expect("cloning");
+    server.query("CREATE TABLE staging CLONE entries", &Caller::new(&anyone())).expect("cloning");
     assert!(table_root(dir.path(), "staging").join("_delta_log").exists());
 
-    let result = server.query("DROP TABLE staging").expect("dropping it");
+    let result = server.query("DROP TABLE staging", &Caller::new(&anyone())).expect("dropping it");
     assert_eq!(result.tag, "DROP TABLE");
     assert!(!table_root(dir.path(), "staging").exists(), "and it is gone from disk");
 }
@@ -352,21 +353,21 @@ async fn dropping_an_origin_a_clone_still_reads_is_refused() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     warehouse_with_entries(dir.path());
     let server = server_over(dir.path());
-    server.query("CREATE TABLE staging CLONE entries").expect("cloning");
+    server.query("CREATE TABLE staging CLONE entries", &Caller::new(&anyone())).expect("cloning");
 
     // `entries` is not itself a clone, so the statement is handed back and the server's
     // standing refusal answers it — which is also a refusal, and for a reason that would still
     // hold if cloning did not exist.
-    let refused = server.query("DROP TABLE entries").expect_err("refused either way");
+    let refused = server.query("DROP TABLE entries", &Caller::new(&anyone())).expect_err("refused either way");
     assert!(table_root(dir.path(), "entries").join("_delta_log").exists(), "and it is still there");
     let _ = refused;
 
     // A clone of a clone is the case where the refusal is this one rather than that one.
     server
-        .query("CREATE TABLE scratch CLONE staging")
+        .query("CREATE TABLE scratch CLONE staging", &Caller::new(&anyone()))
         .expect("cloning the clone");
     let refused = server
-        .query("DROP TABLE staging")
+        .query("DROP TABLE staging", &Caller::new(&anyone()))
         .expect_err("scratch still reads it");
     let said = format!("{refused:?}");
     assert!(said.contains("scratch"), "the refusal names what would break: {said}");
@@ -384,11 +385,11 @@ async fn dropping_the_leaf_first_then_its_origin_works() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     warehouse_with_entries(dir.path());
     let server = server_over(dir.path());
-    server.query("CREATE TABLE staging CLONE entries").expect("cloning");
-    server.query("CREATE TABLE scratch CLONE staging").expect("cloning again");
+    server.query("CREATE TABLE staging CLONE entries", &Caller::new(&anyone())).expect("cloning");
+    server.query("CREATE TABLE scratch CLONE staging", &Caller::new(&anyone())).expect("cloning again");
 
-    server.query("DROP TABLE scratch").expect("the leaf drops");
-    server.query("DROP TABLE staging").expect("and then its origin does");
+    server.query("DROP TABLE scratch", &Caller::new(&anyone())).expect("the leaf drops");
+    server.query("DROP TABLE staging", &Caller::new(&anyone())).expect("and then its origin does");
     assert!(!table_root(dir.path(), "staging").exists());
     assert!(table_root(dir.path(), "entries").join("_delta_log").exists(), "the real table is untouched");
 }
@@ -401,7 +402,7 @@ async fn dropping_a_table_that_is_not_a_clone_is_answered_by_the_server_it_alway
     warehouse_with_entries(dir.path());
 
     let refused = server_over(dir.path())
-        .query("DROP TABLE entries")
+        .query("DROP TABLE entries", &Caller::new(&anyone()))
         .expect_err("data definition is not served");
     let said = format!("{refused:?}");
     assert!(said.contains("read path over a published warehouse"), "{said}");
@@ -411,3 +412,11 @@ async fn dropping_a_table_that_is_not_a_clone_is_answered_by_the_server_it_alway
     );
 }
 
+/// The caller a test means when it does not care who is asking.
+///
+/// Its own helper rather than an inline literal at forty call sites: when a test *does* care,
+/// it should be visibly different from one that does not.
+#[allow(dead_code)]
+fn anyone() -> Vec<(String, String)> {
+    vec![("user".to_string(), "quickstart".to_string())]
+}

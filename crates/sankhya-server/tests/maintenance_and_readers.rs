@@ -27,6 +27,7 @@
 use arrow_array::{Float64Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use datafusion::prelude::SessionContext;
+use sankhya_api_pg::session::Caller;
 use sankhya_api_pg::session::Handler;
 use sankhya_authz::policy::{Action, PolicySet, Rule, TableRef};
 use sankhya_authz::principal::{Role, TenantId};
@@ -225,7 +226,7 @@ async fn a_server_keeps_reading_across_its_own_maintenance() {
         .authenticate(&[("user".to_string(), "ana".to_string())], Some(b"x"))
         .expect("authenticated");
 
-    let before = server.query("SELECT * FROM orders").expect("reads at first");
+    let before = server.query("SELECT * FROM orders", &Caller::new(&anyone())).expect("reads at first");
     assert_eq!(before.rows.len(), 12);
 
     // The warehouse maintains itself underneath the running server.
@@ -234,7 +235,7 @@ async fn a_server_keeps_reading_across_its_own_maintenance() {
     maintainer.tick(&root).expect("a retiring tick");
 
     let after = server
-        .query("SELECT * FROM orders")
+        .query("SELECT * FROM orders", &Caller::new(&anyone()))
         .expect("reads after its own maintenance");
     assert_eq!(
         after.rows.len(),
@@ -309,7 +310,7 @@ async fn a_statement_pins_the_warehouse_for_as_long_as_it_runs() {
         let stop = std::sync::Arc::clone(&stop);
         std::thread::spawn(move || {
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                server.query("SELECT * FROM orders").expect("reads");
+                server.query("SELECT * FROM orders", &Caller::new(&anyone())).expect("reads");
             }
         })
     };
@@ -335,4 +336,13 @@ async fn a_statement_pins_the_warehouse_for_as_long_as_it_runs() {
         leases.drained(after),
         "and the warehouse drains once the statements stop"
     );
+}
+
+/// The caller a test means when it does not care who is asking.
+///
+/// Its own helper rather than an inline literal at forty call sites: when a test *does* care,
+/// it should be visibly different from one that does not.
+#[allow(dead_code)]
+fn anyone() -> Vec<(String, String)> {
+    vec![("user".to_string(), "quickstart".to_string())]
 }

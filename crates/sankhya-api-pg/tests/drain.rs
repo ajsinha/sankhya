@@ -9,7 +9,7 @@
 
 use sankhya_api_pg::catalog::CatalogTable;
 use sankhya_api_pg::listener::PgListener;
-use sankhya_api_pg::session::{Handler, QueryFailure, QueryResult};
+use sankhya_api_pg::session::{Caller, Handler, QueryFailure, QueryResult};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -45,7 +45,7 @@ impl Handler for Slow {
         Ok(())
     }
 
-    fn query(&self, _sql: &str) -> Result<QueryResult, QueryFailure> {
+    fn query(&self, _sql: &str, _caller: &Caller<'_>) -> Result<QueryResult, QueryFailure> {
         self.started.fetch_add(1, Ordering::SeqCst);
         // `block_in_place` rather than a bare `thread::sleep`, because that is what the real
         // handler does and the difference is not cosmetic: the protocol handler is
@@ -62,7 +62,7 @@ impl Handler for Slow {
         })
     }
 
-    fn visible_tables(&self) -> Vec<CatalogTable> {
+    fn visible_tables(&self, _caller: &Caller<'_>) -> Vec<CatalogTable> {
         Vec::new()
     }
 }

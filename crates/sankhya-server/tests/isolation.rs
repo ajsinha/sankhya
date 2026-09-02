@@ -23,6 +23,7 @@
     clippy::float_cmp
 )]
 
+use sankhya_api_pg::session::Caller;
 use sankhya_api_pg::session::Handler;
 use sankhya_audit::chain::{Chain, DataVersion, Entry, RecordedDecision};
 use sankhya_authz::policy::{Action, PolicySet, Rule, TableRef};
@@ -222,8 +223,8 @@ async fn an_error_does_not_disclose_that_the_other_tenants_table_exists() {
     // Acme's server, with the rival's table granted only to the rival.
     let server = wiring::Server::with_tables(empty, policy(), Vec::new(), Vec::new());
 
-    let unknown = server.query("SELECT * FROM does_not_exist_anywhere");
-    let forbidden = server.query("SELECT * FROM orders");
+    let unknown = server.query("SELECT * FROM does_not_exist_anywhere", &Caller::new(&anyone()));
+    let forbidden = server.query("SELECT * FROM orders", &Caller::new(&anyone()));
 
     let shape = |r: &Result<_, sankhya_api_pg::session::QueryFailure>| {
         r.as_ref().err().map(|e| {
@@ -316,4 +317,13 @@ fn one_tenants_audit_history_is_not_visible_to_the_other() {
     }
     assert_eq!(chain.what_was_seen_by(&acme(), "ana").len(), 1);
     assert_eq!(chain.what_was_seen_by(&rival(), "ana").len(), 1);
+}
+
+/// The caller a test means when it does not care who is asking.
+///
+/// Its own helper rather than an inline literal at forty call sites: when a test *does* care,
+/// it should be visibly different from one that does not.
+#[allow(dead_code)]
+fn anyone() -> Vec<(String, String)> {
+    vec![("user".to_string(), "quickstart".to_string())]
 }
