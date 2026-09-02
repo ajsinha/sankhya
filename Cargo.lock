@@ -3918,6 +3918,7 @@ dependencies = [
  "sankhya-publish",
  "sankhya-readpath",
  "sankhya-session",
+ "sankhya-snapshot",
  "sankhya-table",
  "sankhya-table-delta",
  "sankhya-tls",
@@ -3937,6 +3938,15 @@ dependencies = [
  "sankhya-authz",
  "sankhya-types",
  "uuid",
+]
+
+[[package]]
+name = "sankhya-snapshot"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

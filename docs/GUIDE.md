@@ -274,6 +274,39 @@ person**. It does not retry on a timer: a source whose shape has changed produce
 records for as long as it runs, and a feed that keeps going leaves every dashboard green while
 nothing arrives.
 
+## 3c. Taking a snapshot
+
+A **snapshot** names one instant across many tables. A clone freezes a *thing*; a snapshot
+freezes a *moment*.
+
+```sql
+CREATE SNAPSHOT eod_2026_09_02 EXPIRE AFTER 90 DAYS;
+SHOW SNAPSHOTS;
+DROP SNAPSHOT eod_2026_09_02;
+```
+
+It records the version every table you may read stood at, and pins those files so they survive
+reclamation. Nothing is copied.
+
+**The expiry is required and there is no `EXPIRE NEVER`.** A snapshot pins files, so one that
+never expired would hold a whole warehouse's versions alive, and the storage cost would fall on
+somebody who did not ask for it. `SHOW SNAPSHOTS` reports what each one pins and who took it,
+because a cost with no visible owner is one nobody reclaims.
+
+Why a run needs this: a market-risk calculation reads the trade population, the FX rates, the
+curves and the hierarchy. If those four are read at four moments, the reconciliation problem
+this system exists to remove reappears *inside a single query*.
+
+> **Reading as of a snapshot is not built yet.** `SET SNAPSHOT` is **refused**, not ignored —
+> accepting it quietly would serve you the present when you asked for one instant, and nothing
+> in the answer would say so. See [ADR-0019](adr/0019-named-snapshots.md).
+
+A table created *after* a snapshot will be **refused** rather than answered as empty, when
+reading as of one lands. A table that did not exist is not a table that was empty, and a join
+against it would return a confident zero.
+
+---
+
 ### How long a statement may run
 
 A statement is stopped after **thirty minutes** and answers `57014`, *query_canceled*.

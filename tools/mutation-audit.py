@@ -4020,6 +4020,72 @@ CATALOGUE = [
      "        if true {",
      "sankhya-server"),
 
+    # M17, `ADR-0019`. A snapshot pins files, so every guard here is a guard on reclamation.
+    ("snapshot: resolve a table the snapshot does not name to its current version",
+     "crates/sankhya-snapshot/src/model.rs",
+     "        self.tables.get(qualified).copied()",
+     "        Some(self.tables.get(qualified).copied().unwrap_or(Pinned { version: u64::MAX }))",
+     "sankhya-snapshot"),
+
+    ("snapshot: accept a lifetime of zero days",
+     "crates/sankhya-snapshot/src/expire.rs",
+     "        if days == 0 {\n            return Err(Unaskable::Immediate);\n        }",
+     "        if false {\n            return Err(Unaskable::Immediate);\n        }",
+     "sankhya-snapshot"),
+
+    ("snapshot: accept a lifetime longer than this system will hold storage for",
+     "crates/sankhya-snapshot/src/expire.rs",
+     "        if days > LONGEST_DAYS {",
+     "        if false {",
+     "sankhya-snapshot"),
+
+    ("snapshot: expire a snapshot on its last day rather than after it",
+     "crates/sankhya-snapshot/src/expire.rs",
+     "    if today > snapshot.expires_on {",
+     "    if today >= snapshot.expires_on {",
+     "sankhya-snapshot"),
+
+    ("snapshot: let an expiry wrap into the past on a distant day",
+     "crates/sankhya-snapshot/src/expire.rs",
+     "    taken_on.saturating_add(i32::try_from(self.days).unwrap_or(i32::MAX))",
+     "    taken_on.wrapping_add(i32::try_from(self.days).unwrap_or(i32::MAX))",
+     "sankhya-snapshot"),
+
+    ("snapshot: supply a default lifetime where the statement gave none",
+     "crates/sankhya-snapshot/src/statement.rs",
+     "    if words.len() <= 3 {\n        return Err(NotAStatement::NoExpiry);\n    }",
+     "    if words.len() <= 3 {\n        return Ok(Statement::Create { name, expiry: Expiry::days(30).unwrap_or_else(|_| unreachable!()) });\n    }",
+     "sankhya-snapshot"),
+
+    ("snapshot: claim every SHOW statement rather than SHOW SNAPSHOTS",
+     "crates/sankhya-snapshot/src/statement.rs",
+     "        && second.is_some_and(|word| word.eq_ignore_ascii_case(\"SNAPSHOTS\"))",
+     "        && second.is_some()",
+     "sankhya-snapshot"),
+
+    ("server: keep pinning the files of a snapshot that has expired",
+     "crates/sankhya-server/src/snapshots.rs",
+     "        if standing(snapshot, today) == Standing::Expired {\n            continue;\n        }",
+     "        if false {\n            continue;\n        }",
+     "sankhya-server"),
+
+    ("server: replace a snapshot whose name is already taken",
+     "crates/sankhya-server/src/snapshots.rs",
+     "    if path.exists() {",
+     "    if false {",
+     "sankhya-server"),
+
+    # No entry for "snapshot every table rather than the ones the caller may read", and the
+    # absence is honest rather than an oversight.
+    #
+    # The filter is there and correct --- a snapshot recording a table its taker could not read
+    # would disclose that table's existence to everyone who can list snapshots. It cannot be
+    # *observed* in this build: every user has the same role and the same tenant, so the filter
+    # admits every table whichever subject it is asked about.
+    #
+    # Same shape as the absent entry for `visible_tables`, and it becomes observable at the same
+    # moment: when `FR-SEC-03`'s federated identity makes a policy distinguish subjects.
+
     ("server: accept a feed cadence of zero, which is a loop with no sleep in it",
      "crates/sankhya-server/src/main.rs",
      "            Ok(0) | Err(_) => {",

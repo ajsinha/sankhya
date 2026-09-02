@@ -46,6 +46,7 @@ mod adopt;
 mod clones;
 mod driver;
 mod feeds;
+mod snapshots;
 mod flight;
 mod scrape;
 mod warehouse;
@@ -415,6 +416,10 @@ async fn main() -> std::io::Result<()> {
     }
 
     let configured_maintenance = settings.maintenance.clone();
+    // The cadence the pin refresh runs on, taken before the policy is moved into the sweeper.
+    let configured_interval = configured_maintenance
+        .as_ref()
+        .map_or_else(|| std::time::Duration::from_secs(30), |policy| policy.interval);
     let warehouse_root = settings.warehouse.clone();
     let (server, listener, complaints) = start(settings).await?;
 
@@ -431,14 +436,49 @@ async fn main() -> std::io::Result<()> {
             policy.compact_every,
             policy.orphan_sweep_every
         );
+        // What still reads each table, refreshed on its own cadence below.
+        //
+        // The sweeper was told **nothing**: `Maintainer::among` existed and only a soak test
+        // called it, so the maintenance thread ran with an empty lineage set --- and an empty
+        // set pins nothing, which means a clone's files were reclaimable by the sweeper of the
+        // table they belong to. Snapshots would have arrived into the same hole.
+        let reading = std::sync::Arc::new(std::sync::Mutex::new(
+            sankhya_maintenance::StillReading::default(),
+        ));
         // The *same* registry the query path pins. Building a second one here would leave the
         // sweeper watching a registry nobody announces into.
-        std::sync::Arc::new(sankhya_maintenance::spawn_maintenance_watching(
+        let handle = std::sync::Arc::new(sankhya_maintenance::spawn_maintenance_watching_pins(
             tables,
             policy,
             Some(server.leases()),
-        ))
+            std::sync::Arc::clone(&reading),
+        ));
+        (handle, reading)
     });
+    let (maintenance, reading) = match maintenance {
+        Some((handle, reading)) => (Some(handle), Some(reading)),
+        None => (None, None),
+    };
+
+    // Refresh what still reads each table, so the sweeper honours a clone made or a snapshot
+    // taken while this server runs rather than one made before it started.
+    //
+    // On the maintenance cadence, because that is the only consumer: refreshing faster would be
+    // work nobody reads, and refreshing slower would leave a window in which a freshly taken
+    // snapshot protects nothing.
+    if let Some(reading) = reading.clone() {
+        let refreshing = Arc::clone(&server);
+        let every = configured_interval;
+        tokio::spawn(async move {
+            loop {
+                let current = tokio::task::block_in_place(|| crate::snapshots::still_reading(&refreshing));
+                if let Ok(mut held) = reading.lock() {
+                    *held = current;
+                }
+                tokio::time::sleep(every).await;
+            }
+        });
+    }
 
     // Arrow Flight SQL, served on its own listener.
     //

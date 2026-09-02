@@ -132,6 +132,19 @@ pub struct Maintainer {
     /// Empty unless somebody has cloned something, which is the state of every warehouse
     /// today --- and the reason `ADR-0016`'s answer costs nothing until it is used.
     clones: sankhya_clone::Lineages,
+    /// Versions a named snapshot still reads, by the table root they belong to.
+    ///
+    /// # Why a map of versions rather than the snapshots themselves
+    ///
+    /// So this crate needs no notion of what a snapshot *is*. It answers one question ---
+    /// *"which versions of this table must survive?"* --- and a caller that knows about
+    /// snapshots supplies the answer. A maintenance service that understood snapshots would be
+    /// a second place where their expiry is interpreted, and two interpretations of an expiry
+    /// eventually disagree about whether a file may be deleted.
+    ///
+    /// Keyed by **root path** rather than by name, because that is what this already has and it
+    /// removes every question about which naming a key is in.
+    pinned: std::collections::BTreeMap<PathBuf, Vec<u64>>,
 }
 
 impl Maintainer {
@@ -144,6 +157,7 @@ impl Maintainer {
             tick: 0,
             leases: None,
             clones: sankhya_clone::Lineages::new(),
+            pinned: std::collections::BTreeMap::new(),
         }
     }
 
@@ -330,6 +344,49 @@ impl Maintainer {
     /// reachable set, so the sweep falls back to the age threshold that protected everything
     /// before clones existed. That is the safe direction, and it is the only one --- a resolver
     /// that guessed a version's contents would be guessing about what may be deleted.
+    /// Told, before a tick, what still reads this table.
+    ///
+    /// Called every cycle rather than at construction, because a clone made or a snapshot taken
+    /// while the server runs must be honoured by the next sweep and not by the next restart.
+    pub fn told(&mut self, reading: &StillReading, table_root: &Path) {
+        self.clones = reading.clones.clone();
+        self.pinned = reading
+            .snapshots
+            .get(table_root)
+            .map(|versions| {
+                std::collections::BTreeMap::from([(table_root.to_path_buf(), versions.clone())])
+            })
+            .unwrap_or_default();
+    }
+
+    /// The same, told which versions named snapshots still read.
+    ///
+    /// Supplied per pass rather than at construction, for the reason `among` gives about
+    /// clones: it changes when somebody takes, drops or expires a snapshot, and a reload that
+    /// reset it would let the next sweep reclaim files a live snapshot protects.
+    #[must_use]
+    pub fn pinning(mut self, pinned: std::collections::BTreeMap<PathBuf, Vec<u64>>) -> Self {
+        self.pinned = pinned;
+        self
+    }
+
+    /// The files a named snapshot still reads.
+    ///
+    /// Resolved exactly as a clone's are --- by replaying *this table's own log* to each pinned
+    /// version --- because the question is the same question: which of my files does something
+    /// else still need? A version that cannot be read is skipped, which keeps files rather than
+    /// removing them, and is the only safe direction.
+    fn pinned_by_snapshots(&self, table_root: &Path) -> BTreeSet<String> {
+        let Some(versions) = self.pinned.get(table_root) else {
+            return BTreeSet::new();
+        };
+        versions
+            .iter()
+            .filter_map(|version| live_files_at(table_root, *version).ok())
+            .flat_map(|live| live.files.into_iter().map(|file| file.path))
+            .collect()
+    }
+
     fn pinned_by_clones(&self, table_root: &Path) -> BTreeSet<String> {
         if self.clones.is_empty() {
             return BTreeSet::new();
@@ -361,9 +418,14 @@ impl Maintainer {
         // clone reads, which `ADR-0016` made a question about this table's own log.
         let referenced = StillReferenced {
             snapshots: BTreeSet::new(),
+            // Clones and snapshots, unioned. Reclamation has exactly **one** question ---
+            // *"does anything still read this?"* --- and a second thing that can answer yes is
+            // not a second rule. Two rules disagree eventually, and the one that loses deletes
+            // a file somebody is reading.
             cloned: self
                 .pinned_by_clones(table_root)
                 .into_iter()
+                .chain(self.pinned_by_snapshots(table_root))
                 .map(|path| table_root.join(path))
                 .collect(),
         };
@@ -589,10 +651,52 @@ pub fn spawn(tables: Vec<PathBuf>, policy: MaintenancePolicy) -> MaintenanceHand
 /// readers instead of for a count of ticks. `None` is the honest value for a maintainer with
 /// no server beside it, and leaves the grace period doing the protecting as it always did.
 #[must_use]
+/// What still reads a table's files, shared with whoever knows.
+///
+/// # Why the sweeper is *told* rather than asking
+///
+/// Because it cannot ask. Clone lineage is read from every table's log and snapshot pins from
+/// documents under `_snapshots/`, and both change while the server runs --- somebody clones a
+/// table, somebody takes a snapshot, a snapshot expires. A sweeper that read them at startup
+/// would honour a warehouse that no longer exists.
+///
+/// # The defect this exists for
+///
+/// The running server's sweeper was told **neither**. `Maintainer::among` existed and only a
+/// soak test called it, so the maintenance thread ran with an empty lineage set --- and
+/// `pinned_by_clones` returns nothing for an empty set, which means a clone's files were
+/// reclaimable by the sweeper of the table they belong to. The clone would then read a version
+/// whose files were gone.
+///
+/// Found on 2026-09-02 while wiring the same mechanism for snapshots, which is the second thing
+/// that answers *"does anything still read this?"*. One question, two answerers, one place they
+/// are supplied.
+#[derive(Clone, Debug, Default)]
+pub struct StillReading {
+    /// Which tables are clones of which.
+    pub clones: sankhya_clone::Lineages,
+    /// Versions a named snapshot still reads, by table root.
+    pub snapshots: BTreeMap<PathBuf, Vec<u64>>,
+}
+
 pub fn spawn_watching(
     tables: Vec<PathBuf>,
     policy: MaintenancePolicy,
     leases: Option<Arc<Leases>>,
+) -> MaintenanceHandle {
+    spawn_watching_pins(tables, policy, leases, Arc::new(Mutex::new(StillReading::default())))
+}
+
+/// [`spawn_watching`], told what still reads each table.
+///
+/// The handle is read **once per cycle**, exactly as the policy is: a clone made or a snapshot
+/// taken while the server runs must be honoured by the next sweep, not by the next restart.
+#[must_use]
+pub fn spawn_watching_pins(
+    tables: Vec<PathBuf>,
+    policy: MaintenancePolicy,
+    leases: Option<Arc<Leases>>,
+    reading: Arc<Mutex<StillReading>>,
 ) -> MaintenanceHandle {
     let stop = Arc::new(AtomicBool::new(false));
     let ticks = Arc::new(AtomicU64::new(0));
@@ -625,11 +729,19 @@ pub fn spawn_watching(
                     let current = shared
                         .lock()
                         .map_or_else(|_| policy.clone(), |held| held.clone());
+                    // What still reads these tables, read on the same cadence and for the same
+                    // reason. A poisoned handle yields *nothing pinned*, which would be the
+                    // unsafe direction --- so it yields the previous cycle's answer instead by
+                    // falling back to an empty set only when there has never been one.
+                    let reading_now = reading
+                        .lock()
+                        .map_or_else(|held| held.into_inner().clone(), |held| held.clone());
                     for (table, maintainer) in &mut maintainers {
                         if stop.load(Ordering::Relaxed) {
                             break;
                         }
                         maintainer.reconfigure(current.clone());
+                        maintainer.told(&reading_now, table);
                         match maintainer.tick(table) {
                             Ok(report) => {
                                 reclaimed.fetch_add(report.bytes_reclaimed, Ordering::Relaxed);

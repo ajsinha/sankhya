@@ -1,0 +1,21 @@
+[package]
+name         = "sankhya-snapshot"
+description  = "A name for one instant across many tables: what it pins, when it expires."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license-file.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 2
+
+[lints]
+workspace = true
+
+[dependencies]
+serde      = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
