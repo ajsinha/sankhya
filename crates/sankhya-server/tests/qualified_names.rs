@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 mod common;
 
-use common::{query_outcome, start, text_rows, write_warehouse};
+use common::{query_outcome, start, start_with, text_rows, write_warehouse};
 
 /// Put a table of `rows` rows at `<schema>/<name>`, through the product's own writer.
 fn table(warehouse: &std::path::Path, schema: &str, name: &str, rows: i64) {
@@ -319,5 +319,41 @@ fn the_cube_surface_answers_on_a_warehouse_that_has_no_cubes() {
     assert_eq!(
         query_outcome(server.port, "SELECT * FROM cubes()").expect("the function resolves"),
         0
+    );
+}
+
+#[test]
+fn a_statement_that_outruns_its_deadline_is_stopped_rather_than_left_running() {
+    // An adversarial review showed one client typing a cheap, arbitrarily expensive statement
+    // and hanging up, after which the server went on burning a whole core to completion.
+    // Nothing in the query path had a deadline: `collect` awaits every batch, and
+    // `block_in_place` holds a runtime worker while it does. Enough of those starve every
+    // other connection, and the client that started it is gone.
+    //
+    // `sankhya-governor` has `Budget`, `Deadline` and `Cancel`, and the query path used none
+    // of them --- they are a polling model and nothing here polls. This is the bound the
+    // execution actually admits.
+    let dir = tempfile::tempdir().expect("a directory");
+    let warehouse = dir.path().join("warehouse");
+    table(&warehouse, "sales", "orders", 3);
+    let server = start_with(
+        &warehouse,
+        &dir.path().join("data"),
+        // One second, so the test is about the deadline rather than about waiting.
+        &[("SANKHYA_STATEMENT_TIMEOUT_SECONDS", "1")],
+    );
+
+    let refused = query_outcome(
+        server.port,
+        "SELECT count(*) FROM generate_series(1, 400000000) a, generate_series(1, 40) b",
+    )
+    .expect_err("a statement that outruns its deadline is stopped");
+    assert!(refused.contains("57014"), "query_canceled is the code: {refused}");
+    assert!(refused.contains("was stopped"), "{refused}");
+
+    // And the connection is still usable: a stopped statement is not a broken session.
+    assert_eq!(
+        query_outcome(server.port, "SELECT id FROM sales.orders").expect("still serving"),
+        3
     );
 }

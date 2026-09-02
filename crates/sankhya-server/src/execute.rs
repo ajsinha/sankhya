@@ -327,10 +327,34 @@ pub async fn run(
         .await
         .map_err(|error| plan_failure(&error))?;
     let schema = frame.schema().as_arrow().clone();
-    let batches = frame
-        .collect()
-        .await
-        .map_err(|error| plan_failure(&error))?;
+    // Bounded, and the bound is not decoration.
+    //
+    // An adversarial review showed one client typing a cheap, arbitrarily expensive statement
+    // --- a cross join over two `generate_series` --- and hanging up. The server went on
+    // burning a whole core to completion, because nothing in the query path had a deadline:
+    // `collect` awaits every batch, and `block_in_place` holds a runtime worker while it does.
+    // Enough of those starve every other connection, and the client that started it is gone.
+    //
+    // `sankhya-governor` has `Budget`, `Deadline` and `Cancel` and **the query path used none
+    // of them** --- they are a polling model, and nothing in this path polls. A deadline is
+    // what the execution actually admits, so a deadline is what it gets.
+    let batches = match tokio::time::timeout(statement_deadline(), frame.collect()).await {
+        Ok(collected) => collected.map_err(|error| plan_failure(&error))?,
+        Err(_) => {
+            return Err(failure(
+                // `57014`, query_canceled --- which the review found unreachable, because
+                // nothing could cancel a query.
+                "57014",
+                &format!(
+                    "this statement ran for longer than {} seconds and was stopped. It is \
+                     stopped rather than left running because a statement nobody is waiting \
+                     for still holds a worker, and enough of them starve every other \
+                     connection",
+                    statement_deadline().as_secs()
+                ),
+            ));
+        }
+    };
 
     let total: usize = batches.iter().map(RecordBatch::num_rows).sum();
     if total > max_rows {
@@ -572,6 +596,44 @@ fn plan_failure(error: &datafusion::error::DataFusionError) -> QueryFailure {
         // very coupling `subjects` exists to remove.
         subjects: Vec::new(),
     }
+}
+
+/// How long one statement may run before it is stopped.
+///
+/// # Why there is a limit at all
+///
+/// A statement that outlives the client that asked for it is pure cost: nobody will read the
+/// answer, and it holds a runtime worker until it finishes. One is a waste; enough of them are
+/// a denial of service that any connected client can cause by typing a short query and hanging
+/// up.
+///
+/// # Why it is generous
+///
+/// Because a legitimate analytical query over a large warehouse is genuinely slow, and a limit
+/// that stops real work is a limit an operator raises to infinity. Half an hour is far beyond
+/// any interactive statement and far below "forever".
+///
+/// `SANKHYA_STATEMENT_TIMEOUT_SECONDS` overrides it. Zero means no limit, which is a real
+/// choice for a batch deployment with no untrusted clients --- said explicitly, rather than
+/// arrived at by having no limit in the first place.
+fn statement_deadline() -> std::time::Duration {
+    /// What a deployment gets by not thinking about it.
+    const DEFAULT_SECONDS: u64 = 1_800;
+
+    static DEADLINE: std::sync::OnceLock<std::time::Duration> = std::sync::OnceLock::new();
+    *DEADLINE.get_or_init(|| {
+        let seconds = std::env::var("SANKHYA_STATEMENT_TIMEOUT_SECONDS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(DEFAULT_SECONDS);
+        if seconds == 0 {
+            // Not "stop immediately". A deliberate opt-out, expressed as a deadline nothing
+            // reaches, so the code below has one path rather than two.
+            std::time::Duration::from_secs(u64::from(u32::MAX))
+        } else {
+            std::time::Duration::from_secs(seconds)
+        }
+    })
 }
 
 /// Refuse a construct the engine **parses and then ignores**.

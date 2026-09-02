@@ -274,6 +274,19 @@ person**. It does not retry on a timer: a source whose shape has changed produce
 records for as long as it runs, and a feed that keeps going leaves every dashboard green while
 nothing arrives.
 
+### How long a statement may run
+
+A statement is stopped after **thirty minutes** and answers `57014`, *query_canceled*.
+
+Not a performance target. A statement that outlives the client that asked for it is pure cost
+— nobody will read the answer, and it holds a worker until it finishes. One is waste; enough of
+them are a denial of service that any connected client can cause by typing a short query and
+hanging up.
+
+`SANKHYA_STATEMENT_TIMEOUT_SECONDS` overrides it, and `0` means no limit — a real choice for a
+batch deployment with no untrusted clients, said out loud rather than arrived at by having no
+limit at all.
+
 ### Seeing a feed, and starting one again
 
 A feed that stopped is a **state**, not a log line somebody had to be watching for. Ask the
