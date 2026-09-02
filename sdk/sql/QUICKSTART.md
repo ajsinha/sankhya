@@ -11,7 +11,7 @@
 
 **Document ID:** SNK-SDK-SQL-001
 **Version:** 0.1.0
-**Status:** Implementation — M0–M8, M10 and M13 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14 in progress
+**Status:** Implementation — M0–M8, M10 and M13 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14 and M17 in progress
 
 Everything SANKHYA does, from a SQL prompt. **No client library, no language runtime, no
 driver** — the wire-protocol door speaks the PostgreSQL protocol, so `psql` and anything that

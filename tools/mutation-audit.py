@@ -4006,6 +4006,20 @@ CATALOGUE = [
     # federated identity --- and the entry belongs there rather than here, claiming a guard that
     # does not exist yet.
 
+    # `ADR-0019` Decision 6: `SET SNAPSHOT` is the first setting that would change an answer,
+    # and accepting it as a no-op would serve the present to a caller who asked for one instant.
+    ("server: accept a setting that would change an answer, as a no-op",
+     "crates/sankhya-server/src/driver.rs",
+     "    if matches!(first, \"SET\" | \"RESET\") {",
+     "    if false {",
+     "sankhya-server"),
+
+    ("server: refuse every setting rather than the ones that change an answer",
+     "crates/sankhya-server/src/driver.rs",
+     "        if CHANGES_AN_ANSWER.contains(&named) {",
+     "        if true {",
+     "sankhya-server"),
+
     ("server: accept a feed cadence of zero, which is a loop with no sleep in it",
      "crates/sankhya-server/src/main.rs",
      "            Ok(0) | Err(_) => {",
