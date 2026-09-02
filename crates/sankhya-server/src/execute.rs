@@ -313,6 +313,8 @@ pub async fn run(
     // runs data-definition statements *during planning* and hands back a frame over the
     // empty result, so a check against the returned plan happens after the table has already
     // been created. The refusal below only works from here.
+    refuse_if_silently_ignored(sql)?;
+
     let plan = context
         .state()
         .create_logical_plan(sql)
@@ -386,8 +388,13 @@ fn refuse_if_not_a_read(plan: &datafusion::logical_expr::LogicalPlan) -> Result<
          published warehouse"
     ));
     Err(QueryFailure {
-        sqlstate: statuses_for(refusal.class()).sqlstate.as_str().to_string(),
-        message: format!("[{}] {}", refusal.code(), refusal),
+        // `0A000`, feature_not_supported. A driver reads that as "this server will never do
+        // that" and stops asking; `42601` reads as "you typed it wrong" and it retries.
+        sqlstate: "0A000".to_string(),
+        // `Display` for a catalogue error already renders `[code] message`, so prefixing here
+        // produced `[SNK-C0006] [SNK-C0006] ...` --- which reads like a bug in the thing
+        // reporting the bug.
+        message: refusal.to_string(),
         // The remediation names the supported route rather than only saying no. A refusal
         // that does not say what to do instead sends somebody looking for a flag to turn it
         // on, and there is no flag: writes go to the transactional store and reach the
@@ -397,6 +404,7 @@ fn refuse_if_not_a_read(plan: &datafusion::logical_expr::LogicalPlan) -> Result<
              external table with `sankhya-publish`. See GUIDE.md §3."
                 .to_string(),
         ),
+        subjects: Vec::new(),
     })
 }
 
@@ -511,6 +519,7 @@ fn failure(sqlstate: &str, message: &str) -> QueryFailure {
         sqlstate: sqlstate.to_string(),
         message: message.to_string(),
         detail: None,
+        subjects: Vec::new(),
     }
 }
 
@@ -532,13 +541,164 @@ fn failure(sqlstate: &str, message: &str) -> QueryFailure {
 fn plan_failure(error: &datafusion::error::DataFusionError) -> QueryFailure {
     let classified = classify(error);
     QueryFailure {
-        sqlstate: statuses_for(classified.class()).sqlstate.as_str().to_string(),
+        // The **specific** SQLSTATE where the failure has one, and the class's otherwise.
+        //
+        // The class alone is not enough, and the way it fails is expensive. Every user-class
+        // failure answered `42601`, *syntax_error* --- so a migration tool asking for a table
+        // that is not there yet was told its generated SQL was malformed, rather than
+        // `42P01`, which is the code every one of them branches on to mean "create it".
+        //
+        // A driver's behaviour is driven by these five characters and not by the message. Get
+        // them wrong and a well-written client does exactly the wrong thing.
+        sqlstate: specific_sqlstate(error)
+            .unwrap_or_else(|| statuses_for(classified.class()).sqlstate.as_str().to_string()),
         // The code first, because it is what a support conversation is conducted in and what
-        // a runbook is indexed by.
-        message: format!("[{}] {}", classified.code(), error),
+        // a runbook is indexed by --- but **once**. A refusal raised inside the engine already
+        // carries its code in the text it was built with, and prefixing again produced
+        // `[SNK-C0006] [SNK-C0006] ...`, which reads like a bug in the thing reporting the bug.
+        message: {
+            let said = error.to_string();
+            let code = classified.code().as_str();
+            if said.contains(&format!("[{code}]")) {
+                said
+            } else {
+                format!("[{code}] {said}")
+            }
+        },
         // PostgreSQL renders this as DETAIL, which every client shows.
         detail: Some(classified.remediation().to_string()),
+        // An engine failure cites no names of ours: whatever it names is inside its own
+        // message, in its own words. Inventing a list by parsing that message would be the
+        // very coupling `subjects` exists to remove.
+        subjects: Vec::new(),
     }
+}
+
+/// Refuse a construct the engine **parses and then ignores**.
+///
+/// # Why this is the worst failure available
+///
+/// `SELECT count(*) FROM orders TABLESAMPLE BERNOULLI (1)` asks for one per cent of a table
+/// and was answered with all of it, reported as success. Nothing in the result says the
+/// sampling did not happen. A caller doing statistical work on a sample gets the population,
+/// with a confidence interval computed as though it had a sample --- and no symptom at all.
+///
+/// The catalogue's own remediation for `NotSupported` states the rule this violates: *"a
+/// statement that silently means something slightly different from what it says is worse than
+/// one that is rejected."*
+///
+/// # Why the check is textual
+///
+/// Because the plan does not carry it. The parser accepts the clause and drops it, so by the
+/// time there is a `LogicalPlan` there is nothing left to notice. Matching the statement text
+/// is crude, and it is the only place the information still exists.
+///
+/// Literals are removed first, so a row whose text happens to contain the word is not refused.
+fn refuse_if_silently_ignored(sql: &str) -> Result<(), QueryFailure> {
+    let structure = without_literals(&sql.to_uppercase());
+    for ignored in ["TABLESAMPLE"] {
+        if structure.split(|c: char| !c.is_ascii_alphanumeric() && c != '_').any(|word| word == ignored) {
+            let refusal = sankhya_error::Error::NotSupported(format!(
+                "{ignored} is parsed and then ignored by this engine, so the statement would \
+                 be answered over the whole table while appearing to have sampled it. \
+                 Refused rather than answered: a statement that silently means something \
+                 different from what it says is worse than one that is rejected"
+            ));
+            return Err(QueryFailure {
+                sqlstate: "0A000".to_string(),
+                message: refusal.to_string(),
+                detail: Some(
+                    "Sample explicitly --- a `WHERE` on a hash of a key column gives a \
+                     reproducible sample this engine really applies."
+                        .to_string(),
+                ),
+                subjects: Vec::new(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// A statement with its single-quoted literals emptied.
+///
+/// So that a *value* containing a keyword cannot decide how the statement is treated. The same
+/// rule the catalogue recogniser learned the hard way: structure and data are different things
+/// and must not be matched as one string.
+fn without_literals(sql: &str) -> String {
+    let mut out = String::with_capacity(sql.len());
+    let mut characters = sql.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character != '\'' {
+            out.push(character);
+            continue;
+        }
+        out.push_str("''");
+        while let Some(inside) = characters.next() {
+            if inside != '\'' {
+                continue;
+            }
+            if characters.peek() == Some(&'\'') {
+                characters.next();
+                continue;
+            }
+            break;
+        }
+    }
+    out
+}
+
+/// The SQLSTATE a failure has of its own, where its variant names one.
+///
+/// Matched on the **variant**, not on the message, wherever the variant carries the
+/// distinction --- substring matching on a message is a mapping that changes silently when a
+/// dependency rewords itself. Where the variant does not distinguish (`Plan` covers both a
+/// missing table and a missing column), the message is consulted for the one token that does,
+/// and the fallback is the class's own code rather than a guess.
+fn specific_sqlstate(error: &datafusion::error::DataFusionError) -> Option<String> {
+    use datafusion::error::DataFusionError as E;
+    let code = match error {
+        // The same three wrappers `classify` unwraps, for the same reason. DataFusion wraps a
+        // plan error in `Diagnostic` to attach a source span, so matching on `Plan` alone
+        // never fires --- and "table not found", the commonest error anybody meets, kept its
+        // generic code while looking correct.
+        E::Diagnostic(_, inner) | E::Context(_, inner) => return specific_sqlstate(inner),
+        E::Shared(inner) => return specific_sqlstate(inner),
+        E::Collection(errors) => return errors.first().and_then(specific_sqlstate),
+        // `42703`, undefined_column. A `SchemaError` is about a field.
+        E::SchemaError(..) => "42703",
+        // `0A000`, feature_not_supported. A driver reads this as "this server will never do
+        // that" and stops asking; `42601` reads as "you typed it wrong" and it retries.
+        E::NotImplemented(_) => "0A000",
+        E::ArrowError(inner, _) => {
+            let said = inner.to_string();
+            if said.contains("Divide by zero") {
+                // `22012`, division_by_zero.
+                "22012"
+            } else if said.contains("Cast error") || said.contains("Parser error") {
+                // `22P02`, invalid_text_representation.
+                "22P02"
+            } else {
+                return None;
+            }
+        }
+        E::Plan(said) | E::Execution(said) => {
+            let said = said.to_lowercase();
+            if said.contains("not found") && said.contains("table") {
+                // `42P01`, undefined_table --- the one a migration tool branches on.
+                "42P01"
+            } else if said.contains("no field named") || said.contains("column") && said.contains("not found") {
+                "42703"
+            } else if said.contains("divide by zero") {
+                "22012"
+            } else if said.contains("cannot cast") || said.contains("cast error") {
+                "22P02"
+            } else {
+                return None;
+            }
+        }
+        _ => return None,
+    };
+    Some(code.to_string())
 }
 
 /// Which catalogue entry an engine failure is.

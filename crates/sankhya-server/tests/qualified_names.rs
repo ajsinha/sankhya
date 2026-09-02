@@ -184,3 +184,140 @@ fn a_cube_may_not_be_declared_on_a_bare_name_two_schemas_claim() {
     .expect_err("an ambiguous fact table is refused");
     assert!(refused.contains("orders"), "{refused}");
 }
+
+// --- what a refusal says, which is what a client branches on ---------------
+
+#[test]
+fn a_failure_carries_the_sqlstate_its_kind_has_rather_than_the_class_default() {
+    // A driver's behaviour is driven by these five characters, never by the message. Every
+    // user-class failure used to answer `42601`, *syntax_error* --- so a migration tool asking
+    // for a table that is not there yet was told its generated SQL was malformed, instead of
+    // `42P01`, which is what every one of them branches on to mean "create it".
+    let dir = tempfile::tempdir().expect("a directory");
+    let warehouse = dir.path().join("warehouse");
+    write_warehouse(&warehouse);
+    let server = start(&warehouse, &dir.path().join("data"));
+
+    for (sql, expected, why) in [
+        ("SELECT * FROM no_such_table", "42P01", "undefined_table"),
+        ("SELECT no_such_column FROM orders", "42703", "undefined_column"),
+        ("SELECT 1/0", "22012", "division_by_zero"),
+        ("SELECT CAST('abc' AS BIGINT)", "22P02", "invalid_text_representation"),
+        ("TRUNCATE orders", "0A000", "feature_not_supported, not a syntax error"),
+    ] {
+        let refused = query_outcome(server.port, sql).expect_err("refused");
+        assert!(
+            refused.contains(expected),
+            "`{sql}` should answer {expected} ({why}), and said: {refused}"
+        );
+    }
+}
+
+#[test]
+fn a_refusal_carries_its_code_once() {
+    // `Display` for a catalogue error already renders `[code] message`, and prefixing again
+    // produced `[SNK-C0006] [SNK-C0006] ...` --- which reads like a bug in the thing reporting
+    // the bug.
+    let dir = tempfile::tempdir().expect("a directory");
+    let warehouse = dir.path().join("warehouse");
+    write_warehouse(&warehouse);
+    let server = start(&warehouse, &dir.path().join("data"));
+
+    let refused = query_outcome(server.port, "TRUNCATE orders").expect_err("refused");
+    assert_eq!(refused.matches("SNK-C0006").count(), 1, "{refused}");
+}
+
+#[test]
+fn a_construct_the_engine_parses_and_ignores_is_refused_rather_than_answered() {
+    // The worst failure available: `TABLESAMPLE BERNOULLI (1)` asked for one per cent and was
+    // answered with the whole table, reported as success. Nothing in the result said the
+    // sampling had not happened, so a caller doing statistical work got the population with a
+    // confidence interval computed as though it were a sample.
+    let dir = tempfile::tempdir().expect("a directory");
+    let warehouse = dir.path().join("warehouse");
+    write_warehouse(&warehouse);
+    let server = start(&warehouse, &dir.path().join("data"));
+
+    let refused = query_outcome(
+        server.port,
+        "SELECT count(*) FROM orders TABLESAMPLE BERNOULLI (1)",
+    )
+    .expect_err("refused rather than answered over the whole table");
+    assert!(refused.contains("0A000"), "{refused}");
+
+    // And a *value* that happens to contain the word is not a construct. Structure and data
+    // are different things, which is the lesson the catalogue recogniser learned the hard way.
+    assert_eq!(
+        query_outcome(
+            server.port,
+            "SELECT count(*) FROM orders WHERE region = 'TABLESAMPLE'"
+        )
+        .expect("an ordinary query"),
+        1
+    );
+}
+
+#[test]
+fn the_statements_a_driver_sends_around_a_query_are_answered() {
+    // Every connection pool opens with `SET extra_float_digits`, wraps work in
+    // `BEGIN`/`COMMIT`, and returns a connection with `DISCARD ALL`. Refusing them refused the
+    // driver --- and `SET` was refused as `XX000`, a *fatal server configuration error*, which
+    // makes a pool discard the connection and try again forever.
+    let dir = tempfile::tempdir().expect("a directory");
+    let warehouse = dir.path().join("warehouse");
+    write_warehouse(&warehouse);
+    let server = start(&warehouse, &dir.path().join("data"));
+
+    for sql in [
+        "BEGIN",
+        "COMMIT",
+        "SET extra_float_digits = 3",
+        "SET application_name = 'thing'",
+        "RESET ALL",
+        "DISCARD ALL",
+    ] {
+        query_outcome(server.port, sql).unwrap_or_else(|why| panic!("`{sql}` was refused: {why}"));
+    }
+}
+
+#[test]
+fn rollback_is_refused_because_it_is_the_one_that_would_be_a_lie() {
+    // This server writes nothing, so `BEGIN` and `COMMIT` are true statements about a
+    // transaction of one statement. `ROLLBACK` is not: a client that asks to undo and is told
+    // it worked has been lied to about the only thing it wanted.
+    let dir = tempfile::tempdir().expect("a directory");
+    let warehouse = dir.path().join("warehouse");
+    write_warehouse(&warehouse);
+    let server = start(&warehouse, &dir.path().join("data"));
+
+    let refused = query_outcome(server.port, "ROLLBACK").expect_err("refused");
+    assert!(refused.contains("25P01"), "{refused}");
+    assert!(refused.contains("nothing to roll back"), "{refused}");
+}
+
+#[test]
+fn the_cube_surface_answers_on_a_warehouse_that_has_no_cubes() {
+    // `SELECT * FROM cubes()` answered "table function 'cubes' not found" when the warehouse
+    // held none -- so a client could not tell **"no cubes yet"** from **"this server does not
+    // do cubes"**, which are opposite facts with opposite responses, on the one warehouse
+    // where the question is most likely to be asked: a new one.
+    //
+    // The same defect as a projected query over an empty table, one level up. Registering a
+    // catalogue whose contents are empty is not pretending -- the graph functions do exactly
+    // this, deliberately, and say so.
+    // A warehouse with a table and no cube -- which is every warehouse on its first day, and
+    // the state the sample fixture does not have because it declares one.
+    let dir = tempfile::tempdir().expect("a directory");
+    let warehouse = dir.path().join("warehouse");
+    table(&warehouse, "sales", "orders", 3);
+    let server = start(&warehouse, &dir.path().join("data"));
+
+    let listed = text_rows(server.port, "SELECT * FROM cubes()");
+    assert!(listed.is_empty(), "this warehouse has no cubes: {listed:?}");
+
+    // And it answers with the shape a picker binds to, rather than nothing at all.
+    assert_eq!(
+        query_outcome(server.port, "SELECT * FROM cubes()").expect("the function resolves"),
+        0
+    );
+}

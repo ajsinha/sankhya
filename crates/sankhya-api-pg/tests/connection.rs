@@ -62,16 +62,29 @@ impl Handler for Fixture {
                 sqlstate: "28P01".to_string(),
                 message: "password authentication failed".to_string(),
                 detail: None,
+                subjects: Vec::new(),
             }),
         }
     }
 
     fn query(&self, sql: &str) -> Result<QueryResult, QueryFailure> {
+        // The statement is echoed back as a row, so a test can assert **what reached the
+        // handler**. Without it, a bound parameter that never arrived is invisible: the
+        // fixture answers the same two rows either way, and the test passes while the
+        // parameter is dropped on the floor.
+        if sql.contains("echo") {
+            return Ok(QueryResult {
+                fields: vec![FieldDescription::text("sql", oid::TEXT, -1)],
+                rows: vec![vec![Some(sql.to_string())]],
+                tag: "SELECT 1".to_string(),
+            });
+        }
         if sql.contains("boom") {
             return Err(QueryFailure {
                 sqlstate: "42601".to_string(),
                 message: "syntax error at or near \"boom\"".to_string(),
                 detail: None,
+                subjects: Vec::new(),
             });
         }
         Ok(QueryResult {
@@ -551,7 +564,7 @@ async fn a_bound_parameter_reaches_the_statement() {
     client.read_until(b'Z').await;
 
     let mut body = b"\0".to_vec();
-    body.extend_from_slice(b"SELECT id FROM t WHERE note = $1\0");
+    body.extend_from_slice(b"SELECT echo FROM t WHERE note = $1\0");
     body.extend_from_slice(&0i16.to_be_bytes());
     client.send(b'P', &body).await;
 
@@ -569,9 +582,50 @@ async fn a_bound_parameter_reaches_the_statement() {
     client.send(b'S', &[]).await;
 
     let result = client.read_until(b'Z').await;
-    // The fixture echoes the SQL it was given back through its refusal path only for `boom`,
-    // so a successful answer here proves the substituted statement reached the handler.
-    assert!(tags(&result).contains(&'C'), "{:?}", tags(&result));
+    let (_, row) = result.iter().find(|(tag, _)| *tag == b'D').expect("a row");
+    let echoed = String::from_utf8_lossy(row);
+    assert!(
+        echoed.contains("'first'"),
+        "the bound parameter never reached the handler: {echoed}"
+    );
+    assert!(
+        !echoed.contains("$1"),
+        "the placeholder was sent unsubstituted: {echoed}"
+    );
+}
+
+#[tokio::test]
+async fn a_null_parameter_binds_as_null_and_not_as_the_empty_string() {
+    // Two different values. A parameter that is absent and one that is the empty string mean
+    // different things, and a binding that conflated them would produce a wrong answer rather
+    // than a formatting slip.
+    let address = start(Fixture::open()).await;
+    let mut client = Client::connect(address).await;
+    client.startup("ana").await;
+    client.read_until(b'Z').await;
+
+    let mut body = b"\0".to_vec();
+    body.extend_from_slice(b"SELECT echo FROM t WHERE note = $1\0");
+    body.extend_from_slice(&0i16.to_be_bytes());
+    client.send(b'P', &body).await;
+
+    let mut bind = b"\0\0".to_vec();
+    bind.extend_from_slice(&0i16.to_be_bytes());
+    bind.extend_from_slice(&1i16.to_be_bytes());
+    bind.extend_from_slice(&(-1i32).to_be_bytes()); // SQL NULL
+    bind.extend_from_slice(&0i16.to_be_bytes());
+    client.send(b'B', &bind).await;
+
+    let mut execute = b"\0".to_vec();
+    execute.extend_from_slice(&0i32.to_be_bytes());
+    client.send(b'E', &execute).await;
+    client.send(b'S', &[]).await;
+
+    let result = client.read_until(b'Z').await;
+    let (_, row) = result.iter().find(|(tag, _)| *tag == b'D').expect("a row");
+    let echoed = String::from_utf8_lossy(row);
+    assert!(echoed.contains("NULL"), "a null bound as something else: {echoed}");
+    assert!(!echoed.contains("''"), "a null bound as the empty string: {echoed}");
 }
 
 #[tokio::test]

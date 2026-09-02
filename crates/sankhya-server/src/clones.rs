@@ -64,14 +64,14 @@ pub(crate) fn answer(
             ));
         }
         Qualified::Ambiguous(candidates) => {
-            return Err(refusal(
+            let named = candidates.join(", ");
+            return Err(crate::wiring::refusal_about(
                 // `42P09`, ambiguous alias: the name resolves to more than one thing.
                 "42P09",
-                &format!(
-                    "`{asked}` names more than one table: {}. Qualify it with its schema",
-                    candidates.join(", ")
-                ),
-            ))
+                &format!("`{asked}` names more than one table: {named}"),
+                "Qualify it with its schema. Both candidates are in this refusal's `subjects`.",
+                candidates,
+            ));
         }
     };
     if !server.readable(principal, &table, &lineages) {

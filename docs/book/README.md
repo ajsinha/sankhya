@@ -27,15 +27,16 @@ omit — **how every claim in the preceding chapters is verified**.
 
 | If you are | Start at |
 |---|---|
-| Evaluating whether this is worth your time | Chapter 2, *The thesis* |
-| An architect assessing the design | Chapter 5, *Architecture* |
-| An engineer who wants to run a query today | Chapter 18, *Getting started* |
-| Responsible for operating it | Part III |
-| Wondering whether to believe any of it | Chapter 23, *How this is tested* |
+| Evaluating whether this is worth your time | [Chapter 2, *The thesis*](part1/02-thesis.md) |
+| An architect assessing the design | [Chapter 5, *Architecture*](part2/05-architecture.md) |
+| An engineer who wants to run a query today | [Chapter 18, *Getting started*](part4/18-getting-started.md) |
+| Responsible for operating it | [Part III](part3/13-security.md) |
+| Working **on** SANKHYA | [Chapter 27, *The developer guide*](part5/27-developer-guide.md) |
+| Wondering whether to believe any of it | [Chapter 23, *How this is tested*](part5/23-testing.md) |
 
-The contents are in [`SUMMARY.md`](SUMMARY.md). Chapters are being written in order; this book
-is assembled from the repository's working documents rather than written apart from them, so a
-chapter appears when its subject is settled enough to describe honestly.
+Twenty-seven chapters in five parts; the contents are in [`SUMMARY.md`](SUMMARY.md). This book
+is assembled from the repository's working documents rather than written apart from them, which
+is why writing it found thirteen claims in those documents that were false.
 
 ## Three commitments
 
@@ -62,8 +63,8 @@ asserted** — a distinction Chapter 23 takes seriously enough to spend a chapte
 This book describes a system under active construction, and it is written to be **honest about
 which parts exist**. Where something is designed and not yet built, the text says so and names
 the milestone. Where a decision has been made and not yet implemented, it names the decision
-record. The status of every milestone is in Chapter 26, and the authoritative, continuously updated
-version is in the repository's [`STATUS.md`](../STATUS.md).
+record. The status of every milestone is in [Chapter 26](part5/26-roadmap.md), and the authoritative,
+continuously updated version is in the repository's [`STATUS.md`](../STATUS.md).
 
 A document that describes an intention in the present tense is a document that lies to the
 person least able to tell.

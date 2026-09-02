@@ -18,10 +18,13 @@
 //! Inferring one from the first feed to mention it is how a warehouse acquires tables nobody
 //! designed.
 
+use sankhya_api_pg::session::{QueryFailure, QueryResult};
 use sankhya_feed::run::{run, Ran, Running};
 use sankhya_feed::validate::{validate, Feed};
 use sankhya_feed::{quarantine, Declaration};
 use sankhya_publish::Publication;
+
+use crate::wiring::{acknowledged, refusal};
 use std::path::{Path, PathBuf};
 
 /// Where feed declarations live, under the configuration directory.
@@ -206,5 +209,99 @@ fn publication(root: &Path, name: &str, feed: &Feed) -> Publication {
         // rather than left implicit so the two branches are visibly the same decision.
         None => publication,
         Some(column) => publication.dated_by(column),
+    }
+}
+
+
+/// Answer a feed command.
+///
+/// # Why this is not authorized like a query
+///
+/// `SHOW FEEDS` reports what the *server* is doing, not what is in any table: names an
+/// operator configured, counts of rows this process moved, and why something stopped.
+/// None of it is tenant data, and there is no table to check a scope against.
+///
+/// That is a decision rather than an omission, and it is the conservative one only while
+/// this server has a single tenant. When identity arrives (`FR-SEC-03`), a feed belongs to
+/// whoever declared it and this needs the same treatment as everything else.
+pub(crate) fn run_command(
+    feeds: &sankhya_feed::state::Feeds,
+    command: Result<sankhya_feed::command::Command, sankhya_feed::command::CommandError>,
+) -> Result<QueryResult, QueryFailure> {
+    use sankhya_api_pg::message::{oid, FieldDescription};
+    use sankhya_error::protocol::sqlstate;
+    use sankhya_feed::command::Command;
+    use sankhya_feed::state::Health;
+
+    let command = match command {
+        Ok(command) => command,
+        Err(error) => {
+            return Err(refusal(sqlstate::SYNTAX_ERROR.as_str(), &error.to_string()))
+        }
+    };
+
+    match command {
+        Command::Show => {
+            let standing = feeds.all();
+            let rows = standing
+                .iter()
+                .map(|feed| {
+                    let (since, why) = match &feed.health {
+                        Health::Running => (None, None),
+                        Health::Halted { since, reason } => {
+                            (Some(since.to_string()), Some(reason.clone()))
+                        }
+                    };
+                    vec![
+                        Some(feed.name.clone()),
+                        Some(feed.health.word().to_owned()),
+                        since,
+                        why,
+                        Some(feed.runs.to_string()),
+                        Some(feed.published.to_string()),
+                        Some(feed.quarantined.to_string()),
+                        Some(feed.skipped.to_string()),
+                        Some(feed.halts.to_string()),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            let tag = format!("SELECT {}", rows.len());
+            Ok(QueryResult {
+                fields: vec![
+                    FieldDescription::text("feed", oid::TEXT, -1),
+                    FieldDescription::text("state", oid::TEXT, -1),
+                    FieldDescription::text("halted_since", oid::TEXT, -1),
+                    FieldDescription::text("reason", oid::TEXT, -1),
+                    FieldDescription::text("runs", oid::INT8, 8),
+                    FieldDescription::text("published", oid::INT8, 8),
+                    FieldDescription::text("quarantined", oid::INT8, 8),
+                    FieldDescription::text("skipped", oid::INT8, 8),
+                    FieldDescription::text("halts", oid::INT8, 8),
+                ],
+                rows,
+                tag,
+            })
+        }
+        Command::Resume { feed } => {
+            if feeds.resume(&feed) {
+                Ok(QueryResult {
+                    fields: Vec::new(),
+                    rows: Vec::new(),
+                    tag: format!("RESUME FEED {feed}"),
+                })
+            } else {
+                // Named rather than reported as success. An operator who mistypes a feed
+                // name and is told it resumed will go away believing it did.
+                Err(refusal(
+                    // `42704`, undefined object: this is a name that does not resolve, and
+                    // the nearest thing the catalogue has for "no such thing".
+                    "42704",
+                    &format!(
+                        "no feed called `{feed}` is declared on this server. \
+                         `SHOW FEEDS` lists them"
+                    ),
+                ))
+            }
+        }
     }
 }

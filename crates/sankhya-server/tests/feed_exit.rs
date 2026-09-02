@@ -56,6 +56,21 @@ use sankhya_publish::Publication;
 use std::path::PathBuf;
 use std::time::Duration;
 
+// `feeds` names `wiring`'s refusal helpers, which name `execute` and `clones`. That is the
+// cost of a composition root living in a binary crate, and it is cheaper than the alternative
+// of never testing it.
+#[path = "../src/execute.rs"]
+mod execute;
+#[path = "../src/adopt.rs"]
+mod adopt;
+#[path = "../src/clones.rs"]
+mod clones;
+#[path = "../src/driver.rs"]
+mod driver;
+#[path = "../src/warehouse.rs"]
+mod warehouse;
+#[path = "../src/wiring.rs"]
+mod wiring;
 #[path = "../src/feeds.rs"]
 mod feeds;
 

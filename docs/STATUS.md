@@ -3641,7 +3641,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 608 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 625 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -3809,6 +3809,37 @@ serialized arm has produced and far above anything the free one reaches by accid
 The primary assertions are untouched: the free reader still has to hold four tenths of its idle
 rate, and its p99 still has to stay within four times idle. Only the control changed, and it
 changed from a proxy to the thing itself.
+
+---
+
+## Open: a reported cube measure defect that has not been reproduced
+
+**2026-09-01.** The adversarial review reported the most serious finding it made: that
+`MEASURE amount (MEAN ALONG region)` answered with the **total**, because every cell was read
+with a hardcoded `Rule::Sum` at `sankhya-cube-sql::functions::batch`. If true it is the failure
+the whole additivity model exists to prevent --- a number of the right magnitude, the right
+sign, and no meaning.
+
+**The hardcoded `Sum` was real and is gone.** `batch` now reduces by the rule the measure
+declares along the dimensions being rolled away, refusing where those disagree rather than
+picking one, with five unit tests including the semi-additive case a balance needs.
+
+**The defect it was supposed to fix has not been reproduced.** `navigate::roll_up` already
+reduces along the rolled-away dimension using the rule `permits` reads from the measure, so by
+the time `batch` runs, each cell of a rolled result holds a single value and any rule over it
+returns that value. Removing the fix breaks no test, which is why there is no mutation entry
+claiming it does.
+
+Three possibilities remain and they are not the same:
+
+1. The reported behaviour came from the base grain or the slice path, where a cell really does
+   hold several contributions --- which the fix now handles and which no test exercises.
+2. `Rule::Mean` does not compose, so `permits` should have **refused** the roll-up rather than
+   answering at all, and the reported number came from a path that skipped `permits`.
+3. The report was of a query shape not yet reconstructed.
+
+Recorded as **open** rather than closed. A fix whose test passes without it has proved nothing,
+and calling it done would put a defect back into the system with a green tick beside it.
 
 ---
 
@@ -4347,9 +4378,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 2,311 tests, none of which needs a database
+cargo test --workspace           # 2,331 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 608 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 625 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

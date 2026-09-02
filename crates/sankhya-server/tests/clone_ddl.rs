@@ -34,6 +34,10 @@ mod warehouse;
 mod adopt;
 #[path = "../src/clones.rs"]
 mod clones;
+#[path = "../src/feeds.rs"]
+mod feeds;
+#[path = "../src/driver.rs"]
+mod driver;
 #[path = "../src/wiring.rs"]
 mod wiring;
 

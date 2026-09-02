@@ -414,3 +414,43 @@ fn a_column_query_that_names_a_schema_is_narrowed_to_it() {
         })
     );
 }
+
+#[test]
+fn a_column_query_naming_a_schema_answers_about_that_schema_alone() {
+    // `orders` may exist in several schemas. A client that asked about one of them and got
+    // every one's columns interleaved has a wrong answer, not a wide one -- and no way to tell
+    // which rows belong to the table it meant.
+    //
+    // Two tables share a name here for exactly this reason.
+    let mut catalogue = tables();
+    catalogue.push(CatalogTable {
+        schema: "archive".to_string(),
+        name: "orders".to_string(),
+        columns: vec![CatalogColumn {
+            name: "archived_at".to_string(),
+            type_name: "text".to_string(),
+            type_oid: oid::TEXT,
+            nullable: false,
+        }],
+    });
+
+    let query = recognise(
+        "SELECT column_name FROM information_schema.columns \
+         WHERE table_schema = 'archive' AND table_name = 'orders'",
+    )
+    .expect("recognised");
+    let result = answer(&query, VERSION, "public", &catalogue);
+
+    assert_eq!(result.row_count(), 1, "only the archive table's column");
+    assert_eq!(cell(&result, 0, 0), Some("archive".to_string()));
+    assert_eq!(cell(&result, 0, 2), Some("archived_at".to_string()));
+
+    // And without a schema, both are answered -- which is right, and is what makes the
+    // narrowing above load-bearing rather than decorative.
+    let query = recognise(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'orders'",
+    )
+    .expect("recognised");
+    let result = answer(&query, VERSION, "public", &catalogue);
+    assert_eq!(result.row_count(), 3, "both tables' columns");
+}

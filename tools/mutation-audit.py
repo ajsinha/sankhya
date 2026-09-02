@@ -1996,8 +1996,8 @@ CATALOGUE = [
 
     ("server: send the engine's message with no catalogue code",
      "crates/sankhya-server/src/execute.rs",
-     '        message: format!("[{}] {}", classified.code(), error),',
-     "        message: error.to_string(),",
+     "            if said.contains(&format!(\"[{code}]\")) {",
+     "            if true {",
      "sankhya-server"),
 
     ("server: drop the remediation before it reaches the client",
@@ -3830,8 +3830,143 @@ CATALOGUE = [
 
     ("server: answer a feed command from the catalogue instead of the feed registry",
      "crates/sankhya-server/src/wiring.rs",
-     "        sankhya_feed::parse_command(sql).is_some()",
-     "        false && sankhya_feed::parse_command(sql).is_some()",
+     "            || sankhya_feed::parse_command(sql).is_some()",
+     "            || (false && sankhya_feed::parse_command(sql).is_some())",
+     "sankhya-server"),
+
+    # The adversarial review of 2026-09-01. Each of these is a defect it found.
+    ("wire: let a value inside a literal choose which handler answers",
+     "crates/sankhya-api-pg/src/catalog.rs",
+     "    let structure = without_literals(&compact);",
+     "    let structure = compact.clone();",
+     "sankhya-api-pg"),
+
+    ("wire: read a catalogue filter from the projection rather than the WHERE clause",
+     "crates/sankhya-api-pg/src/catalog.rs",
+     "    let mut from = 0usize;\n    while let Some(found) = text.get(from..)?.find(column) {",
+     "    let mut from = 0usize;\n    while let Some(found) = text.get(from..).filter(|_| from == 0)?.find(column) {",
+     "sankhya-api-pg"),
+
+    ("wire: answer a column query without narrowing it to the schema it named",
+     "crates/sankhya-api-pg/src/catalog.rs",
+     "                .filter(|t| schema.as_ref().is_none_or(|named| &t.schema == named))",
+     "                .filter(|t| schema.as_ref().is_none_or(|named| &t.schema != named) || true)",
+     "sankhya-api-pg"),
+
+    ("wire: discard a prepared statement's SQL, as the extended protocol did",
+     "crates/sankhya-api-pg/src/session.rs",
+     "                self.statements.insert(name, sql);",
+     "                self.statements.insert(name, String::new());",
+     "sankhya-api-pg"),
+
+    ("wire: run a bound portal without the parameters bound to it",
+     "crates/sankhya-api-pg/src/session.rs",
+     "                        let sql = substitute(sql, &parameters);",
+     "                        let sql = substitute(sql, &[]);",
+     "sankhya-api-pg"),
+
+    ("server: leave a newly created table out of the servable set until a restart",
+     "crates/sankhya-server/src/adopt.rs",
+     "        table.authorize_as = authority_for(server, &table.reference, &lineages);\n        servable.push(table);",
+     "        table.authorize_as = authority_for(server, &table.reference, &lineages);\n        let _ = table;",
+     "sankhya-server"),
+
+    # No entry for "resolve a clone through the ordinary path", and the absence is deliberate.
+    #
+    # A clone is resolved in **two** places -- `warehouse::servable` when it is adopted, and
+    # `warehouse::refresh` when its log moves -- and each masks the other. Break adoption and
+    # the next statement's refresh repairs it; break refresh and adoption has already done it
+    # right. A single-site mutation therefore survives while the defect it names is real, which
+    # is the definition of a mutation that would pass without proving anything.
+    #
+    # The behaviour is guarded end to end instead, by `clone_questions.rs`:
+    # `a_clone_reads_its_origins_rows_rather_than_none` and
+    # `a_clone_of_a_clone_reads_the_same_rows_as_the_root`. Recorded here rather than left as a
+    # gap, because the next person to notice the missing entry deserves the reason.
+
+    ("server: splice a clone one level, so a clone of a clone reads as nothing",
+     "crates/sankhya-server/src/warehouse.rs",
+     "    while let Some(above) = lineage_at(&origin_root) {",
+     "    while let Some(above) = lineage_at(&origin_root).filter(|_| false) {",
+     "sankhya-server"),
+
+    ("server: answer a user-class failure with the class code rather than its own",
+     "crates/sankhya-server/src/execute.rs",
+     "        sqlstate: specific_sqlstate(error)\n            .unwrap_or_else(|| statuses_for(classified.class()).sqlstate.as_str().to_string()),",
+     "        sqlstate: statuses_for(classified.class()).sqlstate.as_str().to_string(),",
+     "sankhya-server"),
+
+    ("server: answer a statement whose sampling clause is parsed and ignored",
+     "crates/sankhya-server/src/execute.rs",
+     "    refuse_if_silently_ignored(sql)?;",
+     "    let _ = refuse_if_silently_ignored(sql);",
+     "sankhya-server"),
+
+    ("server: refuse the statements a driver sends around a query",
+     "crates/sankhya-server/src/wiring.rs",
+     "        if let Some(answer) = crate::driver::run_session_statement(sql) {",
+     "        if let Some(answer) = None::<Result<QueryResult, QueryFailure>> {",
+     "sankhya-server"),
+
+    ("server: answer ROLLBACK with success, which is the one lie that matters",
+     "crates/sankhya-server/src/driver.rs",
+     "        \"ROLLBACK\" | \"ABORT\" => {",
+     "        \"ROLLBACK__never\" | \"ABORT__never\" => {",
+     "sankhya-server"),
+
+    ("server: give up on cube descriptions when the warehouse holds no cubes",
+     "crates/sankhya-server/src/wiring.rs",
+     "        let cubes = self.cubes();\n        // No early return on an empty set",
+     "        let cubes = self.cubes();\n        if cubes.is_empty() { return; }\n        // No early return on an empty set",
+     "sankhya-server"),
+
+    # The sharpest defect the 2026-09-01 review found: a measure's declared rule was validated
+    # and then ignored when the number was computed.
+    # No entry for "reduce every cell by sum", and the absence is honest rather than an
+    # oversight.
+    #
+    # `navigate::roll_up` already reduces along the dimension being rolled away, using the rule
+    # `permits` reads from the measure. By the time `batch` runs, each cell of a rolled result
+    # holds one value --- so the hardcoded `Rule::Sum` it used was **masked** there, and
+    # replacing it with the declared rule changes nothing a roll-up can observe.
+    #
+    # The rule now read in `batch` is still the right one: it governs cells that hold several
+    # contributions, which is the base grain and the slice path, and a hardcoded sum there was
+    # arbitrary. But no test currently fails without it, and claiming a mutation is caught when
+    # it is not is exactly the failure this tool exists to prevent.
+    #
+    # An adversarial review on 2026-09-01 reported `MEAN ALONG region` answering with the
+    # total. That has **not been reproduced** and is recorded as open in `STATUS.md`.
+
+    ("cube: take the kept dimension's rule rather than the one being rolled away",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "        .filter(|along| !kept.contains(&along.dimension))",
+     "        .filter(|along| kept.contains(&along.dimension))",
+     "sankhya-cube-sql"),
+
+    ("cube: resolve disagreeing reduction rules by taking the first",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "        [only] => Ok(*only),",
+     "        [only] => Ok(*only),\n        [first, ..] if true => Ok(*first),",
+     "sankhya-cube-sql"),
+
+    # `ADR-0017` Decision 2: the names a refusal cites travel as data, never only in prose.
+    ("wire: leave the names a refusal cites out of the message it sends",
+     "crates/sankhya-api-pg/src/message.rs",
+     "            if !subjects.is_empty() {",
+     "            if false {",
+     "sankhya-api-pg"),
+
+    ("wire: send a hint field even when a refusal cites nothing",
+     "crates/sankhya-api-pg/src/message.rs",
+     "            if !subjects.is_empty() {",
+     "            if true {",
+     "sankhya-api-pg"),
+
+    ("server: flatten the clones a drop refusal names into its sentence alone",
+     "crates/sankhya-server/src/wiring.rs",
+     "                sankhya_clone::Refused::StillRead { by, .. } => by.clone(),",
+     "                sankhya_clone::Refused::StillRead { by, .. } => { let _ = by; Vec::new() }",
      "sankhya-server"),
 
     ("server: accept a feed cadence of zero, which is a loop with no sleep in it",

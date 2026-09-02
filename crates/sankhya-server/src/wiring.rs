@@ -515,99 +515,6 @@ impl Server {
     pub fn feeds(&self) -> Arc<sankhya_feed::state::Feeds> {
         Arc::clone(&self.feeds)
     }
-
-    /// Answer a feed command.
-    ///
-    /// # Why this is not authorized like a query
-    ///
-    /// `SHOW FEEDS` reports what the *server* is doing, not what is in any table: names an
-    /// operator configured, counts of rows this process moved, and why something stopped.
-    /// None of it is tenant data, and there is no table to check a scope against.
-    ///
-    /// That is a decision rather than an omission, and it is the conservative one only while
-    /// this server has a single tenant. When identity arrives (`FR-SEC-03`), a feed belongs to
-    /// whoever declared it and this needs the same treatment as everything else.
-    fn run_feed_command(
-        &self,
-        command: Result<sankhya_feed::command::Command, sankhya_feed::command::CommandError>,
-    ) -> Result<QueryResult, QueryFailure> {
-        use sankhya_api_pg::message::{oid, FieldDescription};
-        use sankhya_error::protocol::sqlstate;
-        use sankhya_feed::command::Command;
-        use sankhya_feed::state::Health;
-
-        let command = match command {
-            Ok(command) => command,
-            Err(error) => {
-                return Err(refusal(sqlstate::SYNTAX_ERROR.as_str(), &error.to_string()))
-            }
-        };
-
-        match command {
-            Command::Show => {
-                let standing = self.feeds.all();
-                let rows = standing
-                    .iter()
-                    .map(|feed| {
-                        let (since, why) = match &feed.health {
-                            Health::Running => (None, None),
-                            Health::Halted { since, reason } => {
-                                (Some(since.to_string()), Some(reason.clone()))
-                            }
-                        };
-                        vec![
-                            Some(feed.name.clone()),
-                            Some(feed.health.word().to_owned()),
-                            since,
-                            why,
-                            Some(feed.runs.to_string()),
-                            Some(feed.published.to_string()),
-                            Some(feed.quarantined.to_string()),
-                            Some(feed.skipped.to_string()),
-                            Some(feed.halts.to_string()),
-                        ]
-                    })
-                    .collect::<Vec<_>>();
-                let tag = format!("SELECT {}", rows.len());
-                Ok(QueryResult {
-                    fields: vec![
-                        FieldDescription::text("feed", oid::TEXT, -1),
-                        FieldDescription::text("state", oid::TEXT, -1),
-                        FieldDescription::text("halted_since", oid::TEXT, -1),
-                        FieldDescription::text("reason", oid::TEXT, -1),
-                        FieldDescription::text("runs", oid::INT8, 8),
-                        FieldDescription::text("published", oid::INT8, 8),
-                        FieldDescription::text("quarantined", oid::INT8, 8),
-                        FieldDescription::text("skipped", oid::INT8, 8),
-                        FieldDescription::text("halts", oid::INT8, 8),
-                    ],
-                    rows,
-                    tag,
-                })
-            }
-            Command::Resume { feed } => {
-                if self.feeds.resume(&feed) {
-                    Ok(QueryResult {
-                        fields: Vec::new(),
-                        rows: Vec::new(),
-                        tag: format!("RESUME FEED {feed}"),
-                    })
-                } else {
-                    // Named rather than reported as success. An operator who mistypes a feed
-                    // name and is told it resumed will go away believing it did.
-                    Err(refusal(
-                        // `42704`, undefined object: this is a name that does not resolve, and
-                        // the nearest thing the catalogue has for "no such thing".
-                        "42704",
-                        &format!(
-                            "no feed called `{feed}` is declared on this server. `SHOW FEEDS`                              lists them"
-                        ),
-                    ))
-                }
-            }
-        }
-    }
-
     /// The columnar door's acceptor, if this server encrypts.
     #[must_use]
     pub fn columnar_acceptor(&self) -> Option<sankhya_tls::Acceptor> {
@@ -877,7 +784,8 @@ impl Handler for Server {
     /// anything shadows them now, but because "which statements are ours" is one question,
     /// and answering it in two places is how the next one comes to be shadowed silently.
     fn claims(&self, sql: &str) -> bool {
-        sankhya_feed::parse_command(sql).is_some()
+        crate::driver::run_session_statement(sql).is_some()
+            || sankhya_feed::parse_command(sql).is_some()
             || sankhya_clone::parse_question(sql).is_some()
             || sankhya_cube_sql::parse_ddl(sql).is_some()
             || sankhya_clone::parse_ddl(sql).is_some()
@@ -1871,9 +1779,19 @@ impl Server {
 
         // The refusal `ADR-0016` exists for, at the one door it can arrive through.
         if let Err(refused) = sankhya_clone::refuse::may_drop(table, &lineages) {
-            return Some(Err(refusal(
+            // The clones it names, as a list. `Refused::StillRead` already carries them as
+            // data and this used to flatten them into the sentence --- which is `ADR-0017`
+            // Decision 2's own worked example, failing.
+            let named = match &refused {
+                sankhya_clone::Refused::StillRead { by, .. } => by.clone(),
+                _ => Vec::new(),
+            };
+            return Some(Err(refusal_about(
                 sqlstate::DATA_EXCEPTION.as_str(),
                 &refused.to_string(),
+                "Drop what still reads it first, or ask `SHOW DEPENDENTS OF` before dropping \
+                 anything. Every name is in the `subjects` of this refusal.",
+                named,
             )));
         }
 
@@ -1974,15 +1892,14 @@ impl Server {
                 ))
             }
             Qualified::Ambiguous(candidates) => {
-                return Err(refusal(
+                let named = candidates.join(", ");
+                return Err(refusal_about(
                     sqlstate::DATA_EXCEPTION.as_str(),
-                    &format!(
-                        "`{}` names more than one table: {}. Qualify it with its schema \
-                         --- choosing one here would clone the wrong table silently",
-                        statement.origin,
-                        candidates.join(", ")
-                    ),
-                ))
+                    &format!("`{}` names more than one table: {named}", statement.origin),
+                    "Qualify it with its schema --- choosing one here would clone the wrong \
+                     table silently. Both candidates are in this refusal's `subjects`.",
+                    candidates,
+                ));
             }
         };
 
@@ -2340,6 +2257,7 @@ impl Server {
                 sqlstate: "53400".to_string(),
                 message: refused.to_string(),
                 detail: None,
+                subjects: Vec::new(),
             });
         }
 
@@ -2369,8 +2287,25 @@ impl Server {
         // Feed commands, before the engine sees them. `SHOW FEEDS` and `RESUME FEED x` are
         // not SQL, and `parse` returns `None` for everything that is not one --- including
         // `SHOW server_version_num`, which a catalogue-browsing client sends on connection.
+        // The statements a *driver* sends around a query, answered rather than refused.
+        //
+        // Every connection pool and ORM opens with `SET extra_float_digits`, wraps work in
+        // `BEGIN`/`COMMIT`, and returns a connection with `DISCARD ALL`. Refusing them made
+        // this door unusable by the clients it exists for --- and `SET` was refused as
+        // `XX000`, a *fatal server configuration error*, which makes a pool discard the
+        // connection and try again forever.
+        //
+        // Answered honestly rather than pretended: this is a read path, so a transaction
+        // spans one statement and `BEGIN`/`COMMIT` are already true. What must never happen is
+        // silently accepting a statement whose meaning we do not implement --- so `ROLLBACK`
+        // is refused, because a client that rolls back and is told it worked has been lied to
+        // about the one thing it asked.
+        if let Some(answer) = crate::driver::run_session_statement(sql) {
+            return answer;
+        }
+
         if let Some(command) = sankhya_feed::parse_command(sql) {
-            return self.run_feed_command(command);
+            return crate::feeds::run_command(&self.feeds, command);
         }
 
         // The two questions about a clone, for the same reason and at the same point.
@@ -2510,7 +2445,7 @@ fn statement_shape(sql: &str) -> String {
 /// The tag is what a client prints and what a driver branches on, so it names the statement
 /// rather than being an empty string that leaves `psql` silent about whether anything
 /// happened.
-fn acknowledged(tag: &str) -> QueryResult {
+pub(crate) fn acknowledged(tag: &str) -> QueryResult {
     QueryResult { fields: Vec::new(), rows: Vec::new(), tag: tag.to_string() }
 }
 
@@ -2542,6 +2477,9 @@ fn explain_contested(
              way to identify. Qualify it with its schema.",
             candidates.join(", ")
         )),
+        // The candidates as data, so a client can offer them rather than parse them out of
+        // the sentence above.
+        subjects: candidates.clone(),
         ..failure
     }
 }
@@ -2551,6 +2489,32 @@ pub(crate) fn refusal(sqlstate: &str, message: &str) -> QueryFailure {
         sqlstate: sqlstate.to_string(),
         message: message.to_string(),
         detail: None,
+        subjects: Vec::new(),
+    }
+}
+
+/// A refusal that **names** what it is about, and says what to do.
+///
+/// # Why the names travel separately from the sentence
+///
+/// `ADR-0017` Decision 2. A refusal here names things --- the clones that would break, the
+/// feed that is not declared, the two tables a name could mean --- and a client that wants to
+/// act on them should not have to parse the sentence. The moment it does, the sentence is an
+/// API: nobody may reword it, and every improvement to the message breaks somebody.
+///
+/// `subjects` is the field that is cheap now and expensive later, which is why it is filled in
+/// at every site that has names rather than added when something asks.
+pub(crate) fn refusal_about(
+    sqlstate: &str,
+    message: &str,
+    remediation: &str,
+    subjects: Vec<String>,
+) -> QueryFailure {
+    QueryFailure {
+        sqlstate: sqlstate.to_string(),
+        message: message.to_string(),
+        detail: Some(remediation.to_string()),
+        subjects,
     }
 }
 
