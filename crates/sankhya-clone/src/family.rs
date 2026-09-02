@@ -162,6 +162,23 @@ impl Lineages {
             .collect()
     }
 
+    /// Which clones keep which of `table`'s versions alive, by version.
+    ///
+    /// [`Self::pinned_versions`] answers *"which versions must survive"*, which is all a sweep
+    /// needs. This answers *"and what is holding each one"*, which is what a person needs:
+    /// somebody looking at a pinned version is deciding what to drop to release it, and a
+    /// number with no name attached tells them nothing they can act on.
+    #[must_use]
+    pub fn keepers_of(&self, table: &str) -> BTreeMap<u64, BTreeSet<String>> {
+        let mut keepers: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
+        for (clone, lineage) in &self.by_table {
+            if lineage.origin == table {
+                keepers.entry(lineage.version).or_default().insert(clone.clone());
+            }
+        }
+        keepers
+    }
+
     /// The clones that would be broken by removing `table`.
     ///
     /// # Errors

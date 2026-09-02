@@ -189,6 +189,61 @@ Until `SET SNAPSHOT` is honoured it must be **refused**; the day it is honoured,
 4. **Two readers of one snapshot may see different rows.** Correct, and it will be reported as a
    bug at least once.
 
+## Decision 7 — A version is readable and comparable, but only where something kept it
+
+**Added 2026-09-02 by owner directive**, after the question *"is this a git-like view of history?"*
+--- to which the honest answer is: a snapshot is a **tag**, not a log.
+
+Two surfaces follow from that, and one deliberately does not.
+
+**`SHOW HISTORY OF <table>`** lists the commits a table's log holds: version, when, and what
+each added or removed. Nearly free --- the log already keeps every commit as its own file --- and
+it is what makes pinning legible. Without it a person cannot see which versions exist in order
+to reason about which to keep.
+
+Two of its columns are decisions rather than data.
+
+`changed_data` reports the **writer's own declaration** --- `dataChange` on every add and remove
+--- and not an inference from the file counts. A compaction rewrites files and changes not one
+row. Building this found that the two halves of a compaction disagreed: the removals declared
+`dataChange: false`, correctly and since they were written, and the *addition* declared `true`.
+So a compaction was a data change in one direction and not the other, invisible until something
+printed it. A column that reports maintenance as a change is worse than no column, because it
+trains a reader to ignore it.
+
+`kept_by` names **the snapshots and clones** keeping each version alive, by name and all of
+them. Not the *kind* --- a first implementation printed the word `snapshot`, which is true and
+useless: the person reading this column is deciding what to drop to release the storage, and on
+a warehouse with a dozen snapshots that answer sends them elsewhere to find out which. It also
+omitted clones entirely, though a clone keeps a version alive in exactly the same way, and
+reclamation asks one question that both answer yes to.
+
+**`SET VERSION OF <table> = <n>`** reads a table at a version directly, without a snapshot ---
+per table and per session, spelled as a setting for the same reason `SET SNAPSHOT` is.
+Mechanically it is the same resolution a snapshot uses.
+
+**It must refuse rather than answer short, in two directions.**
+
+The log surviving is not the same as the data surviving: retirement deletes the files a merge
+replaced once nothing references them, so an *untagged* old version resolves to a file list
+naming files that are gone. That read is refused, and the refusal says the version's files were
+reclaimed and that only pinned points survive --- because a partial answer here would be a
+historical query silently missing whatever had been compacted. It is the wrong answer that looks
+most like a right one, because it has rows in it.
+
+And a version the log does not contain is refused too, which was not obvious until it was
+wrong. Replaying a log stops at its end, so asking for version 9999 of a five-version table
+resolved to version 5 and answered --- a version nobody has, served as though they had it. The
+refusal names the newest the table does have.
+
+**A diff between two versions is not decided here.** *(Owner directive 2026-09-02: deferred.)* It
+is a genuine design question rather than an implementation detail --- the log records file-level
+adds and removes, so what a *row-level* difference means over it needs an answer before it needs
+code. It has its own milestone.
+
+> The rule this states plainly, and the one a user must understand: **history is readable only
+> where something is keeping it alive.** A snapshot and a clone are the two things that do.
+
 ## What this does not decide
 
 - **A per-statement `AS OF SNAPSHOT`.** Plausible; not needed yet.

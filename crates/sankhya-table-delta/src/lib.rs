@@ -39,10 +39,12 @@
 mod cache;
 mod checkpoint;
 mod log;
+pub mod history;
 pub mod malformed;
 mod schema;
 mod stats;
 
+pub use history::{describe, history, Change};
 pub use cache::{LogCache, Outcome};
 pub use checkpoint::{latest_checkpoint, read_checkpoint, write_checkpoint, CheckpointReport};
 pub use log::{

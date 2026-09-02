@@ -102,7 +102,7 @@ Discovery | `version`, `settings`, `schemas`, `tables`, `columns`, `exists`
 Cloning | `clone`, `drop`, `lineage_of`, `dependents_of`, `is_clone`
 Cubes | `create_cube`, `cubes`, `cube_dimensions`, `cube_measures`, `rollup`, `slice`, `drop_cube`
 Feeds | `feeds`, `resume_feed`, `quarantine`
-Graph | `reachable`, `shortest_path`, `cycles`, `influence`, `time_respecting`
+Graph | `reachable`, `shortest_path(graph, from, to)`, `cycles`, `influence`, `time_respecting`
 
 Two design choices in there are worth defending. **`connection` is deliberately public**: a binding
 that hides the wire forces its author to anticipate every statement anybody will ever want, and the
@@ -134,13 +134,34 @@ to deal with.
 Counts distinguish `None` from `0` throughout. *"Not recorded"* and *"recorded as none"* are different
 answers, and collapsing them would report a clone as reading version 0 of its origin.
 
-> **Pitfall** — `Sankhya.rollup(cube, by=...)` and `Sankhya.slice(cube, by=...)` misname their second
-> parameter. It is passed to the server as the **measure**, not the dimension, and the docstring
-> ("`by` names the dimension to keep") describes the opposite. Verified:
-> `db.rollup('c', 'amount')` returns the grand total; `db.rollup('c', 'region')` is refused —
-> *"cube 'c' has no published cells for measure 'region'"*. Options reach the server through a keyword
-> whose **name is discarded**, so `db.rollup('c', 'amount', opts='by=region')` works and so does any
-> other keyword. Until the signature is fixed, prefer `db.sql("SELECT * FROM cube_rollup(…)")`.
+The cube navigations take the measure first and the dimension second, exactly as the server's own
+functions do:
+
+```python
+db.rollup('sales', 'amount')                       # the grand total
+db.rollup('sales', 'amount', by='region')          # a breakdown by region
+db.slice('sales', 'amount', where='region:north')  # one member fixed
+db.rollup('sales', 'amount', by='region', min_completeness=0.5)
+```
+
+> **How this was wrong, and how it was found** — both methods once took `(cube, by=…)` and passed
+> `by` into the **measure** position, so `db.rollup('c', 'region')` was refused with *"cube 'c' has
+> no published cells for measure 'region'"* and there was no way to say `by=` at all. Keyword
+> options had their **names discarded**, so `opts='by=region'` worked and so did any other spelling
+> — a parameter that accepted anything and meant nothing.
+>
+> Nothing caught it: the methods were covered, the gate was green, and the docstring described the
+> opposite of what the code did. It was found by *writing a runnable example*, which is why those
+> examples are now a test (`crates/sankhya-server/tests/sdk_examples.rs`). An example that does not
+> run is documentation that lies, and it lies most convincingly right after the code has changed.
+>
+> The graph methods had the same defect and it had gone unnoticed for the same reason: keyword
+> options reached the server as bare values with their names stripped, so `max_depth=3` arrived as
+> `3` in whatever position it happened to fall, and `shortest_path`'s destination — which is a
+> **positional** argument of the server's function — worked only while it happened to be the first
+> keyword given. Both builders now have unit tests of their own, under `sdk/python/tests/`, run
+> from the same gate. They are the one place this package has logic that nothing downstream
+> enforces, which is exactly why both of them were wrong.
 
 ## 20.4 A refusal must cross the wire as data
 
@@ -268,21 +289,22 @@ Exactly two things are properties of the client rather than the server:
 Streaming a result larger than memory | `psql` collects; a binding can iterate
 Getting a refusal as structured fields | The wire carries them; `psql` renders them as text
 
-Seven example files ship under `sdk/sql/examples/`, one per capability, and they are meant to be
-gated artefacts — *an example that does not run is documentation that lies, and it lies to the person
-least able to tell.*
+Eight example files ship under `sdk/sql/examples/`, one per capability, and eight more under
+`sdk/python/examples/`. Both sets are **gated artefacts**: they run in CI against a live server, from
+`crates/sankhya-server/tests/sql_examples.rs` and `tests/sdk_examples.rs`. *An example that does not
+run is documentation that lies, and it lies to the person least able to tell.*
 
-> **Pitfall** — `07-analytics.sql` does not run. Executed against a live server, every statement in
-> its first three sections fails: it calls `vec`, `vec_add`, `vec_norm`, `vec_l2`, `vec_cosine` and
-> `mat`, and the functions are named `vec_of`, `vec_sum`, `vec_norm_l2`, `vec_euclidean`,
-> `vec_cosine_similarity` and `mat_of`. The server's *"did you mean"* hints point at the right names on
-> every line. Chapter 19, *The SQL surface*, §19.8–§19.10 is the verified catalogue; use it rather than
-> that file. The gate that is supposed to execute these examples is `M14` work and has evidently not
-> run against this one.
+The SQL gate reads each statement's outcome, not the script's. A statement preceded by a `-- REFUSES`
+line must fail; every other statement must succeed. Both directions are checked, because a
+demonstration of a refusal that quietly starts succeeding is a rule that has been removed and a
+document that still claims it.
 
-The other six read against a warehouse holding a `sales` schema — the one the repository's quickstart
-generates — and name tables that a differently-shaped warehouse will not have. That is fair and it is
-stated at the top of each file; substitute your own schema.
+> **What ungated cost** — `07-analytics.sql` once called `vec`, `vec_add`, `vec_norm` and `mat`, none
+> of which exist, and `04-cubes.sql` passed the dimension where the measure goes. Both had been
+> reviewed; one carried a written note claiming it had been verified against a live server. A `psql`
+> script with `ON_ERROR_STOP off` prints its errors and keeps going, so a wall of output reads as
+> success. Only something that reads the exit of each statement can tell — which is what these gates
+> now are, and what found the four front-door defects listed in `sdk/python/examples/README.md`.
 
 ## 20.9 What is not built, by name
 

@@ -332,6 +332,72 @@ join with nothing — a confident zero, reported as success.
 `SET`** rather than at the next query. Failing where a person can act beats failing where the
 consequence happens to be noticed.
 
+### Reading one table's history
+
+A snapshot is a *tag*. `SHOW HISTORY OF` is the log underneath it.
+
+```sql
+SHOW HISTORY OF sales.orders;
+```
+
+```
+ version |   what    |      at       | files_added | files_removed | bytes_added | changed_data |         kept_by
+---------+-----------+---------------+-------------+---------------+-------------+--------------+-------------------------
+       0 | created   |               |           0 |             0 |           0 | no           |
+       1 | appended  | 1756545242000 |           4 |             0 |     8912344 | yes          |
+       2 | appended  | 1756631575000 |           4 |             0 |     9014112 | yes          | eod_2026_08_31
+       3 | compacted | 1756609211000 |           1 |             8 |    17800004 | no           | eod_2026_08_31, q3_frozen
+```
+
+`at` is milliseconds from the epoch, as every timestamp on this surface is, and is **empty**
+rather than zero for a commit that touched no file and so recorded no time. A commit that only
+declared a schema has nothing to take a time from, and 1970 presented as a fact is worse than a
+blank.
+
+Two columns carry most of the meaning.
+
+**`changed_data`** is the writer's own declaration, not a guess from the file counts. A
+compaction rewrites files and changes not one row, so it reports `no` — and a column that
+called that a change would be telling you your table moved every time maintenance ran, which is
+both false and the fastest way to make you stop reading the column.
+
+**`kept_by`** names the snapshots and clones holding that version alive — by name, because
+somebody reading this column is deciding what to drop to release the storage — and is empty for
+versions nothing is keeping. That emptiness is the important part: **history is readable only where
+something is keeping it alive.** Retirement deletes the files a merge replaced. The commit stays
+in the log forever; its data does not.
+
+### Reading one table at a version
+
+```sql
+SET VERSION OF sales.orders = 2;
+SELECT count(*) FROM sales.orders;
+RESET VERSION OF sales.orders;
+```
+
+Per table, per session, and independent of `SET SNAPSHOT` — this answers "what did *this* table
+look like then", where a snapshot answers "what did *everything* look like then". Use it to
+check one table against yesterday; use a snapshot when more than one table has to agree.
+
+Three refusals, each of which was a wrong answer before it was a refusal:
+
+- **A version the table does not have** is `42704` and names the newest it does have. Replaying
+  a log stops at its end, so asking for version 9999 of a five-version table used to hand back
+  version 5 — a version nobody has, served as though they had it.
+- **A version whose files retirement has taken** is `42704` and says so in those words: the
+  commit is in the log and its data is not. Answering it would return the rows that happen to
+  survive, which is a historical query silently missing whatever was compacted — the wrong
+  answer that looks most like a right one, because it has rows in it.
+- **A table that does not exist** is `42P01`, at the `SET`.
+
+**What this is not.** It is not version control. There is no diff between two versions and no
+way to restore one, because the log records *files*, not rows: a compaction replaces every file
+and changes nothing, so a file-level diff would report a maintenance job as a total rewrite. A
+row-level difference needs a decision before it needs code, and that decision is `M20`'s.
+
+What you have is closer to a tag than a branch: name a moment, read it back, and know that the
+naming is what keeps it readable.
+
 ---
 
 ### How long a statement may run

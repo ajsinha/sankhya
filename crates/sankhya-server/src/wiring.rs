@@ -527,6 +527,21 @@ impl Server {
         crate::snapshots::as_of(self, caller)
     }
 
+    /// Where a table of this name lives, or `None` if it does not resolve to exactly one.
+    #[must_use]
+    pub(crate) fn root_of(&self, table: &str) -> Option<std::path::PathBuf> {
+        match crate::warehouse::resolve(&self.settings.warehouse, table) {
+            crate::warehouse::Resolved::One(root) => Some(root),
+            crate::warehouse::Resolved::Absent | crate::warehouse::Resolved::Ambiguous(_) => None,
+        }
+    }
+
+    /// Whether this principal may read this table, resolving a clone through its root.
+    #[must_use]
+    pub(crate) fn readable_by(&self, principal: &Principal, table: &str) -> bool {
+        self.readable(principal, table, &self.lineages())
+    }
+
     /// Today, as days from the epoch.
     pub(crate) fn today(&self) -> i32 {
         let now = std::time::SystemTime::now()
@@ -811,6 +826,11 @@ impl Handler for Server {
     /// anything shadows them now, but because "which statements are ours" is one question,
     /// and answering it in two places is how the next one comes to be shadowed silently.
     fn claims(&self, sql: &str) -> bool {
+        // Read past any leading comment, exactly as the dispatch does. Asked of the raw text,
+        // this said *"not mine"* for a commented `SHOW FEEDS` --- and the catalogue then
+        // answered it as an unknown setting. Two places that must agree on what a statement
+        // is, and they now agree by reading the same thing.
+        let sql = sankhya_api_pg::catalog::without_leading_comments(sql);
         crate::driver::run_session_statement(sql).is_some()
             || sql.trim().to_uppercase().starts_with("SET SNAPSHOT")
             || sankhya_snapshot::parse(sql).is_some()
@@ -2315,6 +2335,13 @@ impl Server {
             ));
         };
 
+        // Every statement this server implements itself is recognised by matching the start of
+        // the text, because none of them is SQL. Matched against the raw text, a single
+        // leading `--` comment made the server fail to recognise its own statement --- and
+        // every script this repository ships as an example comments its statements. The
+        // *engine* still receives `sql` unchanged; this is a recogniser's view, not a rewrite.
+        let dispatch = sankhya_api_pg::catalog::without_leading_comments(sql);
+
         // Cube DDL, before the engine is asked anything.
         //
         // `CREATE CUBE` is not SQL, so `sqlparser` rejects it before any DataFusion hook can
@@ -2324,7 +2351,7 @@ impl Server {
         // After admission and after the principal, because a cube is created *by* somebody
         // and against tables they must be allowed to read; before the session, because none
         // of what `session_for` builds is any use to a statement that reads no data.
-        if let Some(statement) = sankhya_cube_sql::parse_ddl(sql) {
+        if let Some(statement) = sankhya_cube_sql::parse_ddl(dispatch) {
             return self.run_cube_ddl(statement, &principal);
         }
 
@@ -2350,33 +2377,35 @@ impl Server {
         // `SET SNAPSHOT` first, because it is the one setting whose *value* must be checked
         // --- and checked here rather than at the next statement, which is where somebody would
         // otherwise learn their snapshot does not exist.
-        if let Some(answer) = crate::snapshots::check_setting(self, sql) {
+        if let Some(answer) = crate::snapshots::check_setting(self, dispatch) {
             return answer;
         }
 
-        if let Some(answer) = crate::driver::run_session_statement(sql) {
-            return answer;
-        }
-
-        if let Some(command) = sankhya_feed::parse_command(sql) {
-            return crate::feeds::run_command(&self.feeds, command);
-        }
-
-        // Snapshot statements, before the engine sees them. `parse` returns `None` for every
-        // other `SHOW`, `CREATE` and `DROP`, including the several a catalogue-browsing client
-        // sends on connection.
-        if let Some(statement) = sankhya_snapshot::parse(sql) {
+        // Snapshot and version statements **before** the generic session handler, because that
+        // handler accepts any `SET` as a no-op --- and `SET VERSION OF <table> = <n>` is a
+        // `SET`. Ordered the other way it was swallowed silently, which is the exact failure
+        // `ADR-0019` Decision 6 names: a caller who asked to read a version, served the
+        // present, with no symptom at all.
+        if let Some(statement) = sankhya_snapshot::parse(dispatch) {
             return crate::snapshots::run_statement(self, statement, &principal);
+        }
+
+        if let Some(answer) = crate::driver::run_session_statement(dispatch) {
+            return answer;
+        }
+
+        if let Some(command) = sankhya_feed::parse_command(dispatch) {
+            return crate::feeds::run_command(&self.feeds, command);
         }
 
         // The two questions about a clone, for the same reason and at the same point.
         // `parse_question` returns `None` for every other `SHOW`, including the several a
         // catalogue-browsing client sends on connection.
-        if let Some(question) = sankhya_clone::parse_question(sql) {
+        if let Some(question) = sankhya_clone::parse_question(dispatch) {
             return crate::clones::answer(self, question, &principal);
         }
 
-        if let Some(statement) = sankhya_clone::parse_ddl(sql) {
+        if let Some(statement) = sankhya_clone::parse_ddl(dispatch) {
             // `None` means the statement turned out not to be this server's business after all
             // --- a `DROP TABLE` of something that is not a clone --- and it goes on to the
             // engine, whose "this is a read path" refusal answers it in its own words. A

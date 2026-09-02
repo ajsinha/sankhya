@@ -39,6 +39,28 @@ pub enum Statement {
         /// Whether the statement said `IF EXISTS`.
         if_exists: bool,
     },
+    /// What a table's log says happened, version by version.
+    ///
+    /// In this crate rather than a new one because it is the same question in a different
+    /// tense: a snapshot names an instant, and this lists the instants there are.
+    History {
+        /// The table asked about.
+        table: String,
+    },
+    /// Read one table at a version, for the rest of this connection.
+    ///
+    /// # Why this is per table and a snapshot is not
+    ///
+    /// A snapshot is a set somebody curated and pinned; this is one table at one number. They
+    /// are different acts: the first is *"the instant I named"* and the second is *"that
+    /// version, whatever else has moved"*. Conflating them would let a query mix a curated
+    /// instant with an arbitrary one and call the result a snapshot.
+    ReadVersion {
+        /// The table.
+        table: String,
+        /// The version, or `None` for `RESET VERSION OF`, which reads the present again.
+        version: Option<u64>,
+    },
 }
 
 /// Why a statement that began like a snapshot statement is not one.
@@ -120,6 +142,16 @@ pub fn parse(sql: &str) -> Option<Result<Statement, NotAStatement>> {
             Some(after) => Err(NotAStatement::Trailing { after: (*after).to_owned() }),
         });
     }
+    if first.eq_ignore_ascii_case("SHOW")
+        && second.is_some_and(|word| word.eq_ignore_ascii_case("HISTORY"))
+    {
+        return Some(read_of(&words, "HISTORY").map(|table| Statement::History { table }));
+    }
+    if (first.eq_ignore_ascii_case("SET") || first.eq_ignore_ascii_case("RESET"))
+        && second.is_some_and(|word| word.eq_ignore_ascii_case("VERSION"))
+    {
+        return Some(read_version(&words));
+    }
     if first.eq_ignore_ascii_case("CREATE")
         && second.is_some_and(|word| word.eq_ignore_ascii_case("SNAPSHOT"))
     {
@@ -131,6 +163,62 @@ pub fn parse(sql: &str) -> Option<Result<Statement, NotAStatement>> {
         return Some(read_drop(&words));
     }
     None
+}
+
+/// `SHOW <what> OF <table>`.
+fn read_of(words: &[&str], what: &'static str) -> Result<String, NotAStatement> {
+    match words.get(2) {
+        Some(word) if word.eq_ignore_ascii_case("OF") => {}
+        found => {
+            return Err(NotAStatement::Expected {
+                wanted: "OF",
+                found: found.map(|word| (*word).to_owned()),
+            })
+        }
+    }
+    let _ = what;
+    let table = identifier(words.get(3), "a table name")?;
+    if let Some(after) = words.get(4) {
+        return Err(NotAStatement::Trailing { after: (*after).to_owned() });
+    }
+    Ok(table)
+}
+
+/// `SET VERSION OF <table> = <n>` and `RESET VERSION OF <table>`.
+fn read_version(words: &[&str]) -> Result<Statement, NotAStatement> {
+    let resetting = words
+        .first()
+        .is_some_and(|word| word.eq_ignore_ascii_case("RESET"));
+    expect(words.get(2), "OF")?;
+    let table = identifier(words.get(3), "a table name")?;
+
+    if resetting {
+        if let Some(after) = words.get(4) {
+            return Err(NotAStatement::Trailing { after: (*after).to_owned() });
+        }
+        return Ok(Statement::ReadVersion { table, version: None });
+    }
+
+    // `= <n>` and `<n>` and `TO <n>` are all spellings a person types.
+    let rest: Vec<&str> = words
+        .iter()
+        .skip(4)
+        .filter(|word| **word != "=" && !word.eq_ignore_ascii_case("TO"))
+        .copied()
+        .collect();
+    let asked = rest.first().ok_or(NotAStatement::Expected {
+        wanted: "a version number",
+        found: None,
+    })?;
+    let asked = asked.trim_start_matches('=');
+    let version: u64 = asked.parse().map_err(|_| NotAStatement::Expected {
+        wanted: "a version number",
+        found: Some((*rest.first().unwrap_or(&"")).to_owned()),
+    })?;
+    if let Some(after) = rest.get(1) {
+        return Err(NotAStatement::Trailing { after: (*after).to_owned() });
+    }
+    Ok(Statement::ReadVersion { table, version: Some(version) })
 }
 
 /// `CREATE SNAPSHOT <name> EXPIRE AFTER <n> DAYS`.

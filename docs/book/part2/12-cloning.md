@@ -285,7 +285,7 @@ The exit criteria had the same problem in miniature. Walking them found that **t
 entirely** — *a clone at constant cost against a large table*, and *every refused clone path shown
 to fail closed*. Both were then built. A criterion nobody wrote is a criterion that cannot fail.
 
-## 12.9 A clone is not a snapshot
+## 12.10 A clone is not a snapshot
 
 The distinction is worth stating because the two are easy to confuse and answer different
 questions.
@@ -308,8 +308,26 @@ loses deletes a file somebody is reading.
 
 Snapshots are Chapter 19 §19.7a and [ADR-0019](../../adr/0019-named-snapshots.md).
 
+### Neither of them is version history
 
-## 12.10 Status, and what would reopen this
+A third confusion is worth heading off, because it is the one people arrive with. A snapshot is
+a **tag**, not a branch, and `SHOW HISTORY OF` (§19.7b) is a list of commits, not a history you
+can walk.
+
+The reason is the same one that shaped this chapter. The log records **files**. A compaction
+replaces every file in a table and changes not one row — so a file-level diff between two
+versions would report a maintenance job as a total rewrite, and a "restore to version N" would
+be restoring a file list rather than a state anybody chose. A diff that reports a compaction as a
+change is worse than no diff, because it looks like an answer.
+
+What the log honestly knows is what §19.7b prints: which versions exist, what each did, whether
+the writer declared it a data change, and **which of them something is still keeping alive**.
+That last column is the one that connects back to this chapter: a clone is one of the two things
+that can appear in it. The row-level question is `M20`'s, and it needs a decision before it needs
+code.
+
+
+## 12.11 Status, and what would reopen this
 
 Cloning is **complete**: its design gate was cleared before any code was written, and all five
 exit criteria are met. It is described in this project's own status document as the first

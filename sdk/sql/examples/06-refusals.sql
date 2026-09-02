@@ -9,42 +9,51 @@
 \set ON_ERROR_STOP off
 
 \echo '== a table that is not there =='
+-- REFUSES
 SELECT * FROM sales.no_such_table;
 
 \echo ''
 \echo '== a column that is not there =='
+-- REFUSES
 SELECT no_such_column FROM sales.orders;
 
 \echo ''
 \echo '== a write, against a read path =='
 -- This server is a read path over a published warehouse. Writes arrive through capture or
 -- through a declared feed, and the refusal names the route rather than merely saying no.
+-- REFUSES
 INSERT INTO sales.orders (id) VALUES (1);
 
 \echo ''
 \echo '== cloning something that is not there =='
+-- REFUSES
 CREATE TABLE nope CLONE sales.no_such_table;
 
 \echo ''
 \echo '== cloning into another schema =='
 -- Refused: a clone is authorized through its origin, so one placed elsewhere would have its
 -- name governed by one policy and its data by another.
+-- REFUSES
 CREATE TABLE archive.q3 CLONE sales.orders;
 
 \echo ''
 \echo '== a feed command with no feed named =='
+-- REFUSES
 RESUME FEED;
 
 \echo ''
 \echo '== resuming a feed nobody declared =='
 -- Named rather than reported as success. An operator who mistypes a feed name and is told it
 -- resumed will go away believing it did.
+-- REFUSES
 RESUME FEED no_such_feed;
 
 \echo ''
 \echo '== a clone question with no table =='
+-- REFUSES
 SHOW LINEAGE;
 
 \echo ''
 \echo '== division by zero =='
+-- REFUSES
 SELECT 1 / 0;

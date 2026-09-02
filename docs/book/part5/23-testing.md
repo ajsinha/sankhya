@@ -14,8 +14,8 @@ Four numbers describe the mechanised half of verification:
 
 | | |
 |---|---|
-| `cargo test --workspace` | 2,377 tests, none of which needs a database |
-| `python3 tools/mutation-audit.py` | 645 specific defects, applied one at a time |
+| `cargo test --workspace` | 2,397 tests, none of which needs a database |
+| `python3 tools/mutation-audit.py` | 657 specific defects, applied one at a time |
 | `cargo xtask check-all` | twenty repository invariants, each proven to fail when violated |
 | `cargo xtask check-performance` | the `NFR-PERF` objectives, as a gate that can fail |
 
@@ -86,7 +86,7 @@ claimed statement bypasses the shortcut. The thing that defines a statement deci
 the thing that guesses at one. It defaults to claiming nothing, so every other handler
 behaves exactly as it did.
 
-Four responses follow from the pattern, and all four are now standing practice:
+Five responses follow from the pattern, and all five are now standing practice:
 
 1. **`check-surfaces`** fails the build when a crate is reachable from nothing that ships,
    or is listed without a milestone. (Chapter 22.)
@@ -99,6 +99,26 @@ Four responses follow from the pattern, and all four are now standing practice:
    refusal.
 4. **The adversarial review** (§23.9) exists for exactly this class, and biases its whole
    method toward execution by clients that know nothing about the code.
+5. **Every shipped SDK example is a test**, added 2026-09-02. The sixteen scripts under
+   `sdk/python/examples/` and `sdk/sql/examples/` run against a live server from
+   `crates/sankhya-server/tests/sdk_examples.rs` and `tests/sql_examples.rs`. The SQL gate reads
+   each *statement's* outcome, not the script's, and checks both directions: a statement marked
+   `-- REFUSES` must fail, and every other must succeed — because a demonstration of a refusal
+   that quietly starts succeeding is a rule that has been removed and a document that still
+   claims it.
+
+   This is the response with the largest catch to date. Writing those examples found six
+   defects that unit tests, mutation tests and a green gate had all missed: `CREATE CUBE` could
+   not name a table in a schema at all; a leading `--` comment made the server fail to recognise
+   its own statements; `SHOW HISTORY OF`'s `kept_by` named nothing and ignored clones; and the
+   Python binding's cube and graph calls passed arguments into the wrong positions while
+   stripping their options' names. Two shipped SQL examples contained statements that could
+   never have run, one of them carrying a written note claiming it had been verified against a
+   live server.
+
+   The reason a *review* misses these is worth stating: a `psql` script with `ON_ERROR_STOP off`
+   prints its errors and keeps going, so a wall of output reads as success. Only something that
+   reads the exit of each statement can tell.
 
 > **Key idea**
 > A surface's own tests call the surface. That is the one place the defect cannot be. Every

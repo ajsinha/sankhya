@@ -409,7 +409,12 @@ pub fn commit_tick(
         // to anyone else reading the table.
         let statistics =
             sankhya_table_delta::from_column_stats(outcome.rows, &outcome.column_stats);
-        actions.push(Action::Add(AddFile::with_statistics(
+        // `rewritten`, not `with_statistics`: a compaction changes no rows, and **both halves
+        // of the commit** must say so. The removals below already declared `dataChange: false`
+        // and the addition declared `true`, so a reader streaming changes saw every compacted
+        // row as new --- the spurious stream `RemoveFile::rewritten` exists to prevent,
+        // arriving through the other half of the same commit.
+        actions.push(Action::Add(AddFile::rewritten(
             name(&outcome.output),
             outcome.bytes,
             now,

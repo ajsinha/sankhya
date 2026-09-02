@@ -116,6 +116,31 @@ impl AddFile {
         }
     }
 
+    /// A file that replaces others without changing what the table contains.
+    ///
+    /// # Why this exists separately from [`AddFile::with_statistics`]
+    ///
+    /// Compaction rewrites files and changes no rows, so **both halves of its commit** must say
+    /// so: the removals through [`RemoveFile::rewritten`], and the addition through this.
+    ///
+    /// Only the removals did. The added file declared `dataChange: true`, so a reader streaming
+    /// changes from this table saw every compacted row as new --- exactly the spurious stream
+    /// `RemoveFile::rewritten`'s own comment exists to prevent, arriving through the other half
+    /// of the same commit. The asymmetry was invisible until `SHOW HISTORY OF` printed a
+    /// compaction as a data change and somebody asked why.
+    #[must_use]
+    pub fn rewritten(
+        path: impl Into<String>,
+        size: u64,
+        modification_time: i64,
+        stats: &crate::stats::FileStatistics,
+    ) -> Self {
+        Self {
+            data_change: false,
+            ..Self::with_statistics(path, size, modification_time, stats)
+        }
+    }
+
     /// Everything the log records about this file's contents, if anything.
     #[must_use]
     pub fn statistics(&self) -> Option<crate::stats::FileStatistics> {

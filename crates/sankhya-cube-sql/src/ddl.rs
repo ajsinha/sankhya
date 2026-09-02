@@ -248,6 +248,29 @@ impl Reader {
         }
     }
 
+    /// A table name, which may name its schema: `orders` or `sales.orders`.
+    ///
+    /// # Why this is separate from [`Self::name`]
+    ///
+    /// The lexer stops an unquoted word at a `.`, so `sales.orders` arrived here as three
+    /// tokens and a cube could not name a table in a schema **at all** --- the qualified form
+    /// failed to parse and the bare form resolved only while one schema claimed the name. On a
+    /// warehouse with more than one schema, which is every real one, that made the whole cube
+    /// surface unreachable.
+    ///
+    /// Only the two table positions use this. A dimension name, a level name and a column name
+    /// are not qualified, and accepting a dot there would parse a typo into a name nothing
+    /// resolves.
+    fn qualified_name(&mut self, what: &str) -> Result<String, DdlError> {
+        let first = self.name(what)?;
+        if self.peek().map(|spanned| &spanned.token) != Some(&Token::Punct('.')) {
+            return Ok(first);
+        }
+        self.next += 1;
+        let second = self.name(what)?;
+        Ok(format!("{first}.{second}"))
+    }
+
     fn number(&mut self, what: &str) -> Result<u64, DdlError> {
         match self.peek().map(|spanned| spanned.token.clone()) {
             Some(Token::Number(n)) => {
@@ -280,7 +303,7 @@ impl Reader {
         self.keyword("CUBE")?;
         let name = self.name("a cube name")?;
         self.keyword("FROM")?;
-        let fact_table = self.name("the fact table's name")?;
+        let fact_table = self.qualified_name("the fact table's name")?;
 
         let mut dimensions = Vec::new();
         while self.peek_keyword("DIMENSION") {
@@ -336,7 +359,7 @@ impl Reader {
         self.keyword("DIMENSION")?;
         let name = self.name("a dimension name")?;
         self.keyword("FROM")?;
-        let table = self.name("the dimension table's name")?;
+        let table = self.qualified_name("the dimension table's name")?;
         self.keyword("ON")?;
         let joins_on = self.name("the fact-table column that joins to it")?;
         self.punct('(')?;

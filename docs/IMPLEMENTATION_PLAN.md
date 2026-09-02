@@ -1666,6 +1666,38 @@ until `M17` honours them, which is `DEC-47`'s rule applied where it was about to
 
 ---
 
+## 13g-a. M20 — What changed between two versions
+
+**Deferred here by owner directive 2026-09-02**, when `SHOW HISTORY OF` and `AS OF VERSION` were
+scoped into `M17`. Named now rather than left as a wish, so the reason it is separate survives.
+
+### Why it is not part of M17
+
+`M17` gives a **tag** and the ability to read at one. Asking *what changed between two of them*
+is a different question and it has no obvious answer, which is the bar for a design gate here.
+
+The log records **file-level** adds and removes. A file is added, another is removed, and
+nothing in the log says which *rows* differ --- a compaction rewrites files without changing a
+single row, and would show as a total replacement. So a naive diff would report a compaction as
+though the whole table had changed, which is worse than no diff at all: it looks like an answer.
+
+### What it must decide
+
+1. **What a difference is.** File-level is cheap, truthful and useless to a person. Row-level is
+   what anybody means and needs a key --- and this system has no primary key, only a date axis.
+2. **What it costs.** A row-level difference over two versions of a large table is a join over
+   both, which is a query rather than a lookup, and pretending otherwise sets an expectation
+   nothing can meet.
+3. **Whether a compaction is a change.** It is not, to a reader, and it is to the log. Anything
+   that reports it as one will be ignored within a week.
+
+### The gate
+
+**An ADR before any code**, answering those three. Until then, `SHOW HISTORY OF` reports what the
+log honestly knows: versions, times, and files added and removed.
+
+---
+
 ## 13h. M18 — Derived results: materialised queries and user merge functions
 
 **After M17.** Two capabilities that share one body of machinery, which is why they are one
