@@ -192,3 +192,89 @@ fn another_show_still_reaches_the_layer_that_answers_it() {
         "a settings query was claimed by the clone handler"
     );
 }
+
+// --- reading a clone, which is what makes it a table ------------------------
+
+#[test]
+fn a_clone_is_readable_without_restarting_the_server() {
+    // `CREATE TABLE ... CLONE` succeeded and produced something unreadable. The clone was
+    // committed, `SHOW LINEAGE` and `SHOW DEPENDENTS` saw it, re-issuing the create refused it
+    // as already there --- and every `SELECT` answered "table not found", until a restart.
+    //
+    // The servable set was fixed at startup and never gained a table. Two reviewers found it
+    // independently, which is what a statement that succeeds and does nothing looks like from
+    // outside.
+    let (_dir, server) = running();
+    let before = query_outcome(server.port, "SELECT id FROM orders").expect("the origin reads");
+
+    query_outcome(server.port, "CREATE TABLE q3_frozen CLONE sales.orders").expect("cloning");
+
+    let after = query_outcome(server.port, "SELECT id FROM sales.q3_frozen")
+        .expect("a clone that cannot be read is not a table");
+    assert_eq!(after, before, "a clone reads exactly what its origin reads");
+}
+
+#[test]
+fn a_clone_reads_its_origins_rows_rather_than_none() {
+    // The second layer, and the worse one. `resolve_clone_cached` was called by nothing but
+    // its own tests, so the server resolved a clone through the ordinary path, found a log
+    // naming no files --- which is what a clone's log is --- and served it as **empty**.
+    //
+    // A whole table's worth of rows, silently absent, from a statement that reported success.
+    let (_dir, server) = running();
+    query_outcome(server.port, "CREATE TABLE q3_frozen CLONE sales.orders").expect("cloning");
+
+    let origin = text_rows(server.port, "SELECT count(*), sum(amount) FROM sales.orders");
+    let clone = text_rows(server.port, "SELECT count(*), sum(amount) FROM sales.q3_frozen");
+    assert_eq!(clone, origin, "the clone answered differently from what it references");
+    assert_ne!(clone[0][0].as_deref(), Some("0"), "the clone read as empty");
+}
+
+#[test]
+fn a_clone_of_a_clone_reads_the_same_rows_as_the_root() {
+    // The third layer. The splice carries one origin at one version, so a clone of a clone
+    // spliced against a log that names no files and read as zero rows --- a chain of three
+    // answering with the table, nothing, and nothing.
+    //
+    // It now walks to where the files are. The walk is bounded, because lineage records can be
+    // made cyclic by editing a table's properties even though cloning cannot create one.
+    let (_dir, server) = running();
+    query_outcome(server.port, "CREATE TABLE q3_frozen CLONE sales.orders").expect("cloning");
+    query_outcome(server.port, "CREATE TABLE q3_audit CLONE sales.q3_frozen").expect("again");
+    query_outcome(server.port, "CREATE TABLE q3_deep CLONE sales.q3_audit").expect("and again");
+
+    let root = text_rows(server.port, "SELECT count(*), sum(amount) FROM sales.orders");
+    for table in ["sales.q3_frozen", "sales.q3_audit", "sales.q3_deep"] {
+        let seen = text_rows(server.port, &format!("SELECT count(*), sum(amount) FROM {table}"));
+        assert_eq!(seen, root, "{table} did not read what the family reads");
+    }
+}
+
+#[test]
+fn a_refusal_carries_the_names_it_cites_as_data() {
+    // `ADR-0017` Decision 2, and the field it calls cheap now and expensive later. A refusal
+    // here names things --- the clones that would break, the two tables a name could mean ---
+    // and a client that wants to act on them must not have to parse the sentence.
+    //
+    // The moment it does, the sentence is an API: nobody may reword it, and every improvement
+    // to the message breaks somebody. `Refused::StillRead` already carried the names as data
+    // and this path flattened them into prose, which is Decision 2's own worked example
+    // failing.
+    let (_dir, server) = running();
+    query_outcome(server.port, "CREATE TABLE q3_frozen CLONE sales.orders").expect("cloning");
+    query_outcome(server.port, "CREATE TABLE q3_audit CLONE sales.q3_frozen").expect("again");
+
+    // Read as **fields**, not as rendered bytes. A test that finds the name anywhere in the
+    // buffer passes whether it arrived as data or only as prose, which is the whole
+    // difference being guarded here.
+    let fields = common::refusal_fields(server.port, "DROP TABLE sales.q3_frozen");
+    assert_eq!(
+        fields.get(&'H').map(String::as_str),
+        Some("sales.q3_audit"),
+        "the names did not travel as data: {fields:?}"
+    );
+    assert!(
+        fields.get(&'D').is_some_and(|detail| detail.contains("SHOW DEPENDENTS OF")),
+        "the refusal must say what to do about it: {fields:?}"
+    );
+}

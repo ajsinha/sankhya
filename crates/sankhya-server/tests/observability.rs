@@ -22,6 +22,10 @@ mod warehouse;
 mod adopt;
 #[path = "../src/clones.rs"]
 mod clones;
+#[path = "../src/feeds.rs"]
+mod feeds;
+#[path = "../src/driver.rs"]
+mod driver;
 #[path = "../src/wiring.rs"]
 mod wiring;
 
@@ -190,6 +194,7 @@ fn the_outcome_label_is_decided_by_the_sqlstate_class() {
             sqlstate: state.to_string(),
             message: String::new(),
             detail: None,
+            subjects: Vec::new(),
         }))
     };
 
@@ -488,13 +493,25 @@ async fn a_failed_statement_carries_a_catalogue_code_and_a_remediation() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_sqlstate_comes_from_the_class_rather_than_from_a_substring() {
-    // Every driver in the PostgreSQL ecosystem branches on SQLSTATE. A plausible message
-    // with the wrong five characters produces a client that connects, appears to work, and
+async fn the_sqlstate_names_the_kind_of_failure_and_not_only_its_class() {
+    // Every driver in the PostgreSQL ecosystem branches on SQLSTATE. A plausible message with
+    // the wrong five characters produces a client that connects, appears to work, and
     // mishandles every failure.
+    //
+    // This asserted `42601` for a missing table until an adversarial review pointed out what
+    // that costs: `42601` is *syntax_error*, so every migration tool asking for a table it is
+    // about to create was told its generated SQL was malformed. `42P01`, *undefined_table*, is
+    // the code all of them branch on to mean "create it".
+    //
+    // The class remains the **floor** --- a failure whose kind carries no code of its own still
+    // gets the class's. What changed is that a kind which does have one now gets it, which is
+    // a refinement of the old rule rather than an exception to it.
     let (server, _warehouse) = server();
     let failure = failure_for(&server, "SELECT * FROM public.no_such_table");
-    assert_eq!(failure.sqlstate, "42601", "a user error is a syntax-class state");
+    assert_eq!(failure.sqlstate, "42P01", "undefined_table, not a syntax error");
+
+    let failure = failure_for(&server, "SELECT no_such_column FROM example");
+    assert_eq!(failure.sqlstate, "42703", "undefined_column");
 
     // Not a five-character-looking string: exactly five characters, which is what the
     // protocol requires and what a driver's lookup table is keyed by.

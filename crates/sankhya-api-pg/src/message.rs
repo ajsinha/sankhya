@@ -164,6 +164,16 @@ pub enum BackendMessage {
         message: String,
         /// What to do about it.
         detail: Option<String>,
+        /// The names this refusal cites, as a list.
+        ///
+        /// Sent in the protocol's `H` (hint) field, space-separated. PostgreSQL has no field
+        /// for a list and an unknown field type is one a driver may or may not survive, so a
+        /// standard field carries it and a client that ignores `H` loses nothing it had.
+        ///
+        /// See `ADR-0017` Decision 2: without the names as data, a client showing *"three
+        /// clones read this table"* has to parse the sentence, and the message becomes an API
+        /// nobody may reword.
+        subjects: Vec<String>,
     },
     /// A statement was prepared.
     ParseComplete,
@@ -526,6 +536,7 @@ pub fn encode(message: &BackendMessage, out: &mut BytesMut) {
             sqlstate,
             message,
             detail,
+            subjects,
         } => framed(out, b'E', |body| {
             // Severity, twice: the localised field and the always-English one. A client
             // reading only the localised field on a server in another locale gets nothing
@@ -541,6 +552,10 @@ pub fn encode(message: &BackendMessage, out: &mut BytesMut) {
             if let Some(detail) = detail {
                 body.put_u8(b'D');
                 put_cstring(body, detail);
+            }
+            if !subjects.is_empty() {
+                body.put_u8(b'H');
+                put_cstring(body, &subjects.join(" "));
             }
             body.put_u8(0);
         }),

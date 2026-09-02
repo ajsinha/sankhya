@@ -46,6 +46,10 @@ mod warehouse;
 mod adopt;
 #[path = "../src/clones.rs"]
 mod clones;
+#[path = "../src/feeds.rs"]
+mod feeds;
+#[path = "../src/driver.rs"]
+mod driver;
 #[path = "../src/wiring.rs"]
 mod wiring;
 
@@ -91,6 +95,20 @@ fn warehouse_with_a_fact_table() -> tempfile::TempDir {
 
     catalogue::save(dir.path(), &sales()).expect("declaring the cube");
     dir
+}
+
+/// The same cube, composing by `Max`.
+fn largest() -> Definition {
+    let mut definition = sales();
+    definition.name = "largest".to_string();
+    definition.measures = vec![Measure::new(
+        "amount",
+        vec![
+            Along::new("region", CubeRule::Max),
+            Along::new("period", CubeRule::Max),
+        ],
+    )];
+    definition
 }
 
 /// A cube over the fact table: one dimension, one additive measure.
@@ -1329,5 +1347,69 @@ async fn a_materialised_cuboid_holds_the_grain_its_key_names() {
         !columns.contains(&"period".to_string()),
         "and not the base's --- storing base cells under a coarser key files them at a grain \
          they do not have: {columns:?}"
+    );
+}
+
+/// A server whose warehouse carries **two** cubes over the same facts and the same measure
+/// name, differing only in the declared rule.
+///
+/// Its own fixture rather than an addition to the shared one: every other test here counts the
+/// cubes it can see, and a second one would change what they are asserting.
+fn server_with_two_rules() -> (Server, tempfile::TempDir) {
+    let dir = warehouse_with_a_fact_table();
+    catalogue::save(dir.path(), &largest()).expect("declaring the second cube");
+
+    let (found, refused) = warehouse::discover(dir.path());
+    assert!(refused.is_empty(), "the fixture must open: {refused:?}");
+    let cache = sankhya_table_delta::LogCache::new();
+    let (servable, unreadable) = warehouse::servable(&found, Lsn::new(u64::MAX), &cache);
+    assert!(unreadable.is_empty(), "the fixture must read: {unreadable:?}");
+    let tables = warehouse::describe(&found);
+    let (server, complaints) = Server::with_tables(
+        settings(dir.path()),
+        policy("reader", None),
+        tables,
+        servable,
+    )
+    .adopting_cubes(dir.path());
+    assert!(complaints.is_empty(), "the cubes must adopt: {complaints:?}");
+    assert_eq!(server.cubes().len(), 2);
+    (server, dir)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_cubes_over_the_same_facts_answer_by_their_own_declared_rules() {
+    // Two cubes over the same fact table and the same measure *name*, differing only in the
+    // rule declared along each dimension. If a declaration were ignored anywhere in the
+    // answering path, the two would agree --- and a measure of the right magnitude and the
+    // wrong meaning is the failure the whole additivity model exists to prevent.
+    //
+    // What this does **not** guard: the reduction inside a single cell. `navigate::roll_up`
+    // reduces along the dimension being rolled away before `batch` sees the cells, so a cell
+    // of a rolled result holds one value and any rule over it returns that value. The rule
+    // `batch` applies governs the base grain and the slice path instead, and is currently
+    // unguarded --- recorded in `tools/mutation-audit.py` rather than left to be discovered.
+    let (server, _dir) = server_with_two_rules();
+    connect(&server, "ana");
+
+    let summed = server
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .expect("the summing cube answers");
+    let largest = server
+        .query("SELECT * FROM cube_rollup('largest', 'amount', 'by=region')")
+        .expect("the max cube answers");
+
+    assert_ne!(
+        total_from(&summed),
+        total_from(&largest),
+        "the declared rule was ignored and both answered with the sum: {:?} against {:?}",
+        summed.rows,
+        largest.rows
+    );
+    assert!(
+        total_from(&summed) > total_from(&largest),
+        "summing contributions must exceed taking the largest of them: {} against {}",
+        total_from(&summed),
+        total_from(&largest)
     );
 }

@@ -357,6 +357,7 @@ fn an_error_response_carries_both_severity_fields() {
             sqlstate: "42501".to_string(),
             message: "permission denied".to_string(),
             detail: Some("ask an administrator".to_string()),
+            subjects: Vec::new(),
         },
         &mut out,
     );
@@ -432,4 +433,45 @@ fn an_empty_message_is_five_bytes() {
     encode(&BackendMessage::ParseComplete, &mut out);
     assert_eq!(out.len(), 5);
     assert_eq!(i32::from_be_bytes([out[1], out[2], out[3], out[4]]), 4);
+}
+
+#[test]
+fn the_names_a_refusal_cites_travel_as_a_field_and_not_only_in_the_sentence() {
+    // `ADR-0017` Decision 2. Without the names as data, a client showing "three clones read
+    // this table" must parse the message -- and the message then becomes an API nobody meant
+    // to publish and nobody may reword.
+    //
+    // PostgreSQL has no field for a list, so they go in `H` space-separated: a standard field,
+    // which a driver that does not want it can ignore without loss.
+    let mut out = BytesMut::new();
+    encode(
+        &BackendMessage::ErrorResponse {
+            sqlstate: "22000".to_string(),
+            message: "still read by two clones".to_string(),
+            detail: Some("drop them first".to_string()),
+            subjects: vec!["sales.q3".to_string(), "sales.q4".to_string()],
+        },
+        &mut out,
+    );
+
+    let body = String::from_utf8_lossy(&out[5..]);
+    assert!(body.contains("sales.q3 sales.q4"), "{body}");
+    assert!(out.contains(&b'H'), "no hint field carries them");
+}
+
+#[test]
+fn a_refusal_that_cites_nothing_sends_no_hint_field() {
+    // An empty list is not an empty hint. Sending `H` with nothing in it would make every
+    // client that checks for the field find one and read no names from it.
+    let mut out = BytesMut::new();
+    encode(
+        &BackendMessage::ErrorResponse {
+            sqlstate: "42601".to_string(),
+            message: "syntax error".to_string(),
+            detail: None,
+            subjects: Vec::new(),
+        },
+        &mut out,
+    );
+    assert!(!out.contains(&b'H'), "an empty subject list sent a hint field anyway");
 }

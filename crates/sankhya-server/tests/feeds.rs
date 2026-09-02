@@ -18,6 +18,21 @@ use std::path::Path;
 // The feeds module is part of the binary, so the test builds it directly — the same pattern
 // `tests/wiring.rs` uses. That is the cost of a composition root living in a binary crate,
 // and it is cheaper than the alternative of never testing it.
+// `feeds` names `wiring`'s refusal helpers, which name `execute` and `clones`. That is the
+// cost of a composition root living in a binary crate, and it is cheaper than the alternative
+// of never testing it.
+#[path = "../src/execute.rs"]
+mod execute;
+#[path = "../src/adopt.rs"]
+mod adopt;
+#[path = "../src/clones.rs"]
+mod clones;
+#[path = "../src/driver.rs"]
+mod driver;
+#[path = "../src/warehouse.rs"]
+mod warehouse;
+#[path = "../src/wiring.rs"]
+mod wiring;
 #[path = "../src/feeds.rs"]
 mod feeds;
 

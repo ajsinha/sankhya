@@ -31,7 +31,7 @@ use sankhya_cube::cells::Cells;
 use sankhya_cube::complete::{Assessed, Completeness, Threshold};
 use sankhya_cube::navigate::{dice, roll_up, slice, Ordered};
 use sankhya_cube::overlay::{Allocation, Applied};
-use sankhya_cube_algo::measure::{Measure, Rule};
+use sankhya_cube_algo::measure::{Along, Measure, Rule};
 use std::sync::Arc;
 
 /// Register every cube function against a session.
@@ -275,6 +275,69 @@ fn schema_for(dimensions: &[String], measure: &str) -> SchemaRef {
     Arc::new(Schema::new(fields))
 }
 
+/// How the contributions inside one cell combine, for this measure at this grain.
+///
+/// # Which of a measure's rules applies
+///
+/// A measure declares a rule **per dimension**. The contributions sitting in one cell are the
+/// facts that were aggregated *along the dimensions rolled away* to reach this grain, so the
+/// rule that applies is the rule along those.
+///
+/// At the base grain nothing has been rolled away and a cell holds facts that shared an
+/// address, so there is no rolled-away dimension to take a rule from. The measure's own rules
+/// are used instead: they are what it says about combining its own values anywhere.
+///
+/// # Why disagreement is refused rather than resolved
+///
+/// Two dimensions rolled away with different rules --- `Sum` along one and `Last` along another
+/// --- have no single answer, and the answer depends on the order the planner happened to
+/// choose. Picking one produces a number that changes between runs and looks plausible every
+/// time, which is the failure mode with no symptom. So it is refused, naming both.
+///
+/// # Errors
+///
+/// When the rules that apply disagree.
+pub fn reduction_for(measure: &Measure, kept: &[String]) -> Result<Rule> {
+    let applying: Vec<&Along> = measure
+        .rules
+        .iter()
+        .filter(|along| !kept.contains(&along.dimension))
+        .collect();
+    // Nothing rolled away: the measure's own rules are what it says about its values.
+    let applying: Vec<&Along> = if applying.is_empty() {
+        measure.rules.iter().collect()
+    } else {
+        applying
+    };
+
+    let mut distinct: Vec<Rule> = Vec::new();
+    for along in &applying {
+        if !distinct.contains(&along.rule) {
+            distinct.push(along.rule);
+        }
+    }
+    match distinct.as_slice() {
+        // A measure with no declared rules at all cannot be reduced by guessing.
+        [] => plan_err!(
+            "the measure `{}` declares no rule, so there is no way to combine the facts in a \
+             cell. A measure must say how it composes along every dimension",
+            measure.name
+        ),
+        [only] => Ok(*only),
+        several => plan_err!(
+            "the measure `{}` combines by {} along the dimensions being rolled away, and \
+             those disagree. Refused rather than resolved: the answer would depend on the \
+             order the planner chose, and would look plausible whichever it picked",
+            measure.name,
+            several
+                .iter()
+                .map(|rule| rule.as_str())
+                .collect::<Vec<&str>>()
+                .join(" and ")
+        ),
+    }
+}
+
 /// Turn a cube into rows.
 fn batch(
     published: &Published,
@@ -287,9 +350,21 @@ fn batch(
     let dimensions: Vec<String> = cells.dimensions().to_vec();
     let schema = schema_for(&dimensions, &measure.name);
 
+    // The rule the **measure declares**, not `Rule::Sum`.
+    //
+    // This read every cell with a hardcoded sum, so `MEASURE amount (MEAN ALONG region)`
+    // answered with the total and `MAX ALONG region` answered with the total. The
+    // composability half of the model was enforced correctly --- a measure that cannot be
+    // rolled up is still refused --- and the **value never saw the rule**, which is precisely
+    // the failure the whole additivity model exists to prevent. A number of the right
+    // magnitude, the right sign, and no meaning.
+    //
+    // Found by an adversarial review on 2026-09-01: a group whose mean is 186.75 and whose
+    // max is 373.5 answered 15,687 for both.
+    let rule = reduction_for(measure, &dimensions)?;
     let rows: Vec<(&Vec<String>, Option<f64>)> = cells
         .addresses()
-        .map(|address| (address, cells.get(address, Rule::Sum)))
+        .map(|address| (address, cells.get(address, rule)))
         .collect();
 
     let mut columns: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len());
@@ -425,5 +500,97 @@ impl TableFunctionImpl for Slice {
             &completeness,
             false,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Tests may panic --- that is how a test reports a failure. The workspace denies `unwrap`,
+    // `expect` and `panic` because a *server* must not do those things on data it did not
+    // choose; a test chooses all of its data, and an assertion that cannot fail loudly is
+    // worse than useless.
+    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+    use super::reduction_for;
+    use sankhya_cube_algo::measure::{Along, Measure, Rule};
+
+    fn measure(rules: &[(&str, Rule)]) -> Measure {
+        Measure::new(
+            "amount",
+            rules.iter().map(|(d, r)| Along::new(*d, *r)).collect(),
+        )
+    }
+
+    #[test]
+    fn a_rolled_away_dimension_decides_how_a_cell_reduces() {
+        // The defect this exists for: every cell was read with a hardcoded `Rule::Sum`, so a
+        // measure declared `MEAN ALONG region` answered with the total. The composability half
+        // of the model worked and the **value never saw the rule**.
+        let m = measure(&[("region", Rule::Max), ("period", Rule::Max)]);
+        // `region` is kept, `period` is rolled away, so `period`'s rule applies.
+        assert_eq!(
+            reduction_for(&m, &["region".to_string()]).expect("a rule"),
+            Rule::Max
+        );
+
+        let m = measure(&[("region", Rule::Min), ("period", Rule::Min)]);
+        assert_eq!(
+            reduction_for(&m, &["region".to_string()]).expect("a rule"),
+            Rule::Min
+        );
+    }
+
+    #[test]
+    fn the_rule_of_the_dimension_being_rolled_away_is_the_one_that_applies() {
+        // Not the kept dimension's. A balance is additive across accounts and `Last` over
+        // time: rolling *time* away must take the last value, and rolling *accounts* away must
+        // sum -- from the same measure, in the same cube.
+        let balance = measure(&[("account", Rule::Sum), ("month", Rule::Last)]);
+
+        assert_eq!(
+            reduction_for(&balance, &["account".to_string()]).expect("a rule"),
+            Rule::Last,
+            "rolling months away takes the last balance, never their sum"
+        );
+        assert_eq!(
+            reduction_for(&balance, &["month".to_string()]).expect("a rule"),
+            Rule::Sum,
+            "rolling accounts away sums them"
+        );
+    }
+
+    #[test]
+    fn rules_that_disagree_are_refused_rather_than_resolved() {
+        // Two dimensions rolled away with different rules have no single answer, and the one
+        // produced would depend on the order the planner happened to choose -- so it would
+        // change between runs and look plausible every time. That is the failure mode with no
+        // symptom, and it is refused instead.
+        let balance = measure(&[("account", Rule::Sum), ("month", Rule::Last)]);
+
+        let refused = reduction_for(&balance, &[]).expect_err("ambiguous");
+        let said = refused.to_string();
+        assert!(said.contains("sum"), "{said}");
+        assert!(said.contains("last"), "{said}");
+        assert!(said.contains("disagree"), "{said}");
+    }
+
+    #[test]
+    fn a_measure_with_no_rules_is_refused_rather_than_summed() {
+        // A measure that says nothing about how it composes cannot be reduced by guessing,
+        // and `Sum` is the guess that looks most like an answer.
+        let nothing = Measure::new("amount", Vec::new());
+        assert!(reduction_for(&nothing, &[]).is_err());
+    }
+
+    #[test]
+    fn every_dimension_kept_falls_back_to_the_measures_own_rules() {
+        // At the base grain nothing has been rolled away, and a cell still holds the facts
+        // that shared an address. The measure's own rules are what it says about combining
+        // its values anywhere.
+        let m = measure(&[("region", Rule::Max), ("period", Rule::Max)]);
+        assert_eq!(
+            reduction_for(&m, &["region".to_string(), "period".to_string()]).expect("a rule"),
+            Rule::Max
+        );
     }
 }

@@ -64,6 +64,23 @@ pub struct QueryFailure {
     pub message: String,
     /// What to do about it.
     pub detail: Option<String>,
+    /// The **names** this refusal cites: clones, partitions, dimensions, feeds.
+    ///
+    /// # Why these travel as data
+    ///
+    /// [ADR-0017](https://github.com/ajsinha/sankhya/blob/main/docs/adr/0017-the-client-contract.md)
+    /// Decision 2. This system's refusals name things --- *"a clone of this table still reads
+    /// it"*, and then which clones. Without the names as a list, a client that wants to show
+    /// *"three clones read this table"* must parse them out of the sentence, and **the message
+    /// becomes an API nobody meant to publish and nobody may reword**.
+    ///
+    /// It is the field that is cheap now and expensive later, which is why it exists before
+    /// anything consumes it.
+    ///
+    /// Sent as the protocol's `H` (hint) field, space-separated, because PostgreSQL has no
+    /// field for a list and an unknown field type is one a driver may or may not survive. A
+    /// client that ignores `H` loses nothing it had before.
+    pub subjects: Vec<String>,
 }
 
 /// Whatever actually answers queries.
@@ -324,6 +341,7 @@ impl Connection {
                              this would already have crossed the wire in the clear"
                                 .to_owned(),
                         ),
+                        subjects: Vec::new(),
                     },
                     output,
                 );
@@ -488,6 +506,7 @@ impl Connection {
                         sqlstate: failure.sqlstate,
                         message: failure.message,
                         detail: failure.detail,
+                        subjects: failure.subjects,
                     },
                     output,
                 );
@@ -641,6 +660,7 @@ impl Connection {
                 sqlstate: sqlstate.to_string(),
                 message: message.to_string(),
                 detail: None,
+                subjects: Vec::new(),
             },
             output,
         );
@@ -657,6 +677,7 @@ impl Connection {
                 sqlstate: failure.sqlstate.clone(),
                 message: failure.message.clone(),
                 detail: failure.detail.clone(),
+                subjects: failure.subjects.clone(),
             },
             output,
         );
@@ -669,6 +690,7 @@ impl Connection {
                 sqlstate: failure.sqlstate.clone(),
                 message: failure.message.clone(),
                 detail: failure.detail.clone(),
+                subjects: failure.subjects.clone(),
             },
             output,
         );
@@ -682,6 +704,7 @@ impl Connection {
                 sqlstate: sqlstate.to_string(),
                 message: message.to_string(),
                 detail: None,
+                subjects: Vec::new(),
             },
             output,
         );

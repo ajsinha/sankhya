@@ -53,10 +53,22 @@ class Refusal(Exception):
 
     sqlstate: str = ""
     message: str = ""
+    #: What to do about it.
     detail: str = ""
-    hint: str = ""
+    #: The **names** this refusal cites: the clones that would break, the two tables a name
+    #: could mean, the feed that is not declared.
+    #:
+    #: The field ``ADR-0017`` Decision 2 calls cheap now and expensive later. Without it a
+    #: client showing *"three clones read this table"* has to parse the message --- and the
+    #: message then becomes an API nobody meant to publish and nobody may reword.
+    subjects: list = field(default_factory=list)
     #: Every field the server sent, by its protocol tag, for anything not named above.
     fields: dict = field(default_factory=dict)
+
+    @property
+    def hint(self) -> str:
+        """The raw ``H`` field, which is how ``subjects`` crosses the wire."""
+        return self.fields.get("H", "")
 
     def __str__(self) -> str:
         parts = [f"[{self.sqlstate}] {self.message}"]
@@ -241,7 +253,10 @@ class Connection:
             sqlstate=fields.get("C", ""),
             message=fields.get("M", ""),
             detail=fields.get("D", ""),
-            hint=fields.get("H", ""),
+            # PostgreSQL has no field for a list, so the names arrive space-separated in the
+            # hint field. Split here rather than in every caller: a client branching on which
+            # clones would break should not also be parsing a protocol field.
+            subjects=fields.get("H", "").split(),
             fields=fields,
         )
 

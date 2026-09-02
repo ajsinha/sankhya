@@ -16,8 +16,6 @@
 //! capability is added. The right answer to that is not a larger limit: a file nobody can hold
 //! in their head is where a statement comes to be intercepted twice, or not at all.
 
-use std::sync::Arc;
-
 use sankhya_authz::policy::TableRef;
 
 use crate::execute::ServableTable;

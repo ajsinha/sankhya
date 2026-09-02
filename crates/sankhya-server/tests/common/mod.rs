@@ -518,6 +518,79 @@ fn decode_row(body: &[u8]) -> Option<Vec<Option<String>>> {
     Some(values)
 }
 
+/// Run a statement expected to fail, and return the refusal's fields by their protocol tag.
+///
+/// `C` is the SQLSTATE, `M` the message, `D` the detail, `H` the hint --- which is where the
+/// **names a refusal cites** travel, per `ADR-0017` Decision 2.
+///
+/// Its own helper because reading them out of the rendered buffer is exactly the mistake the
+/// decision exists to prevent: a test that finds a name anywhere in the bytes passes whether
+/// the name arrived as data or only as prose, which is the difference being guarded.
+pub(crate) fn refusal_fields(port: u16, sql: &str) -> std::collections::BTreeMap<char, String> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connecting");
+    stream.set_nodelay(true).ok();
+
+    let mut startup = Vec::new();
+    let mut body = 196_608i32.to_be_bytes().to_vec();
+    body.extend_from_slice(b"user\0quickstart\0\0");
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    startup.extend_from_slice(&((body.len() + 4) as i32).to_be_bytes());
+    startup.extend_from_slice(&body);
+    stream.write_all(&startup).expect("startup");
+
+    let mut buffer = Vec::new();
+    read_until_ready(&mut stream, &mut buffer);
+
+    let mut message = vec![b'Q'];
+    let payload = format!("{sql}\0");
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    message.extend_from_slice(&((payload.len() + 4) as i32).to_be_bytes());
+    message.extend_from_slice(payload.as_bytes());
+    stream.write_all(&message).expect("query");
+
+    buffer.clear();
+    read_until_ready(&mut stream, &mut buffer);
+
+    let mut fields = std::collections::BTreeMap::new();
+    let mut at = 0usize;
+    while at + 5 <= buffer.len() {
+        let length = i32::from_be_bytes([
+            buffer[at + 1],
+            buffer[at + 2],
+            buffer[at + 3],
+            buffer[at + 4],
+        ]);
+        let Ok(length) = usize::try_from(length) else {
+            break;
+        };
+        if length < 4 || at + 1 + length > buffer.len() {
+            break;
+        }
+        if buffer[at] == b'E' {
+            // The body is a sequence of `tag, cstring`, ended by a zero tag.
+            let mut inner = at + 5;
+            while inner < at + 1 + length {
+                let tag = buffer[inner];
+                if tag == 0 {
+                    break;
+                }
+                inner += 1;
+                let start = inner;
+                while inner < at + 1 + length && buffer[inner] != 0 {
+                    inner += 1;
+                }
+                fields.insert(
+                    tag as char,
+                    String::from_utf8_lossy(&buffer[start..inner]).into_owned(),
+                );
+                inner += 1;
+            }
+        }
+        at += 1 + length;
+    }
+    fields
+}
+
 /// Read until the server says it is ready for the next statement.
 pub(crate) fn read_until_ready(stream: &mut TcpStream, buffer: &mut Vec<u8>) {
     stream
