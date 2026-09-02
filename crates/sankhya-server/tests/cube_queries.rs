@@ -28,6 +28,7 @@
 
 use arrow_array::{Float64Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
+use sankhya_api_pg::session::Caller;
 use sankhya_api_pg::session::Handler;
 use sankhya_authz::policy::{Action, PolicySet, Rule, TableRef};
 use sankhya_authz::principal::{Role, TenantId};
@@ -239,7 +240,7 @@ async fn a_cube_is_answerable_over_the_wire() {
     connect(&server, "ana");
 
     let result = server
-        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')", &Caller::new(&anyone()))
         .expect("the cube answers");
 
     assert_eq!(
@@ -259,7 +260,7 @@ async fn a_restricted_principal_gets_a_total_over_the_rows_they_may_read() {
     connect(&server, "ana");
 
     let result = server
-        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')", &Caller::new(&anyone()))
         .expect("the cube answers");
 
     assert_eq!(
@@ -280,7 +281,7 @@ async fn the_answer_carries_how_much_of_the_table_it_saw() {
     connect(&server, "ana");
 
     let result = server
-        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')", &Caller::new(&anyone()))
         .expect("the cube answers");
 
     assert!(
@@ -307,7 +308,7 @@ async fn a_principal_who_may_not_read_the_fact_table_cannot_reach_the_cube() {
     connect(&server, "ana");
 
     let refused = server
-        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')", &Caller::new(&anyone()))
         .expect_err("a principal with no grant reaches nothing");
     assert!(
         !format!("{}", refused.message).is_empty(),
@@ -323,7 +324,7 @@ async fn a_statement_that_names_no_cube_does_not_hydrate_one() {
     connect(&server, "ana");
 
     let result = server
-        .query("SELECT COUNT(*) FROM orders")
+        .query("SELECT COUNT(*) FROM orders", &Caller::new(&anyone()))
         .expect("a plain query still works");
     assert_eq!(result.rows.len(), 1);
 }
@@ -351,7 +352,7 @@ async fn a_client_can_discover_what_cubes_exist() {
     let (server, _dir) = server_with(policy("reader", None));
     connect(&server, "ana");
 
-    let result = server.query("SELECT * FROM cubes()").expect("cubes are listable");
+    let result = server.query("SELECT * FROM cubes()", &Caller::new(&anyone())).expect("cubes are listable");
     assert_eq!(first_column(&result, "cube"), vec!["sales".to_string()]);
     assert_eq!(first_column(&result, "fact_table"), vec!["orders".to_string()]);
     assert_eq!(first_column(&result, "measures"), vec!["2".to_string()]);
@@ -366,7 +367,7 @@ async fn a_client_can_discover_a_cube_s_dimensions_and_their_order() {
     connect(&server, "ana");
 
     let result = server
-        .query("SELECT * FROM cube_dimensions('sales')")
+        .query("SELECT * FROM cube_dimensions('sales')", &Caller::new(&anyone()))
         .expect("dimensions are listable");
     assert_eq!(
         first_column(&result, "dimension"),
@@ -394,7 +395,7 @@ async fn a_client_can_discover_which_roll_ups_are_even_legal() {
     connect(&server, "ana");
 
     let result = server
-        .query("SELECT * FROM cube_measures('sales')")
+        .query("SELECT * FROM cube_measures('sales')", &Caller::new(&anyone()))
         .expect("measures are listable");
     // One row per (measure, dimension): a rule is declared per dimension, which is what
     // makes a semi-additive measure expressible at all.
@@ -434,7 +435,7 @@ async fn describing_a_cube_that_does_not_exist_names_the_ones_that_do() {
     connect(&server, "ana");
 
     let refused = server
-        .query("SELECT * FROM cube_dimensions('sails')")
+        .query("SELECT * FROM cube_dimensions('sails')", &Caller::new(&anyone()))
         .expect_err("a misspelt cube is refused");
     assert!(
         refused.message.contains("sales"),
@@ -452,7 +453,7 @@ async fn describing_a_cube_does_not_read_its_fact_table() {
     connect(&server, "ana");
 
     let result = server
-        .query("SELECT cube FROM cubes()")
+        .query("SELECT cube FROM cubes()", &Caller::new(&anyone()))
         .expect("listing needs no cells");
     assert_eq!(result.rows.len(), 1);
 }
@@ -475,7 +476,7 @@ async fn the_snapshot_a_cube_reports_is_the_table_s_version() {
     connect(&server, "ana");
 
     let result = server
-        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')", &Caller::new(&anyone()))
         .expect("the cube answers");
 
     let snapshots = first_column(&result, "snapshot");
@@ -507,7 +508,7 @@ async fn a_commit_after_a_cube_was_hydrated_changes_the_answer() {
     connect(&server, "ana");
 
     let before = server
-        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')", &Caller::new(&anyone()))
         .expect("the cube answers");
     assert_eq!(total_from(&before), 100.0);
 
@@ -527,7 +528,7 @@ async fn a_commit_after_a_cube_was_hydrated_changes_the_answer() {
         .expect("publishing more");
 
     let after = server
-        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')", &Caller::new(&anyone()))
         .expect("the cube answers again");
     assert_eq!(
         total_from(&after),
@@ -560,7 +561,7 @@ async fn a_materialised_cuboid_answers_without_reading_the_fact_table() {
     connect(&server, "ana");
 
     let live = server
-        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')", &Caller::new(&anyone()))
         .expect("the cube answers from its table");
     assert_eq!(total_from(&live), 100.0);
 
@@ -595,7 +596,7 @@ async fn a_materialised_cuboid_answers_without_reading_the_fact_table() {
     let restarted = server_over(&dir, policy("reader", None));
     connect(&restarted, "ana");
     let from_disk = restarted
-        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')", &Caller::new(&anyone()))
         .expect("the cuboid answers with no fact table to read");
     assert_eq!(
         total_from(&from_disk),
@@ -793,7 +794,7 @@ async fn a_restricted_caller_is_never_served_the_unrestricted_cuboid() {
     // Same warehouse, same cuboid on disk --- a policy that withholds rows.
     let restricted = server_over(&dir, policy("reader", Some("region = 'north'")));
     connect(&restricted, "ana");
-    let answer = restricted.query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')");
+    let answer = restricted.query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')", &Caller::new(&anyone()));
 
     assert!(
         answer.is_err(),
@@ -814,7 +815,7 @@ async fn the_provenance_column_says_where_the_answer_came_from() {
     connect(&server, "ana");
 
     let live = server
-        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')", &Caller::new(&anyone()))
         .expect("the cube answers from its table");
     assert_eq!(
         first_column(&live, "materialised"),
@@ -829,7 +830,7 @@ async fn the_provenance_column_says_where_the_answer_came_from() {
     let restarted = server_over(&dir, policy("reader", None));
     connect(&restarted, "ana");
     let cached = restarted
-        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')", &Caller::new(&anyone()))
         .expect("the cuboid answers");
     assert_eq!(
         first_column(&cached, "materialised"),
@@ -855,7 +856,7 @@ async fn a_query_is_answered_from_the_narrowest_cuboid_that_can_answer_it() {
     // Ask for `by=region` repeatedly so selection buys that shape from the query log.
     for _ in 0..5 {
         building
-            .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+            .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')", &Caller::new(&anyone()))
             .expect("the cube answers");
     }
     building.refresh_maintained_cubes();
@@ -893,7 +894,7 @@ async fn a_query_is_answered_from_the_narrowest_cuboid_that_can_answer_it() {
     let restarted = server_over(&dir, policy("reader", None));
     connect(&restarted, "ana");
     let answer = restarted
-        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')", &Caller::new(&anyone()))
         .expect("the narrow cuboid answers on its own");
     assert_eq!(total_from(&answer), 100.0);
 }
@@ -911,7 +912,7 @@ async fn a_query_finer_than_every_cuboid_is_not_answered_from_one() {
     connect(&building, "ana");
     for _ in 0..5 {
         building
-            .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+            .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')", &Caller::new(&anyone()))
             .expect("the cube answers");
     }
     building.refresh_maintained_cubes();
@@ -939,7 +940,7 @@ async fn a_query_finer_than_every_cuboid_is_not_answered_from_one() {
     connect(&restarted, "ana");
     assert!(
         restarted
-            .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region|period')")
+            .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region|period')", &Caller::new(&anyone()))
             .is_err(),
         "a query was answered from a cuboid too coarse to express it"
     );
@@ -968,7 +969,7 @@ async fn a_dice_is_not_answered_from_a_cuboid_that_rolled_its_dimension_away() {
     connect(&server, "ana");
 
     let sliced = server
-        .query("SELECT * FROM cube_slice('sales', 'amount', 'where=region:north')")
+        .query("SELECT * FROM cube_slice('sales', 'amount', 'where=region:north')", &Caller::new(&anyone()))
         .expect("the slice answers");
 
     assert_eq!(total_from(&sliced), 30.0, "north's total, and only north's");
@@ -993,10 +994,10 @@ async fn a_session_may_ask_for_the_base_data_and_get_the_same_answer() {
     connect(&server, "ana");
 
     let cached = server
-        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')", &Caller::new(&anyone()))
         .expect("the default path answers");
     let base = server
-        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region', 'materialise=false')")
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region', 'materialise=false')", &Caller::new(&anyone()))
         .expect("and so does the base path");
 
     assert_eq!(
@@ -1028,7 +1029,7 @@ async fn a_session_that_asks_for_the_base_data_is_not_served_a_cuboid() {
     assert_eq!(
         total_from(
             &server
-                .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+                .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')", &Caller::new(&anyone()))
                 .expect("the cuboid answers")
         ),
         100.0
@@ -1037,7 +1038,7 @@ async fn a_session_that_asks_for_the_base_data_is_not_served_a_cuboid() {
         server
             .query(
                 "SELECT * FROM cube_rollup('sales', 'amount', 'by=region', 'materialise=false')"
-            )
+            , &Caller::new(&anyone()))
             .is_err(),
         "a caller who asked for the base data was served the cuboid instead"
     );
@@ -1125,7 +1126,7 @@ async fn a_zero_budget_buys_nothing_beyond_the_base_and_the_pins() {
     connect(&server, "ana");
     for _ in 0..5 {
         server
-            .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+            .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')", &Caller::new(&anyone()))
             .expect("the cube answers");
     }
     server.refresh_maintained_cubes();
@@ -1240,7 +1241,7 @@ async fn what_was_asked_for_is_what_gets_materialised() {
     // Ask for a coarser grain than the base, several times over.
     for _ in 0..5 {
         server
-            .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+            .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')", &Caller::new(&anyone()))
             .expect("the cube answers");
     }
 
@@ -1306,7 +1307,7 @@ async fn a_materialised_cuboid_holds_the_grain_its_key_names() {
 
     for _ in 0..5 {
         server
-            .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+            .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')", &Caller::new(&anyone()))
             .expect("the cube answers");
     }
     server.refresh_maintained_cubes();
@@ -1393,10 +1394,10 @@ async fn two_cubes_over_the_same_facts_answer_by_their_own_declared_rules() {
     connect(&server, "ana");
 
     let summed = server
-        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')")
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')", &Caller::new(&anyone()))
         .expect("the summing cube answers");
     let largest = server
-        .query("SELECT * FROM cube_rollup('largest', 'amount', 'by=region')")
+        .query("SELECT * FROM cube_rollup('largest', 'amount', 'by=region')", &Caller::new(&anyone()))
         .expect("the max cube answers");
 
     assert_ne!(
@@ -1412,4 +1413,13 @@ async fn two_cubes_over_the_same_facts_answer_by_their_own_declared_rules() {
         total_from(&summed),
         total_from(&largest)
     );
+}
+
+/// The caller a test means when it does not care who is asking.
+///
+/// Its own helper rather than an inline literal at forty call sites: when a test *does* care,
+/// it should be visibly different from one that does not.
+#[allow(dead_code)]
+fn anyone() -> Vec<(String, String)> {
+    vec![("user".to_string(), "quickstart".to_string())]
 }

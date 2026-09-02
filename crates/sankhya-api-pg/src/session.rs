@@ -175,6 +175,70 @@ pub fn admits_contract(parameters: &[(String, String)]) -> Result<(), QueryFailu
     })
 }
 
+/// Who is asking, as the connection knows them.
+///
+/// # Why this exists
+///
+/// It did not, and the consequence was that **the authenticated user never reached
+/// authorization or audit**. `authenticate` read the user, refused an empty one on the grounds
+/// that an unattributable connection cannot be audited --- and then discarded it, because
+/// `query` and `visible_tables` had no parameter to carry it in. Every statement was
+/// authorized as a constant, and every audit entry attributed to one.
+///
+/// `FR-SEC-02` asks that a principal be carried unchanged through planning, execution and
+/// audit. It could not be: the trait had nowhere to put it. An adversarial review found this on
+/// 2026-09-01 and it is the first thing federated identity would need.
+///
+/// # Why the startup parameters rather than a resolved principal
+///
+/// Because resolving one is the *handler's* decision, not this layer's. A principal has a
+/// tenant, roles and an authentication method, and every one of those is a policy question
+/// this protocol module has no business answering. It carries what the connection knows ---
+/// what the client said about itself --- and the handler turns that into whoever it means.
+#[derive(Clone, Copy, Debug)]
+pub struct Caller<'a> {
+    /// The startup parameters this connection presented, verbatim.
+    parameters: &'a [(String, String)],
+}
+
+impl<'a> Caller<'a> {
+    /// A caller described by the startup parameters they sent.
+    #[must_use]
+    pub const fn new(parameters: &'a [(String, String)]) -> Self {
+        Self { parameters }
+    }
+
+    /// The user this connection authenticated as.
+    ///
+    /// Empty only for a connection that sent none, which `authenticate` refuses --- so a
+    /// handler seeing an empty user is looking at a bug rather than at an anonymous caller.
+    #[must_use]
+    pub fn user(&self) -> &str {
+        self.named("user").unwrap_or_default()
+    }
+
+    /// The database name the client asked for.
+    #[must_use]
+    pub fn database(&self) -> &str {
+        self.named("database").unwrap_or_default()
+    }
+
+    /// Any startup parameter, by name, case-insensitively.
+    #[must_use]
+    pub fn named(&self, name: &str) -> Option<&str> {
+        self.parameters
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// Every parameter, for a handler that wants them all.
+    #[must_use]
+    pub const fn parameters(&self) -> &'a [(String, String)] {
+        self.parameters
+    }
+}
+
 /// Whatever actually answers queries.
 pub trait Handler: Send + Sync {
     /// Authenticate a client. `None` for the parameters means the startup packet had none.
@@ -195,7 +259,7 @@ pub trait Handler: Send + Sync {
     }
 
     /// Run a statement.
-    fn query(&self, sql: &str) -> Result<QueryResult, QueryFailure>;
+    fn query(&self, sql: &str, caller: &Caller<'_>) -> Result<QueryResult, QueryFailure>;
 
     /// Whether this handler recognises the statement as one of its own.
     ///
@@ -224,7 +288,7 @@ pub trait Handler: Send + Sync {
     /// Already filtered by policy when this is called. A catalogue that listed tables the
     /// caller cannot read would disclose their existence, which is the leak the policy
     /// component refuses to permit anywhere else.
-    fn visible_tables(&self) -> Vec<CatalogTable>;
+    fn visible_tables(&self, caller: &Caller<'_>) -> Vec<CatalogTable>;
 
     /// This server's version, for `version()` and `server_version`.
     fn server_version(&self) -> String {
@@ -561,7 +625,7 @@ impl Connection {
                 &catalogue,
                 &handler.server_version(),
                 &handler.current_schema(),
-                &handler.visible_tables(),
+                &handler.visible_tables(&Caller::new(&self.parameters)),
             );
             let rows = result.rows.len();
             encode(
@@ -587,7 +651,7 @@ impl Connection {
             return;
         }
 
-        match handler.query(sql) {
+        match handler.query(sql, &Caller::new(&self.parameters)) {
             Ok(result) => {
                 encode(
                     &BackendMessage::RowDescription {
@@ -740,7 +804,7 @@ impl Connection {
                 &catalogue,
                 &handler.server_version(),
                 &handler.current_schema(),
-                &handler.visible_tables(),
+                &handler.visible_tables(&Caller::new(&self.parameters)),
             );
             let rows = result.rows.len();
             return Ok(QueryResult {
@@ -749,7 +813,7 @@ impl Connection {
                 tag: format!("SELECT {rows}"),
             });
         }
-        handler.query(sql)
+        handler.query(sql, &Caller::new(&self.parameters))
     }
 
     /// Complain about a statement without closing the connection.

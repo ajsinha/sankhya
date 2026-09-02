@@ -3988,6 +3988,24 @@ CATALOGUE = [
      "    else {\n        return Err(QueryFailure { sqlstate: \"08004\".to_owned(), message: String::new(), detail: None, subjects: Vec::new() });\n    };",
      "sankhya-api-pg"),
 
+    # `FR-SEC-02`: a principal is carried unchanged through planning, execution and audit. It
+    # could not be --- the trait had no parameter for one.
+    ("server: authorize every statement as a constant rather than as the caller",
+     "crates/sankhya-server/src/wiring.rs",
+     "        let outcome = self.run_statement(sql, caller.user());",
+     "        let outcome = self.run_statement(sql, \"query\");",
+     "sankhya-server"),
+
+    # No entry for "answer the catalogue for a constant", and the absence is honest.
+    #
+    # The catalogue *is* now answered for whoever asked, and no test can tell: this build gives
+    # every user the same role and the same tenant, so `visible_tables` returns the same list
+    # whichever subject it is asked about. The plumbing is fixed; nothing yet varies along it.
+    #
+    # It becomes observable the day a policy distinguishes subjects --- which is `FR-SEC-03`'s
+    # federated identity --- and the entry belongs there rather than here, claiming a guard that
+    # does not exist yet.
+
     ("server: accept a feed cadence of zero, which is a loop with no sleep in it",
      "crates/sankhya-server/src/main.rs",
      "            Ok(0) | Err(_) => {",
