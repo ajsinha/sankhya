@@ -3992,8 +3992,8 @@ CATALOGUE = [
     # could not be --- the trait had no parameter for one.
     ("server: authorize every statement as a constant rather than as the caller",
      "crates/sankhya-server/src/wiring.rs",
-     "        let outcome = self.run_statement(sql, caller.user());",
-     "        let outcome = self.run_statement(sql, \"query\");",
+     "        let user = caller.user();",
+     "        let user = \"query\";",
      "sankhya-server"),
 
     # No entry for "answer the catalogue for a constant", and the absence is honest.
@@ -4085,6 +4085,39 @@ CATALOGUE = [
     #
     # Same shape as the absent entry for `visible_tables`, and it becomes observable at the same
     # moment: when `FR-SEC-03`'s federated identity makes a policy distinguish subjects.
+
+    ("readpath: resolve a table at its present rather than at the version asked for",
+     "crates/sankhya-readpath/src/provider.rs",
+     "                    Some(version) => sankhya_table_delta::live_files_at(table_root, version)?,",
+     "                    Some(_version) => live_files(table_root)?,",
+     "sankhya-readpath"),
+
+    ("server: ignore a session's snapshot and answer from the present",
+     "crates/sankhya-server/src/snapshots.rs",
+     "    let Some(named) = caller.setting(\"snapshot\") else {",
+     "    let Some(named) = None::<&str> else {",
+     "sankhya-server"),
+
+    ("server: answer a table the snapshot does not name from the present",
+     "crates/sankhya-server/src/snapshots.rs",
+     "        let Some(at) = snapshot.pins(&qualified) else {\n            // Not named by this snapshot: it did not exist when the snapshot was taken, so it\n            // is left out and a statement naming it fails to resolve.\n            continue;\n        };",
+     "        let Some(at) = snapshot.pins(&qualified) else {\n            pinned.push(table.clone());\n            continue;\n        };",
+     "sankhya-server"),
+
+    ("server: read as of a snapshot that has expired",
+     "crates/sankhya-server/src/snapshots.rs",
+     "    if standing(&snapshot, server.today()) == Standing::Expired {",
+     "    if false {",
+     "sankhya-server"),
+
+    # Named against `sankhya-server`, not the crate the code lives in: a refused `SET` is only
+    # observable where a handler *refuses* one, and only the server's does. The catalogue has
+    # made the other mistake before and records it.
+    ("wire: remember a setting the handler refused",
+     "crates/sankhya-api-pg/src/session.rs",
+     "                if !self.run(&sql, handler, output) {\n                    self.remember_setting(&sql);\n                }",
+     "                self.run(&sql, handler, output);\n                self.remember_setting(&sql);",
+     "sankhya-server"),
 
     ("server: accept a feed cadence of zero, which is a loop with no sleep in it",
      "crates/sankhya-server/src/main.rs",

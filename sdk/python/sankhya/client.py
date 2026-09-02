@@ -112,6 +112,29 @@ class Cube:
 
 
 @dataclass(frozen=True)
+class SnapshotInfo:
+    """A named instant, and what it holds."""
+
+    name: str
+    #: ``"live"`` or ``"expired"``.
+    state: str
+    #: Who took it. A snapshot holds storage on somebody's behalf, and a cost with no owner is
+    #: one nobody reclaims.
+    taken_by: str
+    taken_at: int | None
+    #: The day it stops being honoured, as days from the epoch.
+    expires_on: int | None
+    #: How many tables it pins.
+    tables: int
+    #: Their qualified names.
+    pins: list
+
+    @property
+    def is_live(self) -> bool:
+        return self.state == "live"
+
+
+@dataclass(frozen=True)
 class Feed:
     """A declared feed, and what it is doing."""
 
@@ -418,6 +441,64 @@ class Sankhya:
         """Remove a cube, and the cuboids materialised for it."""
         self.sql(f"DROP CUBE {name}")
 
+    # -- snapshots ----------------------------------------------------------
+
+    def take_snapshot(self, name: str, expire_after_days: int) -> None:
+        """Take a named snapshot of every table you may read.
+
+        A snapshot is a **position**, not a table: a clone freezes a *thing*, a snapshot freezes
+        a *moment*. It records the version each table stood at and pins those files, so a run
+        that reads four tables reads them as of one instant --- otherwise the reconciliation
+        problem this system exists to remove reappears inside a single query.
+
+        ``expire_after_days`` is **required** and there is no unbounded form. A snapshot pins
+        files, so one that never expired would hold a whole warehouse's versions alive and the
+        cost would fall on somebody who did not ask for it.
+
+        Raises :class:`~sankhya.wire.Refusal` when the name is taken, or when the lifetime is
+        zero or longer than this server will hold storage for.
+        """
+        self.sql(f"CREATE SNAPSHOT {name} EXPIRE AFTER {int(expire_after_days)} DAYS")
+
+    def snapshots(self) -> list:
+        """Every snapshot this warehouse holds, as :class:`SnapshotInfo`."""
+        return [
+            SnapshotInfo(
+                name=row.get("snapshot") or "",
+                state=row.get("state") or "",
+                taken_by=row.get("taken_by") or "",
+                taken_at=_int(row.get("taken_at")),
+                expires_on=_int(row.get("expires_on")),
+                tables=_int(row.get("tables")) or 0,
+                pins=(row.get("pins") or "").split(),
+            )
+            for row in self.rows("SHOW SNAPSHOTS")
+        ]
+
+    def drop_snapshot(self, name: str, if_exists: bool = False) -> None:
+        """Remove a snapshot, releasing the files it pinned."""
+        self.sql("DROP SNAPSHOT " + ("IF EXISTS " if if_exists else "") + name)
+
+    def read_as_of(self, name: str) -> None:
+        """Read as of a named snapshot, for the rest of this connection.
+
+        A **session** setting, because a run reads one instant across many statements. Another
+        connection is unaffected.
+
+        A table created *after* the snapshot is not there, and naming it fails to resolve
+        exactly as a table that does not exist does. It is deliberately not answered as empty:
+        a table that did not exist is not a table that was empty, and a join against one returns
+        a confident zero.
+
+        Refused **here** rather than at the next query when the snapshot does not exist or has
+        expired.
+        """
+        self.sql(f"SET SNAPSHOT = '{_quote(name)}'")
+
+    def read_the_present(self) -> None:
+        """Stop reading as of a snapshot."""
+        self.sql("RESET SNAPSHOT")
+
     # -- feeds and quarantine -----------------------------------------------
 
     def feeds(self) -> list:
@@ -548,6 +629,7 @@ __all__ = [
     "Feed",
     "Refusal",
     "Sankhya",
+    "SnapshotInfo",
     "Table",
     "open",
 ]

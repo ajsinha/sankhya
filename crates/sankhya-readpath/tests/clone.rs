@@ -20,7 +20,7 @@
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use sankhya_publish::Publication;
-use sankhya_readpath::{resolve_cached, resolve_clone_cached, Inherited};
+use sankhya_readpath::{resolve_as_of, resolve_cached, resolve_clone_cached, Inherited};
 use sankhya_table_delta::LogCache;
 use sankhya_types::{Lsn, LsnRange};
 use std::sync::Arc;
@@ -220,4 +220,44 @@ fn a_clone_whose_origin_is_gone_reports_rather_than_serving_what_remains() {
         outcome.is_err(),
         "a clone whose origin has gone must say so, not serve the rows it happens to still have"
     );
+}
+
+#[test]
+fn a_table_resolved_at_a_version_reads_that_version_and_not_the_present() {
+    // What reading as of a named snapshot needs (`ADR-0019`): a snapshot records a version per
+    // table, and answering as of one means resolving each table at the version it recorded --
+    // so four tables read at four moments become four tables read at one.
+    //
+    // Not the clone path. That resolves *two* logs, so using it here would add the table's
+    // current files to its historical ones and answer with both: a superset presented as a
+    // snapshot, which only reveals itself once the table has moved.
+    let dir = tempfile::tempdir().expect("a directory");
+    origin(dir.path(), 3);
+    let root = dir.path().join("entries");
+
+    let at_one = resolve_as_of(
+        schema(),
+        &root,
+        1,
+        LsnRange::new(Lsn::new(0), Lsn::new(u64::MAX)),
+        Lsn::new(u64::MAX),
+    )
+    .expect("version one resolves");
+    let now = resolve_cached(
+        schema(),
+        &root,
+        LsnRange::new(Lsn::new(0), Lsn::new(u64::MAX)),
+        None,
+        Lsn::new(u64::MAX),
+        &LogCache::new(),
+    )
+    .expect("the present resolves");
+
+    assert!(
+        at_one.published_files().len() < now.published_files().len(),
+        "version one saw as much as the present: {} against {}",
+        at_one.published_files().len(),
+        now.published_files().len()
+    );
+    assert_eq!(at_one.published_files().len(), 1, "one commit, one file");
 }

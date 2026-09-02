@@ -371,12 +371,11 @@ fn a_setting_that_would_change_an_answer_is_refused_rather_than_accepted_quietly
     table(&warehouse, "sales", "orders", 3);
     let server = start(&warehouse, &dir.path().join("data"));
 
-    for sql in [
-        "SET SNAPSHOT = 'eod_2026_09_02'",
-        "SET snapshot = 'x'",
-        "RESET SNAPSHOT",
-        "SET read_as_of = 412",
-    ] {
+    // `SET SNAPSHOT` is no longer here: it is **honoured** now, which is the other answer
+    // `ADR-0019` Decision 6 allows. What it still may not be is accepted and ignored, and a
+    // name that does not resolve is refused rather than quietly setting nothing --- covered in
+    // `tests/snapshots.rs`. `read_as_of` remains, because nothing reads it.
+    for sql in ["SET read_as_of = 412", "RESET read_as_of"] {
         // `expect_err`, not a row count. An accepted `SET` returns zero rows and so does a
         // refused one, so a test written on the count cannot fail --- which is the same shape
         // of mistake as the defect it is guarding.

@@ -591,6 +591,60 @@ pub(crate) fn refusal_fields(port: u16, sql: &str) -> std::collections::BTreeMap
     fields
 }
 
+/// One connection, held open across several statements.
+///
+/// # Why this exists
+///
+/// [`query`] and [`query_outcome`] open a connection, run one statement and hang up, which is
+/// right for almost everything here and **wrong for anything about session state**. A `SET` on
+/// a connection that is then closed has no observable effect, so a test written on those
+/// helpers passes whether the setting is honoured or ignored --- which is the failure it was
+/// meant to catch.
+pub(crate) struct Session {
+    stream: TcpStream,
+}
+
+impl Session {
+    /// Open a connection and complete the handshake.
+    pub(crate) fn open(port: u16) -> Self {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connecting");
+        stream.set_nodelay(true).ok();
+
+        let mut startup = Vec::new();
+        let mut body = 196_608i32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"user\0quickstart\0\0");
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        startup.extend_from_slice(&((body.len() + 4) as i32).to_be_bytes());
+        startup.extend_from_slice(&body);
+        stream.write_all(&startup).expect("startup");
+
+        let mut buffer = Vec::new();
+        read_until_ready(&mut stream, &mut buffer);
+        Self { stream }
+    }
+
+    /// Run a statement on this connection, returning its rows or the refusal's text.
+    pub(crate) fn run(&mut self, sql: &str) -> Result<usize, String> {
+        let mut message = vec![b'Q'];
+        let payload = format!("{sql}\0");
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        message.extend_from_slice(&((payload.len() + 4) as i32).to_be_bytes());
+        message.extend_from_slice(payload.as_bytes());
+        self.stream.write_all(&message).expect("query");
+
+        let mut buffer = Vec::new();
+        read_until_ready(&mut self.stream, &mut buffer);
+        if count_tags(&buffer, b'E') > 0 {
+            let text: String = buffer
+                .iter()
+                .map(|byte| if byte.is_ascii_graphic() || *byte == b' ' { *byte as char } else { ' ' })
+                .collect();
+            return Err(text.split_whitespace().collect::<Vec<&str>>().join(" "));
+        }
+        Ok(count_tags(&buffer, b'D'))
+    }
+}
+
 /// Read until the server says it is ready for the next statement.
 pub(crate) fn read_until_ready(stream: &mut TcpStream, buffer: &mut Vec<u8>) {
     stream

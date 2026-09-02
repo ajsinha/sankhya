@@ -382,3 +382,168 @@ pub(crate) fn still_reading(server: &crate::wiring::Server) -> sankhya_maintenan
         snapshots: by_root,
     }
 }
+
+/// The tables this session sees, when it has asked to read as of a named snapshot.
+///
+/// `None` when it has not, which is every session until somebody says so --- and the reason
+/// this costs nothing until they do.
+///
+/// # Why a table the snapshot does not name is left out rather than checked
+///
+/// `ADR-0019` Decision 2 says such a table is refused. It is enforced here by **absence**: the
+/// table is simply not registered, so a statement naming it fails to resolve, in the same
+/// words as a table that is not there. A check somewhere downstream would be a second place
+/// the rule lives, and the day somebody adds a third path into the read path it would be the
+/// place they forgot.
+///
+/// # Errors
+///
+/// [`QueryFailure`] when the named snapshot does not exist, has expired, or cannot be read.
+/// Never a fall back to the present: a caller who asked for one instant and was served *now*
+/// has no way to tell.
+pub(crate) fn as_of(
+    server: &crate::wiring::Server,
+    caller: &sankhya_api_pg::session::Caller<'_>,
+) -> Result<Option<std::sync::Arc<Vec<crate::execute::ServableTable>>>, QueryFailure> {
+    let Some(named) = caller.setting("snapshot") else {
+        return Ok(None);
+    };
+    if named.is_empty() {
+        return Ok(None);
+    }
+
+    let (snapshots, complaints) = load(server.warehouse_path());
+    if let Some(first) = complaints.first() {
+        return Err(refusal(
+            sankhya_error::protocol::sqlstate::DATA_EXCEPTION.as_str(),
+            &format!(
+                "a snapshot document could not be read ({first}), so this session cannot be \
+                 sure what `{named}` pins. Refused rather than answered from what is legible"
+            ),
+        ));
+    }
+    let Some(snapshot) = snapshots.into_iter().find(|held| held.name == named) else {
+        return Err(refusal(
+            "42704",
+            &format!(
+                "there is no snapshot called `{named}`. `SHOW SNAPSHOTS` lists them, with what \
+                 each pins and when it expires"
+            ),
+        ));
+    };
+    if standing(&snapshot, server.today()) == Standing::Expired {
+        return Err(refusal(
+            "42704",
+            &sankhya_snapshot::expire::expired_message(&snapshot),
+        ));
+    }
+
+    // Resolved at the pinned version, one table at a time. Not cached: a version is a fixed
+    // point, and the cache answers what a table looks like *now*.
+    let mut pinned = Vec::new();
+    for table in server.servable_now().iter() {
+        let Some(qualified) =
+            crate::warehouse::qualified_name(server.warehouse_path(), &table.root)
+        else {
+            continue;
+        };
+        let Some(at) = snapshot.pins(&qualified) else {
+            // Not named by this snapshot: it did not exist when the snapshot was taken, so it
+            // is left out and a statement naming it fails to resolve.
+            continue;
+        };
+        let resolved = sankhya_readpath::resolve_as_of(
+            std::sync::Arc::clone(&table.schema),
+            &table.root,
+            at.version,
+            sankhya_types::LsnRange::new(sankhya_types::Lsn::new(0), server.read_as_of()),
+            server.read_as_of(),
+        )
+        .map_err(|error| {
+            refusal(
+                sankhya_error::protocol::sqlstate::DATA_EXCEPTION.as_str(),
+                &format!(
+                    "`{qualified}` could not be read as of version {} --- the snapshot \
+                     `{named}` pins a version this table can no longer produce: {error}",
+                    at.version
+                ),
+            )
+        })?;
+        pinned.push(crate::execute::ServableTable {
+            reference: table.reference.clone(),
+            authorize_as: table.authorize_as.clone(),
+            inherited: table.inherited.clone(),
+            root: table.root.clone(),
+            provider: std::sync::Arc::new(resolved),
+            schema: std::sync::Arc::clone(&table.schema),
+            resolved_at: at.version,
+        });
+    }
+    Ok(Some(std::sync::Arc::new(pinned)))
+}
+
+/// Check a `SET SNAPSHOT` before the session remembers it.
+///
+/// `None` when the statement is not one, so the caller passes it on.
+///
+/// # Why this is checked here and not at the next statement
+///
+/// Because the next statement is the wrong place to learn about it. A `SET` that succeeded and
+/// a query that then failed sends somebody to look at the query --- the same reasoning
+/// `ADR-0017` Decision 5 applies to version skew: fail where a person can act, not where the
+/// consequence happens to be noticed.
+pub(crate) fn check_setting(
+    server: &crate::wiring::Server,
+    sql: &str,
+) -> Option<Result<QueryResult, QueryFailure>> {
+    let compact = sql.trim().trim_end_matches(';').trim();
+    let mut words = compact.split_whitespace();
+    let verb = words.next().unwrap_or_default().to_uppercase();
+    if verb != "SET" {
+        return None;
+    }
+    let named = words.next().unwrap_or_default().trim_end_matches('=').trim_matches('"');
+    if !named.eq_ignore_ascii_case("snapshot") {
+        return None;
+    }
+    let value: String = words
+        .filter(|word| *word != "=" && !word.eq_ignore_ascii_case("TO"))
+        .collect::<Vec<&str>>()
+        .join(" ");
+    let wanted = value
+        .trim_start_matches('=')
+        .trim()
+        .trim_matches(|c| c == '\'' || c == '"')
+        .to_owned();
+    if wanted.is_empty() {
+        return Some(Err(refusal(
+            sankhya_error::protocol::sqlstate::SYNTAX_ERROR.as_str(),
+            "`SET SNAPSHOT` needs the name of a snapshot. `SHOW SNAPSHOTS` lists them, and \
+             `RESET SNAPSHOT` reads the present again",
+        )));
+    }
+
+    let (snapshots, complaints) = load(server.warehouse_path());
+    if let Some(first) = complaints.first() {
+        return Some(Err(refusal(
+            sankhya_error::protocol::sqlstate::DATA_EXCEPTION.as_str(),
+            &format!("a snapshot document could not be read ({first})"),
+        )));
+    }
+    let Some(snapshot) = snapshots.iter().find(|held| held.name == wanted) else {
+        return Some(Err(refusal(
+            "42704",
+            &format!(
+                "there is no snapshot called `{wanted}`. `SHOW SNAPSHOTS` lists them, with \
+                 what each pins and when it expires"
+            ),
+        )));
+    };
+    if standing(snapshot, server.today()) == Standing::Expired {
+        return Some(Err(refusal(
+            "42704",
+            &sankhya_snapshot::expire::expired_message(snapshot),
+        )));
+    }
+    Some(Ok(acknowledged("SET")))
+}

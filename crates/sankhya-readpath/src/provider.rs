@@ -661,6 +661,7 @@ pub fn resolve(
         target,
         None,
         None,
+        None,
     )
 }
 
@@ -690,6 +691,45 @@ pub fn resolve_cached(
         target,
         Some(cache),
         None,
+        None,
+    )
+}
+
+/// A table as its log stood at a version, rather than as it stands now.
+///
+/// # What this is for
+///
+/// Reading as of a **named snapshot** (`ADR-0019`). A snapshot records a version per table, and
+/// answering a query as of one means resolving every table it names at the version it recorded
+/// --- so that four tables read at four moments become four tables read at one.
+///
+/// # Why this is not the clone path
+///
+/// A clone resolves *two* logs: the origin's at the cloned version, and the clone's own. This
+/// resolves **one**, at a version. Using the clone path for it would add the table's current
+/// files to its historical ones and answer with both, which is a superset presented as a
+/// snapshot --- worse than a wrong answer, because it is a wrong answer that only appears once
+/// the table has moved.
+///
+/// # Errors
+///
+/// The same conditions as [`resolve`], plus a failure to replay the log to that version.
+pub fn resolve_as_of(
+    schema: SchemaRef,
+    table_root: &std::path::Path,
+    version: sankhya_table_delta::Version,
+    published_coverage: Option<LsnRange>,
+    target: Lsn,
+) -> Result<SankhyaTable, ReadError> {
+    resolve_with(
+        schema,
+        table_root,
+        published_coverage,
+        None,
+        target,
+        None,
+        None,
+        Some(version),
     )
 }
 
@@ -742,6 +782,7 @@ pub fn resolve_clone_cached(
         target,
         Some(cache),
         Some(inherited),
+        None,
     )
 }
 
@@ -754,6 +795,7 @@ fn resolve_with(
     target: Lsn,
     cache: Option<&LogCache>,
     inherited: Option<&Inherited>,
+    as_of: Option<sankhya_table_delta::Version>,
 ) -> Result<SankhyaTable, ReadError> {
     let mut offered: Vec<TierRef> = Vec::new();
     if let Some(coverage) = published_coverage {
@@ -820,9 +862,18 @@ fn resolve_with(
                     );
                 }
 
-                let live = match cache {
-                    Some(cache) => cache.live_files(table_root)?.0,
-                    None => live_files(table_root)?,
+                // At a **version**, when one was asked for: the table as its log stood then,
+                // rather than as it stands now.
+                //
+                // Not cached, deliberately. The cache answers *"what does this table look like
+                // now?"* and keeps itself current; a version is a fixed point and caching it
+                // would be caching an answer that cannot change, keyed by something that does.
+                let live = match as_of {
+                    Some(version) => sankhya_table_delta::live_files_at(table_root, version)?,
+                    None => match cache {
+                        Some(cache) => cache.live_files(table_root)?.0,
+                        None => live_files(table_root)?,
+                    },
                 };
                 resolved.extend(
                     live.files

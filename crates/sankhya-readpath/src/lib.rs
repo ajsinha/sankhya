@@ -49,7 +49,7 @@ pub use budgeted::{BudgetedExec, Clock};
 pub use merge::{Capability, CapabilityError, ResolvedTable};
 pub use predicate::extract;
 pub use provider::{
-    resolve, resolve_cached, resolve_clone_cached, Inherited, LoggedFile, SankhyaTable,
+    resolve, resolve_as_of, resolve_cached, resolve_clone_cached, Inherited, LoggedFile, SankhyaTable,
 };
 
 /// Published files for one table, and what they cover.

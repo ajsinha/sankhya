@@ -36,7 +36,7 @@ mod feeds;
 #[path = "../src/snapshots.rs"]
 mod snapshots;
 
-use common::{query_outcome, start, text_rows, write_warehouse, Running};
+use common::{query_outcome, start, text_rows, write_warehouse, Running, Session};
 
 /// A warehouse with the sample tables, and a running server.
 fn running() -> (tempfile::TempDir, Running) {
@@ -144,20 +144,20 @@ fn dropping_a_snapshot_that_is_not_there_is_named_unless_the_statement_allowed_i
 }
 
 #[test]
-fn setting_a_snapshot_is_refused_rather_than_accepted_quietly() {
-    // The trap `ADR-0019` Decision 6 names, checked here as well as in `qualified_names`
-    // because this is the file somebody reads when they are looking at snapshots.
+fn setting_a_snapshot_that_exists_is_honoured_rather_than_refused_or_ignored() {
+    // This asserted a **refusal** until reading as of a snapshot was built, and the refusal was
+    // right while it was: `ADR-0019` Decision 6 allows two answers for `SET SNAPSHOT` --- refuse
+    // it, or honour it --- and accepting it as a no-op is the one thing it forbids, because a
+    // caller who asked for one instant and was served the present has no way to tell.
     //
-    // Reading *as of* a snapshot is not built. Accepting `SET SNAPSHOT` as a no-op would serve
-    // the present to a caller who asked for one instant, with no symptom at all --- which is
-    // the worst thing this system can do, arriving through the feature meant to prevent it.
+    // It is honoured now. The `0A000` refusal is gone because the reason for it is.
     let (_dir, server) = running();
     query_outcome(server.port, "CREATE SNAPSHOT eod EXPIRE AFTER 90 DAYS").expect("taking");
 
-    let refused =
-        query_outcome(server.port, "SET SNAPSHOT = 'eod'").expect_err("not yet honoured");
-    assert!(refused.contains("0A000"), "{refused}");
-    assert!(refused.contains("ADR-0019"), "{refused}");
+    let mut session = Session::open(server.port);
+    session.run("SET SNAPSHOT = 'eod'").expect("honoured");
+    session.run("SELECT id FROM sales.orders").expect("reads as of it");
+    session.run("RESET SNAPSHOT").expect("reads the present again");
 }
 
 #[test]
@@ -286,4 +286,112 @@ fn two_snapshots_pinning_one_table_contribute_both_versions() {
     let versions = pinned.get("sales.orders").expect("the table is pinned");
     assert!(versions.contains(&412), "{versions:?}");
     assert!(versions.contains(&500), "{versions:?}");
+}
+
+// --- reading as of one -----------------------------------------------------
+
+#[test]
+fn reading_as_of_a_snapshot_reads_the_past_and_not_the_present() {
+    // The property the whole feature exists for, and the only test that can tell the two
+    // apart: the table must **change** after the snapshot is taken. A test over an unchanging
+    // warehouse passes whether the snapshot is honoured or ignored.
+    use arrow_array::{Float64Array, Int64Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+    use sankhya_publish::Publication;
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().expect("a directory");
+    let warehouse = dir.path().join("warehouse");
+    write_warehouse(&warehouse);
+    let server = start(&warehouse, &dir.path().join("data"));
+
+    let before: usize = query_outcome(server.port, "SELECT id FROM sales.orders").expect("reads");
+    query_outcome(server.port, "CREATE SNAPSHOT eod EXPIRE AFTER 90 DAYS").expect("taking");
+
+    // A commit *after* the snapshot, written through the product's own writer.
+    let columns = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("region", DataType::Utf8, true),
+        Field::new("period", DataType::Utf8, true),
+        Field::new("amount", DataType::Float64, false),
+        Field::new("margin_pct", DataType::Float64, false),
+    ]));
+    let publication = Publication::external(warehouse.join("sales").join("orders"), "orders");
+    let ids: Vec<i64> = (10_000..10_050).collect();
+    #[allow(clippy::cast_precision_loss)]
+    let amounts: Vec<f64> = ids.iter().map(|id| *id as f64).collect();
+    let batch = RecordBatch::try_new(
+        Arc::clone(&columns),
+        vec![
+            Arc::new(Int64Array::from(ids.clone())),
+            Arc::new(StringArray::from(vec![Some("north"); ids.len()])),
+            Arc::new(StringArray::from(vec![Some("q3"); ids.len()])),
+            Arc::new(Float64Array::from(amounts.clone())),
+            Arc::new(Float64Array::from(amounts)),
+        ],
+    )
+    .expect("a batch");
+    publication
+        .append(
+            publication.next_version(),
+            "part-0004.parquet",
+            &batch,
+            sankhya_types::Lsn::new(5_000),
+        )
+        .expect("publishing after the snapshot");
+
+    let after: usize = query_outcome(server.port, "SELECT id FROM sales.orders").expect("reads");
+    assert!(after > before, "the fixture did not change: {before} then {after}");
+
+    // And now the point --- on **one connection**, because a session setting is per connection
+    // and a helper that reconnects between statements would pass whether it is honoured or not.
+    let mut session = Session::open(server.port);
+    session.run("SET SNAPSHOT = 'eod'").expect("setting");
+    let as_of = session.run("SELECT id FROM sales.orders").expect("reads");
+    assert_eq!(
+        as_of, before,
+        "reading as of the snapshot saw rows committed after it: {as_of} against {before}"
+    );
+
+    // `RESET` reads the present again, so a session is not stuck in the past.
+    session.run("RESET SNAPSHOT").expect("resetting");
+    assert_eq!(session.run("SELECT id FROM sales.orders").expect("reads"), after);
+
+    // And a *different* connection was never in the past at all.
+    assert_eq!(
+        query_outcome(server.port, "SELECT id FROM sales.orders").expect("reads"),
+        after,
+        "a session setting leaked to another connection"
+    );
+}
+
+#[test]
+fn setting_a_snapshot_that_does_not_exist_is_refused_at_the_set() {
+    // Not at the next statement. A `SET` that succeeded and a query that then failed sends
+    // somebody to look at the query --- the same reasoning `ADR-0017` Decision 5 applies to
+    // version skew: fail where a person can act, not where the consequence is noticed.
+    let (_dir, server) = running();
+
+    let refused = query_outcome(server.port, "SET SNAPSHOT = 'nosuch'").expect_err("refused");
+    assert!(refused.contains("42704"), "{refused}");
+    assert!(refused.contains("SHOW SNAPSHOTS"), "{refused}");
+
+    // And the session was not changed by a statement that was refused --- on **one**
+    // connection, because a helper that reconnects would discard the setting either way and
+    // pass whether the refusal took effect or not.
+    let mut session = Session::open(server.port);
+    session
+        .run("SET SNAPSHOT = 'nosuch'")
+        .expect_err("refused on this session too");
+    session
+        .run("SELECT id FROM sales.orders")
+        .expect("a refused SET must leave the session reading the present");
+}
+
+#[test]
+fn a_snapshot_setting_with_no_name_says_what_the_statement_reads() {
+    let (_dir, server) = running();
+    let refused = query_outcome(server.port, "SET SNAPSHOT").expect_err("refused");
+    assert!(refused.contains("needs the name of a snapshot"), "{refused}");
+    assert!(refused.contains("RESET SNAPSHOT"), "it names the way back: {refused}");
 }

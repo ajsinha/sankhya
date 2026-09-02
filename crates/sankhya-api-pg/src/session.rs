@@ -199,13 +199,54 @@ pub fn admits_contract(parameters: &[(String, String)]) -> Result<(), QueryFailu
 pub struct Caller<'a> {
     /// The startup parameters this connection presented, verbatim.
     parameters: &'a [(String, String)],
+    /// Settings this connection has changed since, by `SET`.
+    ///
+    /// # Why the session owns these and the handler reads them
+    ///
+    /// A setting is **per connection** and the handler is shared by all of them, so the handler
+    /// has nowhere to keep one. The session has exactly one place, and it is the same place the
+    /// startup parameters already live.
+    ///
+    /// The handler still decides what a setting *means* --- and whether it may be set at all.
+    /// Splitting it the other way would put the meaning of `SET SNAPSHOT` in a protocol module
+    /// that has no idea what a snapshot is.
+    settings: &'a BTreeMap<String, String>,
 }
+
+/// An empty settings map, for a caller that has changed none.
+static NO_SETTINGS: std::sync::OnceLock<BTreeMap<String, String>> = std::sync::OnceLock::new();
 
 impl<'a> Caller<'a> {
     /// A caller described by the startup parameters they sent.
     #[must_use]
-    pub const fn new(parameters: &'a [(String, String)]) -> Self {
-        Self { parameters }
+    pub fn new(parameters: &'a [(String, String)]) -> Self {
+        Self {
+            parameters,
+            settings: NO_SETTINGS.get_or_init(BTreeMap::new),
+        }
+    }
+
+    /// The same, with the settings this connection has changed.
+    #[must_use]
+    pub const fn with_settings(
+        parameters: &'a [(String, String)],
+        settings: &'a BTreeMap<String, String>,
+    ) -> Self {
+        Self { parameters, settings }
+    }
+
+    /// A session setting this connection has set, by name.
+    ///
+    /// `None` for one nobody set. Deliberately **not** falling back to a startup parameter of
+    /// the same name: a `SET` and a connection-string option are different acts with different
+    /// lifetimes, and conflating them would make `RESET` restore something the client never
+    /// asked for.
+    #[must_use]
+    pub fn setting(&self, name: &str) -> Option<&str> {
+        self.settings
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
     }
 
     /// The user this connection authenticated as.
@@ -340,6 +381,11 @@ pub struct Connection {
     statements: BTreeMap<String, String>,
     /// Bound portals by name, each carrying the statement it will run.
     portals: BTreeMap<String, Portal>,
+    /// Settings this connection has changed with `SET`.
+    ///
+    /// Held here because a setting is per connection and the handler is shared by all of them.
+    /// The session keeps them; the handler decides what they mean.
+    settings: BTreeMap<String, String>,
 }
 
 /// A bound portal: a statement with its parameters substituted, and its answer once run.
@@ -380,6 +426,7 @@ impl Connection {
             insists: false,
             statements: BTreeMap::new(),
             portals: BTreeMap::new(),
+            settings: BTreeMap::new(),
         }
     }
 
@@ -535,7 +582,12 @@ impl Connection {
                 }
             }
             (Phase::Ready, FrontendMessage::Query { sql }) => {
-                self.run(&sql, handler, output);
+                // Remembered only if the handler did not refuse it. A refused `SET` must
+                // leave the session unchanged --- storing first and asking afterwards is how a
+                // refusal comes to have taken effect.
+                if !self.run(&sql, handler, output) {
+                    self.remember_setting(&sql);
+                }
                 encode(&BackendMessage::ReadyForQuery { status: b'I' }, output);
             }
             (Phase::Ready, FrontendMessage::Parse { name, sql }) => {
@@ -610,11 +662,53 @@ impl Connection {
         encode(&BackendMessage::ReadyForQuery { status: b'I' }, output);
     }
 
+    /// Remember a setting the handler accepted.
+    ///
+    /// # Why after the handler and not before
+    ///
+    /// Because the handler decides whether a setting may be set at all. `SET SNAPSHOT` to a
+    /// snapshot that does not exist is refused, and a session that had already recorded it
+    /// would answer every later statement as of something that is not there --- storing first
+    /// and asking afterwards is how a refusal comes to have taken effect.
+    fn remember_setting(&mut self, sql: &str) {
+        let compact = sql.trim().trim_end_matches(';').trim();
+        let mut words = compact.split_whitespace();
+        let verb = words.next().unwrap_or_default().to_uppercase();
+        if verb != "SET" && verb != "RESET" {
+            return;
+        }
+        let Some(named) = words.next() else {
+            return;
+        };
+        let named = named.trim_end_matches('=').trim_matches('"').to_lowercase();
+        if verb == "RESET" {
+            if named == "all" {
+                self.settings.clear();
+            } else {
+                self.settings.remove(&named);
+            }
+            return;
+        }
+        // `SET name = value` and `SET name value` and `SET name TO value` are all spellings a
+        // client sends. The value is whatever follows, with its quoting removed.
+        let value: String = words
+            .filter(|word| *word != "=" && !word.eq_ignore_ascii_case("TO"))
+            .collect::<Vec<&str>>()
+            .join(" ");
+        let value = value.trim_start_matches('=').trim();
+        let value = value.trim_matches(|c| c == '\'' || c == '"');
+        self.settings.insert(named, value.to_owned());
+    }
+
     /// Run one statement, answering from the catalogue where that is what was asked.
-    fn run(&self, sql: &str, handler: &dyn Handler, output: &mut BytesMut) {
+    ///
+    /// Returns whether it was **refused**, so the caller can tell a statement that took effect
+    /// from one that did not. A `SET` the handler refused must leave the session unchanged, and
+    /// nothing else in the reply distinguishes the two.
+    fn run(&self, sql: &str, handler: &dyn Handler, output: &mut BytesMut) -> bool {
         if sql.trim().is_empty() {
             encode(&BackendMessage::EmptyQueryResponse, output);
-            return;
+            return false;
         }
 
         // Catalogue queries are answered here rather than reaching the engine. They refer
@@ -625,7 +719,7 @@ impl Connection {
                 &catalogue,
                 &handler.server_version(),
                 &handler.current_schema(),
-                &handler.visible_tables(&Caller::new(&self.parameters)),
+                &handler.visible_tables(&Caller::with_settings(&self.parameters, &self.settings)),
             );
             let rows = result.rows.len();
             encode(
@@ -648,10 +742,10 @@ impl Connection {
                 },
                 output,
             );
-            return;
+            return false;
         }
 
-        match handler.query(sql, &Caller::new(&self.parameters)) {
+        match handler.query(sql, &Caller::with_settings(&self.parameters, &self.settings)) {
             Ok(result) => {
                 encode(
                     &BackendMessage::RowDescription {
@@ -668,6 +762,7 @@ impl Connection {
                     );
                 }
                 encode(&BackendMessage::CommandComplete { tag: result.tag }, output);
+                false
             }
             Err(failure) => {
                 encode(
@@ -679,6 +774,7 @@ impl Connection {
                     },
                     output,
                 );
+                true
             }
         }
     }
@@ -804,7 +900,7 @@ impl Connection {
                 &catalogue,
                 &handler.server_version(),
                 &handler.current_schema(),
-                &handler.visible_tables(&Caller::new(&self.parameters)),
+                &handler.visible_tables(&Caller::with_settings(&self.parameters, &self.settings)),
             );
             let rows = result.rows.len();
             return Ok(QueryResult {
@@ -813,7 +909,7 @@ impl Connection {
                 tag: format!("SELECT {rows}"),
             });
         }
-        handler.query(sql, &Caller::new(&self.parameters))
+        handler.query(sql, &Caller::with_settings(&self.parameters, &self.settings))
     }
 
     /// Complain about a statement without closing the connection.

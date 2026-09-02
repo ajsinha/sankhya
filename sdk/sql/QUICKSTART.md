@@ -54,6 +54,7 @@ psql -h 127.0.0.1 -p 5432 -U you -d sankhya -f examples/01-connect-and-discover.
 | [`05-feeds.sql`](examples/05-feeds.sql) | declared ingest, quarantine, and resuming a halted feed |
 | [`06-refusals.sql`](examples/06-refusals.sql) | one refusal per path, with what each one tells you |
 | [`07-analytics.sql`](examples/07-analytics.sql) | the vector, matrix and statistical surface |
+| [`08-snapshots.sql`](examples/08-snapshots.sql) | naming one instant across many tables, and reading as of it |
 
 The examples assume the sample warehouse from the repository's
 [`QUICKSTART.md`](../../docs/QUICKSTART.md). Where one needs a table it creates itself, it
