@@ -3969,6 +3969,12 @@ CATALOGUE = [
      "                sankhya_clone::Refused::StillRead { by, .. } => { let _ = by; Vec::new() }",
      "sankhya-server"),
 
+    ("server: let a statement run with no deadline, as the query path did",
+     "crates/sankhya-server/src/execute.rs",
+     "    let batches = match tokio::time::timeout(statement_deadline(), frame.collect()).await {",
+     "    let batches = match tokio::time::timeout(std::time::Duration::from_secs(86_400), frame.collect()).await {",
+     "sankhya-server"),
+
     ("server: accept a feed cadence of zero, which is a loop with no sleep in it",
      "crates/sankhya-server/src/main.rs",
      "            Ok(0) | Err(_) => {",
