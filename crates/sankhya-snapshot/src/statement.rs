@@ -47,6 +47,19 @@ pub enum Statement {
         /// The table asked about.
         table: String,
     },
+    /// What changed between two of a table's versions.
+    ///
+    /// Beside `History` for the same reason `History` is beside a snapshot: a snapshot names an
+    /// instant, history lists the instants there are, and this measures the distance between
+    /// two of them. One crate, one vocabulary.
+    Changes {
+        /// The table asked about.
+        table: String,
+        /// The earlier version, exclusive.
+        from: u64,
+        /// The later version, inclusive.
+        to: u64,
+    },
     /// Read one table at a version, for the rest of this connection.
     ///
     /// # Why this is per table and a snapshot is not
@@ -146,6 +159,11 @@ pub fn parse(sql: &str) -> Option<Result<Statement, NotAStatement>> {
         && second.is_some_and(|word| word.eq_ignore_ascii_case("HISTORY"))
     {
         return Some(read_of(&words, "HISTORY").map(|table| Statement::History { table }));
+    }
+    if first.eq_ignore_ascii_case("SHOW")
+        && second.is_some_and(|word| word.eq_ignore_ascii_case("CHANGES"))
+    {
+        return Some(read_changes(&words));
     }
     if (first.eq_ignore_ascii_case("SET") || first.eq_ignore_ascii_case("RESET"))
         && second.is_some_and(|word| word.eq_ignore_ascii_case("VERSION"))
@@ -300,4 +318,43 @@ fn identifier(word: Option<&&str>, wanted: &'static str) -> Result<String, NotAS
         });
     }
     Ok(bare.to_owned())
+}
+
+/// `SHOW CHANGES BETWEEN <from> AND <to> FOR <table>`
+///
+/// The shape is written out rather than parsed loosely, because every word in it carries
+/// meaning: `BETWEEN … AND` is a range, `FOR` names the table, and a statement missing one of
+/// them is a statement whose author meant something this does not do.
+fn read_changes(words: &[&str]) -> Result<Statement, NotAStatement> {
+    const SHAPE: &str = "SHOW CHANGES BETWEEN <from> AND <to> FOR <table>";
+    let keyword = |at: usize, want: &'static str| -> Result<(), NotAStatement> {
+        match words.get(at) {
+            Some(found) if found.eq_ignore_ascii_case(want) => Ok(()),
+            found => Err(NotAStatement::Expected {
+                wanted: want,
+                found: found.map(|word| (*word).to_owned()),
+            }),
+        }
+    };
+    let number = |at: usize| -> Result<u64, NotAStatement> {
+        let word = words.get(at).ok_or(NotAStatement::Expected {
+            wanted: SHAPE,
+            found: None,
+        })?;
+        word.parse().map_err(|_| NotAStatement::Expected {
+            wanted: "a version number",
+            found: Some((*word).to_owned()),
+        })
+    };
+
+    keyword(2, "BETWEEN")?;
+    let from = number(3)?;
+    keyword(4, "AND")?;
+    let to = number(5)?;
+    keyword(6, "FOR")?;
+    let table = words.get(7).ok_or(NotAStatement::Expected { wanted: SHAPE, found: None })?;
+    if let Some(after) = words.get(8) {
+        return Err(NotAStatement::Trailing { after: (*after).to_owned() });
+    }
+    Ok(Statement::Changes { table: (*table).to_owned(), from, to })
 }
