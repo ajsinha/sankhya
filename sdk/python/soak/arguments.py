@@ -25,6 +25,13 @@ is why it can live in the test.
 from __future__ import annotations
 
 import math
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from sankhya.functions import matrix  # noqa: E402
 
 
 class Seeded:
@@ -70,23 +77,61 @@ _WHOLE_AT = {
 #: Functions taking a scale or shape that must be positive.
 _POSITIVE_AT = {
     "normal_pdf": [2], "normal_cdf": [2], "normal_inv": [2],
-    "lognorm_cdf": [2], "lognorm_inv": [2],
-    "expon_cdf": [1], "poisson_pmf": [1], "poisson_cdf": [1],
-    "gamma_cdf": [1, 2], "beta_cdf": [1, 2], "gamma_p": [0], "gamma_q": [0],
+    "lognorm_inv": [2],
+    "poisson_pmf": [1], "poisson_cdf": [1],
+    "gamma_cdf": [0, 1, 2], "beta_cdf": [1, 2], "gamma_p": [0, 1], "gamma_q": [0, 1],
     "beta_i": [0, 1], "gammaln": [0],
+    # Written here rather than corrected after the loop, where they were: a correction after
+    # the fact is invisible to anything else that asks what a position takes, and the column
+    # probes ask exactly that.
+    "chisq_cdf": [0], "chisq_sf": [0], "f_cdf": [0], "f_sf": [0],
+    "expon_cdf": [0, 1], "lognorm_cdf": [0, 2],
 }
 
 #: A probability at these positions, for the discrete families.
 _PROBABILITY_AT = {"binom_pmf": [2], "binom_cdf": [2]}
+
+#: Positions taking an `x` on the unit interval --- which is not a probability, though it has
+#: the same range: it is where a cumulative beta is evaluated.
+_UNIT_AT = {"beta_i": [2], "beta_cdf": [0]}
+
+#: Positions whose value is pinned rather than drawn, because it cannot be chosen one position
+#: at a time. A uniform distribution's bounds must bracket its argument, and Welch's formula
+#: takes two variances and two counts in an order no per-position rule expresses.
+_FIXED_AT = {
+    "uniform_cdf": {0: 5.0, 1: 0.0, 2: 10.0},
+    "ttest_df_welch": {0: 4.0, 1: 12.0, 2: 9.0, 3: 15.0},
+}
+
+
+def domain_at(name: str, at: int):
+    """What kind of number belongs at one argument position, and a value of that kind.
+
+    **The single place the soak decides what a probability is.** Both halves ask it --- the
+    literal generator below and the column probes in ``columns.py`` --- because two tables of
+    domains drift, and a drifted domain does not fail: it makes every path refuse identically,
+    which the soak counts as agreement and reports as a pass.
+    """
+    if at in _FIXED_AT.get(name, {}):
+        return ("fixed", _FIXED_AT[name][at])
+    if (at == 0 and name in _PROBABILITY_FIRST) or at in _PROBABILITY_AT.get(name, []):
+        return ("probability", 0.5)
+    if at in _UNIT_AT.get(name, []):
+        return ("unit", 0.5)
+    if at in _WHOLE_AT.get(name, []):
+        # A count, and for the binomial the second must not be below the first.
+        return ("count", 3.0 if at == 0 else 10.0)
+    if at in _FREEDOM_AT.get(name, []):
+        return ("freedom", 9.0)
+    if at in _POSITIVE_AT.get(name, []):
+        return ("positive", 1.5)
+    return ("real", 0.25)
 
 #: Functions this generator cannot produce arguments for, with the reason.
 #:
 #: Named rather than skipped by falling through, so the soak can report its own coverage
 #: honestly — see ``unreachable`` below.
 CANNOT = {
-    "vec_of": "builds a vector from its arguments, so it is how every other call is written",
-    "mat_of": "takes a row count and a column count before its values, which no shape describes",
-    "mat_identity": "takes an order rather than data",
     "functions": "a table function; it returns rows rather than a value",
     "cubes": "a table function over cubes this soak does not declare",
     "cube_dimensions": "needs a declared cube",
@@ -98,14 +143,6 @@ CANNOT = {
     "graph_time_respecting": "needs a declared graph",
     "graph_cycles": "needs a declared graph",
     "graph_influence": "needs a declared graph",
-    "mat_solve": "takes a matrix and a right-hand side whose length is the matrix's order",
-    "mat_multiply": "takes two matrices whose inner dimensions must agree",
-    "mat_transpose": (
-        "is defined on a rectangular matrix, so it needs a shape declared by `mat_of` --- "
-        "sixteen values are a 4x4 or a 2x8, and transposing the wrong one produces numbers "
-        "from values that were never in the same row. This generator writes plain arrays"
-    ),
-    "mat_vec": "takes a matrix and a vector of its order",
 }
 
 
@@ -129,6 +166,49 @@ def _positive_definite(seeded: Seeded, order: int) -> list:
     return flat
 
 
+def _prices(seeded: Seeded, length: int = 16) -> list:
+    """A price path, strictly positive at every point.
+
+    Positive because a logarithmic return needs both ends of every step to be above zero, and a
+    drawdown measured against a negative peak is a number with no meaning. Given the generator's
+    ordinary series, every one of the time-series functions refused --- on all three paths, so
+    the soak counted it as agreement and compared no answers at all.
+    """
+    price = 100.0
+    out = []
+    for _ in range(length):
+        price *= 1.0 + seeded.signed(0.05)
+        out.append(price)
+    return out
+
+
+def _returns(seeded: Seeded, length: int = 24) -> list:
+    """Period returns, some of them losses.
+
+    Some of them losses on purpose: a Sortino ratio over a series that never fell is refused,
+    and rightly --- there is no downside deviation to divide by.
+    """
+    return [seeded.signed(0.04) for _ in range(length)]
+
+
+def _flows(seeded: Seeded, length: int = 8) -> list:
+    """A cash flow with one outlay and several receipts, so an internal rate exists."""
+    return [-(100.0 + seeded.unit() * 20.0)] + [
+        20.0 + seeded.unit() * 10.0 for _ in range(length - 1)
+    ]
+
+
+def _option(seeded: Seeded) -> list:
+    """A spot, a strike, a rate, a volatility and a time to expiry, each in its own domain."""
+    return [
+        100.0 + seeded.signed(10.0),
+        95.0 + seeded.signed(10.0),
+        0.01 + seeded.unit() * 0.04,
+        0.1 + seeded.unit() * 0.4,
+        0.25 + seeded.unit() * 2.0,
+    ]
+
+
 def _series(seeded: Seeded, length: int, positive: bool = False) -> list:
     """A series with genuine variation, because a constant series has no statistics."""
     out = []
@@ -136,6 +216,57 @@ def _series(seeded: Seeded, length: int, positive: bool = False) -> list:
         value = 1.0 + i * 0.5 + seeded.signed(0.3)
         out.append(abs(value) + 0.1 if positive else value)
     return out
+
+
+#: Functions whose arguments are a **shape** rather than a domain per position, written out.
+#:
+#: A per-position rule cannot say that a cash flow needs a sign change, that a matrix's right
+#: hand side is as long as its order, or that a depreciation period lies inside the asset's
+#: life. Guessing produced twenty-six functions that refused on every path --- which the soak
+#: counts as agreement, and which means their *answers* were never compared once.
+#:
+#: The whole numbers here are `int`, and that matters: a window, a lag, a life and a matrix's
+#: order are counts, and every function taking one refuses a `5.0` by name.
+_SHAPED = {
+    "irr": lambda s: [_flows(s)],
+    "npv": lambda s: [0.05 + s.unit() * 0.1, _flows(s)],
+    "npv_from_now": lambda s: [0.05 + s.unit() * 0.1, _flows(s)],
+    "var_historical": lambda s: [_returns(s, 32), 0.01 + s.unit() * 0.1],
+    "expected_shortfall": lambda s: [_returns(s, 32), 0.01 + s.unit() * 0.1],
+    "sharpe": lambda s: [_returns(s), s.unit() * 0.01],
+    "sortino": lambda s: [_returns(s), s.unit() * 0.01],
+    "ts_returns": lambda s: [_prices(s)],
+    "ts_log_returns": lambda s: [_prices(s)],
+    "ts_drawdown": lambda s: [_prices(s)],
+    "ts_max_drawdown": lambda s: [_prices(s)],
+    "ts_cumulative_return": lambda s: [_returns(s, 16)],
+    "ts_rolling_mean": lambda s: [_prices(s, 20), 5],
+    "ts_rolling_std": lambda s: [_prices(s, 20), 5],
+    "ts_rolling_min": lambda s: [_prices(s, 20), 5],
+    "ts_rolling_max": lambda s: [_prices(s, 20), 5],
+    "ts_ewma": lambda s: [_prices(s, 20), 0.1 + s.unit() * 0.8],
+    "ts_autocorrelation": lambda s: [_returns(s, 32), 1],
+    "pv": lambda s: [0.02 + s.unit() * 0.08, 10, -100.0 - s.unit() * 50.0, 0.0],
+    "fv": lambda s: [0.02 + s.unit() * 0.08, 10, -100.0 - s.unit() * 50.0, 0.0],
+    "pmt": lambda s: [0.02 + s.unit() * 0.08, 10, 1000.0 + s.unit() * 500.0, 0.0],
+    "sln": lambda s: [10000.0 + s.unit() * 1000.0, 1000.0, 5],
+    "syd": lambda s: [10000.0 + s.unit() * 1000.0, 1000.0, 10, 3],
+    "black_scholes_call": _option,
+    "black_scholes_put": _option,
+    "greeks_delta": _option,
+    "greeks_vega": _option,
+    # The matrix family, which needs a *declared* shape and refuses a plain array by name:
+    # six values are a 2x3 or a 3x2, and transposing the wrong one answers with numbers built
+    # from values that were never in the same row.
+    "mat_identity": lambda s: [2 + int(s.next() % 4)],
+    # The values are arguments of `mat_of`, not one array argument: it counts them and checks
+    # the count against the shape while it is still planning.
+    "mat_of": lambda s: [2, 3, *_series(s, 6)],
+    "mat_transpose": lambda s: [matrix(2, 3, _series(s, 6))],
+    "mat_multiply": lambda s: [matrix(2, 3, _series(s, 6)), matrix(3, 2, _series(s, 6))],
+    "mat_vec": lambda s: [matrix(3, 3, _positive_definite(s, 3)), _series(s, 3)],
+    "mat_solve": lambda s: [matrix(3, 3, _positive_definite(s, 3)), _series(s, 3)],
+}
 
 
 def for_function(entry, seeded: Seeded):
@@ -147,6 +278,8 @@ def for_function(entry, seeded: Seeded):
     name, arity, takes = entry.name, entry.arity, entry.takes
     if name in CANNOT:
         return None
+    if name in _SHAPED:
+        return _SHAPED[name](seeded)
 
     if takes == "a matrix":
         return [_positive_definite(seeded, 4)]
@@ -213,49 +346,21 @@ def for_function(entry, seeded: Seeded):
         return None
 
     if takes == "numbers":
-        if name == "ttest_df_welch":
-            # Two variances and two counts. Handled here rather than with the two-sample tests
-            # because the catalogue says it takes *numbers*: a caller who has summary
-            # statistics rather than samples, which is what an aggregate query leaves them
-            # with. Each count must be at least two, or the formula divides by zero.
-            return [4.0, 12.0, 9.0, 15.0]
         values = []
         for at in range(arity):
-            if at == 0 and name in _PROBABILITY_FIRST:
+            kind, fixed = domain_at(name, at)
+            if kind == "probability":
                 values.append(0.25 + seeded.unit() * 0.5)
-            elif at in _PROBABILITY_AT.get(name, []):
-                values.append(0.3 + seeded.unit() * 0.4)
-            elif at in _WHOLE_AT.get(name, []):
-                # A count, and for the binomial the second must not be below the first.
-                values.append(3.0 if at == 0 else 10.0)
-            elif at in _FREEDOM_AT.get(name, []):
-                values.append(float(5 + (seeded.next() % 20)))
-            elif at in _POSITIVE_AT.get(name, []):
+            elif kind == "unit":
+                values.append(0.2 + seeded.unit() * 0.6)
+            elif kind == "positive":
                 values.append(0.5 + seeded.unit() * 3.0)
+            elif kind == "freedom":
+                values.append(float(5 + (seeded.next() % 20)))
             else:
-                values.append(seeded.signed(1.5))
-        # `beta_i` and `beta_cdf` take an `x` on the unit interval, in a position the tables
-        # above cannot express because it differs between the two.
-        if name == "beta_i":
-            values[2] = 0.2 + seeded.unit() * 0.6
-        if name == "beta_cdf":
-            values[0] = 0.2 + seeded.unit() * 0.6
-        if name == "uniform_cdf":
-            values = [seeded.unit() * 10.0, 0.0, 10.0]
-        if name in ("gamma_p", "gamma_q"):
-            values[1] = abs(values[1]) + 0.1
-        if name == "gamma_cdf":
-            values[0] = abs(values[0]) + 0.1
-        if name in ("chisq_cdf", "chisq_sf"):
-            values[0] = abs(values[0]) + 0.1
-        if name in ("f_cdf", "f_sf"):
-            values[0] = abs(values[0]) + 0.1
-        if name == "expon_cdf":
-            values[0] = abs(values[0]) + 0.1
-        if name in ("lognorm_cdf",):
-            values[0] = abs(values[0]) + 0.1
-        if name == "gammaln":
-            values[0] = abs(values[0]) + 0.5
+                # A count, a pinned bound, or an ordinary real. The first two are what
+                # `domain_at` says they are; only the last is drawn.
+                values.append(fixed if kind in ("count", "fixed") else seeded.signed(1.5))
         return values
 
     return None

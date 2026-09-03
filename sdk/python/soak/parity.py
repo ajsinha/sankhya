@@ -246,27 +246,34 @@ def over_columns(db, catalogue, findings: Findings) -> None:
     broadcast against an Arrow array read by stride. A disagreement is a marshalling defect,
     which is where one would be.
     """
-    table, column, key = columns.TABLE, columns.COLUMN, columns.KEY
+    table, key = columns.TABLE, columns.KEY
     if not db.exists(table):
         print(f"   SKIPPED  `{table}` is not on this warehouse, so nothing was read from a column")
         return
 
-    # One row's values, to build the literal from. The first by key, so the run is repeatable.
+    # One row's values, to build the literals from. The first by key, so the run is repeatable.
     first = None
-    for row in db.rows(f"SELECT {key}, {column} FROM {table} ORDER BY {key} LIMIT 1"):
+    reads = ", ".join(columns.READS)
+    for row in db.rows(f"SELECT {reads} FROM {table} ORDER BY {key} LIMIT 1"):
         first = row
     if first is None:
         print(f"   SKIPPED  `{table}` is empty")
         return
-    identifier = first[key]
-    values = [float(v) for v in str(first[column]).strip("{}").split(",") if v]
-    literal = columns.literal_of(values)
+    values = {}
+    for read in columns.READS:
+        raw = first[read]
+        values[read] = (
+            [float(v) for v in str(raw).strip("{}").split(",") if v]
+            if read in columns.VECTORS
+            else float(raw)
+        )
+    identifier = int(values[key])
 
-    for entry, call in columns.probes(catalogue):
+    for entry, over_column, over_literal in columns.probes(catalogue, values):
         findings.over_columns += 1
-        # Over the column, restricted to the row the literal came from.
-        column_sql = f"SELECT {call} AS result FROM {table} WHERE {key} = {identifier}"
-        literal_sql = f"SELECT {call.replace(column, literal)} AS result"
+        # Over the columns, restricted to the row the literals came from.
+        column_sql = f"SELECT {over_column} AS result FROM {table} WHERE {key} = {identifier}"
+        literal_sql = f"SELECT {over_literal} AS result"
 
         outcomes = {}
         for label, sql in (("column", column_sql), ("literal", literal_sql)):

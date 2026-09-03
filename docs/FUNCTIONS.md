@@ -35,6 +35,19 @@ copy per row, and a similarity between a 384-dimensional embedding and a 512-dim
 not a near miss — it is a different question. A row whose vector is the wrong width is refused
 rather than widening the column to a variable-length list.
 
+**A matrix column's shape survives being stored**, which it did not until 2026-09-02. The shape
+lives in the column's field metadata and nowhere else — sixteen values are a 4×4 or a 2×8, and
+nothing in the values says which — and the Delta writer kept only its own key and dropped every
+other one. A matrix that was stored came back *not being a matrix*: the functions that can
+deduce a square order (`mat_determinant`, `mat_inverse`, `mat_cholesky`) all still answered, and
+only the ones that need a declared shape — `mat_transpose`, `mat_multiply`, `mat_vec` — refused.
+The table read perfectly, which is why nobody saw it. Found by calling every function over a
+stored column and comparing it against the same function over a literal of the same values.
+
+**A matrix is written down in SQL as `mat_of(rows, columns, …)`**, and in the Python binding as
+`matrix(rows, columns, values)`. Both are the shape declaration; a bare array is accepted only
+where a square order can be deduced from the length.
+
 ## Where each function is reachable from, today
 
 | Surface | State |
@@ -522,6 +535,31 @@ Part 2 is a plan and is marked as one.
 The gate that keeps it true is the same one that keeps the examples true: each category ships
 with runnable examples in every SDK, executed against a real server on every build. **An example
 that does not run is documentation that lies**, and a catalogue is a very large example.
+
+### And every function is *called*, on every path, on every build
+
+`sdk/python/soak/parity.py` runs on each build against the shipping server. It reads the
+server's own catalogue, generates arguments from what each entry says it takes, and calls every
+function three ways — over the wire as `psql` sends it, through the binding's `sql()`, and
+through `db.fn.<name>()` — comparing the answers **bit for bit**. A disagreement of `1e-16`
+between two paths is the difference that makes a figure fail to tie out.
+
+Two things it reports that a green tick would hide:
+
+- **Its own coverage.** 144 of the 155 are callable by the generator. The other eleven are named
+  in the run with the reason: five graph functions and four cube functions need a declared graph
+  or cube, and `functions()` and `cubes()` are table functions, which return rows rather than a
+  value. A soak that covers a hundred and prints PASS has made a claim about the rest.
+- **Every function that refused on all three paths.** That is agreement, and it means those
+  *answers* were never compared — so the coverage figure would overstate what ran. Getting this
+  number to **zero** is what turned up the arguments the generator had wrong: a Sortino ratio
+  over a series that never fell, a logarithmic return over prices that went negative, a
+  depreciation period outside the asset's life.
+
+The second half calls every function it can **over a stored column** and checks it against the
+same function over a literal built from that row's values: 150 probes, same values, same
+function, two entirely different routes into the kernel — a scalar broadcast against an Arrow
+array read by stride. That is the half that found the matrix column losing its shape.
 
 ---
 

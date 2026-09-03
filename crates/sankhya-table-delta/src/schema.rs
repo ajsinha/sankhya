@@ -110,10 +110,38 @@ fn field_json(field: &Field) -> Result<String, UnsupportedType> {
         serde_json::to_string(&name).unwrap_or_else(|_| "\"\"".to_string())
     };
 
-    let metadata = match field.data_type() {
-        DataType::FixedSizeList(_, width) => format!(r#"{{"{FIXED_LENGTH_KEY}":"{width}"}}"#),
-        _ => "{}".to_string(),
-    };
+    // Every key the field carries, and then the fixed length, which is a rendering of the
+    // type rather than something a caller set.
+    //
+    // Carried through because a column's metadata is *part of the column*. A matrix column
+    // declares its shape there and nowhere else --- `ADR-0021` Decision 2, because sixteen
+    // values are a 4x4 or a 2x8 and nothing in the values says which --- and a writer that
+    // kept only its own key stored a matrix that came back not being one. The column was
+    // still readable, which is what made it hard to see: every function that deduces a
+    // square order answered, and only the ones that need a declared shape refused.
+    let mut entries: std::collections::BTreeMap<&str, String> = field
+        .metadata()
+        .iter()
+        .filter(|(key, _)| key.as_str() != FIXED_LENGTH_KEY)
+        .map(|(key, value)| (key.as_str(), value.clone()))
+        .collect();
+    let width;
+    if let DataType::FixedSizeList(_, length) = field.data_type() {
+        width = length.to_string();
+        entries.insert(FIXED_LENGTH_KEY, width);
+    }
+    let metadata = format!(
+        "{{{}}}",
+        entries
+            .into_iter()
+            .map(|(key, value)| format!(
+                "{}:{}",
+                serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_string()),
+                serde_json::to_string(&value).unwrap_or_else(|_| "\"\"".to_string())
+            ))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
 
     Ok(format!(
         r#"{{"name":{},"type":{},"nullable":{},"metadata":{}}}"#,
@@ -284,7 +312,27 @@ pub fn schema_from_string(json: &str) -> Result<Schema, UnsupportedType> {
                     })
                 }
             };
-            Ok(Field::new(field.name, data_type, field.nullable))
+            // The metadata comes back with the field. Its own key is left out: it is a
+            // rendering of the fixed-length type, which the type now states, and carrying it
+            // twice would let the two disagree.
+            let carried: std::collections::HashMap<String, String> = field
+                .metadata
+                .iter()
+                .filter(|(key, _)| key.as_str() != FIXED_LENGTH_KEY)
+                .map(|(key, value)| {
+                    let text = match value {
+                        serde_json::Value::String(text) => text.clone(),
+                        other => other.to_string(),
+                    };
+                    (key.clone(), text)
+                })
+                .collect();
+            let restored = Field::new(field.name, data_type, field.nullable);
+            Ok(if carried.is_empty() {
+                restored
+            } else {
+                restored.with_metadata(carried)
+            })
         })
         .collect();
 

@@ -127,11 +127,19 @@ fn simpson_refuses_an_even_sample_count_rather_than_dropping_one() {
     let Err(error) = integrate_simpson(&values, spacing) else {
         panic!("Simpson's rule needs an even number of intervals");
     };
-    let VectorError::LengthMismatch { left, right } = error else {
-        panic!("expected a length complaint");
-    };
-    assert_eq!(left, 100);
-    assert_eq!(right, 101, "the message says what would work");
+    // The **rendered** message, not the variant. This asserted the two fields of a
+    // `LengthMismatch` and called it "the message says what would work" --- and the message it
+    // rendered was "cannot combine vectors of length 100 and 101", about a second vector the
+    // caller never passed. A test that reads the fields cannot see that.
+    let said = error.to_string();
+    assert!(
+        said.contains("odd number of samples") && said.contains("101 samples would work"),
+        "the refusal must say what is wrong and what would work: {said}"
+    );
+    assert!(
+        !said.contains("combine"),
+        "and must not describe combining two vectors, when one was passed: {said}"
+    );
 }
 
 #[test]

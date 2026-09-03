@@ -28,7 +28,7 @@ from .client import (
     Table,
     open,
 )
-from .functions import Catalogue, Column, Function, col
+from .functions import Catalogue, Column, Function, Matrix, col, matrix
 from .wire import Connection, Refusal, Result, WireError, connect
 
 __all__ = [
@@ -47,6 +47,8 @@ __all__ = [
     "Column",
     "col",
     "Catalogue",
+    "Matrix",
+    "matrix",
     "Table",
     "WireError",
     "connect",

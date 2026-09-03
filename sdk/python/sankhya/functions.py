@@ -79,6 +79,39 @@ def col(name: str) -> Column:
     return Column(name)
 
 
+class Matrix:
+    """A matrix, with its shape, as an argument.
+
+    ``db.fn.mat_transpose(matrix(2, 3, [1, 2, 3, 4, 5, 6]))``
+
+    Why a shape has to be carried
+    -----------------------------
+    Six values are a 2x3 or a 3x2, and transposing the wrong one produces numbers built from
+    values that were never in the same row --- an answer, and a wrong one. So the SQL surface
+    makes the shape part of the *expression*: ``mat_of(2, 3, ...)`` declares it, and the
+    functions that need it refuse an argument that does not.
+
+    Without this class those functions were reachable from ``psql`` and not from the binding,
+    which is half a delivery. It is still not an expression type: it renders as ``mat_of`` and
+    nothing else, and it composes with nothing --- exactly as :class:`Column` does not.
+    """
+
+    __slots__ = ("rows", "columns", "values")
+
+    def __init__(self, rows: int, columns: int, values) -> None:
+        self.rows = int(rows)
+        self.columns = int(columns)
+        self.values = list(values)
+
+    def __repr__(self) -> str:
+        return f"matrix({self.rows}, {self.columns}, {self.values!r})"
+
+
+def matrix(rows: int, columns: int, values) -> Matrix:
+    """A matrix argument of a declared shape."""
+    return Matrix(rows, columns, values)
+
+
 def _literal(value: Any) -> str:
     """One argument, as SQL.
 
@@ -91,6 +124,14 @@ def _literal(value: Any) -> str:
         # the column's name, and a function over it would compute something from the word
         # `pnl` rather than from the column.
         return value.name
+    if isinstance(value, Matrix):
+        # The shape is part of the expression, not of the values: `mat_of` is how a matrix of
+        # a declared shape is written in SQL, and a flat array cannot say whether six values
+        # are two rows or three.
+        # The values are arguments of `mat_of`, not one array argument: it counts them, and
+        # checks the count against the shape at planning time.
+        inner = ", ".join(_literal(item) for item in value.values)
+        return f"mat_of({value.rows}, {value.columns}, {inner})"
     if isinstance(value, (list, tuple)):
         inner = ", ".join(_literal(item) for item in value)
         return f"vec_of({inner})"
@@ -98,16 +139,23 @@ def _literal(value: Any) -> str:
         # Before the numeric branch: `bool` is a subclass of `int` in Python, and `TRUE`
         # reaching a kernel as `1` would be a coercion this binding is not entitled to make.
         return "TRUE" if value else "FALSE"
-    if isinstance(value, (int, float)):
-        return repr(float(value))
+    if isinstance(value, int):
+        # An `int` stays whole. It was rendered as a float here, and that was the same
+        # unasked-for coercion the branch above refuses to make for `bool`: a window, a lag,
+        # a number of rows and a matrix's order are all *counts*, and every function taking
+        # one refuses `5.0` by name --- so `db.fn.ts_rolling_mean(prices, 5)` was refused
+        # while the identical statement typed into `psql` answered.
+        return repr(value)
+    if isinstance(value, float):
+        return repr(value)
     if value is None:
         return "NULL"
     if isinstance(value, str):
         escaped = value.replace("'", "''")
         return f"'{escaped}'"
     raise TypeError(
-        f"a function argument must be a number, a list of numbers, a string or None, "
-        f"and this is {type(value).__name__}"
+        f"a function argument must be a number, a list of numbers, a matrix, a string or "
+        f"None, and this is {type(value).__name__}"
     )
 
 

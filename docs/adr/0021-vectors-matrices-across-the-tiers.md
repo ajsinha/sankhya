@@ -149,6 +149,30 @@ second-guessed. The deduction applies only where the alternative was a refusal.
 > **Two conventions in one catalogue is not a safety property.** It is a surface a user has to
 > learn twice, and the half that refuses is the half that cannot be reached from a column.
 
+## Decision 4b — A column's declared metadata is part of the column, and is carried
+
+**Added 2026-09-02**, correcting a premise in 4a above. It said a `FixedSizeList` read back from
+Parquet has no tensor metadata. That was true, and it was not a property of the format: **the
+Delta writer was dropping it.** `field_json` wrote one key of its own — the fixed length, which
+the protocol has no type for — and discarded every other key the column declared, and the reader
+rebuilt each field with no metadata at all.
+
+So a matrix that was stored came back not being a matrix. The failure had no symptom worth
+noticing: the table read perfectly, every function that can deduce a square order answered, and
+only `mat_transpose`, `mat_multiply` and `mat_vec` refused — the three that need a shape they
+could not have. Which reads as three functions being awkward, not as a storage defect.
+
+> **A column's metadata is part of the column.** It is written with the schema and restored with
+> it, whatever the key. The fixed length is the one exception, and only because it is a
+> *rendering of the type*: it is derived on write and dropped on read, so the two cannot come to
+> disagree about how wide a column is.
+
+Decision 4a's rule stands and is now the smaller half of the answer: a deduced order still saves
+the functions that can only mean one thing, and a stored matrix now declares its shape rather
+than relying on a deduction. Found by the parity soak, which calls every function over a stored
+column and against a literal of the same values — the two routes disagreed, and only one of them
+could be right.
+
 ## Decision 5 — An index may rank candidates; only a kernel may report a distance
 
 `pgvector` brings HNSW and IVFFlat indexes, and they are the reason to want it: a nearest-
