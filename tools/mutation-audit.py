@@ -4723,6 +4723,21 @@ CATALOGUE = [
      "        cells\n            .addresses()\n            .map(|address| (address, cells.get(address, Rule::Sum)))\n            .collect()",
      "sankhya-server"),
 
+    # The binding's transport security. The refusal is the load-bearing half: a client that
+    # asks for encryption, is told no, and continues has already sent the password it was
+    # protecting.
+    ("sdk: continue in the clear when `sslmode=require` and the server declines",
+     "sdk/python/sankhya/wire.py",
+     "            if sslmode == \"prefer\":\n                # Declined, and the caller said they would take either.",
+     "            if True:\n                # Declined, and the caller said they would take either.",
+     "sankhya-server"),
+
+    ("sdk: report a connection as encrypted when the handshake never happened",
+     "sdk/python/sankhya/wire.py",
+     "        self.encrypted = True",
+     "        self.encrypted = False",
+     "sankhya-server"),
+
     # A derived result: a query given a name. `ADR-0014` Option A.
     ("derived: accept a derived result over a bare table name",
      "crates/sankhya-cube/src/validate.rs",

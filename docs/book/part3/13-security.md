@@ -238,9 +238,12 @@ can see it — that is the hook the work will hang from — and nothing yet deri
 from somewhere else, it is credential exposure, which is why `M14` is gated on transport security
 rather than treating it as work inside the milestone.
 
-**TLS in the Python binding.** The server offers it; `sdk/python` does not use it. The binding's own
-quickstart says so by name. Chapter 20, *The client contract and the SDKs*, covers the consequence:
-a connection from anywhere but a loopback sends its password as typed.
+~~**TLS in the Python binding.**~~ **Built 2026-09-03.** `sslmode` takes PostgreSQL's own
+vocabulary — `disable`, `prefer`, `require`, `verify-ca`, `verify-full` — and the default is
+`prefer`, which is libpq's. The honesty is elsewhere: `db.connection.encrypted` says what
+actually happened, so a caller can assert on their posture rather than assume it. `require`
+against a server that declines **refuses**, because a client that asks for encryption, is told
+no, and continues has already sent the password it was protecting and cannot un-send it.
 
 **Envelope encryption and per-tenant graph epochs** are built and tested and have **no path through
 the front door** — no running process reaches them.

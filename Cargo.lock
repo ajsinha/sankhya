@@ -3946,6 +3946,7 @@ dependencies = [
  "sankhya-snapshot",
  "sankhya-table",
  "sankhya-table-delta",
+ "sankhya-testkit",
  "sankhya-tls",
  "sankhya-types",
  "sankhya-udf",
