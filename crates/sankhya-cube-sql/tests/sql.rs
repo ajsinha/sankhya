@@ -117,7 +117,14 @@ fn session() -> (SessionContext, Arc<CubeCatalog>) {
     catalog.register_overlay(Arc::new(overlay));
 
     let context = SessionContext::new();
-    register(&context, Arc::clone(&catalog), Arc::new(sankhya_cube::querylog::QueryLog::new()));
+    // `None`: this fixture declares no aggregation of its own, which is the common case and
+    // costs nothing to say.
+    register(
+        &context,
+        Arc::clone(&catalog),
+        Arc::new(sankhya_cube::querylog::QueryLog::new()),
+        None,
+    );
     (context, catalog)
 }
 

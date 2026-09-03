@@ -349,6 +349,20 @@ pub fn roll_up(
             let _ = out.add_reduced(coarser, rule, exact);
             continue;
         }
+        if matches!(rule, Rule::Supplied { .. }) {
+            // A user's own aggregation is not reduced here at all: the facts are carried up
+            // whole, and the coarser cell holds the union of its children's contributions.
+            //
+            // That is what makes a roll-up correct without needing the author's `merge` --- the
+            // aggregation is computed over the same facts it would have seen at the base grain,
+            // rather than over partial results combined in some order. `merge` remains the
+            // claim that lets a *materialised* cuboid be rolled up further, which is a
+            // different question and a later one.
+            for (_, contribution) in values {
+                let _ = out.add(coarser.clone(), contribution.to_f64());
+            }
+            continue;
+        }
         let mut contributions = Contributions::none();
         for (_, contribution) in values {
             // A non-summing rule reduces over the facts themselves, so the expansion is

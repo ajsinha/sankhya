@@ -675,6 +675,36 @@ impl Server {
         }
     }
 
+    /// How a cube measure declared with `AGGREGATION <name>` is computed.
+    ///
+    /// A closure over the declared set and the worker, so `sankhya-cube-sql` knows nothing
+    /// about processes or interpreters --- only that some rules are computed by somebody else,
+    /// and what to hand them.
+    ///
+    /// `None` where nothing has been declared or the boundary cannot be built, and a cube that
+    /// names one then refuses **by name** rather than answering. A measure that quietly
+    /// answered something else would be a number of the right magnitude and no meaning, which
+    /// is the failure the whole additivity model exists to prevent.
+    fn supplied_rules(&self) -> Option<sankhya_cube_sql::functions::Supplied> {
+        let declared = self.aggregations();
+        if declared.is_empty() {
+            return None;
+        }
+        let worker = self.worker().ok()?;
+        Some(Arc::new(move |name: &str, values: &[f64]| {
+            let Some(aggregation) = declared.iter().find(|held| held.name == name) else {
+                return Err(format!(
+                    "this server has no aggregation called `{name}`. `SHOW AGGREGATIONS` \
+                     lists what it has"
+                ));
+            };
+            let state = worker
+                .accumulate(aggregation, &[], values)
+                .map_err(|refused| refused.to_string())?;
+            worker.finish(aggregation, &state).map_err(|refused| refused.to_string())
+        }))
+    }
+
     /// Register every declared aggregation against a session.
     ///
     /// Registered per session rather than once, because a session is what a statement is planned
@@ -1159,6 +1189,7 @@ impl Server {
             context,
             Arc::clone(&catalog),
             Arc::clone(&self.query_log),
+            self.supplied_rules(),
         );
         // Description alongside navigation, always. A surface a client can use only by
         // already knowing the model is a surface only its author can use, and a picker that

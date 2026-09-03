@@ -482,10 +482,10 @@ impl Reader {
         self.punct('(')?;
         let mut rules = Vec::new();
         loop {
-            let rule = self.rule()?;
+            let (rule, supplied) = self.rule()?;
             self.keyword("ALONG")?;
             let dimension = self.name("a dimension name")?;
-            rules.push(Along::new(dimension, rule));
+            rules.push(Along { dimension, rule, supplied });
             if !self.peek_punct(',') {
                 break;
             }
@@ -500,11 +500,23 @@ impl Reader {
     /// `NONE` is spelled out and is not a default. A measure that cannot be derived from its
     /// children is a real and common thing — a ratio, a distinct count — and the whole design
     /// of the measure model is that it is *declared* rather than assumed.
-    fn rule(&mut self) -> Result<Rule, DdlError> {
+    fn rule(&mut self) -> Result<(Rule, Option<String>), DdlError> {
         let Some(Token::Word { text, .. }) = self.peek().map(|spanned| spanned.token.clone())
         else {
-            return self.fail("a rule: `SUM`, `LAST`, `FIRST`, `MAX`, `MIN`, `MEAN` or `NONE`");
+            return self.fail(
+                "a rule: `SUM`, `LAST`, `FIRST`, `MAX`, `MIN`, `MEAN`, `NONE`, or \
+                 `AGGREGATION <name>` for one of your own",
+            );
         };
+        // `AGGREGATION <name>` --- a rule the user wrote. Whether it composes is not written
+        // here and could not be: it is what a declared `merge` claims, and the server checked
+        // that claim when the aggregation was declared. Taking the author's word for it in a
+        // `CREATE CUBE` would let a cube assert a property its function does not have.
+        if text.eq_ignore_ascii_case("AGGREGATION") {
+            self.next += 1;
+            let name = self.name("the name of a declared aggregation")?;
+            return Ok((Rule::Supplied { composes: false }, Some(name)));
+        }
         let rule = match text.to_ascii_uppercase().as_str() {
             "SUM" => Rule::Sum,
             "LAST" => Rule::Last,
@@ -514,12 +526,14 @@ impl Reader {
             "MEAN" => Rule::Mean,
             "NONE" => Rule::None,
             _ => {
-                return self
-                    .fail("a rule: `SUM`, `LAST`, `FIRST`, `MAX`, `MIN`, `MEAN` or `NONE`")
+                return self.fail(
+                    "a rule: `SUM`, `LAST`, `FIRST`, `MAX`, `MIN`, `MEAN`, `NONE`, or \
+                     `AGGREGATION <name>` for one of your own",
+                )
             }
         };
         self.next += 1;
-        Ok(rule)
+        Ok((rule, None))
     }
 
     /// Nothing but an optional terminating semicolon may follow.

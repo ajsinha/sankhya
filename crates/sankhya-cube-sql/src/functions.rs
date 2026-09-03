@@ -38,16 +38,26 @@ use std::sync::Arc;
 ///
 /// One call, so a session either has the whole surface or none of it. A partially
 /// registered catalogue means a query works on one node and fails on another.
+/// How a measure declared with `AGGREGATION <name>` is computed.
+///
+/// A callback rather than a dependency, so this crate knows nothing about processes,
+/// interpreters or sandboxes --- it knows that some rules are computed by somebody else, and
+/// what to hand them: the name they were declared under, and the contributions of one cell.
+///
+/// `None` on a server where none has been declared, which is the common case and costs nothing.
+pub type Supplied = Arc<dyn Fn(&str, &[f64]) -> std::result::Result<f64, String> + Send + Sync>;
+
 pub fn register(
     context: &SessionContext,
     catalog: Arc<CubeCatalog>,
     log: Arc<sankhya_cube::querylog::QueryLog>,
+    supplied: Option<Supplied>,
 ) {
     context.register_udtf(
         "cube_rollup",
-        Arc::new(RollUp(Arc::clone(&catalog), Arc::clone(&log))),
+        Arc::new(RollUp(Arc::clone(&catalog), Arc::clone(&log), supplied.clone())),
     );
-    context.register_udtf("cube_slice", Arc::new(Slice(catalog, log)));
+    context.register_udtf("cube_slice", Arc::new(Slice(catalog, log, supplied)));
 }
 
 /// Record the shape a query asked for, so selection has something to read.
@@ -346,6 +356,7 @@ fn batch(
     overlay: Option<&str>,
     completeness: &Completeness,
     materialised: bool,
+    supplied: Option<&Supplied>,
 ) -> Result<Arc<dyn TableProvider>> {
     let dimensions: Vec<String> = cells.dimensions().to_vec();
     let schema = schema_for(&dimensions, &measure.name);
@@ -362,10 +373,38 @@ fn batch(
     // Found by an adversarial review on 2026-09-01: a group whose mean is 186.75 and whose
     // max is 373.5 answered 15,687 for both.
     let rule = reduction_for(measure, &dimensions)?;
-    let rows: Vec<(&Vec<String>, Option<f64>)> = cells
-        .addresses()
-        .map(|address| (address, cells.get(address, rule)))
-        .collect();
+    // A rule the user wrote is computed by whoever owns the worker, over the contributions of
+    // each cell. `Cells::get` answers `None` for it deliberately --- that type cannot run
+    // somebody's Python, and the layer that can is above it.
+    let rows: Vec<(&Vec<String>, Option<f64>)> = if let Rule::Supplied { .. } = rule {
+        let name = supplied_name(measure, &dimensions);
+        let Some((name, compute)) = name.zip(supplied) else {
+            return plan_err!(
+                "the measure `{}` is computed by an aggregation of your own, and this server \
+                 has none by that name. `SHOW AGGREGATIONS` lists what it has; the cube was \
+                 declared against one that has since been dropped, or was never declared here",
+                measure.name
+            );
+        };
+        let mut rows = Vec::new();
+        for address in cells.addresses() {
+            let contributions = cells.contributions_at(address).unwrap_or(&[]);
+            if contributions.is_empty() {
+                rows.push((address, None));
+                continue;
+            }
+            match compute(&name, contributions) {
+                Ok(value) => rows.push((address, Some(value))),
+                Err(said) => return plan_err!("{}: {said}", measure.name),
+            }
+        }
+        rows
+    } else {
+        cells
+            .addresses()
+            .map(|address| (address, cells.get(address, rule)))
+            .collect()
+    };
 
     let mut columns: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len());
     for axis in 0..dimensions.len() {
@@ -397,6 +436,21 @@ fn batch(
     Ok(Arc::new(CubeTable::new(schema, batch)))
 }
 
+/// The aggregation a measure names along the dimensions rolled away.
+///
+/// The same question `reduction_for` answers, asked of the *name* rather than the rule. Kept
+/// beside it rather than folded into it because `Rule` is `Copy` and holds no string --- see
+/// `Rule::Supplied`.
+fn supplied_name(measure: &Measure, kept: &[String]) -> Option<String> {
+    let rolled: Vec<&Along> = measure
+        .rules
+        .iter()
+        .filter(|along| !kept.contains(&along.dimension))
+        .collect();
+    let candidates = if rolled.is_empty() { measure.rules.iter().collect() } else { rolled };
+    candidates.iter().find_map(|along| along.supplied.clone())
+}
+
 /// Refuse the whole result when it saw too little of its input.
 ///
 /// `FR-QUERY-13`, at the surface a caller actually uses. The threshold is a per-query
@@ -416,8 +470,15 @@ fn check_completeness(completeness: &Completeness, args: &Arguments) -> Result<(
 // ---------------------------------------------------------------------------
 
 /// `cube_rollup(cube, measure, options)` --- a breakdown at the grain `by` names.
-#[derive(Debug)]
-struct RollUp(Arc<CubeCatalog>, Arc<sankhya_cube::querylog::QueryLog>);
+/// `Debug` by hand: a callback has no useful debug form, and deriving it would make this
+/// struct undebuggable rather than making the callback printable.
+struct RollUp(Arc<CubeCatalog>, Arc<sankhya_cube::querylog::QueryLog>, Option<Supplied>);
+
+impl std::fmt::Debug for RollUp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RollUp").field("supplied", &self.2.is_some()).finish()
+    }
+}
 
 impl TableFunctionImpl for RollUp {
     fn call(&self, exprs: &[Expr]) -> Result<Arc<dyn TableProvider>> {
@@ -449,13 +510,19 @@ impl TableFunctionImpl for RollUp {
             overlay.as_deref(),
             &completeness,
             materialised,
+            self.2.as_ref(),
         )
     }
 }
 
 /// `cube_slice(cube, measure, options)` --- one member fixed, that axis dropped.
-#[derive(Debug)]
-struct Slice(Arc<CubeCatalog>, Arc<sankhya_cube::querylog::QueryLog>);
+struct Slice(Arc<CubeCatalog>, Arc<sankhya_cube::querylog::QueryLog>, Option<Supplied>);
+
+impl std::fmt::Debug for Slice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Slice").field("supplied", &self.2.is_some()).finish()
+    }
+}
 
 impl TableFunctionImpl for Slice {
     fn call(&self, exprs: &[Expr]) -> Result<Arc<dyn TableProvider>> {
@@ -499,6 +566,7 @@ impl TableFunctionImpl for Slice {
             overlay.as_deref(),
             &completeness,
             false,
+            self.2.as_ref(),
         )
     }
 }

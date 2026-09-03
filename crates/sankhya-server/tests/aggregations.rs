@@ -198,3 +198,98 @@ fn dropping_one_stops_it_answering() {
         "and a statement calling it is refused rather than answered by something else"
     );
 }
+
+/// A root-mean-square: a rule no built-in expresses, and one a cube can use.
+///
+/// Single-argument on purpose. A cube measure **is one column**, so an aggregation used as a
+/// cube rule sees one value per fact. A weighted mean needs two columns and is therefore a
+/// query-level aggregate rather than a cube rule until a measure can name more than one column
+/// --- which is a different feature and is not this one pretending to be it.
+const RMS: &str = "CREATE AGGREGATION rms LANGUAGE PYTHON AS $$
+def initial():
+    return {'sq': 0.0, 'n': 0}
+
+def accumulate(state, values):
+    for v in values:
+        state['sq'] += v * v
+        state['n'] += 1
+    return state
+
+def merge(a, b):
+    return {'sq': a['sq'] + b['sq'], 'n': a['n'] + b['n']}
+
+def finish(state):
+    return (state['sq'] / state['n']) ** 0.5 if state['n'] else 0.0
+$$";
+
+/// Two dimensions on purpose. One cannot demonstrate a roll-up --- rolling *up* means rolling a
+/// dimension **away**, and with a single dimension every query is already the base grain, so the
+/// code that combines a user's aggregation across cells would never run.
+const CUBE: &str = "CREATE CUBE spread FROM sales.orders \
+     DIMENSION region FROM sales.regions ON region (LEVEL area = region) \
+     DIMENSION period FROM sales.orders ON period (LEVEL quarter = period) \
+     MEASURE margin_pct (AGGREGATION rms ALONG region, AGGREGATION rms ALONG period)";
+
+#[test]
+fn a_cube_measure_may_be_an_aggregation_of_your_own() {
+    // The owner's ask, end to end: *user supplied merge functions can be very useful for custom
+    // cubing.* A root mean square is not a sum, a last, a max, a min or a mean, so before this
+    // there was no way to declare it as a measure at all --- and `MEAN` is refused along any
+    // dimension for the reason that makes this worth having: an average of averages is not an
+    // average.
+    let (_dir, server) = running();
+    match ask(server.port, RMS) {
+        Ok(_) => {}
+        Err(said) if said.contains("namespace") || said.contains("Linux") => {
+            println!("SKIPPED: this machine cannot host the sandbox");
+            return;
+        }
+        Err(said) => panic!("declaring it failed: {said}"),
+    }
+
+    let _ = ask(server.port, CUBE).expect("a cube may name a declared aggregation");
+
+    // `by=region` rolls **period away**, so each answer is computed over every fact in that
+    // region across both quarters. That is the path a single-dimension cube could never reach,
+    // and it is where a user's aggregation has to be recomputed over the union of its children's
+    // facts rather than over numbers made from them.
+    let answers = text_rows(
+        server.port,
+        "SELECT region, margin_pct FROM cube_rollup('spread', 'margin_pct', 'by=region') \
+         ORDER BY region",
+    );
+    assert_eq!(answers.len(), 2, "one row per region, with the quarters rolled away: {answers:?}");
+
+    // Against the same arithmetic written out in SQL, which is the only assertion that can fail
+    // for the right reason. A row count proves the roll-up ran; only the number proves the
+    // author's function is what computed it.
+    let expected = text_rows(
+        server.port,
+        "SELECT o.region, sqrt(avg(o.margin_pct * o.margin_pct)) AS rms \
+           FROM sales.orders o WHERE o.region IS NOT NULL \
+          GROUP BY o.region ORDER BY o.region",
+    );
+    assert_eq!(expected.len(), 2, "the control: {expected:?}");
+    for (mine, theirs) in answers.iter().zip(expected.iter()) {
+        let a: f64 = mine[1].as_deref().unwrap_or("nan").parse().unwrap_or(f64::NAN);
+        let b: f64 = theirs[1].as_deref().unwrap_or("nan").parse().unwrap_or(f64::NAN);
+        assert!(
+            (a - b).abs() < 1e-9,
+            "the cube's measure must be what the author's function computes: {a} against {b}"
+        );
+    }
+}
+
+#[test]
+fn a_cube_naming_an_aggregation_that_does_not_exist_is_refused() {
+    // At declaration, where the person who typed the name is still here --- rather than at the
+    // first query, three weeks later, run by somebody else.
+    let (_dir, server) = running();
+    let Err(said) = ask(server.port, CUBE) else {
+        panic!("a cube must not name an aggregation this server has never heard of");
+    };
+    assert!(
+        said.contains("SHOW AGGREGATIONS"),
+        "and the refusal says how to find out what it does have: {said}"
+    );
+}
