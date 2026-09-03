@@ -147,6 +147,19 @@ their time in the interpreter boundary and the GIL, and the data is already Arro
 sides — so it crosses as Arrow, zero-copy, and a competent implementation does its work in
 NumPy or Polars rather than in a Python loop.
 
+> **Amended 2026-09-03, when it was built.** The reasoning above holds; the *packaging* did not
+> survive contact with a machine. Reading Arrow IPC in Python needs `pyarrow`, so requiring the
+> envelope would make a user's aggregation unavailable on any machine that has Python and not
+> that package — including the machine this repository is built and tested on, where the feature
+> would then have been unverifiable.
+>
+> What crosses instead is **Arrow's own buffer layout without the IPC envelope**: the values as
+> little-endian `f64`, the validity beside them. `numpy.frombuffer` reads that at no copy, which
+> is precisely the path Arrow IPC would have given for a `Float64` column; the standard library
+> reads it as a `memoryview` cast to doubles, iterating without materialising a list. The
+> property this decision wanted — the boundary is crossed **per batch** and the work is done in
+> vectorised code — is kept exactly. The dependency is not.
+
 ### What we do not adopt
 
 The shape, not the packaging. Snowpark's decorators, its Python runtime, its

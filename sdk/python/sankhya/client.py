@@ -112,6 +112,24 @@ class Cube:
 
 
 @dataclass(frozen=True)
+class AggregationInfo:
+    """An aggregation somebody declared, and whether it composes.
+
+    ``composes`` is the whole of what a declared ``merge`` claims: an aggregation that composes
+    may be rolled up and answered from a materialised ancestor; one that does not is computed
+    from base data every time. Both are legitimate, and the difference has to be visible.
+
+    ``source`` is the author's Python as written, because ``ADR-0023`` makes creating one a
+    **grant** rather than a right --- and a grant nobody can review is a grant nobody should
+    give.
+    """
+
+    name: str
+    composes: bool
+    source: str
+
+
+@dataclass(frozen=True)
 class SnapshotInfo:
     """A named instant, and what it holds."""
 
@@ -527,6 +545,42 @@ class Sankhya:
             )
             for row in self.rows("SHOW SNAPSHOTS")
         ]
+
+    def create_aggregation(self, name: str, source: str) -> None:
+        """Declare an aggregation of your own, in Python.
+
+        The four methods are ``ADR-0010``'s contract::
+
+            def initial():                 # optional; the empty state
+            def accumulate(state, values): # required; `values` is a memoryview of doubles
+            def merge(a, b):               # optional --- its presence IS the composability claim
+            def finish(state):             # required; returns a float
+
+        The server **exercises** it before trusting it: the same values accumulated one way and
+        several ways, merged in two groupings, compared bit for bit. A function that disagrees
+        with itself is refused here, with both answers --- rather than found months later as two
+        reports differing by a penny.
+
+        It runs behind an operating-system boundary and cannot reach the network, the filesystem
+        or a subprocess (``ADR-0023``). Where that boundary cannot be built, this is refused
+        naming the mechanism rather than run without it.
+        """
+        self.sql(f"CREATE AGGREGATION {name} LANGUAGE PYTHON AS $$\n{source}\n$$")
+
+    def aggregations(self) -> list:
+        """Every aggregation declared on this server, as :class:`AggregationInfo`."""
+        return [
+            AggregationInfo(
+                name=row.get("aggregation") or "",
+                composes=(row.get("composes") or "") == "yes",
+                source=row.get("source") or "",
+            )
+            for row in self.rows("SHOW AGGREGATIONS")
+        ]
+
+    def drop_aggregation(self, name: str, if_exists: bool = False) -> None:
+        """Remove a declared aggregation."""
+        self.sql("DROP AGGREGATION " + ("IF EXISTS " if if_exists else "") + name)
 
     def drop_snapshot(self, name: str, if_exists: bool = False) -> None:
         """Remove a snapshot, releasing the files it pinned."""

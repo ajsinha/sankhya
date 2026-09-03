@@ -21,6 +21,7 @@ pub mod construct;
 mod exactness;
 pub mod matrices;
 mod session;
+pub mod supplied;
 pub mod vectors;
 
 pub use construct::{functions as constructor_functions, register as register_constructors};

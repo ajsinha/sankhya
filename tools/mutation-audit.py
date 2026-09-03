@@ -4674,6 +4674,44 @@ CATALOGUE = [
 
     # Simpson's rule. An even sample count has no answer under it, and both ways of pretending
     # otherwise --- dropping a sample, falling back to the trapezoid --- return a number.
+    # A user's own aggregation. `ADR-0010`: a declared aggregation is *exercised* before it is
+    # trusted, and a declared `merge` is a claim that partial results compose.
+    ("udf: trust a declared aggregation instead of exercising it",
+     "crates/sankhya-udf/src/worker.rs",
+     "        self.exercise(&candidate)?;",
+     "        let _ = &candidate;",
+     "sankhya-udf"),
+
+    ("udf: accept an aggregation whose answer depends on how the rows were batched",
+     "crates/sankhya-udf/src/worker.rs",
+     "        if !same(whole, in_pieces) {",
+     "        if false {",
+     "sankhya-udf"),
+
+    ("udf: accept a merge that is not associative",
+     "crates/sankhya-udf/src/worker.rs",
+     "        if !same(whole, left) || !same(left, right) {",
+     "        if false {",
+     "sankhya-udf"),
+
+    ("udf: compare a declaration's answers loosely rather than bit for bit",
+     "crates/sankhya-udf/src/worker.rs",
+     "    left.to_bits() == right.to_bits() || (left.is_nan() && right.is_nan())",
+     "    (left - right).abs() < 1e-6 || (left.is_nan() && right.is_nan())",
+     "sankhya-udf"),
+
+    ("olap: let a null argument contribute to a user-supplied aggregation",
+     "crates/sankhya-olap/src/supplied.rs",
+     "                if column.is_null(row) {\n                    // The whole row, not the one argument.",
+     "                if false {\n                    // The whole row, not the one argument.",
+     "sankhya-olap"),
+
+    ("olap: answer zero for a group a user-supplied aggregation saw no rows of",
+     "crates/sankhya-olap/src/supplied.rs",
+     "            return Ok(ScalarValue::Float64(None));",
+     "            return Ok(ScalarValue::Float64(Some(0.0)));",
+     "sankhya-olap"),
+
     # The boundary a user-supplied function runs behind. Each entry removes one mechanism and
     # the test that proves that prohibition must fail --- which is the only way to know the
     # mechanism is the thing doing the work, rather than something else about this machine.
