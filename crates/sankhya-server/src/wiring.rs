@@ -50,6 +50,23 @@ pub struct Settings {
     pub read_as_of: sankhya_types::Lsn,
     /// The tenant every connection belongs to, until federated identity is wired in.
     pub tenant: TenantId,
+    /// The roles each named user holds, from `server.users.<name>`.
+    ///
+    /// # Why an empty map means *everybody is a reader*
+    ///
+    /// Because the presence of the map is the switch, and a separate flag is a flag somebody
+    /// forgets. An operator who has written down no users has not decided anything about
+    /// roles, and this build's behaviour --- one role for everybody --- is what they get.
+    ///
+    /// An operator who has written down **one** user has decided that the list is the list, so
+    /// a user absent from it holds no role at all and every rule that grants by role passes
+    /// them by. That is the direction to be wrong in: adding a user is a change somebody
+    /// notices, and silently granting one is not.
+    ///
+    /// Until this existed, `Principal::authenticated` was handed a literal `reader` for every
+    /// connection --- so the subject travelled inward correctly and **nothing downstream could
+    /// tell two subjects apart**, which is a plumbing job finished and a feature that is not.
+    pub roles: std::collections::BTreeMap<String, Vec<String>>,
     /// How the warehouse maintains itself, or `None` to leave it alone.
     ///
     /// # Why this is a policy and not an interval
@@ -816,10 +833,21 @@ impl Server {
     /// currently receives the same roles; federated identity replaces this function and
     /// nothing downstream changes, which is the point of having established the type first.
     fn principal(&self, user: &str) -> Option<Principal> {
+        // The roles this user holds. See `Settings::roles` for why an empty map means one
+        // thing and a populated one that does not name them means another.
+        let held: Vec<Role> = if self.settings.roles.is_empty() {
+            vec![Role::new("reader")]
+        } else {
+            self.settings
+                .roles
+                .get(user)
+                .map(|names| names.iter().map(|name| Role::new(name.clone())).collect())
+                .unwrap_or_default()
+        };
         Principal::authenticated(
             user,
             self.settings.tenant,
-            [Role::new("reader")],
+            held,
             if self.settings.require_password {
                 Authentication::Password
             } else {

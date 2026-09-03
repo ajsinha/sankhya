@@ -215,6 +215,7 @@ async fn an_error_does_not_disclose_that_the_other_tenants_table_exists() {
     // working enumeration oracle.
     let dir = tempfile::tempdir().expect("a temporary directory");
     let empty = wiring::Settings {
+        roles: Default::default(),
         listen: "127.0.0.1:0".to_string(),
         warehouse: dir.path().to_path_buf(),
         read_as_of: sankhya_types::Lsn::new(u64::MAX),

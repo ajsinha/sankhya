@@ -96,6 +96,7 @@ fn server() -> (Arc<Server>, tempfile::TempDir) {
     let tables = warehouse::describe(&found);
     let policy = wiring::permissive_policy(&tenant(), &tables);
     let settings = Settings {
+        roles: Default::default(),
         listen: "127.0.0.1:0".to_string(),
         warehouse: dir.path().to_path_buf(),
         read_as_of: Lsn::new(u64::MAX),
@@ -164,6 +165,7 @@ async fn a_refusal_is_not_counted_as_an_error() {
     let cache = sankhya_table_delta::LogCache::new();
     let (servable, _) = warehouse::servable(&found, Lsn::new(u64::MAX), &cache);
     let settings = Settings {
+        roles: Default::default(),
         listen: "127.0.0.1:0".to_string(),
         warehouse: dir.path().to_path_buf(),
         read_as_of: Lsn::new(u64::MAX),
@@ -566,6 +568,7 @@ async fn a_query_naming_a_forbidden_table_looks_exactly_like_one_naming_a_missin
             .collect::<Vec<_>>(),
     );
     let settings = Settings {
+        roles: Default::default(),
         listen: "127.0.0.1:0".to_string(),
         warehouse: dir.path().to_path_buf(),
         read_as_of: Lsn::new(u64::MAX),

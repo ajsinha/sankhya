@@ -126,6 +126,7 @@ fn tenant() -> TenantId {
 
 fn settings(require_password: bool, warehouse: &std::path::Path) -> Settings {
     Settings {
+        roles: Default::default(),
         listen: "127.0.0.1:0".to_string(),
         warehouse: warehouse.to_path_buf(),
         read_as_of: Lsn::new(u64::MAX),
