@@ -4723,6 +4723,33 @@ CATALOGUE = [
      "        cells\n            .addresses()\n            .map(|address| (address, cells.get(address, Rule::Sum)))\n            .collect()",
      "sankhya-server"),
 
+    # The difference between two versions. `M20` was deferred because the log records files and
+    # a compaction rewrites files without changing a row, so the whole feature turns on that
+    # distinction being honoured.
+    ("delta: count a compaction as a change between two versions",
+     "crates/sankhya-table-delta/src/history.rs",
+     "        if declares {\n            changed.insert(*version);\n        }",
+     "        if is_file {\n            changed.insert(*version);\n        }",
+     "sankhya-table-delta"),
+
+    ("delta: report a compaction as nothing at all rather than naming it",
+     "crates/sankhya-table-delta/src/history.rs",
+     "        compactions: touched.difference(&changed).count(),",
+     "        compactions: 0,",
+     "sankhya-table-delta"),
+
+    ("delta: forget how many rows a removed file held",
+     "crates/sankhya-table-delta/src/history.rs",
+     "                difference.rows_removed += rows_in.get(&remove.path).copied().unwrap_or(0);",
+     "                difference.rows_removed += 0;",
+     "sankhya-table-delta"),
+
+    ("delta: answer about the newest version when asked about one nobody has",
+     "crates/sankhya-table-delta/src/history.rs",
+     "        if wanted > newest {\n            return Err(NoDifference::NoSuchVersion { wanted, newest });\n        }",
+     "        if false {\n            return Err(NoDifference::NoSuchVersion { wanted, newest });\n        }",
+     "sankhya-server"),
+
     # Authorization varying by subject. The identity travelled inward correctly for two days
     # while every user was handed the same literal role, so nothing downstream could tell two
     # subjects apart --- a plumbing job finished and a feature that was not.

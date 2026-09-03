@@ -618,6 +618,49 @@ from a correct historical read except the number at the bottom.
 > What you have is closer to a **tag** than a branch: name a moment, read it back, and know that
 > the naming is what keeps it readable.
 
+## 19.7c What changed between two versions
+
+```sql
+SHOW CHANGES BETWEEN 1 AND 4 FOR sales.orders;
+```
+
+```console
+ commits | rows_added | rows_removed | files_added | files_removed | compactions
+---------+------------+--------------+-------------+---------------+-------------
+       3 |        750 |            0 |           3 |             0 |           0
+```
+
+The question people ask between two reporting runs — *did anything change, and how much* —
+answered from the log alone. Nothing here opens a Parquet file, so it is answerable on a table
+nobody would consider scanning.
+
+[ADR-0024](../../adr/0024-what-a-difference-between-two-versions-is.md) settles what a difference
+*is*, and one line decides the rest:
+
+> **A difference is a change to rows, and a compaction is not one.**
+
+The log already knows: every add and remove carries `dataChange`, and a compaction writes `false`
+on both sides. That is the writer's own statement about what it did, not a heuristic. This is why
+the feature was deferred for a day and then buildable in an afternoon — the objection was that a
+compaction would show as a total replacement, and the answer was that the log has always said
+otherwise.
+
+Three things about the shape:
+
+- **The range excludes the earlier version and includes the later.** `BETWEEN 4 AND 7` is *what
+  happened after 4, up to and including 7* — what would be new to a reader who last read 4. The
+  other reading is defensible, and the two differ by exactly one commit.
+- **`compactions` is counted and never folded in.** Filtering it out of the arithmetic is
+  correct; staying silent about it would be a second misleading answer, leaving a reader to
+  wonder why the storage looks nothing like it did.
+- **There is no `rows_changed`, deliberately.** An update here is a remove and an add, and
+  nothing in the log says the two are the same row. Reporting a changed count would mean guessing
+  which removal pairs with which addition — right often enough to be trusted, and wrong exactly
+  when a key was rewritten, which is the case somebody is diffing to find.
+
+A version nobody has is refused by name rather than clamped to the newest, and a range that runs
+backwards is refused rather than reversed: reversing it would report additions as removals.
+
 ## 19.8 Vectors
 
 A column can hold a vector per row — an embedding, a factor vector, a window of readings — stored as

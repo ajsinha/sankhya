@@ -143,3 +143,96 @@ fn an_unreadable_log_is_reported_rather_than_summarised_as_no_history() {
         .expect("corrupting");
     assert!(history(dir.path()).is_err());
 }
+
+#[test]
+fn a_compaction_between_two_versions_contributes_no_rows_and_is_still_reported() {
+    // **The reason `M20` was deferred, and the reason it could be built.** The log records
+    // file-level adds and removes, so a compaction --- which rewrites files and changes no row
+    // --- would show as a total replacement. A diff that reported it as a change would be worse
+    // than no diff, because it looks like an answer.
+    //
+    // Both halves are asserted, and the second is the one that is easy to leave out: filtering
+    // the compaction out of the arithmetic is correct, and *silence* about it is a second
+    // misleading answer. A reader told nothing changed over a range in which every file was
+    // rewritten is left wondering why the storage looks nothing like it did.
+    let dir = table();
+    let statistics = FileStatistics::new(100);
+    commit(
+        dir.path(),
+        1,
+        &[
+            Action::Add(AddFile::with_statistics("part-0000.parquet", 100, 1, &statistics)),
+            Action::Add(AddFile::with_statistics("part-0001.parquet", 100, 2, &statistics)),
+        ],
+    )
+    .expect("appending");
+    let merged = FileStatistics::new(200);
+    commit(
+        dir.path(),
+        2,
+        &[
+            Action::Remove(RemoveFile::rewritten("part-0000.parquet", 3)),
+            Action::Remove(RemoveFile::rewritten("part-0001.parquet", 3)),
+            Action::Add(AddFile::rewritten("part-merged.parquet", 200, 3, &merged)),
+        ],
+    )
+    .expect("compacting");
+
+    let over_the_compaction =
+        sankhya_table_delta::difference(dir.path(), 1, 2).expect("a difference");
+    assert_eq!(
+        over_the_compaction.commits, 0,
+        "no commit in this range changed a row, and the compaction must not be counted as one"
+    );
+    assert_eq!(over_the_compaction.rows_added, 0, "a compaction adds no rows");
+    assert_eq!(over_the_compaction.rows_removed, 0, "and removes none");
+    assert_eq!(
+        over_the_compaction.files_added, 0,
+        "and its file counts stay out of the arithmetic too --- reporting one file added is the \
+         same wrong answer one level down"
+    );
+    assert_eq!(
+        over_the_compaction.compactions, 1,
+        "and it is *named*, because a number withheld to avoid confusing somebody is a number \
+         they will need and will then get somewhere less careful"
+    );
+
+    // And a range that spans the append still counts the append, which is what makes the
+    // assertions above about the compaction rather than about an empty implementation.
+    let including_the_append =
+        sankhya_table_delta::difference(dir.path(), 0, 2).expect("a difference");
+    assert_eq!(including_the_append.commits, 1, "the append, and only the append");
+    assert_eq!(including_the_append.rows_added, 200, "two files of a hundred");
+    assert_eq!(including_the_append.compactions, 1, "with the compaction still named beside it");
+}
+
+#[test]
+fn rows_removed_are_the_rows_that_were_in_the_file() {
+    // A removal names a path and says nothing about what was in it, so the count is looked up
+    // from the commit that added it. Without that, `rows_removed` would be zero for every
+    // deletion and a diff would report a table emptying as no change at all.
+    let dir = table();
+    let hundred = FileStatistics::new(100);
+    commit(
+        dir.path(),
+        1,
+        &[Action::Add(AddFile::with_statistics("part-0000.parquet", 100, 1, &hundred))],
+    )
+    .expect("appending");
+    commit(
+        dir.path(),
+        2,
+        &[Action::Remove(RemoveFile::deleted("part-0000.parquet", 3))],
+    )
+    .expect("deleting");
+
+    let difference = sankhya_table_delta::difference(dir.path(), 1, 2).expect("a difference");
+    assert_eq!(difference.commits, 1);
+    assert_eq!(difference.files_removed, 1);
+    assert_eq!(
+        difference.rows_removed, 100,
+        "the rows the file held, from the commit that added it --- not zero, which is what a \
+         removal action says on its own"
+    );
+    assert_eq!(difference.rows_added, 0);
+}

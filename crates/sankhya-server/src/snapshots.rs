@@ -252,6 +252,7 @@ pub(crate) fn describe(statement: &Statement) -> &'static str {
         Statement::Show => "SHOW SNAPSHOTS",
         Statement::Drop { .. } => "DROP SNAPSHOT",
         Statement::History { .. } => "SHOW HISTORY",
+        Statement::Changes { .. } => "SHOW CHANGES",
         Statement::ReadVersion { .. } => "SET VERSION",
     }
 }
@@ -306,6 +307,9 @@ pub(crate) fn run_statement(
             drop_it(warehouse, &name, if_exists)
         }
         Statement::History { table } => history_of(server, &table, principal),
+        Statement::Changes { table, from, to } => {
+            changes_between(server, &table, from, to, principal)
+        }
         // Answered as an acknowledgement; the session remembers it and the read path consults
         // it, exactly as `SET SNAPSHOT` does. Checked here so that a version this table can no
         // longer produce is refused at the `SET` rather than at the next query.
@@ -610,6 +614,65 @@ pub(crate) fn check_setting(
 /// invite somebody to read a version that is gone and be told only at that point.
 ///
 /// Only a snapshot or a clone keeps a version alive. This column is where that becomes visible.
+/// `SHOW CHANGES BETWEEN <from> AND <to> FOR <table>`
+///
+/// [ADR-0024](../../../docs/adr/0024-what-a-difference-between-two-versions-is.md). Every number
+/// comes from the log and none of them opens a Parquet file, which is what makes this answerable
+/// between two reporting runs on a table nobody would consider scanning.
+fn changes_between(
+    server: &crate::wiring::Server,
+    table: &str,
+    from: u64,
+    to: u64,
+    principal: &Principal,
+) -> Result<QueryResult, QueryFailure> {
+    use sankhya_api_pg::message::{oid, FieldDescription};
+
+    // The same absence as everywhere else: "you may not ask about that" confirms it is there.
+    let absent = || {
+        refusal(
+            "42P01",
+            &format!("there is no table called `{table}` on this server"),
+        )
+    };
+    let Some(root) = server.root_of(table) else {
+        return Err(absent());
+    };
+    if !server.readable_by(principal, table) {
+        return Err(absent());
+    }
+
+    let difference = sankhya_table_delta::difference(&root, from, to).map_err(|error| {
+        refusal(
+            sankhya_error::protocol::sqlstate::DATA_EXCEPTION.as_str(),
+            &error.to_string(),
+        )
+    })?;
+
+    Ok(QueryResult {
+        fields: vec![
+            FieldDescription::text("commits", oid::TEXT, -1),
+            FieldDescription::text("rows_added", oid::TEXT, -1),
+            FieldDescription::text("rows_removed", oid::TEXT, -1),
+            FieldDescription::text("files_added", oid::TEXT, -1),
+            FieldDescription::text("files_removed", oid::TEXT, -1),
+            // Counted separately and never folded into the numbers beside it. A diff reporting
+            // *nothing changed* over a range in which every file was rewritten tells the truth
+            // about rows and leaves the reader wondering about the storage.
+            FieldDescription::text("compactions", oid::TEXT, -1),
+        ],
+        rows: vec![vec![
+            Some(difference.commits.to_string()),
+            Some(difference.rows_added.to_string()),
+            Some(difference.rows_removed.to_string()),
+            Some(difference.files_added.to_string()),
+            Some(difference.files_removed.to_string()),
+            Some(difference.compactions.to_string()),
+        ]],
+        tag: "SHOW".to_owned(),
+    })
+}
+
 fn history_of(
     server: &crate::wiring::Server,
     table: &str,
