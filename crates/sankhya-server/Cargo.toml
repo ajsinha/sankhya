@@ -43,6 +43,7 @@ sankhya-clone       = { path = "../sankhya-clone" }
 sankhya-publish     = { path = "../sankhya-publish" }
 sankhya-functions = { path = "../sankhya-functions" }
 sankhya-olap        = { path = "../sankhya-olap" }
+sankhya-udf         = { path = "../sankhya-udf" }
 sankhya-graph-sql   = { path = "../sankhya-graph-sql" }
 sankhya-plan     = { path = "../sankhya-plan" }
 datafusion       = { workspace = true }

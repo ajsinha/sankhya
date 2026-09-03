@@ -48,6 +48,26 @@ stored column and comparing it against the same function over a literal of the s
 `matrix(rows, columns, values)`. Both are the shape declaration; a bare array is accepted only
 where a square order can be deduced from the length.
 
+## And one you write yourself
+
+The catalogue is what a hundred people need. The rule that is *this* firm's — a weighted average
+with their weighting, an exposure netted their way — will never be in it, and the answer is not
+to make them leave the warehouse:
+
+```sql
+CREATE AGGREGATION weighted_mean LANGUAGE PYTHON AS $$
+def accumulate(state, values): ...
+def merge(a, b): ...          -- optional; its presence is the claim that partials compose
+def finish(state): ...
+$$;
+```
+
+It is exercised before it is trusted, it runs behind an operating-system boundary, and it costs
+a process boundary per batch — two to three orders of magnitude against a compiled built-in,
+which is exactly why the built-in catalogue below is worth its size. Chapter 19 §19.5a has the
+detail; [ADR-0010](adr/0010-external-aggregations.md), [ADR-0022](adr/0022-user-defined-functions.md)
+and [ADR-0023](adr/0023-the-sandbox-a-user-function-runs-in.md) have the decisions.
+
 ## Where each function is reachable from, today
 
 | Surface | State |

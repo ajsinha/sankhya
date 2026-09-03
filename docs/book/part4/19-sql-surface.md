@@ -293,6 +293,62 @@ right sentence — but the cell is read with a hardcoded summation
 does, **only `SUM` measures return the number they claim.** That is the exact failure the cube model
 exists to prevent, arriving one layer below where the model checks for it.
 
+## 19.5a An aggregation of your own
+
+A cube's measures compose along each dimension by a **declared rule**, and that model exists
+because the alternative produces plausible wrong figures. What it cannot express is the rule that
+is *this* firm's — a weighted average with their weighting, an exposure netted their way.
+
+```sql
+CREATE AGGREGATION weighted_mean LANGUAGE PYTHON AS $$
+def initial():
+    return {'total': 0.0, 'weight': 0.0}
+
+def accumulate(state, values):
+    # `values` arrives interleaved, one tuple per row, as a memoryview of doubles.
+    for i in range(0, len(values) - 1, 2):
+        state['total'] += values[i] * values[i + 1]
+        state['weight'] += values[i + 1]
+    return state
+
+def merge(a, b):
+    return {'total': a['total'] + b['total'], 'weight': a['weight'] + b['weight']}
+
+def finish(state):
+    return state['total'] / state['weight'] if state['weight'] else 0.0
+$$;
+
+SELECT region, weighted_mean(margin_pct, amount) FROM sales.orders GROUP BY region;
+```
+
+`SHOW AGGREGATIONS` lists them with their source; `DROP AGGREGATION [IF EXISTS] <name>` removes
+one. The four methods are [ADR-0010](../../adr/0010-external-aggregations.md)'s contract:
+`initial` and `merge` are optional, `accumulate` and `finish` are not, and **a declared `merge`
+is the claim that partial results compose** — it is what lets the aggregate be split across
+partitions and, later, rolled up from a materialised cuboid.
+
+Three things happen before the server believes you, and each is a refusal you will meet if it
+does not hold:
+
+- **It is exercised.** The same values are accumulated in one batch and in several, and the
+  parts are merged in two different groupings, and the answers are compared **bit for bit**. A
+  function whose answer depends on how the rows happened to be batched is refused at declaration
+  with both numbers, rather than found later as two reports differing by a penny.
+- **Its state must be storable.** The state is JSON. One that is not — a `set`, an object — is
+  refused by name, because `ADR-0010` says a measure whose state is not serialisable is usable
+  and *not materialisable*, and that has to be said at declaration rather than discovered when a
+  cuboid fails to write.
+- **It runs behind an operating-system boundary.** No network, no filesystem, no subprocess,
+  bounded in time and memory ([ADR-0023](../../adr/0023-the-sandbox-a-user-function-runs-in.md)).
+  On a machine where that boundary cannot be built — a kernel with unprivileged user namespaces
+  disabled — `CREATE AGGREGATION` is refused naming the mechanism. It does not fall back.
+
+> **It costs a process boundary per batch**, which is two to three orders of magnitude against a
+> compiled built-in ([ADR-0022](../../adr/0022-user-defined-functions.md) Decision 5). That is the
+> reason the built-in catalogue is worth its size, and it is still enormously faster than
+> fetching a million rows to a client to do the same arithmetic — which is the comparison that
+> decides whether the feature earns its place.
+
 ## 19.6 Clones and lineage
 
 ```sql

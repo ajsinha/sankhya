@@ -43,6 +43,7 @@ mod backup;
 mod doctor;
 mod execute;
 mod adopt;
+mod aggregations;
 mod clones;
 mod cubes;
 mod driver;

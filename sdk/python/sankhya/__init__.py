@@ -17,6 +17,7 @@ Two ways in:
 """
 
 from .client import (
+    AggregationInfo,
     Ancestor,
     Column,
     Cube,
@@ -32,6 +33,7 @@ from .functions import Catalogue, Column, Function, Matrix, col, matrix
 from .wire import Connection, Refusal, Result, WireError, connect
 
 __all__ = [
+    "AggregationInfo",
     "Ancestor",
     "Column",
     "Connection",

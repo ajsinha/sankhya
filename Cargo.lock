@@ -3797,6 +3797,7 @@ dependencies = [
  "sankhya-table",
  "sankhya-table-delta",
  "sankhya-types",
+ "sankhya-udf",
  "serde_json",
  "tempfile",
  "tokio",
@@ -3946,6 +3947,7 @@ dependencies = [
  "sankhya-table-delta",
  "sankhya-tls",
  "sankhya-types",
+ "sankhya-udf",
  "tempfile",
  "tokio",
  "tonic",
@@ -4074,6 +4076,14 @@ dependencies = [
  "serde_json",
  "time",
  "uuid",
+]
+
+[[package]]
+name = "sankhya-udf"
+version = "0.1.0"
+dependencies = [
+ "sankhya-sandbox",
+ "tempfile",
 ]
 
 [[package]]

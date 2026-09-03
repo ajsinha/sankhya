@@ -258,6 +258,14 @@ pub struct Server {
     /// Writers are DDL and therefore rare; readers are every statement. That asymmetry is why
     /// this is an `RwLock` and not a `Mutex`.
     pub(crate) cubes: std::sync::RwLock<Arc<Vec<sankhya_cube::model::Cube>>>,
+    /// Aggregations somebody declared, and the worker that runs them.
+    ///
+    /// The worker is built **once** and only if this machine can host the boundary they must
+    /// run behind. `None` is not a degraded mode: `CREATE AGGREGATION` then refuses, naming the
+    /// mechanism, which is `ADR-0023` Decision 3 --- where the boundary cannot be built the
+    /// feature is off rather than run without it.
+    pub(crate) aggregations: std::sync::RwLock<Arc<Vec<sankhya_udf::Aggregation>>>,
+    pub(crate) udf_worker: std::sync::OnceLock<Result<Arc<sankhya_udf::Worker>, String>>,
     /// Cells already hydrated, keyed by everything that makes them an answer.
     ///
     /// Shared across statements, which is the point: `session_for` builds a context per
@@ -590,6 +598,20 @@ impl Server {
         if let Ok(mut cubes) = self.cubes.write() {
             *cubes = Arc::new(adopted);
         }
+
+        // And the aggregations, from the same directory tree and at the same moment. Adopted
+        // here rather than lazily because a declared aggregation that only appears once
+        // somebody calls it is one a restart silently drops --- and the symptom is a query
+        // that worked yesterday failing to plan.
+        //
+        // **Not re-exercised.** `ADR-0010`'s determinism check runs at declaration; running it
+        // again at every startup would fork a worker per aggregation before the server accepts
+        // its first connection, and the code has not changed since it passed.
+        let declared = crate::aggregations::stored(warehouse);
+        if let Ok(mut aggregations) = self.aggregations.write() {
+            *aggregations = Arc::new(declared);
+        }
+
         (self, complaints)
     }
 
@@ -604,6 +626,76 @@ impl Server {
         self.cubes
             .read()
             .map_or_else(|poisoned| Arc::clone(&poisoned.into_inner()), |cubes| Arc::clone(&cubes))
+    }
+
+    /// Every aggregation somebody has declared.
+    pub fn aggregations(&self) -> Arc<Vec<sankhya_udf::Aggregation>> {
+        self.aggregations.read().map_or_else(
+            |poisoned| Arc::clone(&poisoned.into_inner()),
+            |aggregations| Arc::clone(&aggregations),
+        )
+    }
+
+    /// The worker user-supplied aggregations run behind, or why there is none.
+    ///
+    /// Built once, lazily, and the failure is **remembered**: probing the boundary forks, and a
+    /// machine that cannot host it will not start being able to between two statements. Retried
+    /// per statement it would be a fork per `CREATE AGGREGATION` on a machine where the answer
+    /// is already known.
+    pub(crate) fn worker(&self) -> Result<Arc<sankhya_udf::Worker>, sankhya_udf::Refused> {
+        let outcome = self.udf_worker.get_or_init(|| {
+            let python = std::path::Path::new("/usr/bin/python3");
+            sankhya_udf::Worker::start(python)
+                .map(Arc::new)
+                .map_err(|refused| refused.to_string())
+        });
+        match outcome {
+            Ok(worker) => Ok(Arc::clone(worker)),
+            Err(said) => Err(sankhya_udf::Refused::NoBoundary(said.clone())),
+        }
+    }
+
+    /// Serve one, having declared it.
+    pub(crate) fn remember_aggregation(&self, aggregation: sankhya_udf::Aggregation) {
+        if let Ok(mut held) = self.aggregations.write() {
+            let mut next: Vec<_> = held.iter().cloned().collect();
+            next.retain(|existing| existing.name != aggregation.name);
+            next.push(aggregation);
+            next.sort_by(|a, b| a.name.cmp(&b.name));
+            *held = Arc::new(next);
+        }
+    }
+
+    /// Stop serving one.
+    pub(crate) fn forget_aggregation(&self, name: &str) {
+        if let Ok(mut held) = self.aggregations.write() {
+            let mut next: Vec<_> = held.iter().cloned().collect();
+            next.retain(|existing| existing.name != name);
+            *held = Arc::new(next);
+        }
+    }
+
+    /// Register every declared aggregation against a session.
+    ///
+    /// Registered per session rather than once, because a session is what a statement is planned
+    /// against and an aggregation declared a moment ago must be callable by the next statement.
+    fn register_aggregations(&self, context: &SessionContext) {
+        let declared = self.aggregations();
+        if declared.is_empty() {
+            return;
+        }
+        let Ok(worker) = self.worker() else {
+            // Declared and unrunnable. Not registered, so a statement calling one is refused by
+            // name --- which is a better answer than a function that plans and then fails per
+            // batch inside a scan.
+            return;
+        };
+        for aggregation in declared.iter() {
+            context.register_udaf(sankhya_olap::supplied::Supplied::new(
+                Arc::new(aggregation.clone()),
+                Arc::clone(&worker),
+            ));
+        }
     }
 
     /// Assemble a server that can actually answer queries.
@@ -624,6 +716,8 @@ impl Server {
             audit: parking_lot::Mutex::new(Chain::new()),
             tables,
             servable: parking_lot::RwLock::new(Arc::new(servable)),
+            aggregations: std::sync::RwLock::new(Arc::new(Vec::new())),
+            udf_worker: std::sync::OnceLock::new(),
             leases: Arc::new(sankhya_leases::Leases::new()),
             log_cache: sankhya_table_delta::LogCache::new(),
             cubes: std::sync::RwLock::new(Arc::new(Vec::new())),
@@ -834,6 +928,7 @@ impl Handler for Server {
         crate::driver::run_session_statement(sql).is_some()
             || sql.trim().to_uppercase().starts_with("SET SNAPSHOT")
             || sankhya_snapshot::parse(sql).is_some()
+            || crate::aggregations::parse(sql).is_some()
             || sankhya_feed::parse_command(sql).is_some()
             || sankhya_clone::parse_question(sql).is_some()
             || sankhya_cube_sql::parse_ddl(sql).is_some()
@@ -2252,6 +2347,12 @@ impl Server {
         // `SET`. Ordered the other way it was swallowed silently, which is the exact failure
         // `ADR-0019` Decision 6 names: a caller who asked to read a version, served the
         // present, with no symptom at all.
+        // Aggregation DDL, before the engine and before the generic session handler. `CREATE
+        // AGGREGATION` is not SQL, so `sqlparser` rejects it before any hook could see it.
+        if let Some(statement) = crate::aggregations::parse(dispatch) {
+            return crate::aggregations::run(self, statement, &principal);
+        }
+
         if let Some(statement) = sankhya_snapshot::parse(dispatch) {
             return crate::snapshots::run_statement(self, statement, &principal);
         }
@@ -2322,6 +2423,7 @@ impl Server {
         // authorization story for cubes: there is no second implementation of the rule, and
         // therefore no second implementation to disagree with the first.
         self.register_cubes(&context, &principal, sql);
+        self.register_aggregations(&context);
 
         // `block_in_place` rather than a bare `block_on`. This method is called from inside
         // a Tokio task — the connection's — and blocking that thread directly panics,
