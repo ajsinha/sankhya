@@ -46,9 +46,52 @@ pub(crate) fn run_ddl(
         sankhya_cube_sql::Statement::Create(definition) => {
             create(server, *definition, principal)
         }
-        sankhya_cube_sql::Statement::Drop { name, if_exists } => {
-            remove(server, &name, if_exists, principal)
+        sankhya_cube_sql::Statement::Drop { derived, name, if_exists } => {
+            remove(server, &name, if_exists, derived, principal)
         }
+    }
+}
+
+/// Register every derived result against a session, as a relation a query may name.
+///
+/// # Why a view rather than a table
+///
+/// A derived result of the **declared** lifetime materialises nothing --- `ADR-0009`'s
+/// distinction, unchanged: persisted, and computed on demand under the caller's own scope.
+/// Registering it as a view means its query is planned against the same `SecuredTable`s a plain
+/// `SELECT` sees, so the authorization story is the query path's with no second implementation.
+/// A table of pre-computed rows would need its own answer to *whose rows*.
+///
+/// A derived result whose query no longer plans --- a table dropped underneath it --- is
+/// **skipped and left unregistered**, so naming it fails to resolve. Registering a broken one
+/// would turn a missing table into a planning error inside somebody else's statement.
+pub(crate) fn register_derived(
+    server: &Server,
+    context: &datafusion::prelude::SessionContext,
+    principal: &Principal,
+) {
+    let cubes = server.cubes();
+    let derived: Vec<_> = cubes.iter().filter(|cube| cube.definition().is_derived()).collect();
+    if derived.is_empty() {
+        return;
+    }
+    for cube in derived {
+        // Only what this caller may read. A derived result over a table they cannot see is not
+        // registered, so it is indistinguishable from one that does not exist --- the same rule
+        // the table catalogue follows, for the same reason.
+        if server.scope_across(principal, cube.reads()).is_none() {
+            continue;
+        }
+        let statement = format!("SELECT * FROM {} AS derived", cube.fact_table());
+        let planned = tokio::task::block_in_place(|| {
+            server.runtime.block_on(context.state().create_logical_plan(&statement))
+        });
+        let Ok(plan) = planned else {
+            continue;
+        };
+        let view =
+            datafusion::datasource::ViewTable::new(plan, Some(cube.fact_table().to_owned()));
+        let _ = context.register_table(cube.name(), Arc::new(view));
     }
 }
 
@@ -117,6 +160,7 @@ fn create(
     use sankhya_error::protocol::sqlstate;
 
     let name = definition.name.clone();
+    let is_derived = definition.is_derived();
 
     // A name already taken is refused rather than replaced, and there is no
     // `OR REPLACE`. Replacing a cube orphans every cuboid it materialised, and the
@@ -128,7 +172,7 @@ fn create(
         return Err(refusal(
             sqlstate::DATA_EXCEPTION.as_str(),
             &format!(
-                "the cube `{name}` already exists. Drop it first: replacing a cube \
+                "`{name}` already exists. Drop it first: replacing a cube \
                  retires every cuboid it materialised, which is not something a \
                  re-run of a script should do silently"
             ),
@@ -196,6 +240,24 @@ fn create(
         }
     }
 
+    // A derived result may not yet be **maintained**, and it says so rather than accepting the
+    // clause and doing nothing.
+    //
+    // `MAINTAINED WITHIN n VERSIONS` parses for a derived definition and sets its target lag,
+    // and the maintenance loop walks a cube's *measures* to decide what to build --- a derived
+    // result has none, so it would quietly build nothing while `derived()` reported its
+    // lifetime as `maintained`. A clause accepted and ignored is the worst of the three
+    // available behaviours: worse than refusing it, and worse than not parsing it, because the
+    // operator has been told their staleness bound is being honoured.
+    if is_derived && definition.target_lag.is_some() {
+        return Err(refusal(
+            sqlstate::DATA_EXCEPTION.as_str(),
+            &format!(
+                "`{name}` is a derived result, and a maintained one is not built yet ---                  `ADR-0014` Option A settles that it can be, and nothing materialises it today.                  Declare it without `MAINTAINED` and it is computed under the caller's own                  scope on every read, which is correct and is not cached. Refused rather than                  accepted: a staleness bound nothing honours is worse than none"
+            ),
+        ));
+    }
+
     // The one validator, reporting every rejection rather than the first. A definition
     // fixable in one sitting should be reported in one message.
     let cube = definition.validate().map_err(|rejections| {
@@ -223,7 +285,7 @@ fn create(
     // and inventing one would mean a second vocabulary for the audit reader to learn;
     // creating a cube adds something that was not there, which is what `Insert` says.
     server.record(principal, TableRef::new("", &name), Action::Insert, true);
-    Ok(acknowledged("CREATE CUBE"))
+    Ok(acknowledged(if is_derived { "CREATE DERIVED" } else { "CREATE CUBE" }))
 }
 
 /// Stop serving a cube, remove its definition, and reclaim what it materialised.
@@ -231,17 +293,31 @@ fn remove(
     server: &Server,
     name: &str,
     if_exists: bool,
+    derived: bool,
     principal: &Principal,
 ) -> Result<QueryResult, QueryFailure> {
     use sankhya_error::protocol::sqlstate;
 
-    let Some(cube) = server.cubes().iter().find(|cube| cube.name() == name).cloned() else {
+    // The word the writer used, and the thing they named, must agree. A cube and a derived
+    // result share a namespace --- both are definitions in one catalogue --- and they are
+    // different things to lose. A `DROP CUBE` that removed a derived result would report
+    // success for a statement nobody wrote.
+    let (kind, tag) = if derived { ("derived result", "DROP DERIVED") } else { ("cube", "DROP CUBE") };
+    let found = server
+        .cubes()
+        .iter()
+        .find(|cube| cube.name() == name && cube.definition().is_derived() == derived)
+        .cloned();
+    let Some(cube) = found else {
         if if_exists {
-            return Ok(acknowledged("DROP CUBE"));
+            return Ok(acknowledged(tag));
         }
+        // Named as absent whichever it is, so `DROP CUBE` cannot be used to discover that a
+        // derived result of that name exists --- the same rule the query path follows about a
+        // table somebody may not read.
         return Err(refusal(
             sqlstate::DATA_EXCEPTION.as_str(),
-            &format!("there is no cube `{name}`"),
+            &format!("there is no {kind} `{name}`"),
         ));
     };
 
@@ -252,7 +328,7 @@ fn remove(
     if server.scope_across(principal, cube.reads()).is_none() {
         return Err(refusal(
             sqlstate::DATA_EXCEPTION.as_str(),
-            &format!("there is no cube `{name}`"),
+            &format!("there is no {kind} `{name}`"),
         ));
     }
 
@@ -286,5 +362,5 @@ fn remove(
     }
 
     server.record(principal, TableRef::new("", name), Action::Delete, true);
-    Ok(acknowledged("DROP CUBE"))
+    Ok(acknowledged(tag))
 }

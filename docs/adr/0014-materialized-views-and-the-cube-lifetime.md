@@ -9,7 +9,7 @@
 
 # ADR-0014 — Materialized views, and whether they are a cube lifetime
 
-**Status:** Proposed · **Date:** 2026-08-28 · **Milestone:** M8 or later
+**Status:** Accepted · **Date:** 2026-08-28 · **Milestone:** M8 or later
 **Builds on:** [ADR-0009](0009-the-cube-lifecycle.md), [ADR-0012](0012-open-capabilities.md)
 
 ## Context
@@ -111,11 +111,45 @@ guess.
 > about a cube changed. A query that cannot be planned, and a query whose answer can move on its
 > own, are both refused at declaration.
 >
-> The prerequisite is therefore met and option A is now buildable. What remains of it is the
-> smaller half: a definition with **no dimensions and no measures** — a maintained query rather
-> than a maintained cube — which today `validate` refuses by name, because a cube with neither
-> is a table. That refusal has to become a second lifetime rather than an error, and until it
-> does, this ADR stays *Proposed* for the part that is genuinely undecided.
+> The prerequisite is therefore met and option A is now buildable.
+
+## Accepted 2026-09-03 — Option A, and what is built of it
+
+`CREATE DERIVED <name> FROM ( <query> )`. A definition with **no dimensions and no measures** is
+a derived result, and the shape is the discriminator rather than a flag beside it, because a flag
+can disagree with the shape and this cannot.
+
+Everything this ADR worried about duplicating is reused, unchanged: the declared query, the
+dependency list resolved by planning under the caller's guard, the snapshot key, the fingerprint,
+the catalogue, and the reclamation. There is no second refresh loop, no second staleness rule and
+no second reclamation path, because there is no second implementation.
+
+`CREATE DERIVED` rather than `CREATE CUBE` with the clauses left off. The definition is the same
+either way; only the word differs. The reason is that `validate` refuses a cube with no
+dimensions and says something useful about it — *a cube with no dimension is a table; define it
+as one, or say what was meant* — and that advice would become a lie the moment one statement
+meant two things.
+
+Two refusals fall out, and one of them is about this ADR's own scope:
+
+- **A derived result over a bare table name is refused.** It would be that table with a second
+  name, plus a catalogue entry, a fingerprint and a dependency list to keep current for no gain.
+- **A *maintained* derived result is refused, by name, because nothing materialises one yet.**
+  The clause parses and sets a target lag, and the maintenance loop walks a cube's *measures* to
+  decide what to build — a derived result has none, so it would build nothing while `derived()`
+  reported its lifetime as `maintained`. A clause accepted and ignored is the worst of the three
+  available behaviours: worse than refusing it, and worse than not parsing it, because the
+  operator has been *told* their staleness bound is being honoured.
+
+So the **declared** lifetime is built and the **maintained** one is not. That is `ADR-0009`'s own
+distinction, unchanged and applied one artefact wider, and it is the honest state: a declared
+derived result is persisted, authorized, dependency-tracked, deterministic, and computed under
+the caller's own scope on every read.
+
+Option B — incremental maintenance, delta rules, the algebra of which views can be maintained
+incrementally at all — remains unwanted and unbuilt. When a maintained derived result is built it
+is a **full refresh at each snapshot**, which the keying already makes correct, and that is not
+option B.
 
 That is the deliberate difference from the nine crates resolved beside it. Those had no design
 question left — six had a milestone that was simply unwritten, three duplicated something that

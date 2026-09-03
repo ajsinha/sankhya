@@ -233,6 +233,26 @@ impl Definition {
         is_a_query(&self.fact_table)
     }
 
+    /// Whether this is a **derived result** rather than a cube.
+    ///
+    /// [ADR-0014](../../../docs/adr/0014-materialized-views-and-the-cube-lifetime.md) Option A,
+    /// in one line: *a definition with no dimensions and no measures is simply a maintained
+    /// query.* The shape is the discriminator rather than a flag beside it, because a flag can
+    /// disagree with the shape and this cannot.
+    ///
+    /// # Why this is not a second kind of artefact
+    ///
+    /// It is the same `Definition`, so it gets the same declared query, the same dependency
+    /// list, the same snapshot key, the same fingerprint and the same catalogue. That is the
+    /// whole of the ADR's reasoning: every candidate design for a separate materialized-view
+    /// crate reused all of those, and *"the failure mode is not that it will not work — it is
+    /// that it will grow a second refresh loop, a second staleness rule and a second
+    /// reclamation path, and the two will drift."*
+    #[must_use]
+    pub fn is_derived(&self) -> bool {
+        self.dimensions.is_empty() && self.measures.is_empty()
+    }
+
     /// The same definition, held to a staleness target.
     #[must_use]
     pub fn maintained_within(mut self, versions: u64) -> Self {
@@ -254,6 +274,15 @@ impl Definition {
             Some(_) => Lifetime::Maintained,
             None => Lifetime::Declared,
         }
+    }
+
+    /// A derived result: a declared query with no dimensions and no measures.
+    #[must_use]
+    pub fn derived(name: impl Into<String>, query: impl Into<String>, reads: Vec<String>) -> Self {
+        let mut definition = Self::new(name, "", Vec::new(), Vec::new());
+        definition.fact_table = query.into();
+        definition.reads = reads;
+        definition
     }
 
     /// Check it, and produce a cube.

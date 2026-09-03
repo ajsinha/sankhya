@@ -97,6 +97,12 @@ pub enum Rejection {
         /// The dimension it was declared along.
         dimension: String,
     },
+    /// A derived result whose source is a table's name rather than a query.
+    ///
+    /// A derived result *is* a query given a name. Over a bare table name it is that table with
+    /// a second name --- and a catalogue entry, a fingerprint and a dependency list to keep
+    /// current for no gain.
+    DerivedFromATable,
     /// A declared query whose answer may change without its inputs changing.
     ///
     /// A cuboid built from such a query is a cache of one arbitrary answer, and every later
@@ -153,6 +159,12 @@ impl fmt::Display for Rejection {
                  your own and does not say which one. Write `AGGREGATION <name> ALONG \
                  {dimension}`, naming one that `SHOW AGGREGATIONS` lists"
             ),
+            Self::DerivedFromATable => write!(
+                f,
+                "a derived result is a query given a name, and this one names a table. Over a \
+                 table it would be that table with a second name --- select from the table, or \
+                 write the query the name was meant to stand for"
+            ),
             Self::NotDeterministic { found } => write!(
                 f,
                 "this cube's fact query uses `{found}`, so the same query can answer \
@@ -171,11 +183,21 @@ impl std::error::Error for Rejection {}
 pub fn inspect(definition: &Definition) -> Vec<Rejection> {
     let mut out = Vec::new();
 
-    if definition.dimensions.is_empty() {
-        out.push(Rejection::Empty { what: "dimension" });
-    }
-    if definition.measures.is_empty() {
-        out.push(Rejection::Empty { what: "measure" });
+    // A definition with **neither** is a derived result, not a broken cube --- `ADR-0014`
+    // Option A. One of the two missing is still a broken cube, and says so: a grid with
+    // dimensions and no measures has nothing to report, and one with measures and no
+    // dimensions is a single number that did not need this machinery.
+    if !definition.is_derived() {
+        if definition.dimensions.is_empty() {
+            out.push(Rejection::Empty { what: "dimension" });
+        }
+        if definition.measures.is_empty() {
+            out.push(Rejection::Empty { what: "measure" });
+        }
+    } else if !crate::model::is_a_query(&definition.fact_table) {
+        // A derived result over a bare table name is that table, with a second name and a
+        // catalogue entry to keep current. Refused rather than accepted as a synonym.
+        out.push(Rejection::DerivedFromATable);
     }
     if definition.name.trim().is_empty() {
         out.push(Rejection::Blank { what: "cube", within: definition.fact_table.clone() });

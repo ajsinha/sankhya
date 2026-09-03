@@ -33,7 +33,8 @@ use std::sync::Arc;
 pub fn register(context: &SessionContext, cubes: Arc<Vec<Cube>>, catalog: Arc<CubeCatalog>) {
     context.register_udtf("cubes", Arc::new(Cubes(Arc::clone(&cubes), catalog)));
     context.register_udtf("cube_dimensions", Arc::new(Dimensions(Arc::clone(&cubes))));
-    context.register_udtf("cube_measures", Arc::new(Measures(cubes)));
+    context.register_udtf("cube_measures", Arc::new(Measures(Arc::clone(&cubes))));
+    context.register_udtf("derived", Arc::new(Derived(cubes)));
 }
 
 /// The cube a call names, or an error listing the ones that exist.
@@ -56,6 +57,54 @@ fn named<'a>(cubes: &'a [Cube], exprs: &[Expr]) -> Result<&'a Cube> {
 fn table(schema: SchemaRef, columns: Vec<ArrayRef>) -> Result<Arc<dyn TableProvider>> {
     let batch = RecordBatch::try_new(Arc::clone(&schema), columns)?;
     Ok(Arc::new(MemTable::try_new(schema, vec![vec![batch]])?))
+}
+
+/// `derived()` — every derived result this server serves.
+///
+/// A separate listing from `cubes()` because they are separate things to a reader, however much
+/// machinery they share: a derived result has no dimensions and no measures, and would arrive in
+/// a cube picker as a row of zeroes.
+#[derive(Debug)]
+struct Derived(Arc<Vec<Cube>>);
+
+impl datafusion::catalog::TableFunctionImpl for Derived {
+    fn call(&self, _exprs: &[Expr]) -> Result<Arc<dyn TableProvider>> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("derived", DataType::Utf8, false),
+            // The query as it was written. A reader who has to work out what a name stands for
+            // by reading its dependencies has been shown the half that does not say.
+            Field::new("query", DataType::Utf8, false),
+            // What it reads, which is what it is authorized against and keyed on.
+            Field::new("reads", DataType::Utf8, false),
+            Field::new("definition_version", DataType::UInt64, false),
+            // `declared` or `maintained` — `ADR-0009`'s distinction, unchanged.
+            Field::new("lifetime", DataType::Utf8, false),
+        ]));
+        let held: Vec<&Cube> =
+            self.0.iter().filter(|cube| cube.definition().is_derived()).collect();
+        let names: Vec<&str> = held.iter().map(|cube| cube.name()).collect();
+        let queries: Vec<&str> = held.iter().map(|cube| cube.fact_table()).collect();
+        let reads: Vec<String> = held.iter().map(|cube| cube.reads().join(", ")).collect();
+        let versions: Vec<u64> = held.iter().map(|cube| cube.version()).collect();
+        let lifetimes: Vec<&str> = held
+            .iter()
+            .map(|cube| match cube.lifetime() {
+                sankhya_cube::model::Lifetime::Maintained => "maintained",
+                sankhya_cube::model::Lifetime::Declared => "declared",
+            })
+            .collect();
+
+        table(
+            schema,
+            vec![
+                Arc::new(StringArray::from(names)),
+                Arc::new(StringArray::from(queries)),
+                Arc::new(StringArray::from(reads)),
+                Arc::new(UInt64Array::from(versions)),
+                Arc::new(StringArray::from(lifetimes)),
+            ],
+        )
+    }
 }
 
 /// `cubes()` — every cube this server serves.
@@ -83,17 +132,22 @@ impl datafusion::catalog::TableFunctionImpl for Cubes {
             // about from one that would answer "not published yet".
             Field::new("hydrated_measures", DataType::UInt32, false),
         ]));
-        let names: Vec<&str> = self.0.iter().map(Cube::name).collect();
-        let facts: Vec<&str> = self.0.iter().map(Cube::fact_table).collect();
-        let reads: Vec<String> = self.0.iter().map(|c| c.reads().join(", ")).collect();
-        let versions: Vec<u64> = self.0.iter().map(Cube::version).collect();
+        // Cubes only. A derived result is a definition in the same catalogue --- `ADR-0014`
+        // Option A, and the reuse is the point --- but it has no dimensions and no measures, so
+        // listing it here would put two rows of zeroes in front of somebody building a cube
+        // picker. `derived()` lists those.
+        let held: Vec<&Cube> =
+            self.0.iter().filter(|cube| !cube.definition().is_derived()).collect();
+        let names: Vec<&str> = held.iter().map(|cube| cube.name()).collect();
+        let facts: Vec<&str> = held.iter().map(|c| c.fact_table()).collect();
+        let reads: Vec<String> = held.iter().map(|c| c.reads().join(", ")).collect();
+        let versions: Vec<u64> = held.iter().map(|c| c.version()).collect();
         #[allow(clippy::cast_possible_truncation)]
-        let dimensions: Vec<u32> = self.0.iter().map(|c| c.dimensions().len() as u32).collect();
+        let dimensions: Vec<u32> = held.iter().map(|c| c.dimensions().len() as u32).collect();
         #[allow(clippy::cast_possible_truncation)]
-        let measures: Vec<u32> = self.0.iter().map(|c| c.measures().len() as u32).collect();
+        let measures: Vec<u32> = held.iter().map(|c| c.measures().len() as u32).collect();
         #[allow(clippy::cast_possible_truncation)]
-        let hydrated: Vec<u32> = self
-            .0
+        let hydrated: Vec<u32> = held
             .iter()
             .map(|c| self.1.published_measures(c.name()).len() as u32)
             .collect();

@@ -377,6 +377,46 @@ somebody queries it three weeks later.
 > fetching a million rows to a client to do the same arithmetic — which is the comparison that
 > decides whether the feature earns its place.
 
+## 19.5b A derived result
+
+A query given a name, selected from like a table:
+
+```sql
+CREATE DERIVED regional FROM (
+    SELECT r.area, o.amount FROM sales.orders o JOIN sales.regions r ON o.region = r.region
+);
+
+SELECT area, sum(amount) FROM regional GROUP BY area;
+```
+
+`derived()` lists them with their query, their dependencies and their lifetime;
+`DROP DERIVED [IF EXISTS] <name>` removes one.
+
+[ADR-0014](../../adr/0014-materialized-views-and-the-cube-lifetime.md) settles what this is: **a
+definition with no dimensions and no measures is simply a maintained query.** It is the same
+definition a cube is, so it gets the same declared query, the same dependency list resolved by
+planning under your own guard, the same snapshot key and the same fingerprint — which is the
+entire reason it is not a separate feature. A second implementation of maintained-derived-data
+would grow a second refresh loop and a second staleness rule, and the two would drift.
+
+It is a separate *statement* from `CREATE CUBE` for a smaller reason: `CREATE CUBE` with no
+dimensions is refused with advice — *a cube with no dimension is a table; define it as one, or
+say what was meant* — and that advice would become a lie if one statement meant two things.
+
+Three refusals, and the third is about scope rather than about your query:
+
+- **A derived result over a bare table name.** It would be that table with a second name, and a
+  catalogue entry to keep current for no gain.
+- **A query whose answer can move on its own** — `now()`, `random()` — for the same reason a
+  cube's fact query is refused one.
+- **`MAINTAINED WITHIN n VERSIONS` is refused**, because nothing materialises a derived result
+  yet. Declared without it, the result is computed under your own scope on every read: correct,
+  and not cached. The clause is refused rather than accepted and ignored, which would tell an
+  operator their staleness bound was being honoured when it was not.
+
+A cube and a derived result share a namespace, so the word must match the thing: `DROP CUBE`
+naming a derived result is refused, and reports it as absent rather than confirming it exists.
+
 ## 19.6 Clones and lineage
 
 ```sql

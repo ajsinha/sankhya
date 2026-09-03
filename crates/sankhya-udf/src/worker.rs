@@ -62,9 +62,9 @@ impl Worker {
         let home = tempfile::tempdir().map_err(|error| {
             Refused::NoBoundary(format!("the worker needs a directory and has none: {error}"))
         })?;
-        std::fs::write(home.path().join("harness.py"), HARNESS).map_err(|error| {
-            Refused::NoBoundary(format!("the worker could not be written: {error}"))
-        })?;
+        sankhya_atomicfs::publish(&home.path().join("harness.py"), HARNESS.as_bytes()).map_err(
+            |error| Refused::NoBoundary(format!("the worker could not be written: {error}")),
+        )?;
 
         // The interpreter's own installation, asked of the interpreter rather than guessed.
         // Binding `/usr` wholesale would work and would put a great deal in the jail that has

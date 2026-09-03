@@ -47,6 +47,13 @@ pub enum Statement {
     Create(Box<Definition>),
     /// Drop a cube by name.
     Drop {
+        /// Whether the writer said `DERIVED` or `CUBE`.
+        ///
+        /// They share a namespace --- both are definitions in the same catalogue --- so the
+        /// word decides which of them the statement may remove. `DROP CUBE` naming a derived
+        /// result is refused rather than obeyed: the two are different things to lose, and a
+        /// script that dropped the wrong one would report success.
+        derived: bool,
         /// The cube named.
         name: String,
         /// Whether the statement said `IF EXISTS`.
@@ -108,6 +115,8 @@ pub fn parse(sql: &str) -> Option<Result<Statement, DdlError>> {
     match (opener.0.to_ascii_uppercase().as_str(), opener.1.to_ascii_uppercase().as_str()) {
         ("CREATE", "CUBE") => Some(reader.create()),
         ("DROP", "CUBE") => Some(reader.drop()),
+        ("CREATE", "DERIVED") => Some(reader.create_derived()),
+        ("DROP", "DERIVED") => Some(reader.drop_derived()),
         _ => None,
     }
 }
@@ -350,7 +359,7 @@ impl Reader {
         };
         let name = self.name("a cube name")?;
         self.end_of_statement()?;
-        Ok(Statement::Drop { name, if_exists })
+        Ok(Statement::Drop { derived: false, name, if_exists })
     }
 
     /// `CREATE CUBE <name> FROM <fact> <dimension>+ <measure>+ [MAINTAINED …] [PINNED …]*`
@@ -425,6 +434,54 @@ impl Reader {
 
         self.end_of_statement()?;
         Ok(Statement::Create(Box::new(definition)))
+    }
+
+    /// `CREATE DERIVED <name> FROM ( <query> ) [MAINTAINED WITHIN n VERSIONS]`
+    ///
+    /// # Why this is not `CREATE CUBE` with the clauses left off
+    ///
+    /// Because `validate` refuses a cube with no dimensions and says something useful about it
+    /// --- *a cube with no dimension is a table; define it as one, or say what was meant.* That
+    /// advice is right, and it would become a lie the moment the same statement meant two
+    /// things. The **definition** is the same shape either way, which is `ADR-0014` Option A;
+    /// only the word a person types is different.
+    fn create_derived(&mut self) -> Result<Statement, DdlError> {
+        self.keyword("CREATE")?;
+        self.keyword("DERIVED")?;
+        let name = self.name("a name for the derived result")?;
+        self.keyword("FROM")?;
+        let Some(query) = self.parenthesised() else {
+            return self.fail("a parenthesised query: `FROM ( SELECT … )`");
+        };
+        let query = query?;
+
+        let mut definition = sankhya_cube::model::Definition::derived(name, query, Vec::new());
+        if self.optional_keyword("MAINTAINED") {
+            self.keyword("WITHIN")?;
+            let versions = self.number("a number of versions")?;
+            if !self.optional_keyword("VERSIONS") {
+                self.keyword("VERSION")?;
+            }
+            definition = definition.maintained_within(versions);
+        }
+        self.end_of_statement()?;
+        Ok(Statement::Create(Box::new(definition)))
+    }
+
+    /// `DROP DERIVED [IF EXISTS] <name>`
+    fn drop_derived(&mut self) -> Result<Statement, DdlError> {
+        self.keyword("DROP")?;
+        self.keyword("DERIVED")?;
+        let if_exists = if self.peek_keyword("IF") {
+            self.keyword("IF")?;
+            self.keyword("EXISTS")?;
+            true
+        } else {
+            false
+        };
+        let name = self.name("a name")?;
+        self.end_of_statement()?;
+        Ok(Statement::Drop { derived: true, name, if_exists })
     }
 
     /// `DIMENSION <name> FROM <table> ON <fact column> ( <item>, … )`

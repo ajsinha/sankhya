@@ -220,3 +220,33 @@ fn a_valid_definition_becomes_a_cube_that_answers_for_itself() {
         Some("year")
     );
 }
+
+#[test]
+fn a_derived_result_over_a_bare_table_name_is_refused() {
+    use sankhya_cube::model::Definition;
+    use sankhya_cube::validate::Rejection;
+
+    // Reached from the **catalogue**, not from the statement. `CREATE DERIVED` demands a
+    // parenthesised query and refuses a name before validation ever runs --- so this guards the
+    // other way in: a definition read back from disk, written by an older version or edited by
+    // hand, and validated on adoption.
+    //
+    // A derived result over a table is that table with a second name, plus a catalogue entry, a
+    // fingerprint and a dependency list to keep current for no gain.
+    let over_a_table =
+        Definition::derived("copy", "sales.orders", vec!["sales.orders".to_owned()]);
+    let rejections = over_a_table.validate().expect_err("a name is not a query");
+    assert!(
+        rejections.iter().any(|r| matches!(r, Rejection::DerivedFromATable)),
+        "refused for the reason it is wrong, not some other one: {rejections:?}"
+    );
+
+    // And the same definition over a query is accepted, which is what makes the refusal above
+    // load-bearing rather than a rule against derived results.
+    let over_a_query = Definition::derived(
+        "regional",
+        "(SELECT area FROM sales.regions)",
+        vec!["sales.regions".to_owned()],
+    );
+    assert!(over_a_query.validate().is_ok(), "a query given a name is a derived result");
+}
