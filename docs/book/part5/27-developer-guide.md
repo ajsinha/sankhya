@@ -86,7 +86,7 @@ The rule is: widen the API, never the allowance.
 git clone https://github.com/ajsinha/sankhya.git && cd sankhya
 cargo build --workspace          # several minutes on a first build
 vendor/postgresql/build.sh       # ~2 min, idempotent, 35 MB installed
-cargo test --workspace           # 2,529 tests, none of which needs a database
+cargo test --workspace           # 2,537 tests, none of which needs a database
 ```
 
 Nothing is mocked. The Parquet is real Parquet, the Delta logs are read back by an independent
@@ -99,7 +99,7 @@ Five gates run outside or alongside the suite:
 ```bash
 cargo xtask check-all                        # every repository invariant (§27.4)
 cargo xtask check-concurrency                # ADR-0013's measurements, alone (also inside check-all)
-python3 tools/mutation-audit.py              # 713 deliberate defects, one at a time
+python3 tools/mutation-audit.py              # 718 deliberate defects, one at a time
 cargo xtask check-performance                # the NFR-PERF objectives, as a gate that can fail
 SANKHYA_RELEASE=1 cargo xtask check-package  # the release artifact's platform baseline
 crates/sankhya-cdc-apply/tests/run_e2e.sh    # capture against a live database
@@ -140,7 +140,7 @@ trace of which paragraph went missing — which happened to an owner decision in
 ## 27.5 The mutation audit
 
 ```bash
-python3 tools/mutation-audit.py            # the whole catalogue: 713 sequential cargo test runs
+python3 tools/mutation-audit.py            # the whole catalogue: 718 sequential cargo test runs
 python3 tools/mutation-audit.py splice     # only entries whose label matches
 ```
 
@@ -210,6 +210,22 @@ unwrap_used = "deny"   expect_used = "deny"      panic = "deny"
 todo = "deny"          unimplemented = "deny"
 indexing_slicing = "deny"                        float_cmp = "deny"
 ```
+
+`unsafe_code` is `forbid` rather than `deny` on purpose: `forbid` cannot be relaxed by an
+`#![allow]` inside a crate, so the only way out is for a crate to stop inheriting the workspace
+lints — which shows in its own manifest, where a reviewer looks. **Two crates do**, and
+`check-unsafety` holds the list:
+
+| Crate | Why |
+|---|---|
+| `sankhya-alloc` | A `GlobalAlloc` implementation cannot be written in safe Rust, and the crate is short enough to read in a sitting |
+| `sankhya-sandbox` | [ADR-0023](../../adr/0023-the-sandbox-a-user-function-runs-in.md) Decision 8 — the namespace, mount and `rlimit` syscalls that isolate a user-supplied function are made between `fork` and `exec` |
+
+The check fails the build both ways: for a crate that opts out and is not on the list, and for a
+listed crate that no longer writes any `unsafe` — because a permission that outlives its reason is
+how an exception becomes a habit. Writing the check found that both `sankhya-alloc`'s manifest and
+its module header still said it was *the only* crate in which unsafe code is permitted, which had
+stopped being true.
 
 The denied set is a **safety policy, not a style preference**: a server must not abort on data it
 did not choose. This policy was declared from the first commit and enforced by nothing for five

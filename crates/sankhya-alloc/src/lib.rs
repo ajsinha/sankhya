@@ -1,4 +1,4 @@
-//! The counting allocator, and the only unsafe code in this system.
+//! The counting allocator, and one of the two places this system writes unsafe code.
 //!
 //! # Why this is its own crate
 //!
