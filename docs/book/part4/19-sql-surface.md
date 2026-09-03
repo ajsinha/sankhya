@@ -344,6 +344,23 @@ does not hold:
 ### Using one as a cube measure
 
 ```sql
+CREATE AGGREGATION rms LANGUAGE PYTHON AS $$
+def initial():
+    return {'sq': 0.0, 'n': 0}
+
+def accumulate(state, values):
+    for v in values:
+        state['sq'] += v * v
+        state['n'] += 1
+    return state
+
+def merge(a, b):
+    return {'sq': a['sq'] + b['sq'], 'n': a['n'] + b['n']}
+
+def finish(state):
+    return (state['sq'] / state['n']) ** 0.5 if state['n'] else 0.0
+$$;
+
 CREATE CUBE spread FROM sales.orders
   DIMENSION region FROM sales.regions ON region (LEVEL area = region)
   DIMENSION period FROM sales.orders  ON period (LEVEL quarter = period)
