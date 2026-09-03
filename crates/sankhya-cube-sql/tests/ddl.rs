@@ -245,14 +245,14 @@ fn a_trailing_semicolon_is_accepted_and_nothing_else_is() {
 #[test]
 fn dropping_a_cube_is_read_with_and_without_if_exists() {
     match parse("DROP CUBE sales") {
-        Some(Ok(Statement::Drop { name, if_exists })) => {
+        Some(Ok(Statement::Drop { name, if_exists, .. })) => {
             assert_eq!(name, "sales");
             assert!(!if_exists);
         }
         other => panic!("expected a DROP, got {other:?}"),
     }
     match parse("drop cube if exists sales") {
-        Some(Ok(Statement::Drop { name, if_exists })) => {
+        Some(Ok(Statement::Drop { name, if_exists, .. })) => {
             assert_eq!(name, "sales");
             assert!(if_exists, "IF EXISTS is carried rather than resolved here");
         }

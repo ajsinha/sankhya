@@ -4723,6 +4723,31 @@ CATALOGUE = [
      "        cells\n            .addresses()\n            .map(|address| (address, cells.get(address, Rule::Sum)))\n            .collect()",
      "sankhya-server"),
 
+    # A derived result: a query given a name. `ADR-0014` Option A.
+    ("derived: accept a derived result over a bare table name",
+     "crates/sankhya-cube/src/validate.rs",
+     "        out.push(Rejection::DerivedFromATable);",
+     "        let _ = Rejection::DerivedFromATable;",
+     "sankhya-cube"),
+
+    ("derived: accept a maintained derived result and materialise nothing",
+     "crates/sankhya-server/src/cubes.rs",
+     "    if is_derived && definition.target_lag.is_some() {",
+     "    if false {",
+     "sankhya-server"),
+
+    ("derived: let `DROP CUBE` remove a derived result",
+     "crates/sankhya-server/src/cubes.rs",
+     "        .find(|cube| cube.name() == name && cube.definition().is_derived() == derived)",
+     "        .find(|cube| cube.name() == name)",
+     "sankhya-server"),
+
+    ("derived: list a derived result among the cubes",
+     "crates/sankhya-cube-sql/src/describe.rs",
+     "            self.0.iter().filter(|cube| !cube.definition().is_derived()).collect();",
+     "            self.0.iter().collect();",
+     "sankhya-server"),
+
     # A user's own aggregation as a cube measure.
     ("cube: let a cube assert a composability its function never claimed",
      "crates/sankhya-server/src/cubes.rs",

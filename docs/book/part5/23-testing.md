@@ -14,8 +14,8 @@ Four numbers describe the mechanised half of verification:
 
 | | |
 |---|---|
-| `cargo test --workspace` | 2,562 tests, none of which needs a database |
-| `python3 tools/mutation-audit.py` | 729 specific defects, applied one at a time |
+| `cargo test --workspace` | 2,570 tests, none of which needs a database |
+| `python3 tools/mutation-audit.py` | 733 specific defects, applied one at a time |
 | `cargo xtask check-all` | twenty repository invariants, each proven to fail when violated |
 | `cargo xtask check-performance` | the `NFR-PERF` objectives, as a gate that can fail |
 

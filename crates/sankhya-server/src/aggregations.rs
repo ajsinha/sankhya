@@ -30,6 +30,8 @@ use sankhya_authz::principal::Principal;
 use sankhya_udf::Aggregation;
 
 use crate::wiring::{acknowledged, refusal, Server};
+use datafusion::prelude::SessionContext;
+use std::sync::Arc;
 
 /// The bookkeeping schema aggregation documents live under.
 ///
@@ -249,8 +251,14 @@ pub(crate) fn run(
             std::fs::create_dir_all(&directory).map_err(|error| {
                 refusal(sqlstate::IO_ERROR.as_str(), &error.to_string())
             })?;
-            std::fs::write(document_at(&server.settings.warehouse, &name), encode(&declared))
-                .map_err(|error| refusal(sqlstate::IO_ERROR.as_str(), &error.to_string()))?;
+            // Published, not written. A reader opening `_aggregations/x.json` while it is being
+            // written sees a truncated document --- and a truncated aggregation is one whose
+            // source stops mid-function, which is a thing this server would then try to run.
+            sankhya_atomicfs::publish(
+                &document_at(&server.settings.warehouse, &name),
+                encode(&declared).as_bytes(),
+            )
+            .map_err(|error| refusal(sqlstate::IO_ERROR.as_str(), &error.to_string()))?;
 
             server.remember_aggregation(declared);
             server.record(principal, TableRef::new("", &name), Action::Insert, true);
@@ -287,4 +295,57 @@ fn show(server: &Server) -> Result<QueryResult, QueryFailure> {
         rows,
         tag: "SHOW".to_owned(),
     })
+}
+
+/// How a cube measure declared with `AGGREGATION <name>` is computed.
+///
+/// A closure over the declared set and the worker, so `sankhya-cube-sql` knows nothing
+/// about processes or interpreters --- only that some rules are computed by somebody else,
+/// and what to hand them.
+///
+/// `None` where nothing has been declared or the boundary cannot be built, and a cube that
+/// names one then refuses **by name** rather than answering. A measure that quietly
+/// answered something else would be a number of the right magnitude and no meaning, which
+/// is the failure the whole additivity model exists to prevent.
+pub(crate) fn supplied_rules(server: &Server) -> Option<sankhya_cube_sql::functions::Supplied> {
+    let declared = server.aggregations();
+    if declared.is_empty() {
+        return None;
+    }
+    let worker = server.worker().ok()?;
+    Some(Arc::new(move |name: &str, values: &[f64]| {
+        let Some(aggregation) = declared.iter().find(|held| held.name == name) else {
+            return Err(format!(
+                "this server has no aggregation called `{name}`. `SHOW AGGREGATIONS` \
+                 lists what it has"
+            ));
+        };
+        let state = worker
+            .accumulate(aggregation, &[], values)
+            .map_err(|refused| refused.to_string())?;
+        worker.finish(aggregation, &state).map_err(|refused| refused.to_string())
+    }))
+}
+
+/// Register every declared aggregation against a session.
+///
+/// Registered per session rather than once, because a session is what a statement is planned
+/// against and an aggregation declared a moment ago must be callable by the next statement.
+pub(crate) fn register(server: &Server, context: &SessionContext) {
+    let declared = server.aggregations();
+    if declared.is_empty() {
+        return;
+    }
+    let Ok(worker) = server.worker() else {
+        // Declared and unrunnable. Not registered, so a statement calling one is refused by
+        // name --- which is a better answer than a function that plans and then fails per
+        // batch inside a scan.
+        return;
+    };
+    for aggregation in declared.iter() {
+        context.register_udaf(sankhya_olap::supplied::Supplied::new(
+            Arc::new(aggregation.clone()),
+            Arc::clone(&worker),
+        ));
+    }
 }

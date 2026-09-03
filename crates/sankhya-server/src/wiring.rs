@@ -675,58 +675,6 @@ impl Server {
         }
     }
 
-    /// How a cube measure declared with `AGGREGATION <name>` is computed.
-    ///
-    /// A closure over the declared set and the worker, so `sankhya-cube-sql` knows nothing
-    /// about processes or interpreters --- only that some rules are computed by somebody else,
-    /// and what to hand them.
-    ///
-    /// `None` where nothing has been declared or the boundary cannot be built, and a cube that
-    /// names one then refuses **by name** rather than answering. A measure that quietly
-    /// answered something else would be a number of the right magnitude and no meaning, which
-    /// is the failure the whole additivity model exists to prevent.
-    fn supplied_rules(&self) -> Option<sankhya_cube_sql::functions::Supplied> {
-        let declared = self.aggregations();
-        if declared.is_empty() {
-            return None;
-        }
-        let worker = self.worker().ok()?;
-        Some(Arc::new(move |name: &str, values: &[f64]| {
-            let Some(aggregation) = declared.iter().find(|held| held.name == name) else {
-                return Err(format!(
-                    "this server has no aggregation called `{name}`. `SHOW AGGREGATIONS` \
-                     lists what it has"
-                ));
-            };
-            let state = worker
-                .accumulate(aggregation, &[], values)
-                .map_err(|refused| refused.to_string())?;
-            worker.finish(aggregation, &state).map_err(|refused| refused.to_string())
-        }))
-    }
-
-    /// Register every declared aggregation against a session.
-    ///
-    /// Registered per session rather than once, because a session is what a statement is planned
-    /// against and an aggregation declared a moment ago must be callable by the next statement.
-    fn register_aggregations(&self, context: &SessionContext) {
-        let declared = self.aggregations();
-        if declared.is_empty() {
-            return;
-        }
-        let Ok(worker) = self.worker() else {
-            // Declared and unrunnable. Not registered, so a statement calling one is refused by
-            // name --- which is a better answer than a function that plans and then fails per
-            // batch inside a scan.
-            return;
-        };
-        for aggregation in declared.iter() {
-            context.register_udaf(sankhya_olap::supplied::Supplied::new(
-                Arc::new(aggregation.clone()),
-                Arc::clone(&worker),
-            ));
-        }
-    }
 
     /// Assemble a server that can actually answer queries.
     pub fn with_tables(
@@ -1189,7 +1137,7 @@ impl Server {
             context,
             Arc::clone(&catalog),
             Arc::clone(&self.query_log),
-            self.supplied_rules(),
+            crate::aggregations::supplied_rules(self),
         );
         // Description alongside navigation, always. A surface a client can use only by
         // already knowing the model is a surface only its author can use, and a picker that
@@ -2454,7 +2402,8 @@ impl Server {
         // authorization story for cubes: there is no second implementation of the rule, and
         // therefore no second implementation to disagree with the first.
         self.register_cubes(&context, &principal, sql);
-        self.register_aggregations(&context);
+        crate::aggregations::register(self, &context);
+        crate::cubes::register_derived(self, &context, &principal);
 
         // `block_in_place` rather than a bare `block_on`. This method is called from inside
         // a Tokio task — the connection's — and blocking that thread directly panics,

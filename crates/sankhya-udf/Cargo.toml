@@ -14,6 +14,10 @@ layer = 1
 workspace = true
 
 [dependencies]
+# The worker's own file is published rather than written. It lands in a directory this process
+# just made, so nothing is reading it --- and an excuse costs more than the one line: excuses
+# accumulate, and the next one is argued against this one.
+sankhya-atomicfs = { path = "../sankhya-atomicfs" }
 sankhya-sandbox = { path = "../sankhya-sandbox" }
 tempfile = { workspace = true }
 
