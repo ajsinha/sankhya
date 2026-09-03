@@ -12,6 +12,7 @@ mod lockorder;
 mod buildtree;
 mod docnumbers;
 mod surfaces;
+mod unsafety;
 mod package;
 mod concurrency;
 
@@ -190,6 +191,9 @@ fn main() -> ExitCode {
     if run_all || task == "check-lints" {
         failed |= !check_lints(&root);
     }
+    if run_all || task == "check-unsafety" {
+        failed |= !unsafety::check(&root);
+    }
     if run_all || task == "check-mutations" {
         failed |= !check_mutations(&root);
     }
@@ -251,6 +255,7 @@ fn main() -> ExitCode {
                 | "check-features"
                 | "check-lints"
                 | "check-mutations"
+                | "check-unsafety"
                 | "check-doc-numbers"
                 | "check-writers"
                 | "check-invariants"
@@ -273,7 +278,7 @@ fn main() -> ExitCode {
         eprintln!(
             "usage: cargo xtask \
              [check-all|check-tests|check-concurrency|check-invariants|check-writers|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
-             |check-features|check-lints|check-mutations|check-doc-numbers\
+             |check-features|check-lints|check-unsafety|check-mutations|check-doc-numbers\
              |check-catalogues|write-catalogues|check-logging|check-package|check-build-tree|check-surfaces|check-atomic-writes|check-lock-order|sweep|sweep-dry-run|sync-doc-numbers|check-performance]"
         );
         return ExitCode::from(2);

@@ -4674,6 +4674,44 @@ CATALOGUE = [
 
     # Simpson's rule. An even sample count has no answer under it, and both ways of pretending
     # otherwise --- dropping a sample, falling back to the trapezoid --- return a number.
+    # The boundary a user-supplied function runs behind. Each entry removes one mechanism and
+    # the test that proves that prohibition must fail --- which is the only way to know the
+    # mechanism is the thing doing the work, rather than something else about this machine.
+    #
+    # There is deliberately **no entry for `RLIMIT_FSIZE`**. Writing is stopped twice, by the
+    # read-only bind and by a file-size limit of zero, so removing either alone leaves writing
+    # refused and the mutation survives. That is what defence in depth means and it is not a
+    # gap in the tests.
+    ("sandbox: leave the worker on the host's network",
+     "crates/sankhya-sandbox/src/jail.rs",
+     "    | libc::CLONE_NEWNET\n",
+     "",
+     "sankhya-sandbox"),
+
+    ("sandbox: leave the worker on the host's filesystem",
+     "crates/sankhya-sandbox/src/jail.rs",
+     "    | libc::CLONE_NEWNS\n",
+     "",
+     "sankhya-sandbox"),
+
+    ("sandbox: bind the allowed tree writable rather than read-only",
+     "crates/sankhya-sandbox/src/jail.rs",
+     "                libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_REC,",
+     "                libc::MS_BIND | libc::MS_REMOUNT | libc::MS_REC,",
+     "sankhya-sandbox"),
+
+    ("sandbox: let a function that never returns keep running",
+     "crates/sankhya-sandbox/src/lib.rs",
+     "                    if started.elapsed() >= bounds.wall {",
+     "                    if false {",
+     "sankhya-sandbox"),
+
+    ("sandbox: accept more output than the caller allowed",
+     "crates/sankhya-sandbox/src/lib.rs",
+     "                    if answered.len() > bounds.output {",
+     "                    if false {",
+     "sankhya-sandbox"),
+
     # A cube over a declared query. Its dependency list is what authorization, the cache key
     # and the invalidation are all decided against, and the query's *text* does not say what
     # they are.

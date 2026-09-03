@@ -94,6 +94,11 @@ tempfile      = { version = "3" }
 # Certificates for tests, generated rather than committed: a private key in a repository
 # is a private key, whatever the file is named. `ring` again, for the reason above.
 rcgen         = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+# The syscalls `sankhya-sandbox` makes between `fork` and `exec` --- `unshare`, `setrlimit`,
+# `prctl`. Nothing else in the workspace depends on it, and `check-layers` keeps it that way:
+# a second crate reaching for `libc` is a second crate writing `unsafe`, which `ADR-0023`
+# Decision 8 forbids by name.
+libc          = { version = "0.2" }
 
 [workspace.lints.rust]
 unsafe_code                   = "forbid"

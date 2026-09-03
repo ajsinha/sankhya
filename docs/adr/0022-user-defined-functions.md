@@ -119,10 +119,11 @@ rather than in the client.
 
 ## What this does not decide
 
-- **Sandboxing and resource limits.** A user function is arbitrary code; what it may import,
-  how long it may run, and how much memory it may take are a security question with its own
-  answer, and `ADR-0010`'s *"inside the trust boundary of the data it sees"* is the start of it
-  rather than the whole.
+- ~~**Sandboxing and resource limits.**~~ **Decided 2026-09-03 in
+  [ADR-0023](0023-the-sandbox-a-user-function-runs-in.md).** The boundary is the operating
+  system and never the interpreter; each prohibition names its mechanism; where the mechanism
+  does not exist the feature is refused rather than degraded; and creating a function is a grant
+  rather than a right.
 - **Languages beyond Python.** The owner directive names Rust, C++ and Java to follow. The
   contract is deliberately language-neutral — a batch in, a batch out — so adding one is a
   worker, not a redesign.

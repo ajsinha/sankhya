@@ -264,6 +264,49 @@ an identifier must exist downstream, per-subject encryption keys permit cryptogr
 > deletes records that were legally required to persist. Chapter 15, *Maintenance, tiering and the
 > data lifecycle*, specifies the ladder that keeps them apart.
 
+## 13.7a The boundary a user-supplied function runs behind
+
+A user may write a function in Python and have SANKHYA compute it
+([ADR-0022](../../adr/0022-user-defined-functions.md)). That is arbitrary code, handed rows a
+policy has already filtered **for a particular principal** — so the question is not whether it is
+convenient but what stops it from publishing them.
+
+[ADR-0023](../../adr/0023-the-sandbox-a-user-function-runs-in.md) answers it, and the first
+decision is the one that decides all the others:
+
+> **The isolation is enforced by the kernel, outside the process running the code.** What Python
+> does inside that process is not part of the boundary and is not relied on for any property.
+
+The cheap alternative — stripping `__builtins__`, an audit hook, a source rewriter — is refused by
+name. It is not a weak boundary; it is a **decoration**, and a decoration is worse than nothing,
+because with no boundary nobody grants the capability lightly.
+
+| Prohibition | Mechanism | What it stops |
+|---|---|---|
+| No network | A network namespace with no interface but a disconnected loopback | Exfiltration — a socket turns *may read* into *may publish* |
+| No filesystem | A mount namespace pivoted onto a read-only tree holding the interpreter and nothing else | Reading the warehouse directly, which bypasses every policy; reading the server's keys; writing anything at all |
+| No subprocess | The same mount namespace: inside the jail there is nothing to exec | Escaping the two above by starting something that was not the worker |
+| Bounded time | `RLIMIT_CPU`, and a wall-clock deadline the parent enforces by killing | A function that never returns is an outage, not an error |
+| Bounded memory and output | `RLIMIT_AS`, `RLIMIT_FSIZE` of zero, and a cap on the bytes returned | One query taking the machine down |
+
+Three things about this are worth reading twice, because each is a place the obvious design is
+wrong:
+
+- **A `seccomp` filter cannot deliver "no subprocess".** The mechanisms are applied between `fork`
+  and `exec`, and the child must `exec` once to become the worker at all; a filter denying `execve`
+  denies that one, and `seccomp` has no state with which to allow the first and refuse the second.
+  What delivers the prohibition is the empty jail.
+- **Where the mechanism does not exist, the feature is refused rather than degraded.** Several
+  distributions ship unprivileged user namespaces disabled and several operators turn them off
+  deliberately. `CREATE FUNCTION` then fails, naming the mechanism. It does not fall back.
+- **Creating one is a grant, not a right.** The sandbox stops the code reaching out; it cannot
+  review it. `CREATE FUNCTION` needs a capability that is not granted by default, and the source is
+  stored and shown so the grant is reviewable.
+
+Each prohibition is proved by trying it — a process that opens a socket, reads a file it was not
+given, writes, loops forever — because a test that asserted which flags were passed would pass for
+a mechanism this kernel does not honour, and that is precisely the case worth detecting.
+
 ## 13.8 How this is tested, and why mutation testing is not optional here
 
 A negative test suite is a first-class deliverable: for every policy fixture it asserts that

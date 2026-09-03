@@ -1,0 +1,44 @@
+[package]
+name         = "sankhya-sandbox"
+description  = "The operating-system boundary a user-supplied function runs behind."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license-file.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 0
+
+# Deliberately NOT `workspace = true`, and one of exactly two crates where that is so ---
+# `sankhya-alloc` is the other, for the same kind of reason.
+#
+# The workspace forbids `unsafe_code`. Every mechanism this crate exists to apply --- entering a
+# namespace, setting a resource limit, dropping the ability to gain privileges --- is a syscall
+# made between `fork` and `exec`, and in Rust that is `unsafe`. `ADR-0023` Decision 8 chose this
+# over the two alternatives: delegating to whatever sandbox binary happens to be installed, which
+# makes the security property somebody else's, and dropping the feature.
+#
+# `cargo xtask check-lints` fails the build if a second crate opts out. An exception that is only
+# a convention becomes two exceptions and then a policy.
+[lints.rust]
+# `deny` rather than the workspace's `forbid`, so a single module may allow it and the rest of
+# the crate may not. `forbid` cannot be relaxed locally, which is why the workspace uses it.
+unsafe_code                   = "deny"
+unreachable_pub               = "warn"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+unwrap_used   = "deny"
+expect_used   = "deny"
+panic         = "deny"
+todo          = "deny"
+unimplemented = "deny"
+indexing_slicing = "deny"
+float_cmp     = "deny"
+
+[dependencies]
+libc = { workspace = true }
+# A dependency rather than a dev-dependency: the jail's root is a temporary directory the
+# parent owns and the child pivots onto, so it is part of the mechanism and not of its tests.
+tempfile = { workspace = true }
