@@ -111,6 +111,13 @@ class Connection:
         self._socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self._buffer = b""
         self._parameters: dict = {}
+        # Bytes over the socket, counted rather than estimated.
+        #
+        # Not instrumentation for its own sake: the reason to compute in the warehouse is that
+        # only the *answers* cross the wire, and that is a claim until somebody measures it. A
+        # counter here lets an example show the difference instead of asserting it.
+        self._sent = 0
+        self._received = 0
         self._startup(user, database, password)
 
     # -- connecting ---------------------------------------------------------
@@ -126,7 +133,9 @@ class Connection:
         ):
             body += key.encode() + b"\0" + value.encode() + b"\0"
         body += b"\0"
-        self._socket.sendall(struct.pack("!i", len(body) + 4) + body)
+        startup = struct.pack("!i", len(body) + 4) + body
+        self._sent += len(startup)
+        self._socket.sendall(startup)
 
         while True:
             tag, payload = self._read_message()
@@ -147,6 +156,22 @@ class Connection:
                 raise self._refusal(payload)
             elif tag == b"Z":
                 return
+
+    @property
+    def bytes_sent(self) -> int:
+        """Bytes this connection has put on the wire."""
+        return self._sent
+
+    @property
+    def bytes_received(self) -> int:
+        """Bytes this connection has taken off the wire.
+
+        The number that makes the case for computing in the warehouse: a statement that takes a
+        quantile of a stored vector receives one number per row, and the same answer reached by
+        fetching the vectors receives every outcome. The difference is not an argument --- it is
+        a measurement, and this is what measures it.
+        """
+        return self._received
 
     @property
     def parameters(self) -> dict:
@@ -229,7 +254,9 @@ class Connection:
     # -- framing ------------------------------------------------------------
 
     def _send(self, tag: bytes, body: bytes) -> None:
-        self._socket.sendall(tag + struct.pack("!i", len(body) + 4) + body)
+        message = tag + struct.pack("!i", len(body) + 4) + body
+        self._sent += len(message)
+        self._socket.sendall(message)
 
     def _read_message(self) -> tuple:
         header = self._read_exactly(5)
@@ -242,6 +269,7 @@ class Connection:
     def _read_exactly(self, count: int) -> bytes:
         while len(self._buffer) < count:
             chunk = self._socket.recv(65536)
+            self._received += len(chunk)
             if not chunk:
                 raise WireError("the server closed the connection")
             self._buffer += chunk

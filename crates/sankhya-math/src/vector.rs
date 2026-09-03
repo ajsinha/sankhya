@@ -34,7 +34,9 @@ use crate::reduce::deterministic_sum;
 use std::fmt;
 
 /// Why a kernel could not be applied.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+// No longer `Copy`: `Refused` carries the reason it was refused, and a reason that fits
+// in a register is a reason that says nothing.
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum VectorError {
     /// Two vectors of different lengths were combined.
     ///
@@ -58,6 +60,16 @@ pub enum VectorError {
     /// place the vector at a definite similarity to everything, which sorts it to the top
     /// or bottom of every ranked result.
     ZeroMagnitude,
+    /// A refusal that came from somewhere else, carried rather than flattened.
+    ///
+    /// # Why this exists
+    ///
+    /// A wrapper that maps every failure of a kernel it calls onto the nearest variant here
+    /// loses the reason. `vec_quantile` did exactly that: a probability outside `[0, 1]` was
+    /// reported as [`Self::Empty`], so somebody was sent to look at their data instead of
+    /// their argument. The parity soak found it --- every path refused identically, and
+    /// consistent refusal is still refusal.
+    Refused(String),
 }
 
 impl fmt::Display for VectorError {
@@ -78,6 +90,7 @@ impl fmt::Display for VectorError {
                  angle to the origin is not zero and not one, and returning either places \
                  the vector at a definite similarity to everything",
             ),
+            Self::Refused(reason) => f.write_str(reason),
         }
     }
 }

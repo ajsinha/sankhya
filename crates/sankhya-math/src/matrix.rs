@@ -56,6 +56,20 @@ pub enum MatrixError {
         /// Its columns.
         columns: usize,
     },
+    /// The matrix is square and is not symmetric.
+    ///
+    /// # Why this is not [`Self::NotSquare`]
+    ///
+    /// It was, and the message it produced was *"this operation needs a square matrix and was
+    /// given 8 by 8"* --- which is a refusal telling somebody their 8x8 matrix is not square.
+    /// Found by the column soak, where a Cholesky of a stored column refused with it.
+    ///
+    /// A message that contradicts itself is worse than a vague one: it sends the reader to
+    /// check the shape, which is correct, and they find nothing wrong with it.
+    NotSymmetric {
+        /// The order of the matrix that was given.
+        size: usize,
+    },
     /// The matrix has no inverse.
     ///
     /// Reported rather than approximated. A near-singular matrix inverted anyway produces
@@ -87,6 +101,13 @@ impl fmt::Display for MatrixError {
                 f,
                 "this operation needs a square matrix and was given {rows} by {columns}"
             ),
+            Self::NotSymmetric { size } => write!(
+                f,
+                "this operation is defined on a symmetric matrix, and this {size} by {size} \
+                 one is not --- it does not equal its own transpose. Refused rather than \
+                 symmetrised: the eigenvalues of `(A + At)/2` answer a question about a \
+                 different matrix"
+            ),
             Self::Singular => f.write_str(
                 "the matrix is singular and has no inverse. Refusing rather than \
                  approximating: an almost-singular matrix inverted anyway produces enormous \
@@ -107,7 +128,9 @@ impl From<VectorError> for MatrixError {
                 left_columns: left,
                 right_rows: right,
             },
-            VectorError::Empty | VectorError::ZeroMagnitude => Self::Degenerate,
+            VectorError::Empty | VectorError::ZeroMagnitude | VectorError::Refused(_) => {
+                Self::Degenerate
+            }
         }
     }
 }

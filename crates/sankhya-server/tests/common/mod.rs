@@ -87,7 +87,77 @@ pub(crate) fn write_warehouse(root: &std::path::Path) {
     }
 
     write_the_dimension_table(root);
+    write_the_risk_table(root);
     declare_the_sample_cube(root);
+}
+
+/// A table of profit-and-loss vectors, one per position.
+///
+/// # Why the fixture has one at all
+///
+/// Because the function catalogue exists so that arithmetic happens **where the data is**, and
+/// nothing demonstrated that. Every example called a function on a literal carried from the
+/// client --- which is precisely the thing the catalogue is meant to make unnecessary, and a
+/// fixture with no vector column is why nobody noticed.
+///
+/// A P&L vector per position is the shape a risk calculation actually has: five hundred
+/// simulated outcomes for one instrument, and a value-at-risk is a quantile of them. Small
+/// enough to check by hand, real enough to be the example.
+fn write_the_risk_table(root: &std::path::Path) {
+    use arrow_array::builder::{FixedSizeListBuilder, Float64Builder};
+
+    const OUTCOMES: i32 = 64;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("position_id", DataType::Int64, false),
+        Field::new("book", DataType::Utf8, false),
+        Field::new(
+            "pnl",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float64, true)),
+                OUTCOMES,
+            ),
+            false,
+        ),
+    ]));
+    let table_root = root.join("risk").join("positions");
+    let publication = Publication::external(&table_root, "positions");
+    publication.create(&schema).expect("creating the risk table");
+
+    let mut vectors = FixedSizeListBuilder::new(Float64Builder::new(), OUTCOMES);
+    let mut ids: Vec<i64> = Vec::new();
+    let mut books: Vec<&str> = Vec::new();
+    for position in 0..12i64 {
+        ids.push(position + 1);
+        books.push(if position % 3 == 0 { "rates" } else if position % 3 == 1 { "credit" } else { "equity" });
+        // A spread that differs per position, so a quantile across positions is not the same
+        // number twelve times --- which is what a fixture of identical rows would produce, and
+        // an example that showed one would demonstrate nothing.
+        #[allow(clippy::cast_precision_loss)]
+        let scale = 1.0 + position as f64 * 0.4;
+        let outcomes: Vec<f64> = (0..OUTCOMES)
+            .map(|outcome| {
+                let t = f64::from(outcome) / f64::from(OUTCOMES) * std::f64::consts::TAU;
+                // Deterministic, so the expected numbers in a test are the same every run.
+                (t.sin() * 3.0 + (t * 2.7).cos() * 1.5) * scale
+            })
+            .collect();
+        vectors.values().append_slice(&outcomes);
+        vectors.append(true);
+    }
+
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(ids)),
+            Arc::new(StringArray::from(books)),
+            Arc::new(vectors.finish()),
+        ],
+    )
+    .expect("a valid batch");
+    publication
+        .append(1, "part-0000.parquet", &batch, Lsn::new(12))
+        .expect("publishing the risk table");
 }
 
 /// The member table a dimension hangs on.
@@ -507,11 +577,14 @@ pub(crate) fn first_column_oid(port: u16, sql: &str) -> Option<i32> {
     let buffer = exchange(port, sql);
     let mut at = 0usize;
     while at + 5 <= buffer.len() {
+        // Bounds-checked accessors rather than indexing: this walks a wire buffer, and a
+        // malformed frame is a server defect worth seeing as a returned `None` rather than as
+        // a panic inside a helper.
         let length = i32::from_be_bytes([
-            buffer[at + 1],
-            buffer[at + 2],
-            buffer[at + 3],
-            buffer[at + 4],
+            *buffer.get(at + 1)?,
+            *buffer.get(at + 2)?,
+            *buffer.get(at + 3)?,
+            *buffer.get(at + 4)?,
         ]);
         let length = usize::try_from(length).ok()?;
         if length < 4 || at + 1 + length > buffer.len() {
@@ -519,8 +592,8 @@ pub(crate) fn first_column_oid(port: u16, sql: &str) -> Option<i32> {
         }
         // `T`, the row description: a field count, then per field a name, a table OID, a
         // column number, and the type OID.
-        if buffer[at] == b'T' {
-            let body = &buffer[at + 5..at + 1 + length];
+        if buffer.get(at) == Some(&b'T') {
+            let body = buffer.get(at + 5..at + 1 + length)?;
             let end = body.iter().skip(2).position(|byte| *byte == 0)? + 2;
             let type_at = end + 1 + 4 + 2;
             return Some(i32::from_be_bytes([

@@ -155,12 +155,16 @@ pub fn functions() -> Vec<ScalarUDF> {
                 return Err(vector::VectorError::Empty);
             };
             let mut values = a.to_vec();
+            // The quantile's own error, not `Empty`. Mapping every failure to "empty vector"
+            // reported a probability outside `[0, 1]` as an empty input --- which sent
+            // somebody to look at their data instead of their argument. Found by the parity
+            // soak, where the message was the only thing that said what had gone wrong.
             sankhya_math::quantile(
                 &mut values,
                 probability,
                 sankhya_math::Convention::LinearInterpolation,
             )
-            .map_err(|_| vector::VectorError::Empty)
+            .map_err(|reason| vector::VectorError::Refused(reason.to_string()))
         })),
     ]
 }

@@ -4,7 +4,7 @@
 //! is it symmetric, is it positive definite, what is its rank --- reads a whole matrix and
 //! answers with a single value, and neither of the other two wrappers fits.
 
-use arrow_array::{Array, ArrayRef, FixedSizeListArray, Float64Array, ListArray};
+use arrow_array::{ArrayRef, Float64Array};
 use arrow_schema::DataType;
 use datafusion::common::{exec_err, Result};
 use datafusion::logical_expr::{
@@ -79,11 +79,15 @@ impl ScalarUDFImpl for Property {
         };
         let array = first.clone().into_array(rows)?;
 
+        // Borrowed rather than copied. A `FixedSizeList` stores its rows end to end, so a row
+        // is a slice with a known stride --- and copying one per row was measured at 25x the
+        // cost for a narrow column. See `rows`.
+        let mut vectors = crate::rows::Vectors::read(&array, self.name)?;
         let mut out: Vec<Option<f64>> = Vec::with_capacity(rows);
         for row in 0..rows {
-            match flat_at(&array, row, self.name)? {
+            match vectors.row(row) {
                 None => out.push(None),
-                Some(values) => match (self.kernel)(&values) {
+                Some(values) => match (self.kernel)(values) {
                     Ok(value) => out.push(Some(value)),
                     Err(reason) => return exec_err!("{}: {reason}", self.name),
                 },
@@ -91,38 +95,4 @@ impl ScalarUDFImpl for Property {
         }
         Ok(ColumnarValue::Array(Arc::new(Float64Array::from(out))))
     }
-}
-
-/// One row's flat array of doubles.
-fn flat_at(array: &ArrayRef, row: usize, function: &str) -> Result<Option<Vec<f64>>> {
-    if array.is_null(row) {
-        return Ok(None);
-    }
-    let values: ArrayRef = match array.data_type() {
-        DataType::FixedSizeList(_, _) => {
-            let Some(list) = array.as_any().downcast_ref::<FixedSizeListArray>() else {
-                return exec_err!("{function}: expected a fixed-size list");
-            };
-            list.value(row)
-        }
-        DataType::List(_) => {
-            let Some(list) = array.as_any().downcast_ref::<ListArray>() else {
-                return exec_err!("{function}: expected a list");
-            };
-            list.value(row)
-        }
-        other => {
-            return exec_err!(
-                "{function} needs an array of doubles, and this column is {other}. Refused \
-                 rather than coerced: a coercion computes a real answer from the wrong thing"
-            )
-        }
-    };
-    let Some(doubles) = values.as_any().downcast_ref::<Float64Array>() else {
-        return exec_err!(
-            "{function} needs an array of doubles, and this one holds {}",
-            values.data_type()
-        );
-    };
-    Ok(Some((0..doubles.len()).map(|i| doubles.value(i)).collect()))
 }

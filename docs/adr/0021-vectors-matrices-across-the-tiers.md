@@ -121,6 +121,34 @@ The alternative — PostgreSQL's `float8[][]` — was rejected because its dimen
 property of the *value* rather than the type, so a column could hold a 2×3 in one row and a
 4×4 in the next, and the shape would have to be re-read per row to know what was there.
 
+## Decision 4a — A shape is deduced only where a guess is impossible
+
+**Added 2026-09-02**, after the parity soak found the catalogue holding two matrix conventions:
+`mat_cholesky(vec_of(...))` answered and `mat_determinant(vec_of(...))` refused. One surface, two
+rules, and a user meets both within a minute of each other.
+
+The refusal was deliberate and its reasoning was sound as far as it went: assuming a matrix is
+square is wrong for every rectangular one, and produces numbers from values that were never in
+the same row.
+
+What it missed is that **a stored matrix column carries no shape.** A `FixedSizeList` read back
+from Parquet has no tensor metadata — only `mat_of(rows, columns, ...)` sets it, and that takes
+scalar arguments and so cannot name a column at all. Requiring a declared shape therefore made
+`mat_determinant`, `mat_trace`, `mat_inverse` and `mat_solve` unusable on real data.
+
+So the line is not *declared or not*. It is **whether a guess is possible**:
+
+| | Rule | Why |
+|---|---|---|
+| Defined only on a square matrix — determinant, trace, inverse, solve, Cholesky, eigen | The order may be deduced from the length | Four values are a 2×2 or they are not this function's argument. There is nothing to guess wrong. |
+| Defined on a rectangular matrix — transpose, multiply, matrix-vector | A declared shape is required | Sixteen values are a 4×4 or a 2×8, and the wrong one produces numbers from values that were never in the same row. |
+
+A declared shape always wins where there is one, so nothing that names its shape is ever
+second-guessed. The deduction applies only where the alternative was a refusal.
+
+> **Two conventions in one catalogue is not a safety property.** It is a surface a user has to
+> learn twice, and the half that refuses is the half that cannot be reached from a column.
+
 ## Decision 5 — An index may rank candidates; only a kernel may report a distance
 
 `pgvector` brings HNSW and IVFFlat indexes, and they are the reason to want it: a nearest-

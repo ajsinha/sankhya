@@ -145,6 +145,58 @@ impl Operation {
     const fn returns_array(self) -> bool {
         !matches!(self, Self::Determinant | Self::Trace)
     }
+
+    /// Whether this operation is defined only on a square matrix.
+    ///
+    /// # Why this distinction earns its keep
+    ///
+    /// A matrix arrives one of two ways: from `mat_of(rows, columns, ...)`, which declares its
+    /// shape in the field's metadata, or as a plain array of doubles, which declares nothing.
+    /// The second happens constantly --- a stored `FixedSizeList` column, a `vec_of` literal,
+    /// the output of another matrix function.
+    ///
+    /// For a **rectangular** operation, guessing the shape is the failure the refusal below
+    /// exists for: sixteen values are a 4×4 or a 2×8, and transposing the wrong one produces
+    /// numbers from values that were never in the same row. That case must be refused.
+    ///
+    /// For an operation that is **only defined on a square matrix** --- a determinant, a
+    /// trace, an inverse --- there is nothing to guess. Any other shape is invalid input, so
+    /// taking the order as the square root of the length is a deduction rather than a guess,
+    /// and refusing instead makes `mat_determinant` reject an array that `mat_cholesky`
+    /// accepts. Two matrix conventions in one catalogue is not a safety property; it is a
+    /// surface a user has to learn twice.
+    const fn needs_square(self) -> bool {
+        matches!(self, Self::Determinant | Self::Trace | Self::Inverse | Self::Solve)
+    }
+}
+
+/// How many values the first argument holds, when its type says.
+///
+/// A `FixedSizeList` carries its width in its type, which is exactly the case this deduction
+/// serves: a stored matrix column, or a `vec_of` literal.
+fn fixed_length(field: Option<&FieldRef>) -> Option<usize> {
+    match field?.data_type() {
+        DataType::FixedSizeList(_, width) => usize::try_from(*width).ok(),
+        _ => None,
+    }
+}
+
+/// How many values the first argument holds at execution.
+fn first_length(args: &datafusion::logical_expr::ScalarFunctionArgs) -> Option<usize> {
+    match args.arg_fields.first()?.data_type() {
+        DataType::FixedSizeList(_, width) => usize::try_from(*width).ok(),
+        _ => None,
+    }
+}
+
+/// The order of a square matrix held flat, if the length admits one.
+fn square_order(length: usize) -> Option<(usize, usize)> {
+    if length == 0 {
+        return None;
+    }
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let side = (length as f64).sqrt().round() as usize;
+    (side * side == length).then_some((side, side))
 }
 
 /// One matrix function, wired to the planner.
@@ -197,6 +249,14 @@ impl ScalarUDFImpl for MatrixFunction {
 
         let first = args.arg_fields.first().and_then(shape_of);
         let second = args.arg_fields.get(1).and_then(shape_of);
+        let first = first.or_else(|| {
+            // Same deduction as at execution: a square-only operation can take its order from
+            // the length, because any other shape is invalid input rather than an ambiguity.
+            self.operation
+                .needs_square()
+                .then(|| fixed_length(args.arg_fields.first()).and_then(square_order))
+                .flatten()
+        });
         let Some(first) = first else {
             return datafusion::common::plan_err!(
                 "{}: its argument declares no matrix shape",
@@ -238,12 +298,23 @@ impl ScalarUDFImpl for MatrixFunction {
         let Some(first_field) = args.arg_fields.first() else {
             return exec_err!("{}: no field information for its argument", self.name);
         };
-        let Some((rows, columns)) = shape_of(first_field) else {
+        // The declared shape if there is one, and for a square-only operation the deduced one
+        // if there is not --- see `needs_square`. A rectangular operation still refuses,
+        // because sixteen values are a 4x4 or a 2x8 and transposing the wrong one produces
+        // numbers from values that were never in the same row.
+        let declared = shape_of(first_field);
+        let deduced = self
+            .operation
+            .needs_square()
+            .then(|| first_length(&args).and_then(square_order))
+            .flatten();
+        let Some((rows, columns)) = declared.or(deduced) else {
             return exec_err!(
                 "{}: the column '{}' declares no matrix shape. A matrix is stored flat, so \
-                 the shape must come from field metadata ('{TENSOR_EXTENSION}'). Refusing \
-                 rather than assuming it is square: that is wrong for every rectangular \
-                 matrix and produces numbers from values that were never in the same row",
+                 the shape must come from field metadata ('{TENSOR_EXTENSION}') --- build it \
+                 with `mat_of(rows, columns, ...)`. Refusing rather than assuming it is \
+                 square: that is wrong for every rectangular matrix and produces numbers from \
+                 values that were never in the same row",
                 self.name,
                 first_field.name()
             );

@@ -187,7 +187,7 @@ async fn every_registered_function_is_in_the_catalogue_and_the_reverse() {
     use std::collections::BTreeSet;
 
     let registered: BTreeSet<String> = sankhya_functions::names().into_iter().collect();
-    let described: BTreeSet<String> = sankhya_functions::catalogue::catalogue()
+    let described: BTreeSet<String> = sankhya_functions::catalogue::mine()
         .iter()
         .map(|entry| entry.name.to_owned())
         .collect();
@@ -210,7 +210,7 @@ async fn every_registered_function_is_in_the_catalogue_and_the_reverse() {
 async fn every_catalogue_entry_says_enough_to_offer_the_function() {
     // What a binding needs from an entry, and a client needs from a picker. An entry that
     // named a function and said nothing else would be a list a `SELECT` already gives.
-    for entry in sankhya_functions::catalogue::catalogue() {
+    for entry in sankhya_functions::catalogue::mine() {
         assert!(!entry.category.is_empty(), "{} has no category", entry.name);
         assert!(
             entry.about.len() > 20,
@@ -234,7 +234,7 @@ async fn the_declared_arity_is_the_arity_the_function_enforces() {
     //
     // Checked by calling each with **one argument too many** and requiring a refusal that says
     // so --- which also proves the arity check is reached before anything else.
-    for entry in sankhya_functions::catalogue::catalogue() {
+    for entry in sankhya_functions::catalogue::mine() {
         if entry.takes != sankhya_functions::Takes::Numbers {
             // Only the numeric ones can be called with plain literals here; the rest need an
             // array, and building one per shape would test the fixture rather than the arity.

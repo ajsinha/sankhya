@@ -223,41 +223,72 @@ async fn a_null_matrix_yields_a_null_and_not_a_zero_one() {
 }
 
 #[tokio::test]
-async fn a_column_with_no_declared_shape_is_refused_rather_than_assumed_square() {
-    // The obvious guess is wrong for every rectangular matrix, and produces numbers from
-    // values that were never in the same row — each of which looks ordinary.
-    let mut builder = FixedSizeListBuilder::new(Float64Builder::new(), 4);
-    for value in [1.0, 2.0, 3.0, 4.0] {
-        builder.values().append_value(value);
-    }
-    builder.append(true);
-
-    // No tensor metadata on this field, deliberately.
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        "unshaped",
-        DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, true)), 4),
-        true,
-    )]));
-    let batch = RecordBatch::try_new(schema, vec![Arc::new(builder.finish())]).expect("valid");
+async fn a_column_with_no_declared_shape_is_deduced_only_where_a_guess_is_impossible() {
+    // **This test asserted the opposite until 2026-09-02**, and the reasoning it carried was
+    // sound for the case it had in mind: assuming a matrix is square is wrong for every
+    // rectangular one, and produces numbers from values that were never in the same row.
+    //
+    // What that reasoning missed is that a **stored** matrix column carries no shape. A
+    // `FixedSizeList` read back from Parquet has no tensor metadata, so requiring one made
+    // `mat_determinant`, `mat_trace`, `mat_inverse` and `mat_solve` unusable on real data ---
+    // reachable only through `mat_of(4, 4, ...)`, which takes sixteen scalar arguments and so
+    // cannot name a column at all.
+    //
+    // The distinction that resolves it is not "declared or not" but **whether a guess is
+    // possible**. A determinant is defined only on a square matrix, so four values are a 2x2
+    // or they are not a determinant's argument; there is nothing to guess wrong. A transpose
+    // is defined on both, so sixteen values are a 4x4 or a 2x8 and the guess is real.
+    let unshaped = |width: i32, values: Vec<f64>| {
+        let mut builder = FixedSizeListBuilder::new(Float64Builder::new(), width);
+        for value in values {
+            builder.values().append_value(value);
+        }
+        builder.append(true);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "unshaped",
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, true)), width),
+            true,
+        )]));
+        RecordBatch::try_new(schema, vec![Arc::new(builder.finish())]).expect("valid")
+    };
 
     let context = systems().await;
     context
-        .register_batch("unshaped", batch)
+        .register_batch("unshaped", unshaped(4, vec![1.0, 2.0, 3.0, 4.0]))
         .expect("registering");
 
-    let outcome = context
+    // Square-only: deduced, because 1x4 is not a determinant's argument either.
+    let answered = context
         .sql("SELECT mat_determinant(unshaped) FROM unshaped")
         .await
         .expect("planning")
         .collect()
-        .await;
+        .await
+        .expect("a determinant of the only shape these values could have");
+    let rendered = datafusion::arrow::util::pretty::pretty_format_batches(&answered)
+        .map(|d| d.to_string())
+        .unwrap_or_default();
+    assert!(rendered.contains("-2"), "1*4 - 2*3 is -2, and this gave {rendered}");
 
-    let Err(error) = outcome else {
-        panic!("a column with no shape must be refused");
+    // Rectangular: still refused, and the refusal still says why the guess is unsafe.
+    //
+    // Refused at **planning**, because a transpose returns an array and its return type
+    // depends on the shape --- so the shape is needed before a row is read. Both stages are
+    // accepted here: which one refuses is an implementation detail, and a test that pinned it
+    // would fail the day the check moved without anything being wrong.
+    let planned = context.sql("SELECT mat_transpose(unshaped) FROM unshaped").await;
+    let error = match planned {
+        Err(error) => error,
+        Ok(frame) => match frame.collect().await {
+            Err(error) => error,
+            Ok(_) => {
+                panic!("a transpose of a column with no shape must be refused: the guess is real")
+            }
+        },
     };
     assert!(
-        error.to_string().contains("never in the same row"),
-        "the refusal must say why guessing is unsafe: {error}"
+        error.to_string().contains("no matrix shape"),
+        "the refusal must say what is missing: {error}"
     );
 }
 

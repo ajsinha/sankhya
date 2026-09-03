@@ -47,6 +47,38 @@ class Function:
         return self.gives == "a series"
 
 
+class Column:
+    """A column name, to be used where a value would otherwise go.
+
+    ``db.fn.vec_quantile(col("pnl"), 0.05, frm="risk.positions")``
+
+    Why this exists
+    ---------------
+    Without it every named function takes **values**, so the only way to use one is to carry
+    the data into Python first --- which is exactly what the catalogue exists to make
+    unnecessary. A user who ships a million P&L vectors to a client to take a quantile of them
+    has left the warehouse, and the warehouse is where the arithmetic is cheap.
+
+    It is a marker rather than an expression type. It renders as an identifier and nothing
+    else: no operators, no composition, no second query language growing inside a binding that
+    ``ADR-0017`` says must contain no logic. Anything more than a column reference is a
+    statement, and ``db.sql`` is how a statement is written.
+    """
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __repr__(self) -> str:
+        return f"col({self.name!r})"
+
+
+def col(name: str) -> Column:
+    """A column reference, for a function called over stored data."""
+    return Column(name)
+
+
 def _literal(value: Any) -> str:
     """One argument, as SQL.
 
@@ -54,6 +86,11 @@ def _literal(value: Any) -> str:
     every digit it had --- ``repr`` rather than ``str``, because a float rendered to six places
     and sent to a kernel is a different number from the one the caller passed.
     """
+    if isinstance(value, Column):
+        # An identifier, not a string. Quoted as a value it would become the literal text of
+        # the column's name, and a function over it would compute something from the word
+        # `pnl` rather than from the column.
+        return value.name
     if isinstance(value, (list, tuple)):
         inner = ", ".join(_literal(item) for item in value)
         return f"vec_of({inner})"
@@ -155,15 +192,42 @@ class Catalogue:
             )
         entry = entries[name]
 
-        def call(*arguments):
+        def call(*arguments, frm=None, where=None, keep=None, limit=None):
+            """Call this function.
+
+            With no ``frm`` it is one value, computed from the arguments given. With ``frm`` it
+            is computed **over a table**, once per row, and a list of rows comes back --- which
+            is the shape that matters, because it is the one where the data does not move.
+
+            ``keep`` names columns to return alongside the result, so a caller knows which row
+            each answer belongs to. ``where`` and ``limit`` are passed through as written.
+            """
             # Deliberately **not** checked against `entry.arity` here. A binding that
             # validated would be a second definition of the signature, and the two would
             # drift; the server's refusal names the counts and is the one that knows.
             rendered = ", ".join(_literal(argument) for argument in arguments)
-            result = self._client.sql(f"SELECT {name}({rendered})")
-            if not result.rows or not result.rows[0]:
-                return None
-            return _parse(result.rows[0][0], entry.returns_series)
+            call_text = f"{name}({rendered})"
+
+            if frm is None:
+                result = self._client.sql(f"SELECT {call_text}")
+                if not result.rows or not result.rows[0]:
+                    return None
+                return _parse(result.rows[0][0], entry.returns_series)
+
+            columns = list(keep or [])
+            selected = ", ".join([*columns, f"{call_text} AS result"])
+            statement = f"SELECT {selected} FROM {frm}"
+            if where:
+                statement += f" WHERE {where}"
+            if limit is not None:
+                statement += f" LIMIT {int(limit)}"
+
+            out = []
+            for row in self._client.rows(statement):
+                answer = dict(row)
+                answer["result"] = _parse(row.get("result"), entry.returns_series)
+                out.append(answer)
+            return out
 
         call.__name__ = name
         call.__doc__ = f"{entry.about}.\n\nTakes {entry.takes}; gives {entry.gives}."
