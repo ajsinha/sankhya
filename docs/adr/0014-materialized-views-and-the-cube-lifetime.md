@@ -98,10 +98,24 @@ for — which is what the other nine empty crates were.
 
 ## Consequences
 
-Deciding this needs one thing that does not exist yet: **the declared-query cube from
-ADR-0012**. Until a cube can be defined over a query rather than a table name, option A cannot
-be built and option B has nothing to depend on. So this ADR stays *Proposed*, and
-`sankhya-mv` stays empty and **listed with a reason** rather than deleted on a guess.
+Deciding this needs one thing that did not exist when this was written: **the declared-query
+cube from ADR-0012**. Until a cube could be defined over a query rather than a table name,
+option A could not be built and option B had nothing to depend on. So this ADR stayed
+*Proposed*, and `sankhya-mv` stayed empty and **listed with a reason** rather than deleted on a
+guess.
+
+> **Built 2026-09-02.** `CREATE CUBE <name> FROM ( <query> )` exists, and the rule that makes it
+> safe is ADR-0012's: the query is planned once under the caller's own guard, and the tables it
+> is found to read are recorded with the definition. Those tables are what the cube is
+> authorized against, what its cache is keyed on, and what makes it stale — so nothing else
+> about a cube changed. A query that cannot be planned, and a query whose answer can move on its
+> own, are both refused at declaration.
+>
+> The prerequisite is therefore met and option A is now buildable. What remains of it is the
+> smaller half: a definition with **no dimensions and no measures** — a maintained query rather
+> than a maintained cube — which today `validate` refuses by name, because a cube with neither
+> is a table. That refusal has to become a second lifetime rather than an error, and until it
+> does, this ADR stays *Proposed* for the part that is genuinely undecided.
 
 That is the deliberate difference from the nine crates resolved beside it. Those had no design
 question left — six had a milestone that was simply unwritten, three duplicated something that

@@ -40,6 +40,12 @@ pub fn fingerprint(definition: &Definition) -> u64 {
     let mut h = OFFSET;
     feed(&mut h, definition.name.as_bytes());
     feed(&mut h, definition.fact_table.as_bytes());
+    // What the facts are read from, not only how they were written. A query's text does not
+    // say which tables it reads --- the same text resolves differently under a different
+    // search path --- and a cube reading a different table is a different cube.
+    for table in &definition.reads {
+        feed(&mut h, table.as_bytes());
+    }
 
     for dimension in &definition.dimensions {
         feed(&mut h, dimension.name.as_bytes());

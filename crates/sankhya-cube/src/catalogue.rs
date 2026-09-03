@@ -89,6 +89,13 @@ pub struct Stored {
     pub format: u32,
     pub name: String,
     pub fact_table: String,
+    /// Every table the cube reads.
+    ///
+    /// Defaulted for a catalogue written before declared queries existed, where the fact
+    /// source was always a name and read exactly itself --- see [`Stored::into_definition`],
+    /// which fills it in rather than restoring a cube that says it reads nothing.
+    #[serde(default)]
+    pub reads: Vec<String>,
     pub dimensions: Vec<StoredDimension>,
     pub measures: Vec<StoredMeasure>,
     /// How stale materialised cells may be, in table versions.
@@ -147,6 +154,7 @@ impl Stored {
             format: FORMAT,
             name: definition.name.clone(),
             fact_table: definition.fact_table.clone(),
+            reads: definition.reads.clone(),
             target_lag: definition.target_lag,
             pinned: definition.pinned.clone(),
             dimensions: definition
@@ -245,6 +253,13 @@ impl Stored {
         }
 
         let mut definition = Definition::new(self.name, self.fact_table, dimensions, measures);
+        // A catalogue written before declared queries existed has no `reads`, and the cube it
+        // describes read exactly its fact table. Filled in rather than left empty, because an
+        // empty dependency list is refused --- and refusing a cube that was valid when it was
+        // written would be this change breaking somebody's warehouse on upgrade.
+        if !self.reads.is_empty() {
+            definition.reads = self.reads.clone();
+        }
         definition.target_lag = self.target_lag;
         definition.pinned = self.pinned.clone();
         Ok(definition)

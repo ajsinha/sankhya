@@ -143,7 +143,7 @@ inside it — ``no feed called `x` is declared on this server. `SHOW FEEDS`     
 ### Declaring one
 
 ```sql
-CREATE CUBE <name> FROM <fact table>
+CREATE CUBE <name> FROM { <fact table> | ( <query> ) }
   DIMENSION <dim> FROM <member table> ON <join column> (
       LEVEL <level> = <column>[, LEVEL … ]
     [ , PARENT <child column> TO <parent column> ]
@@ -160,10 +160,34 @@ All of the optional clauses parse and were exercised. Levels run coarse to fine,
 drill-down walks; a ragged hierarchy — an org chart, where depth varies — is declared as
 `PARENT … TO …` rather than as levels, because flattening it forces padding.
 
-> **Pitfall — undocumented anywhere else.** `CREATE CUBE` does **not** accept a schema-qualified name
-> unqualified by quotes. `FROM common.orders` fails at the dot with *"expected at least one
-> `DIMENSION …`, found `.`"*. Write `FROM "common.orders"`. On a warehouse where the bare table name
-> is ambiguous — which is the situation qualification exists for — a cube is otherwise undeclarable.
+A schema-qualified fact table is written plainly — `FROM common.orders`. It used to fail at the
+dot, which made a cube undeclarable on exactly the warehouses where qualification exists.
+
+**The facts may be a query instead of a table**, parenthesised:
+
+```sql
+CREATE CUBE joined FROM (
+    SELECT o.amount, r.area FROM sales.orders o JOIN sales.regions r ON o.region = r.region
+)
+  DIMENSION area FROM sales.regions ON area (LEVEL area = area)
+  MEASURE amount (SUM ALONG area);
+```
+
+Nothing else about the cube changes, and that is the point:
+[ADR-0012](../../adr/0012-open-capabilities.md) makes the generalisation small under one rule —
+*an artefact that cannot say what it needs cannot be cached correctly, checked against policy, or
+bounded.* A query's **text** does not say what it needs, so the query is planned once, under the
+caller's own guard, and the tables it turns out to read are recorded with the definition. Those
+tables are then what the cube is authorized against, what its cache is keyed on, and what makes
+it stale. `cubes()` shows them in its `reads` column.
+
+Two refusals follow from the same rule, and both land at declaration rather than later:
+
+- **A query that cannot be planned is not a fact source.** No plan, no dependency list; a cube
+  with no dependency list would be checked against nothing and invalidated by nothing.
+- **A query whose answer can move on its own is refused**, naming what it found — `now()`,
+  `random()`, `current_date`. A cuboid built from such a query is a cache of one arbitrary
+  answer, and every later read serves it as though it were *the* answer.
 
 **Every measure needs a rule for every dimension, and there is no default:**
 
@@ -192,7 +216,7 @@ which its cuboids can be reclaimed (Chapter 15, *Maintenance, tiering and the da
 ### Discovering one
 
 ```sql
-SELECT cube, fact_table, definition_version, dimensions, measures, hydrated_measures FROM cubes();
+SELECT cube, fact_table, reads, definition_version, dimensions, measures, hydrated_measures FROM cubes();
 SELECT dimension, level, depth, column, joins_on, member_table, parent_child
   FROM cube_dimensions('regional');
 SELECT measure, dimension, rule, composes FROM cube_measures('regional');

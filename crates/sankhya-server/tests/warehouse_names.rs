@@ -31,6 +31,8 @@ mod execute;
 mod adopt;
 #[path = "../src/clones.rs"]
 mod clones;
+#[path = "../src/cubes.rs"]
+mod cubes;
 #[path = "../src/feeds.rs"]
 mod feeds;
 #[path = "../src/driver.rs"]

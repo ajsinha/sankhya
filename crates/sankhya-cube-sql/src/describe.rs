@@ -67,6 +67,12 @@ impl datafusion::catalog::TableFunctionImpl for Cubes {
         let schema = Arc::new(Schema::new(vec![
             Field::new("cube", DataType::Utf8, false),
             Field::new("fact_table", DataType::Utf8, false),
+            // Every table this cube reads, comma-separated. For a cube over a named table it
+            // is that name; for a cube over a declared query it is what the query was found
+            // to read --- and that is what the cube is authorized against and keyed on, so a
+            // reader who can see the query and not its dependencies has been shown the half
+            // that does not decide anything.
+            Field::new("reads", DataType::Utf8, false),
             // The fingerprint of the definition. A client caching anything about a cube keys
             // it on this, so an edited definition invalidates the client's copy the same way
             // it invalidates the server's cells.
@@ -79,6 +85,7 @@ impl datafusion::catalog::TableFunctionImpl for Cubes {
         ]));
         let names: Vec<&str> = self.0.iter().map(Cube::name).collect();
         let facts: Vec<&str> = self.0.iter().map(Cube::fact_table).collect();
+        let reads: Vec<String> = self.0.iter().map(|c| c.reads().join(", ")).collect();
         let versions: Vec<u64> = self.0.iter().map(Cube::version).collect();
         #[allow(clippy::cast_possible_truncation)]
         let dimensions: Vec<u32> = self.0.iter().map(|c| c.dimensions().len() as u32).collect();
@@ -96,6 +103,7 @@ impl datafusion::catalog::TableFunctionImpl for Cubes {
             vec![
                 Arc::new(StringArray::from(names)),
                 Arc::new(StringArray::from(facts)),
+                Arc::new(StringArray::from(reads)),
                 Arc::new(UInt64Array::from(versions)),
                 Arc::new(UInt32Array::from(dimensions)),
                 Arc::new(UInt32Array::from(measures)),
