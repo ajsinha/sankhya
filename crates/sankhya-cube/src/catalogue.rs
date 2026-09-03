@@ -189,7 +189,7 @@ impl Stored {
                         .rules
                         .iter()
                         .map(|along| {
-                            (along.dimension.clone(), along.rule.as_str().to_string())
+                            (along.dimension.clone(), rule_text(along))
                         })
                         .collect(),
                 })
@@ -236,6 +236,15 @@ impl Stored {
         for stored in self.measures {
             let mut rules = Vec::new();
             for (dimension, rule) in stored.rules {
+                // A user's own aggregation carries its name in the same string, because the
+                // stored form is a pair and widening it would make every catalogue written
+                // before today unreadable by this version. `ADR-0016`'s rule for a format
+                // change applies: a new field is a migration, and a new *value* of an existing
+                // field is not.
+                if let Some(supplied) = along_supplied(&dimension, &rule) {
+                    rules.push(supplied);
+                    continue;
+                }
                 let Some(rule) = rule_named(&rule) else {
                     return Err(CatalogueError::Invalid {
                         name: self.name.clone(),
@@ -267,6 +276,30 @@ impl Stored {
 }
 
 /// The rule a stored name refers to, or `None` if this version does not know it.
+/// The prefix a user-supplied rule is written under.
+///
+/// A prefix rather than a new field: the stored form is a pair of strings, and adding a third
+/// would make every catalogue written before today unreadable by this version. A new *value* of
+/// an existing field costs nothing to read.
+const SUPPLIED: &str = "aggregation:";
+
+/// How one rule is written down.
+fn rule_text(along: &Along) -> String {
+    match (along.rule, &along.supplied) {
+        (Rule::Supplied { composes }, Some(name)) => {
+            format!("{SUPPLIED}{name}:{}", if composes { "composes" } else { "base" })
+        }
+        _ => along.rule.as_str().to_string(),
+    }
+}
+
+/// A user-supplied rule read back, or `None` if this is an ordinary one.
+fn along_supplied(dimension: &str, text: &str) -> Option<Along> {
+    let rest = text.strip_prefix(SUPPLIED)?;
+    let (name, composes) = rest.rsplit_once(':')?;
+    Some(Along::by_aggregation(dimension, name, composes == "composes"))
+}
+
 fn rule_named(name: &str) -> Option<Rule> {
     [
         Rule::Sum,

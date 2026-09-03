@@ -87,7 +87,12 @@ async fn a_cube_is_built_from_the_table_its_definition_names_and_then_queried() 
         vec![Some(1.0), Some(2.0), Some(4.0)],
     );
     let catalog = Arc::new(CubeCatalog::new());
-    register(&context, Arc::clone(&catalog), Arc::new(sankhya_cube::querylog::QueryLog::new()));
+    register(
+        &context,
+        Arc::clone(&catalog),
+        Arc::new(sankhya_cube::querylog::QueryLog::new()),
+        None,
+    );
 
     let absorbed = publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 11)
         .await
@@ -123,7 +128,12 @@ async fn rows_that_could_not_be_placed_reach_the_completeness_column() {
         vec![Some(1.0), Some(2.0), Some(4.0), None],
     );
     let catalog = Arc::new(CubeCatalog::new());
-    register(&context, Arc::clone(&catalog), Arc::new(sankhya_cube::querylog::QueryLog::new()));
+    register(
+        &context,
+        Arc::clone(&catalog),
+        Arc::new(sankhya_cube::querylog::QueryLog::new()),
+        None,
+    );
 
     let absorbed = publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 11)
         .await
@@ -156,7 +166,12 @@ async fn a_completeness_threshold_refuses_a_cube_that_lost_rows() {
         vec![Some(1.0), Some(2.0)],
     );
     let catalog = Arc::new(CubeCatalog::new());
-    register(&context, Arc::clone(&catalog), Arc::new(sankhya_cube::querylog::QueryLog::new()));
+    register(
+        &context,
+        Arc::clone(&catalog),
+        Arc::new(sankhya_cube::querylog::QueryLog::new()),
+        None,
+    );
     publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 11)
         .await
         .expect("hydrated");
@@ -256,7 +271,12 @@ async fn the_cubes_totals_agree_with_plain_sql_over_the_same_table() {
         .register_batch("fact_figures", many_facts(ROWS))
         .expect("registered");
     let catalog = Arc::new(CubeCatalog::new());
-    register(&context, Arc::clone(&catalog), Arc::new(sankhya_cube::querylog::QueryLog::new()));
+    register(
+        &context,
+        Arc::clone(&catalog),
+        Arc::new(sankhya_cube::querylog::QueryLog::new()),
+        None,
+    );
 
     let absorbed = publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 1)
         .await
@@ -303,7 +323,12 @@ async fn a_two_dimensional_breakdown_agrees_with_the_equivalent_group_by() {
         .register_batch("fact_figures", many_facts(ROWS))
         .expect("registered");
     let catalog = Arc::new(CubeCatalog::new());
-    register(&context, Arc::clone(&catalog), Arc::new(sankhya_cube::querylog::QueryLog::new()));
+    register(
+        &context,
+        Arc::clone(&catalog),
+        Arc::new(sankhya_cube::querylog::QueryLog::new()),
+        None,
+    );
     publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 1)
         .await
         .expect("hydrated");

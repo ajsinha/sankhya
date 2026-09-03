@@ -50,6 +50,21 @@ pub enum Rule {
     /// composed rather than silently produce a plausible figure --- see
     /// [`Rule::composes`].
     Mean,
+    /// A rule the user supplied, in their own code.
+    ///
+    /// The name of the function is **not** here, and that is deliberate: this type is `Copy`
+    /// and is compared, matched and stored in every corner of the cube machinery, and giving it
+    /// an owned string would cost an allocation everywhere for a variant almost no cube uses.
+    /// The name lives beside it on [`Along::supplied`], where a definition already owns strings.
+    ///
+    /// `composes` is what a declared `merge` claims --- see
+    /// [ADR-0010](../../../docs/adr/0010-external-aggregations.md). It is checked at
+    /// declaration, not believed: the same values merged in two groupings must give the same
+    /// bits.
+    Supplied {
+        /// Whether its author declared a `merge`.
+        composes: bool,
+    },
     /// Cannot be derived from its children at all.
     ///
     /// A ratio, a distinct count, a percentile. There is no operation over the parts that
@@ -67,6 +82,7 @@ impl Rule {
     #[must_use]
     pub const fn composes(self) -> bool {
         matches!(self, Self::Sum | Self::Last | Self::First | Self::Max | Self::Min)
+            || matches!(self, Self::Supplied { composes: true })
     }
 
     /// Its name in a message.
@@ -79,6 +95,11 @@ impl Rule {
             Self::Max => "max",
             Self::Min => "min",
             Self::Mean => "mean",
+            // The aggregation's own name is on `Along`, and this is a `const fn` returning a
+            // `&'static str` --- so a message that wants to name the function reads it from
+            // there. What this says is what *kind* of rule it is, which is what every caller
+            // of `as_str` is asking.
+            Self::Supplied { .. } => "an aggregation of your own",
             Self::None => "none",
         }
     }
@@ -101,6 +122,13 @@ pub struct Along {
     pub dimension: String,
     /// How it combines there.
     pub rule: Rule,
+    /// The user-supplied aggregation's name, when [`Along::rule`] is [`Rule::Supplied`].
+    ///
+    /// Beside the rule rather than inside it, so [`Rule`] stays `Copy`. A `Supplied` rule with
+    /// no name here is refused by validation rather than silently treated as something else ---
+    /// the two fields are one fact, and a definition where they disagree is a definition
+    /// nothing can compute.
+    pub supplied: Option<String>,
 }
 
 /// A declared measure.
@@ -118,7 +146,16 @@ pub struct Measure {
 impl Along {
     /// How a measure combines along one dimension.
     pub fn new(dimension: impl Into<String>, rule: Rule) -> Self {
-        Self { dimension: dimension.into(), rule }
+        Self { dimension: dimension.into(), rule, supplied: None }
+    }
+
+    /// A measure that combines along one dimension by a user's own aggregation.
+    pub fn by_aggregation(dimension: impl Into<String>, name: impl Into<String>, composes: bool) -> Self {
+        Self {
+            dimension: dimension.into(),
+            rule: Rule::Supplied { composes },
+            supplied: Some(name.into()),
+        }
     }
 }
 

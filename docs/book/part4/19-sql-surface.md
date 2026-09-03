@@ -151,6 +151,8 @@ CREATE CUBE <name> FROM { <fact table> | ( <query> ) }
   )
   [ DIMENSION … ]
   MEASURE <measure> ( <RULE> ALONG <dim> [, <RULE> ALONG <dim> ] )
+      -- <RULE> is SUM | LAST | FIRST | MAX | MIN | MEAN | NONE
+      --        | AGGREGATION <name>   -- one you declared yourself (§19.5a)
   [ MEASURE … ]
   [ MAINTAINED WITHIN <n> VERSIONS ]
   [ PINNED ( <dim>[, …] ) ]
@@ -342,6 +344,36 @@ does not hold:
   bounded in time and memory ([ADR-0023](../../adr/0023-the-sandbox-a-user-function-runs-in.md)).
   On a machine where that boundary cannot be built — a kernel with unprivileged user namespaces
   disabled — `CREATE AGGREGATION` is refused naming the mechanism. It does not fall back.
+
+### Using one as a cube measure
+
+```sql
+CREATE CUBE spread FROM sales.orders
+  DIMENSION region FROM sales.regions ON region (LEVEL area = region)
+  DIMENSION period FROM sales.orders  ON period (LEVEL quarter = period)
+  MEASURE margin_pct (AGGREGATION rms ALONG region, AGGREGATION rms ALONG period);
+```
+
+This is the reason the capability exists. A root mean square is not a sum, a last, a max, a min
+or a mean, so before this there was no way to *declare* it as a measure at all — and `MEAN` is
+refused along any dimension for the reason that makes it worth having: an average of averages is
+not an average.
+
+Three things about it are worth knowing before you write one:
+
+- **A cube measure is one column**, so an aggregation used as a cube rule sees one value per
+  fact. A weighted mean needs two and is therefore a query-level aggregate rather than a cube
+  rule, until a measure can name more than one column — which is a different feature.
+- **Whether it composes comes from the declaration, never from the cube.** A `CREATE CUBE` cannot
+  assert that a function's partial results combine; that is what a declared `merge` claims, and
+  the server checked the claim when the function was declared.
+- **A roll-up recomputes over the facts**, not over partial results. Rolling a dimension away
+  carries its cells' contributions up whole and runs the aggregation over the union, so the
+  answer at a coarse grain is the answer it would have given at the base grain over the same
+  rows. The `merge` matters for a *materialised* cuboid, where partials are all that survive.
+
+An aggregation the server has never heard of is refused when the cube is created, not when
+somebody queries it three weeks later.
 
 > **It costs a process boundary per batch**, which is two to three orders of magnitude against a
 > compiled built-in ([ADR-0022](../../adr/0022-user-defined-functions.md) Decision 5). That is the

@@ -4712,6 +4712,31 @@ CATALOGUE = [
      "            return Ok(ScalarValue::Float64(Some(0.0)));",
      "sankhya-olap"),
 
+    # A user's own aggregation as a cube measure.
+    ("cube: let a cube assert a composability its function never claimed",
+     "crates/sankhya-server/src/cubes.rs",
+     "            if let Some(held) = declared.iter().find(|held| held.name == named) {",
+     "            if false {",
+     "sankhya-server"),
+
+    ("cube: let a cube name an aggregation this server has never heard of",
+     "crates/sankhya-server/src/cubes.rs",
+     "            if !declared.iter().any(|held| held.name == named) {",
+     "            if false {",
+     "sankhya-server"),
+
+    ("cube: roll a user's aggregation up from reduced partials rather than from the facts",
+     "crates/sankhya-cube/src/navigate.rs",
+     "        if matches!(rule, Rule::Supplied { .. }) {",
+     "        if false {",
+     "sankhya-server"),
+
+    ("cube: answer a user-supplied measure with a built-in reduction",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "    let rows: Vec<(&Vec<String>, Option<f64>)> = if let Rule::Supplied { .. } = rule {",
+     "    let rows: Vec<(&Vec<String>, Option<f64>)> = if false {",
+     "sankhya-server"),
+
     # The boundary a user-supplied function runs behind. Each entry removes one mechanism and
     # the test that proves that prohibition must fail --- which is the only way to know the
     # mechanism is the thing doing the work, rather than something else about this machine.

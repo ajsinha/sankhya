@@ -86,6 +86,17 @@ pub enum Rejection {
     /// key is built from, so a cube with none of them would be authorized against nothing
     /// and invalidated by nothing.
     UndeclaredDependencies,
+    /// A rule that says it is a user's own aggregation and does not say which.
+    ///
+    /// The rule and the name are one fact stored in two fields, and a definition where they
+    /// disagree is one nothing can compute --- so it is refused here rather than reaching a
+    /// query as a measure that silently answers nothing.
+    SuppliedWithoutAName {
+        /// The measure.
+        measure: String,
+        /// The dimension it was declared along.
+        dimension: String,
+    },
     /// A declared query whose answer may change without its inputs changing.
     ///
     /// A cuboid built from such a query is a cache of one arbitrary answer, and every later
@@ -135,6 +146,12 @@ impl fmt::Display for Rejection {
                  reads. Those tables are what a caller is authorized against and what the \
                  materialisation key is built from, so a cube without them would be checked \
                  against nothing and invalidated by nothing"
+            ),
+            Self::SuppliedWithoutAName { measure, dimension } => write!(
+                f,
+                "measure '{measure}' says it combines along '{dimension}' by an aggregation of \
+                 your own and does not say which one. Write `AGGREGATION <name> ALONG \
+                 {dimension}`, naming one that `SHOW AGGREGATIONS` lists"
             ),
             Self::NotDeterministic { found } => write!(
                 f,
@@ -225,6 +242,16 @@ pub fn inspect(definition: &Definition) -> Vec<Rejection> {
                 measure: undeclared.measure,
                 dimensions: undeclared.dimensions,
             });
+        }
+        for along in &measure.rules {
+            if matches!(along.rule, sankhya_cube_algo::measure::Rule::Supplied { .. })
+                && along.supplied.as_ref().is_none_or(|name| name.trim().is_empty())
+            {
+                out.push(Rejection::SuppliedWithoutAName {
+                    measure: measure.name.clone(),
+                    dimension: along.dimension.clone(),
+                });
+            }
         }
         for rule in &measure.rules {
             if !names.contains(rule.dimension.as_str()) {

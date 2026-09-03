@@ -364,7 +364,12 @@ async fn six_dimensional() -> SessionContext {
     context.register_batch("fact_wide", batch).expect("registered");
 
     let catalog = Arc::new(CubeCatalog::new());
-    register(&context, Arc::clone(&catalog), Arc::new(sankhya_cube::querylog::QueryLog::new()));
+    register(
+        &context,
+        Arc::clone(&catalog),
+        Arc::new(sankhya_cube::querylog::QueryLog::new()),
+        None,
+    );
     let absorbed = publish_from_fact_table(&context, &catalog, "wide", cube, &wide(), 7)
         .await
         .expect("hydrated from the table its definition names");

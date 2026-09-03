@@ -163,6 +163,39 @@ fn create(
         }
     }
 
+    // An aggregation a cube names must exist **now**, on this server. Checked here rather than
+    // at the first query, because the person who typed the name is still here and the person
+    // running the report in three weeks is not.
+    let declared = server.aggregations();
+    for measure in &mut definition.measures {
+        for along in &mut measure.rules {
+            let Some(named) = along.supplied.clone() else {
+                continue;
+            };
+            // Whether it composes is taken from the **declaration**, never from the cube. It is
+            // what a declared `merge` claims, and the server checked that claim by exercising
+            // the function when it was declared --- so letting a `CREATE CUBE` assert it would
+            // let a cube claim a property its function does not have. `ADR-0010`: no merge
+            // means the measure is computed from base data every time.
+            if let Some(held) = declared.iter().find(|held| held.name == named) {
+                along.rule = sankhya_cube::algo::Rule::Supplied {
+                    composes: held.composes,
+                };
+            }
+            if !declared.iter().any(|held| held.name == named) {
+                return Err(refusal(
+                    sqlstate::DATA_EXCEPTION.as_str(),
+                    &format!(
+                        "the measure `{}` combines along `{}` by an aggregation called \
+                         `{named}`, and this server has none by that name. `SHOW AGGREGATIONS` \
+                         lists what it has",
+                        measure.name, along.dimension
+                    ),
+                ));
+            }
+        }
+    }
+
     // The one validator, reporting every rejection rather than the first. A definition
     // fixable in one sitting should be reported in one message.
     let cube = definition.validate().map_err(|rejections| {

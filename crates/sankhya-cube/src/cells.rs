@@ -158,6 +158,11 @@ impl Contributions {
                 // reproducible as the sum it comes from.
                 Some(total / self.values.len() as f64)
             }
+            // A user's own aggregation is computed by a worker in another process, over the
+            // contributions this cell holds. `None` here for the same reason `Rule::None` is
+            // `None`: this type cannot compute it, and the layer that can is the one holding
+            // the worker. See `Contributions::values`, which is what that layer reads.
+            Rule::Supplied { .. } => None,
             // A measure that composes along nothing has no reduction *from partials*. It
             // still has a value over the rows themselves, and that is not something this
             // type can compute --- it needs the rows, not their contributions.
@@ -275,6 +280,16 @@ impl Cells {
     ///
     /// Ordered because `FR-QUERY-10` asks for two runs to be bit-identical, and a result set
     /// whose row order varies is not identical however equal its contents are.
+    /// The contributions sitting at one address, unreduced.
+    ///
+    /// For the one rule this type cannot apply: a user's own aggregation is computed by a
+    /// worker in another process, and what it needs is the facts rather than a number made
+    /// from them. See [`Contributions::reduce`], which answers `None` for that rule.
+    #[must_use]
+    pub fn contributions_at(&self, address: &Address) -> Option<&[f64]> {
+        self.cells.get(address).map(Contributions::values)
+    }
+
     pub fn addresses(&self) -> impl Iterator<Item = &Address> {
         self.cells.keys()
     }

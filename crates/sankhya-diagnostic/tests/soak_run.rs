@@ -936,6 +936,7 @@ fn navigate_the_cube(runtime: &tokio::runtime::Runtime, table_root: &Path) -> bo
         &context,
         Arc::clone(&catalog),
         Arc::new(sankhya_cube::querylog::QueryLog::new()),
+        None,
     );
 
     runtime.block_on(async {
