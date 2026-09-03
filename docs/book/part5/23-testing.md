@@ -14,7 +14,7 @@ Four numbers describe the mechanised half of verification:
 
 | | |
 |---|---|
-| `cargo test --workspace` | 2,570 tests, none of which needs a database |
+| `cargo test --workspace` | 2,571 tests, none of which needs a database |
 | `python3 tools/mutation-audit.py` | 733 specific defects, applied one at a time |
 | `cargo xtask check-all` | twenty repository invariants, each proven to fail when violated |
 | `cargo xtask check-performance` | the `NFR-PERF` objectives, as a gate that can fail |
@@ -361,6 +361,53 @@ machine belongs.
 
 > A flaky gate is worse than a missing one. It gets re-run until it passes, and from then on the
 > number means nothing and nobody notices when it starts being wrong.
+
+## 23.x The documentation is executed
+
+`check-doc-numbers` catches a stale figure. `check-docs` catches a stale status line. Neither
+catches **a sentence that stopped being true**, and on 2026-09-03 three of those surfaced in one
+morning — each found by building something, none by a check:
+
+- `sankhya-alloc`'s manifest and module header both said it was *the only* crate permitted to
+  write `unsafe`. A second was needed, and the sentence had quietly stopped being true.
+- `ADR-0021` said a `FixedSizeList` read back from Parquet cannot carry tensor metadata. That was
+  not a property of the format; the writer was dropping it.
+- Chapter 19 documented a `MEAN`/`MAX` cube defect, with a transcript, as something a reader
+  *must know about before declaring a non-`SUM` measure*. It had been fixed two days earlier.
+  Wrong in the more damaging direction: it told people a working feature did not work, and its
+  advice would have kept somebody from declaring the measure they needed.
+
+The third is the kind a machine can catch. `tests/book_sql.rs` extracts every ` ```sql ` block in
+`docs/`, splits it into statements, runs each against a live server, and checks the **outcome in
+both directions**: a statement shown as working must work, and one shown as refused — the book
+marks those with a leading or trailing `-- ERROR:` — must be refused. A demonstration of a
+refusal that quietly starts succeeding is a rule that has been removed and a document that still
+claims it.
+
+**Where the line is.** Much of the book is a transcript taken against a warehouse this fixture is
+not: a `payments` graph, a `documents` table, a cube over another machine's data. So the rule is
+narrower than *every statement runs* and much sharper than nothing:
+
+> A statement shown as working must fail **only** because the object it names is absent.
+
+Everything else is caught: a function renamed, a clause that no longer parses, an example that
+names something it never created.
+
+Its first run found six things, and the split is the interesting part — **four were defects in
+the check itself**, which is what a new check should mostly find:
+
+| | |
+|---|---|
+| Trailing `--` comments were kept, so a `;` before one went unnoticed and two statements ran as one | the check |
+| Newlines inside `$$ … $$` were collapsed, which is fatal to Python's indentation | the check |
+| A transcript's reply was read as a heading for the *next* statement, excusing one and holding another to a rule it never claimed | the check |
+| Clauses and elisions — `WHERE …`, `SELECT ... FROM` — were run as statements | the check |
+| `mat_of(2, 3, …)` was shown with five values where a 2×3 needs six | **the book** |
+| A cube example named an aggregation the chapter never declared | **the book**, written that morning |
+
+The last one is worth sitting with: it was introduced and caught the same day, by a check written
+the same day, in a section documenting a feature built the same day. Documentation rot does not
+need time.
 
 One more thing had to be fixed, and it is the quietest failure in this chapter. The skips were
 written to be *"loud and by name"* and were neither: `eprintln!` inside a **passing** test goes

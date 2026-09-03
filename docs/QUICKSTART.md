@@ -88,7 +88,7 @@ availability event.
 ## 3. Run the tests
 
 ```bash
-cargo test --workspace          # 2,570 tests, none of which needs a database
+cargo test --workspace          # 2,571 tests, none of which needs a database
 ```
 
 Everything here runs without a database, in well under a minute. Nothing is mocked: the
