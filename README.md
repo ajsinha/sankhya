@@ -264,6 +264,8 @@ Start here:
 | [`docs/STATUS.md`](docs/STATUS.md) | What is actually built today, what is not, and what broke along the way |
 | [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) | The amended, traceable functional and non-functional requirements |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture, crate decomposition, consistency and security models |
+| [`docs/POSTGRES.md`](docs/POSTGRES.md) | Exactly what SANKHYA changes about PostgreSQL, and what it will never do to it |
+| [`docs/FUNCTIONS.md`](docs/FUNCTIONS.md) | Every built-in function, where each is reachable from, and what is still planned |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | What each release is *for*, gated on exit criteria rather than dates |
 
 Generated from the code, and checked against it on every build:

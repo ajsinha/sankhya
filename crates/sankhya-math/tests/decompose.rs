@@ -96,7 +96,15 @@ fn a_matrix_no_data_could_have_produced_is_refused_rather_than_factored() {
 fn a_matrix_that_is_not_symmetric_is_refused_rather_than_symmetrised() {
     let lopsided = vec![1.0, 2.0, 3.0, 4.0];
     assert!(!is_symmetric(&lopsided, 2));
-    assert!(cholesky(&lopsided, 2).is_err());
+
+    // And the refusal says **symmetry**, not shape. It said "needs a square matrix and was
+    // given 2 by 2" until the column soak read one back --- a refusal telling somebody their
+    // square matrix is not square, which sends them to check the shape and find nothing wrong.
+    let said = cholesky(&lopsided, 2).expect_err("not symmetric").to_string();
+    assert!(said.contains("symmetric"), "{said}");
+    assert!(!said.contains("needs a square matrix"), "the message contradicts itself: {said}");
+    assert!(said.contains("answer a question about a different matrix"), "{said}");
+
     assert!(eigen_symmetric(&lopsided, 2).is_err());
 
     // Symmetric to the last bit but not exactly, which is what a covariance matrix assembled

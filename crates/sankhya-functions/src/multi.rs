@@ -18,14 +18,20 @@ use datafusion::logical_expr::{
 };
 use std::sync::Arc;
 
-/// A kernel over several arrays.
+/// A kernel over several arrays, giving a number or a series.
+///
+/// One type rather than two wrappers. A scalar result is a vector of one, which costs a `Vec`
+/// per row and buys the catalogue a single many-argument shape instead of a fifth nearly
+/// identical file --- see `ADR-0020` Decision 7 on what stops scaling.
 pub type MultiKernel =
-    Arc<dyn Fn(&[Vec<f64>]) -> std::result::Result<f64, String> + Send + Sync>;
+    Arc<dyn Fn(&[Vec<f64>]) -> std::result::Result<Vec<Option<f64>>, String> + Send + Sync>;
 
 /// One many-argument function, wired to the planner.
 pub struct Multi {
     name: &'static str,
     arity: usize,
+    /// Whether the answer is a series rather than one number.
+    gives_series: bool,
     kernel: MultiKernel,
     signature: Signature,
 }
@@ -42,6 +48,7 @@ impl std::fmt::Debug for Multi {
 impl PartialEq for Multi {
     fn eq(&self, other: &Self) -> bool {
         self.name == other.name && self.arity == other.arity
+            && self.gives_series == other.gives_series
     }
 }
 
@@ -64,7 +71,36 @@ impl Multi {
         Self {
             name,
             arity,
-            kernel: Arc::new(kernel),
+            gives_series: false,
+            kernel: Arc::new(move |operands| kernel(operands).map(|value| vec![Some(value)])),
+            signature: Signature::variadic_any(Volatility::Immutable),
+        }
+    }
+
+    /// A function of `arity` arguments that answers with a **series**.
+    ///
+    /// A rolling statistic is the shape this exists for: a series and a window in, a series
+    /// with holes out.
+    pub fn series(
+        name: &'static str,
+        arity: usize,
+        kernel: impl Fn(&[Vec<f64>]) -> std::result::Result<Vec<f64>, String> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            name,
+            arity,
+            gives_series: true,
+            kernel: Arc::new(move |operands| {
+                kernel(operands).map(|out| {
+                    // A `NaN` from the kernel is the carrier for a hole --- a window that did
+                    // not reach --- and becomes a null here. A real `NaN` from arithmetic is
+                    // indistinguishable and becomes one too, which is the honest reading:
+                    // neither is a value.
+                    out.into_iter()
+                        .map(|value| if value.is_nan() { None } else { Some(value) })
+                        .collect()
+                })
+            }),
             signature: Signature::variadic_any(Volatility::Immutable),
         }
     }
@@ -80,6 +116,13 @@ impl ScalarUDFImpl for Multi {
     }
 
     fn return_type(&self, _arguments: &[DataType]) -> Result<DataType> {
+        if self.gives_series {
+            return Ok(DataType::List(Arc::new(arrow_schema::Field::new(
+                "item",
+                DataType::Float64,
+                true,
+            ))));
+        }
         Ok(DataType::Float64)
     }
 
@@ -107,36 +150,67 @@ impl ScalarUDFImpl for Multi {
             .map(|arg| arg.clone().into_array(rows))
             .collect::<Result<_>>()?;
 
-        let mut out: Vec<Option<f64>> = Vec::with_capacity(rows);
+        // The buffers are allocated **once** and refilled, not allocated per row.
+        //
+        // This wrapper holds several arrays at a time, so it cannot borrow each row the way
+        // the single-argument wrappers do --- two simultaneous borrows of two readers is a
+        // fight with the borrow checker for a shape that is genuinely more complex. Reusing
+        // the buffers removes the allocation, which is where nearly all the cost was: see
+        // `rows` for the measurement that made the difference visible.
+        let mut operands: Vec<Vec<f64>> = vec![Vec::new(); self.arity];
+        let mut numbers: Vec<Option<f64>> = Vec::with_capacity(rows);
+        let mut series = arrow_array::builder::ListBuilder::new(
+            arrow_array::builder::Float64Builder::new(),
+        );
         for row in 0..rows {
-            let mut operands = Vec::with_capacity(self.arity);
             let mut any_null = false;
-            for array in &arrays {
-                match values_at(array, row, self.name)? {
-                    None => {
-                        any_null = true;
-                        break;
-                    }
-                    Some(values) => operands.push(values),
+            for (at, array) in arrays.iter().enumerate() {
+                let Some(slot) = operands.get_mut(at) else {
+                    break;
+                };
+                slot.clear();
+                if !fill(array, row, self.name, slot)? {
+                    any_null = true;
+                    break;
                 }
             }
             if any_null {
-                out.push(None);
+                if self.gives_series {
+                    series.append_null();
+                } else {
+                    numbers.push(None);
+                }
                 continue;
             }
             match (self.kernel)(&operands) {
-                Ok(value) => out.push(Some(value)),
+                Ok(values) => {
+                    if self.gives_series {
+                        for element in values {
+                            series.values().append_option(element);
+                        }
+                        series.append(true);
+                    } else {
+                        numbers.push(values.first().copied().flatten());
+                    }
+                }
                 Err(reason) => return exec_err!("{}: {reason}", self.name),
             }
         }
-        Ok(ColumnarValue::Array(Arc::new(Float64Array::from(out))))
+        if self.gives_series {
+            return Ok(ColumnarValue::Array(Arc::new(series.finish())));
+        }
+        Ok(ColumnarValue::Array(Arc::new(Float64Array::from(numbers))))
     }
 }
 
-/// One argument at one row, as a vector --- a number becoming a vector of one.
-fn values_at(array: &ArrayRef, row: usize, function: &str) -> Result<Option<Vec<f64>>> {
+/// Fill `into` with one argument at one row. `false` for a null.
+///
+/// Takes the buffer rather than returning one, so the caller can reuse it across rows. The
+/// allocation was the cost, not the copy: a `Vec` per argument per row is millions of
+/// allocations over a scan, and none of them holds anything for longer than one row.
+fn fill(array: &ArrayRef, row: usize, function: &str, into: &mut Vec<f64>) -> Result<bool> {
     if array.is_null(row) {
-        return Ok(None);
+        return Ok(false);
     }
     let inner: ArrayRef = match array.data_type() {
         DataType::FixedSizeList(_, _) => {
@@ -155,14 +229,16 @@ fn values_at(array: &ArrayRef, row: usize, function: &str) -> Result<Option<Vec<
             let Some(doubles) = array.as_any().downcast_ref::<Float64Array>() else {
                 return exec_err!("{function}: expected doubles");
             };
-            return Ok(Some(vec![doubles.value(row)]));
+            into.push(doubles.value(row));
+            return Ok(true);
         }
         DataType::Int64 => {
             let Some(ints) = array.as_any().downcast_ref::<Int64Array>() else {
                 return exec_err!("{function}: expected integers");
             };
             #[allow(clippy::cast_precision_loss)]
-            return Ok(Some(vec![ints.value(row) as f64]));
+            into.push(ints.value(row) as f64);
+            return Ok(true);
         }
         other => {
             return exec_err!(
@@ -175,7 +251,8 @@ fn values_at(array: &ArrayRef, row: usize, function: &str) -> Result<Option<Vec<
     let Some(doubles) = inner.as_any().downcast_ref::<Float64Array>() else {
         return exec_err!("{function} needs doubles, and this array holds {}", inner.data_type());
     };
-    Ok(Some((0..doubles.len()).map(|i| doubles.value(i)).collect()))
+    into.extend_from_slice(doubles.values());
+    Ok(true)
 }
 
 /// One number out of an argument that should be a single value.

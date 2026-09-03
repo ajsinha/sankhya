@@ -11,7 +11,7 @@
 //! both — so a factor feeds straight back into another matrix function.
 
 use arrow_array::builder::{Float64Builder, ListBuilder};
-use arrow_array::{Array, ArrayRef, FixedSizeListArray, Float64Array, ListArray};
+use arrow_array::ArrayRef;
 use arrow_schema::{DataType, Field};
 use datafusion::common::{exec_err, Result};
 use datafusion::logical_expr::{
@@ -20,8 +20,17 @@ use datafusion::logical_expr::{
 use std::sync::Arc;
 
 /// A kernel over one flat array, returning another.
+///
+/// The result is `Option<f64>` per element, because some series genuinely have **holes**: a
+/// rolling mean has no answer for the positions its window does not reach, and every plausible
+/// invention there is wrong --- zero is a number somebody acts on, the series mean pretends to
+/// information that is not there, and repeating the first value makes a flat start that reads
+/// as low volatility.
+///
+/// A `NaN` would not do. `NaN` means *not a number* and travels silently into every arithmetic
+/// it touches; a null means *no value*, which is what a window that did not reach produced.
 pub type ArrayKernel =
-    Arc<dyn Fn(&[f64]) -> std::result::Result<Vec<f64>, String> + Send + Sync>;
+    Arc<dyn Fn(&[f64]) -> std::result::Result<Vec<Option<f64>>, String> + Send + Sync>;
 
 /// One array-to-array function, wired to the planner.
 pub struct Series {
@@ -51,10 +60,23 @@ impl std::hash::Hash for Series {
 }
 
 impl Series {
-    /// A function of one array.
+    /// A function of one array, every element of which is a value.
     pub fn new(
         name: &'static str,
         kernel: impl Fn(&[f64]) -> std::result::Result<Vec<f64>, String> + Send + Sync + 'static,
+    ) -> Self {
+        Self::holed(name, move |values| kernel(values).map(|out| out.into_iter().map(Some).collect()))
+    }
+
+    /// A function of one array whose result may have **holes**.
+    ///
+    /// See [`ArrayKernel`] for why a hole is a null rather than a zero or a `NaN`.
+    pub fn holed(
+        name: &'static str,
+        kernel: impl Fn(&[f64]) -> std::result::Result<Vec<Option<f64>>, String>
+            + Send
+            + Sync
+            + 'static,
     ) -> Self {
         Self {
             name,
@@ -87,16 +109,20 @@ impl ScalarUDFImpl for Series {
         };
         let array = first.clone().into_array(rows)?;
 
+        // Borrowed rather than copied; see `rows` for the measurement.
+        let mut vectors = crate::rows::Vectors::read(&array, self.name)?;
         let mut builder = ListBuilder::new(Float64Builder::new());
         for row in 0..rows {
-            match flat_at(&array, row, self.name)? {
+            match vectors.row(row) {
                 // A null matrix gives a null result, never an empty one. An empty result is a
                 // definite statement --- "this matrix has no eigenvalues" --- and a missing
                 // matrix is not that.
                 None => builder.append_null(),
-                Some(values) => match (self.kernel)(&values) {
+                Some(values) => match (self.kernel)(values) {
                     Ok(out) => {
-                        builder.values().append_slice(&out);
+                        for element in out {
+                            builder.values().append_option(element);
+                        }
                         builder.append(true);
                     }
                     Err(reason) => return exec_err!("{}: {reason}", self.name),
@@ -105,38 +131,4 @@ impl ScalarUDFImpl for Series {
         }
         Ok(ColumnarValue::Array(Arc::new(builder.finish())))
     }
-}
-
-/// One row's flat array of doubles.
-fn flat_at(array: &ArrayRef, row: usize, function: &str) -> Result<Option<Vec<f64>>> {
-    if array.is_null(row) {
-        return Ok(None);
-    }
-    let values: ArrayRef = match array.data_type() {
-        DataType::FixedSizeList(_, _) => {
-            let Some(list) = array.as_any().downcast_ref::<FixedSizeListArray>() else {
-                return exec_err!("{function}: expected a fixed-size list");
-            };
-            list.value(row)
-        }
-        DataType::List(_) => {
-            let Some(list) = array.as_any().downcast_ref::<ListArray>() else {
-                return exec_err!("{function}: expected a list");
-            };
-            list.value(row)
-        }
-        other => {
-            return exec_err!(
-                "{function} needs an array of doubles, and this column is {other}. Refused \
-                 rather than coerced: a coercion computes a real answer from the wrong thing"
-            )
-        }
-    };
-    let Some(doubles) = values.as_any().downcast_ref::<Float64Array>() else {
-        return exec_err!(
-            "{function} needs an array of doubles, and this one holds {}",
-            values.data_type()
-        );
-    };
-    Ok(Some((0..doubles.len()).map(|i| doubles.value(i)).collect()))
 }

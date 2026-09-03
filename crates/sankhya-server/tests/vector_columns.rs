@@ -193,3 +193,91 @@ fn a_vector_column_of_a_different_width_is_a_different_column() {
          what every similarity against it means"
     );
 }
+
+#[test]
+fn computing_over_a_column_sends_the_answer_rather_than_the_data() {
+    // The claim the whole function catalogue rests on: **only the results cross the wire**.
+    // Asserted with a number, because a claim with no number is a claim.
+    //
+    // The same twelve quantiles, reached two ways. Server-side, one number per row comes back.
+    // Client-side, every simulated outcome has to arrive before the client can take a quantile
+    // of it. The ratio is not a constant --- it is the width of the vector --- so it does not
+    // improve as a book grows.
+    let (_dir, server) = running_with_risk();
+
+    let answers = text_rows(
+        server.port,
+        "SELECT position_id, vec_quantile(pnl, vec_of(0.05)) AS var_95 FROM risk.positions",
+    );
+    let vectors = text_rows(server.port, "SELECT position_id, pnl FROM risk.positions");
+
+    assert_eq!(answers.len(), vectors.len(), "the two routes read different rows");
+    assert!(!answers.is_empty(), "the fixture has no positions");
+
+    let answer_bytes: usize = answers
+        .iter()
+        .flat_map(|row| row.iter())
+        .map(|value| value.as_deref().unwrap_or("").len())
+        .sum();
+    let vector_bytes: usize = vectors
+        .iter()
+        .flat_map(|row| row.iter())
+        .map(|value| value.as_deref().unwrap_or("").len())
+        .sum();
+
+    assert!(
+        vector_bytes > answer_bytes * 10,
+        "computing in the warehouse saved less than tenfold: {answer_bytes} against \
+         {vector_bytes}. Either the vectors got narrower or the answer stopped being one \
+         number per row --- and the second is the one worth knowing about"
+    );
+}
+
+/// A server over the fixture's risk table.
+fn running_with_risk() -> (tempfile::TempDir, common::Running) {
+    let dir = tempfile::tempdir().expect("a directory");
+    let warehouse = dir.path().join("warehouse");
+    common::write_warehouse(&warehouse);
+    let server = start(&warehouse, &dir.path().join("data"));
+    (dir, server)
+}
+
+#[test]
+fn a_vector_column_reports_its_type_rather_than_text() {
+    // A client asking what type a column is gets the answer in one place, and that place said
+    // `text` for every vector column --- while the same column crossed the wire as `float8[]`.
+    // Two answers about one column, and the catalogue's was the wrong one.
+    let (_dir, server) = running_with_risk();
+
+    let rows = text_rows(
+        server.port,
+        "SELECT column_name, data_type FROM information_schema.columns \
+         WHERE table_name = 'positions'",
+    );
+
+    // **The projection is ignored.** A client writing `SELECT column_name, data_type` receives
+    // all six columns of `information_schema.columns`, in the catalogue's own order --- schema,
+    // table, column, ordinal, type, nullability. That is a real defect, recorded in `STATUS`,
+    // and this test indexes around it rather than pretending it is not there.
+    //
+    // If it is ever fixed, this fails and says where to look, which is the right behaviour for
+    // a test written against a known-wrong surface.
+    assert_eq!(rows[0].len(), 6, "the projection is now honoured; this test can be simplified");
+
+    let pnl = rows
+        .iter()
+        .find(|row| row[2].as_deref() == Some("pnl"))
+        .unwrap_or_else(|| panic!("no `pnl` column in {rows:?}"));
+    assert_eq!(
+        pnl[4].as_deref(),
+        Some("float8[]"),
+        "the catalogue reports a vector column as something a client cannot decode"
+    );
+
+    // And the ordinary columns beside it are untouched by the change.
+    let id = rows
+        .iter()
+        .find(|row| row[2].as_deref() == Some("position_id"))
+        .expect("a `position_id` column");
+    assert_eq!(id[4].as_deref(), Some("int8"));
+}

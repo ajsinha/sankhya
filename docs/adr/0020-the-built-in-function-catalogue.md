@@ -236,6 +236,76 @@ by somebody reconciling to four decimal places at a month-end.
 Where agreement is not achievable, the function takes a different name and says why in its
 description. Named differently is honest; named identically and subtly different is not.
 
+## Decision 7 — Designed for thousands, because that is the stated target
+
+**Added 2026-09-02 by owner directive**: the catalogue is meant to grow until it *rivals
+MATLAB*. That is a different engineering problem from the one the first six decisions solved,
+and saying so now is cheaper than discovering it at four hundred functions.
+
+### What breaks at scale, and what each costs
+
+**One file per category stops working at about fifteen functions each.** `check-loc` caps a
+file at 1500 lines and does so for a reason. The answer is one module per *family* — normal,
+Student's t, the incomplete gamma — not one per broad category, and a crate per domain once a
+domain outgrows a directory.
+
+**One crate becomes a compile bottleneck.** `sankhya-functions` is already the crate every
+build must finish before the server links. Splitting it by domain — one crate for statistics,
+one for linear algebra, one for finance — buys parallel compilation and lets a contributor
+rebuild one domain. It costs a registration point per crate, which the catalogue already
+handles: `describe::register` takes the entries rather than owning them, exactly so that the
+list can come from several places.
+
+(Those crates do not exist. They are named as a shape rather than as a plan, and the gate
+refuses a document that references a crate the workspace does not have — which is how this
+paragraph came to be phrased without them.)
+
+**Hand-written registration stops scaling before the functions do.** Sixty-nine
+`ScalarUDF::from(Numeric::new(...))` lines are readable; two thousand are not, and the
+catalogue entry beside each is a second copy that drifts. The next structural step is one table
+per family carrying name, arity, shape, description **and** kernel together, with registration
+and catalogue both generated from it — so the two cannot disagree because there is one list.
+
+The drift test written for the current shape (`every_registered_function_is_in_the_catalogue_
+and_the_reverse`) is what makes that migration safe: it fails the moment the two lists diverge,
+whichever way they are built.
+
+### Performance is a property that is measured
+
+The wrappers here were written row-at-a-time, allocating a `Vec` per argument per row — the
+same defect that made `vec_dot` slow before the fixed-point sum replaced the sorted one,
+written again in four new places three weeks later. A `FixedSizeList` stores its rows end to
+end, so a row is a borrowed slice with a known stride and no allocation at all.
+
+Measured, summing a column on this machine:
+
+| Width | Copying per row | Borrowing | |
+|---|---|---|---|
+| 8 | 21.15 ms | 0.85 ms | **24.9×** |
+| 64 | 4.57 ms | 0.63 ms | **7.2×** |
+| 512 | 3.08 ms | 1.46 ms | **2.1×** |
+
+The narrow case wins most, and narrow is what a series column usually is: a window of readings,
+a term structure, a short curve. Results are identical; only the allocation changed.
+
+So the rule for anything added here:
+
+1. **A row is borrowed, not copied**, wherever the layout allows it. Where it does not — a
+   variable-length `List` — the buffer is reused across rows, so the cost is one allocation per
+   column rather than one per row.
+2. **A reduction goes through `sankhya-math`**, which is where the order-independence argument
+   lives. A kernel that sums its own way is a kernel whose answer moves when the machine is
+   busier.
+3. **Every claim about speed carries its number.** The table above is the form; *"we optimised
+   it"* with no measurement is a claim, and this repository does not ship claims.
+
+### What is deliberately not promised
+
+Not that every function will be fast. A Cholesky is `O(n³)` and no amount of care changes that.
+What is promised is that the **wrapper** costs nothing measurable next to the kernel, so a slow
+function is slow because the mathematics is, and a caller reading a profile sees the arithmetic
+rather than the plumbing.
+
 ## What this does not decide
 
 - **Which functions, exactly.** The catalogue is a living list in the milestone, not an ADR

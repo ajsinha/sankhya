@@ -548,6 +548,21 @@ pub fn describe(tables: &[FoundTable]) -> Vec<sankhya_api_pg::catalog::CatalogTa
                         DataType::Date32 => ("date", oid::DATE),
                         DataType::Timestamp(_, _) => ("timestamp", oid::TIMESTAMP),
                         DataType::Binary | DataType::LargeBinary => ("bytea", oid::BYTEA),
+                        // A vector column is an array of doubles, and the catalogue said
+                        // `text` --- so a client asking what type `pnl` was got the wrong
+                        // answer in the one place it goes to find out. It travels the wire as
+                        // `float8[]` (`ADR-0021` Decision 3); the catalogue must say the same,
+                        // or the two disagree about the same column.
+                        DataType::List(item)
+                        | DataType::LargeList(item)
+                        | DataType::FixedSizeList(item, _)
+                            if matches!(
+                                item.data_type(),
+                                DataType::Float64 | DataType::Float32
+                            ) =>
+                        {
+                            ("float8[]", oid::FLOAT8_ARRAY)
+                        }
                         _ => ("text", oid::TEXT),
                     };
                     CatalogColumn {

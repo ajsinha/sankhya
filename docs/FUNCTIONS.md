@@ -41,7 +41,7 @@ rather than widening the column to a variable-length list.
 |---|---|
 | **OLAP SQL** (`psql`, Flight SQL) | **All of them.** |
 | **SDK, as raw SQL** (`db.sql("SELECT norm_inv(0.975)")`) | **All of them.** |
-| **SDK, as a named method** (`db.fn.norm_inv(0.975)`) | **All 128** SANKHYA-specific ones |
+| **SDK, as a named method** (`db.fn.norm_inv(0.975)`) | **All 155** SANKHYA-specific ones |
 | **OLTP SQL** | No query path exists yet — but the rule that governs it is built |
 
 ### How the wiring works
@@ -104,7 +104,7 @@ differently, because of a routing decision nobody can see.
 
 # Part 1 — What ships today
 
-**309 functions.** 192 from the query engine, 117 written for SANKHYA.
+**347 functions.** 192 from the query engine, 155 written for SANKHYA.
 
 ## 1.1 Vectors and per-row series — SANKHYA
 
@@ -215,6 +215,14 @@ Accuracy: the cumulatives iterate to `3e-16`, so they are good to the last few b
 | `mat_singular_values` | Singular values, descending |
 | `mat_qr_q` · `mat_qr_r` | The QR factors, each returned flat |
 | `mat_is_symmetric` · `mat_is_positive_definite` · `mat_is_square` | Questions answered `1` or `0` |
+
+> **A matrix's shape, and when it is deduced.** A function defined *only* on a square matrix —
+> a determinant, a trace, an inverse, a Cholesky, an eigendecomposition — takes its order from
+> the array's length, because any other shape is not that function's argument and there is
+> nothing to guess wrong. A function defined on a **rectangular** matrix — a transpose, a
+> multiply — requires a shape declared by `mat_of`, because sixteen values are a 4×4 or a 2×8
+> and the wrong one produces numbers from values that were never in the same row. A declared
+> shape always wins where there is one.
 
 > **A Cholesky failure is the useful part.** It succeeds exactly on the positive-definite
 > matrices, so a covariance matrix that will not factor is not a numerical accident — it is one
@@ -389,12 +397,46 @@ are in §1.13; `regress_lasso`, `regress_logistic` and `regress_quantile` remain
 **Transforms:** `fft` · `ifft` · `dct` · `wavelet_haar` · `autocorrelation` ·
 `partial_autocorrelation` · `cross_correlation` · `convolve`
 
+## 1.14 Time series, finance and risk — SANKHYA
+
+| Function | What it gives |
+|---|---|
+| `ts_rolling_mean` · `_std` · `_min` · `_max` | Rolling statistics over a window |
+| `ts_ewma` | Exponentially weighted moving average |
+| `ts_returns` · `ts_log_returns` | Simple and logarithmic period returns |
+| `ts_drawdown` · `ts_max_drawdown` | Fall from the running peak, and the worst of them |
+| `ts_cumulative_return` | Period returns **compounded**, which is not their sum |
+| `ts_autocorrelation` | Correlation of a series with itself at a lag |
+| `npv` · `npv_from_now` · `irr` | Net present value under either convention, and the rate that zeroes it |
+| `pv` · `fv` · `pmt` | Annuity present value, future value and level payment |
+| `sln` · `syd` | Straight-line and sum-of-years depreciation |
+| `var_historical` · `expected_shortfall` | Value-at-risk, and the mean of what lies beyond it |
+| `sharpe` · `sortino` | Excess return per unit of total, and of downside, deviation |
+| `black_scholes_call` · `_put` · `greeks_delta` · `greeks_vega` | European option prices and two sensitivities |
+
+> **A rolling window reports nothing where it does not reach.** The leading positions come back
+> as **nulls inside the array**, not zeros. Zero is a number somebody acts on; the series mean
+> pretends to information that is not there; repeating the first value makes a flat start that
+> reads as low volatility.
+
+> **A value-at-risk is negative for a loss**, because the outcomes are. It is not flipped to a
+> positive "amount at risk" — one quoted positive gets added to a profit somewhere, and the sign
+> is the only thing between a report and a number twice as wrong as it looks.
+
+> **Both discounting conventions are named**, rather than selected by a flag. `npv` discounts
+> from period one as a spreadsheet does; `npv_from_now` leaves the first flow undiscounted. A
+> boolean deciding which of two definitions applies is a boolean somebody passes wrongly, and
+> the result is plausible.
+
+> **An internal rate of return refuses more than it converges.** A cash flow of one sign has no
+> rate at which its value is zero, and one with several sign changes has several — all correct,
+> none of them *the* answer.
+
 ## 2.5 Time series
 
-`ts_lag` · `ts_lead` · `ts_diff` · `ts_pct_change` · `ts_log_return` · `ts_cumulative_return` ·
-`ts_drawdown` · `ts_max_drawdown` · `ts_rolling_mean` · `ts_rolling_std` · `ts_rolling_min` ·
-`ts_rolling_max` · `ts_rolling_quantile` · `ts_rolling_corr` · `ts_ewma` · `ts_ewmstd` ·
-`ts_resample` · `ts_seasonal_decompose` · `ts_detrend` · `ts_stl`
+**Shipped 2026-09-02**: see §1.14. Remaining: `ts_lag` · `ts_lead` · `ts_diff` ·
+`ts_pct_change` · `ts_rolling_quantile` · `ts_rolling_corr` · `ts_ewmstd` · `ts_resample` ·
+`ts_seasonal_decompose` · `ts_detrend` · `ts_stl`
 
 **Forecasting:** `ts_arima` · `ts_holt_winters` · `ts_theta`
 

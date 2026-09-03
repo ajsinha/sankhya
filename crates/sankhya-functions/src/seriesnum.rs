@@ -3,7 +3,7 @@
 //! The shape a one-sample test has --- the observations, and the value they are tested
 //! against --- and the shape neither of the other wrappers covers.
 
-use arrow_array::{Array, ArrayRef, FixedSizeListArray, Float64Array, Int64Array, ListArray};
+use arrow_array::{Array, ArrayRef, Float64Array, Int64Array};
 use arrow_schema::DataType;
 use datafusion::common::{exec_err, Result};
 use datafusion::logical_expr::{
@@ -94,52 +94,22 @@ impl ScalarUDFImpl for SeriesAndNumber {
         let series = first.clone().into_array(rows)?;
         let numbers = second.clone().into_array(rows)?;
 
+        // Borrowed rather than copied; see `rows` for the measurement.
+        let mut vectors = crate::rows::Vectors::read(&series, self.name)?;
         let mut out: Vec<Option<f64>> = Vec::with_capacity(rows);
         for row in 0..rows {
-            let (Some(values), Some(number)) =
-                (flat_at(&series, row, self.name)?, number_at(&numbers, row, self.name)?)
-            else {
+            let number = number_at(&numbers, row, self.name)?;
+            let (Some(values), Some(number)) = (vectors.row(row), number) else {
                 out.push(None);
                 continue;
             };
-            match (self.kernel)(&values, number) {
+            match (self.kernel)(values, number) {
                 Ok(value) => out.push(Some(value)),
                 Err(reason) => return exec_err!("{}: {reason}", self.name),
             }
         }
         Ok(ColumnarValue::Array(Arc::new(Float64Array::from(out))))
     }
-}
-
-/// One row's flat array of doubles.
-fn flat_at(array: &ArrayRef, row: usize, function: &str) -> Result<Option<Vec<f64>>> {
-    if array.is_null(row) {
-        return Ok(None);
-    }
-    let values: ArrayRef = match array.data_type() {
-        DataType::FixedSizeList(_, _) => {
-            let Some(list) = array.as_any().downcast_ref::<FixedSizeListArray>() else {
-                return exec_err!("{function}: expected a fixed-size list");
-            };
-            list.value(row)
-        }
-        DataType::List(_) => {
-            let Some(list) = array.as_any().downcast_ref::<ListArray>() else {
-                return exec_err!("{function}: expected a list");
-            };
-            list.value(row)
-        }
-        other => {
-            return exec_err!(
-                "{function} needs a series of doubles, and this column is {other}. Refused \
-                 rather than coerced: a coercion computes a real answer from the wrong thing"
-            )
-        }
-    };
-    let Some(doubles) = values.as_any().downcast_ref::<Float64Array>() else {
-        return exec_err!("{function} needs doubles, and this series holds {}", values.data_type());
-    };
-    Ok(Some((0..doubles.len()).map(|i| doubles.value(i)).collect()))
 }
 
 /// One number, whatever numeric type it arrived as.

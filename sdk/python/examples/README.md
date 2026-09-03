@@ -1,6 +1,6 @@
 # Runnable examples
 
-Eight scripts, one per capability, each runnable on its own against a live SANKHYA.
+Ten scripts, one per capability, each runnable on its own against a live SANKHYA.
 
 ```
 pip install -e sdk/python
@@ -20,6 +20,8 @@ python3 sdk/python/examples/01_connect_and_discover.py
 | [`06_refusals.py`](06_refusals.py) | refusals as data — code, message, subjects |
 | [`07_the_raw_wire.py`](07_the_raw_wire.py) | the connection underneath the methods, and streaming |
 | [`08_snapshots_and_history.py`](08_snapshots_and_history.py) | naming an instant, reading it back, and the log underneath |
+| [`09_the_function_catalogue.py`](09_the_function_catalogue.py) | asking what the server can compute, and calling it |
+| [`10_value_at_risk.py`](10_value_at_risk.py) | value-at-risk over stored P&L vectors — and what it costs to compute it here against there |
 
 `_common.py` is imported by the rest and is not a script.
 

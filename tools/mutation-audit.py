@@ -4199,6 +4199,98 @@ CATALOGUE = [
     # while the workspace suite saturates the machine describes the machine --- so no crate's
     # default run notices, and a catalogue entry claiming otherwise would be false.
 
+    # A stored matrix column carries no shape --- a `FixedSizeList` read back from Parquet has
+    # no tensor metadata --- so requiring one made four functions unusable on real data.
+    ("olap: refuse a square-only operation on a stored matrix column",
+     "crates/sankhya-olap/src/matrices.rs",
+     "        let deduced = self\n            .operation\n            .needs_square()\n            .then(|| first_length(&args).and_then(square_order))\n            .flatten();",
+     "        let deduced = None;",
+     "sankhya-olap"),
+
+    ("olap: deduce a square shape for an operation where the guess is real",
+     "crates/sankhya-olap/src/matrices.rs",
+     "    const fn needs_square(self) -> bool {\n        matches!(self, Self::Determinant | Self::Trace | Self::Inverse | Self::Solve)\n    }",
+     "    const fn needs_square(self) -> bool {\n        true\n    }",
+     "sankhya-olap"),
+
+    # M21. Time series, finance and risk. Every one is a wrong number somebody acts on.
+    ("math: pad a rolling window's leading positions instead of reporting nothing",
+     "crates/sankhya-math/src/timeseries.rs",
+     "            if at + 1 < window {\n                return None;\n            }\n            values\n                .get(at + 1 - window..=at)\n                .map(|slice| deterministic_sum(slice) / divisor)",
+     "            values\n                .get(at.saturating_sub(window - 1)..=at)\n                .map(|slice| deterministic_sum(slice) / divisor)",
+     "sankhya-math"),
+
+    ("math: measure a drawdown from the last value rather than the running peak",
+     "crates/sankhya-math/src/timeseries.rs",
+     "        if *value > peak {\n            peak = *value;\n        }",
+     "        peak = *value;",
+     "sankhya-math"),
+
+    ("math: sum period returns rather than compounding them",
+     "crates/sankhya-math/src/timeseries.rs",
+     "    Ok(returns.iter().fold(1.0, |total, r| total * (1.0 + r)) - 1.0)",
+     "    Ok(deterministic_sum(returns))",
+     "sankhya-math"),
+
+    ("math: discount a net present value from period zero under the period-one name",
+     "crates/sankhya-math/src/finance.rs",
+     "            let exponent = period as i32 + 1;",
+     "            let exponent = period as i32;",
+     "sankhya-math"),
+
+    ("math: return the nearest iterate when no rate zeroes the cash flow",
+     "crates/sankhya-math/src/finance.rs",
+     "    if !(positive && negative) {",
+     "    if false {",
+     "sankhya-math"),
+
+    ("math: report a value-at-risk positive, so it is added to a profit",
+     "crates/sankhya-math/src/finance.rs",
+     "    crate::quantile(&mut sorted, tail, crate::Convention::LinearInterpolation)\n        .map_err(|reason| VectorError::Refused(reason.to_string()))",
+     "    crate::quantile(&mut sorted, tail, crate::Convention::LinearInterpolation)\n        .map(f64::abs)\n        .map_err(|reason| VectorError::Refused(reason.to_string()))",
+     "sankhya-math"),
+
+    ("math: count the whole deviation in a Sortino ratio rather than the downside",
+     "crates/sankhya-math/src/finance.rs",
+     "    let downside: Vec<f64> = excess.iter().filter(|v| **v < 0.0).map(|v| v * v).collect();",
+     "    let downside: Vec<f64> = excess.iter().map(|v| v * v).collect();",
+     "sankhya-math"),
+
+    ("math: drop the variance term from the Black-Scholes drift",
+     "crates/sankhya-math/src/finance.rs",
+     "    let d1 = ((spot / strike).ln() + (rate + 0.5 * volatility * volatility) * years) / root;",
+     "    let d1 = ((spot / strike).ln() + rate * years) / root;",
+     "sankhya-math"),
+
+    ("math: call a square non-symmetric matrix not square",
+     "crates/sankhya-math/src/decompose.rs",
+     "        return Err(MatrixError::NotSymmetric { size });\n    }\n\n    let mut lower = vec![0.0f64; size * size];",
+     "        return Err(MatrixError::NotSquare { rows: size, columns: size });\n    }\n\n    let mut lower = vec![0.0f64; size * size];",
+     "sankhya-math"),
+
+    # M21. Reading a column of vectors. The borrowing path is 25x the copying one on a narrow
+    # column, and a stride read from the wrong place returns numbers rather than failing.
+    # No entry for "ignore a sliced column's offset". There is no offset to ignore: slicing a
+    # `FixedSizeListArray` slices its child values too, so `offset()` is zero and `values()`
+    # already begins at the slice's first row.
+    #
+    # The first version of this file carried an offset anyway, with a comment calling it a
+    # hazard --- and the mutation was unobservable because the premise was false. The line is
+    # gone rather than kept with a note, because a defensive line whose premise is false reads
+    # as evidence somebody checked.
+
+    ("functions: give a null row an empty series rather than a null one",
+     "crates/sankhya-functions/src/rows.rs",
+     "            Self::Strided { flat, width, list } => {\n                if list.is_null(row) {\n                    return None;\n                }",
+     "            Self::Strided { flat, width, list } => {\n                let _ = list;",
+     "sankhya-functions"),
+
+    ("functions: allocate a buffer per row instead of reusing one",
+     "crates/sankhya-functions/src/multi.rs",
+     "                slot.clear();\n                if !fill(array, row, self.name, slot)? {",
+     "                if !fill(array, row, self.name, slot)? {",
+     "sankhya-functions"),
+
     # M21. The catalogue and the routing. Every one of these is a function a user is told
     # exists and cannot call, or a statement sent to a tier that cannot answer it.
     ("functions: match a bare name, so a column called `erf` routes a lookup analytically",
@@ -4337,7 +4429,7 @@ CATALOGUE = [
     # caught by the identity tests rather than by a table of expected entries.
     ("math: symmetrise a matrix rather than refusing an asymmetric one",
      "crates/sankhya-math/src/decompose.rs",
-     "    if !is_symmetric(values, size) {\n        return Err(MatrixError::NotSquare { rows: size, columns: size });\n    }\n\n    let mut a = values.to_vec();",
+     "    if !is_symmetric(values, size) {\n        return Err(MatrixError::NotSymmetric { size });\n    }\n\n    let mut a = values.to_vec();",
      "    let mut a = values.to_vec();",
      "sankhya-math"),
 

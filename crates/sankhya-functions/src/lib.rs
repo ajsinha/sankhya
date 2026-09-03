@@ -26,8 +26,10 @@ pub mod entry;
 pub mod inference;
 pub mod routing;
 pub mod linalg;
+pub mod quant;
 pub mod multi;
 mod property;
+pub mod rows;
 pub mod seriesnum;
 mod scalar;
 mod series;
@@ -36,6 +38,7 @@ pub use entry::{Entry, Gives, Takes};
 pub use routing::{built_ins_in, tier_for, Tier};
 pub use scalar::{Numeric, NumericKernel};
 pub use property::{Property, PropertyKernel};
+pub use rows::Vectors;
 pub use series::{ArrayKernel, Series};
 
 use datafusion::logical_expr::ScalarUDF;
@@ -53,7 +56,7 @@ pub fn register(context: &SessionContext) {
     // The catalogue over this crate's own entries. A server that also registers the vector,
     // matrix, cube and graph functions calls `describe::register` itself with the whole list,
     // which replaces this --- see its doc comment for why the entries are passed in.
-    describe::register(context, catalogue::catalogue());
+    describe::register(context, catalogue::mine());
 }
 
 /// Every function this crate offers.
@@ -66,6 +69,7 @@ pub fn functions() -> Vec<ScalarUDF> {
     all.extend(linalg::functions());
     all.extend(linalg::property_functions());
     all.extend(inference::functions());
+    all.extend(quant::functions());
     all
 }
 

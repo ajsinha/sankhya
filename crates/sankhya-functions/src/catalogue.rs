@@ -160,6 +160,71 @@ pub fn catalogue() -> Vec<Entry> {
     ]
 }
 
+/// Time series, finance, risk and options.
+///
+/// Separated only because the list above reached the length at which a reader stops finding
+/// anything in it. The two are concatenated by [`catalogue`]'s caller, and the drift test sees
+/// them as one.
+#[must_use]
+pub fn quantitative() -> Vec<Entry> {
+    vec![
+        Entry::new("black_scholes_call", "options", 5, Takes::Numbers, Gives::Number,
+            "The Black-Scholes price of a European call"),
+        Entry::new("black_scholes_put", "options", 5, Takes::Numbers, Gives::Number,
+            "The Black-Scholes price of a European put"),
+        Entry::new("expected_shortfall", "risk", 2, Takes::Several, Gives::Number,
+            "The mean of the outcomes at or beyond the value-at-risk"),
+        Entry::new("fv", "finance", 4, Takes::Numbers, Gives::Number,
+            "The future value of a level annuity"),
+        Entry::new("greeks_delta", "options", 5, Takes::Numbers, Gives::Number,
+            "How a call's price moves with the spot"),
+        Entry::new("greeks_vega", "options", 5, Takes::Numbers, Gives::Number,
+            "How an option's price moves with volatility"),
+        Entry::new("irr", "finance", 1, Takes::Series, Gives::Number,
+            "The rate at which a cash flow's present value is zero"),
+        Entry::new("npv", "finance", 2, Takes::Several, Gives::Number,
+            "Net present value, discounting from period one as a spreadsheet does"),
+        Entry::new("npv_from_now", "finance", 2, Takes::Several, Gives::Number,
+            "Net present value with the first flow left undiscounted"),
+        Entry::new("pmt", "finance", 4, Takes::Numbers, Gives::Number,
+            "The level payment that amortises a present value"),
+        Entry::new("pv", "finance", 4, Takes::Numbers, Gives::Number,
+            "The present value of a level annuity"),
+        Entry::new("sharpe", "risk", 2, Takes::Several, Gives::Number,
+            "Excess return per unit of its own deviation"),
+        Entry::new("sln", "finance", 3, Takes::Numbers, Gives::Number,
+            "Straight-line depreciation for one period"),
+        Entry::new("sortino", "risk", 2, Takes::Several, Gives::Number,
+            "Excess return per unit of downside deviation only"),
+        Entry::new("syd", "finance", 4, Takes::Numbers, Gives::Number,
+            "Sum-of-years-digits depreciation for one period"),
+        Entry::new("ts_autocorrelation", "time series", 2, Takes::Several, Gives::Number,
+            "The correlation of a series with itself at a given lag"),
+        Entry::new("ts_cumulative_return", "time series", 1, Takes::Series, Gives::Number,
+            "Period returns compounded, which is not their sum"),
+        Entry::new("ts_drawdown", "time series", 1, Takes::Series, Gives::Series,
+            "How far below its running peak the series has fallen, as a negative proportion"),
+        Entry::new("ts_ewma", "time series", 2, Takes::Several, Gives::Series,
+            "The exponentially weighted moving average, given a smoothing factor"),
+        Entry::new("ts_log_returns", "time series", 1, Takes::Series, Gives::Series,
+            "Logarithmic returns, which add where simple ones compound"),
+        Entry::new("ts_max_drawdown", "time series", 1, Takes::Series, Gives::Number,
+            "The worst drawdown the series reached"),
+        Entry::new("ts_returns", "time series", 1, Takes::Series, Gives::Series,
+            "Simple period returns, one shorter than the prices they came from"),
+        Entry::new("ts_rolling_max", "time series", 2, Takes::Several, Gives::Series,
+            "The largest value in each rolling window"),
+        Entry::new("ts_rolling_mean", "time series", 2, Takes::Several, Gives::Series,
+            "The rolling mean over a window, with nulls where the window does not reach"),
+        Entry::new("ts_rolling_min", "time series", 2, Takes::Several, Gives::Series,
+            "The smallest value in each rolling window"),
+        Entry::new("ts_rolling_std", "time series", 2, Takes::Several, Gives::Series,
+            "The rolling sample deviation over a window"),
+        Entry::new("var_historical", "risk", 2, Takes::Several, Gives::Number,
+            "Historical value-at-risk, negative for a loss because the outcomes are"),
+    ]
+}
+
 /// The functions **other crates** register, described here.
 ///
 /// # Why they are described in this crate and not in theirs
@@ -295,10 +360,23 @@ pub fn elsewhere() -> Vec<Entry> {
     ]
 }
 
+/// **This crate's** own functions, as one list.
+///
+/// Named rather than left as an expression, so registration and the drift test read the same
+/// thing. Two places assembling the same list from parts is two places that can be edited
+/// apart --- which is what happened the moment [`quantitative`] was added and only one of them
+/// learned about it.
+#[must_use]
+pub fn mine() -> Vec<Entry> {
+    let mut all = catalogue();
+    all.extend(quantitative());
+    all
+}
+
 /// Everything a server serves: this crate's functions and the ones registered around them.
 #[must_use]
 pub fn everything() -> Vec<Entry> {
-    let mut all = catalogue();
+    let mut all = mine();
     all.extend(elsewhere());
     all
 }

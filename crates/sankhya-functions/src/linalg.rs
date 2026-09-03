@@ -91,12 +91,6 @@ pub fn functions() -> Vec<ScalarUDF> {
         })),
         // --- properties, each one number ---
         //
-        // `1` and `0` rather than a boolean, because this wire renders a boolean as `t`/`f`
-        // and these are asked inside arithmetic --- `CASE WHEN mat_is_positive_definite(c) = 1`
-        // reads the same in every client, and a boolean would not.
-        ScalarUDF::from(Numeric::new("mat_is_square", 1, |a| {
-            Ok(f64::from(u8::from(order(a).is_ok())))
-        })),
     ]
 }
 
@@ -107,6 +101,16 @@ pub fn functions() -> Vec<ScalarUDF> {
 #[must_use]
 pub fn property_functions() -> Vec<ScalarUDF> {
     vec![
+        // `1` and `0` rather than a boolean, because this wire renders a boolean as `t`/`f`
+        // and these are asked inside arithmetic --- `CASE WHEN mat_is_positive_definite(c) = 1`
+        // reads the same in every client, and a boolean would not.
+        //
+        // Registered here rather than through the numeric wrapper, which takes **numbers**: it
+        // was, and so refused the array it exists to be asked about. Found by the parity soak,
+        // because every path refused it identically and consistent refusal is still refusal.
+        ScalarUDF::from(crate::property::Property::new("mat_is_square", |values| {
+            Ok(f64::from(u8::from(order(values).is_ok())))
+        })),
         // Whether a matrix equals its own transpose. Within a tolerance, deliberately: a
         // covariance matrix assembled by summing products is symmetric mathematically and
         // differs in the last bit arithmetically, and answering `false` for one would answer

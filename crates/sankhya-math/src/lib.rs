@@ -50,6 +50,7 @@
 
 pub mod calculus;
 pub mod decompose;
+pub mod finance;
 pub mod inference;
 pub mod distribution;
 pub mod special;
@@ -58,6 +59,7 @@ mod quantile;
 pub mod regression;
 mod reduce;
 pub mod stats;
+pub mod timeseries;
 pub mod vector;
 
 pub use special::DomainError;

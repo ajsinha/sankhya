@@ -78,7 +78,8 @@ pub fn is_symmetric(values: &[f64], size: usize) -> bool {
 ///
 /// # Errors
 ///
-/// [`MatrixError::NotSquare`] or [`MatrixError::ShapeMismatch`] for the wrong shape, and
+/// [`MatrixError::NotSymmetric`] when it is not symmetric, [`MatrixError::ShapeMismatch`] for
+/// the wrong length, and
 /// [`MatrixError::Singular`] when a pivot is not positive.
 pub fn cholesky(values: &[f64], size: usize) -> Result<Vec<f64>, MatrixError> {
     if values.len() != size * size {
@@ -88,7 +89,7 @@ pub fn cholesky(values: &[f64], size: usize) -> Result<Vec<f64>, MatrixError> {
         return Err(MatrixError::NotSquare { rows: 0, columns: 0 });
     }
     if !is_symmetric(values, size) {
-        return Err(MatrixError::NotSquare { rows: size, columns: size });
+        return Err(MatrixError::NotSymmetric { size });
     }
 
     let mut lower = vec![0.0f64; size * size];
@@ -217,7 +218,7 @@ pub fn qr(values: &[f64], rows: usize, columns: usize) -> Result<(Vec<f64>, Vec<
 ///
 /// # Errors
 ///
-/// [`MatrixError::NotSquare`] for a matrix that is not symmetric --- refused rather than
+/// [`MatrixError::NotSymmetric`] for a matrix that is not symmetric --- refused rather than
 /// symmetrised, because the eigenvalues of `(A + Aᵀ)/2` answer a question about a different
 /// matrix. [`MatrixError::Singular`] if the sweeps do not converge.
 pub fn eigen_symmetric(
@@ -231,7 +232,7 @@ pub fn eigen_symmetric(
         return Err(MatrixError::NotSquare { rows: 0, columns: 0 });
     }
     if !is_symmetric(values, size) {
-        return Err(MatrixError::NotSquare { rows: size, columns: size });
+        return Err(MatrixError::NotSymmetric { size });
     }
 
     let mut a = values.to_vec();
