@@ -250,7 +250,7 @@ fn a_query_joining_pg_class_to_pg_namespace_is_a_table_list_not_a_schema_list() 
               FROM pg_catalog.pg_class c \
               LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
               WHERE c.relkind IN ('r','p') ORDER BY 1,2";
-    assert_eq!(recognise(dt), Some(CatalogQuery::Tables { schema: None }));
+    assert!(matches!(recognise(dt), Some(CatalogQuery::Tables { schema: None, .. })));
 }
 
 #[test]
@@ -345,18 +345,18 @@ fn a_real_catalogue_query_is_still_recognised_with_its_literal_intact() {
     let recognised = recognise(
         "SELECT column_name FROM information_schema.columns WHERE table_name = 'orders'",
     );
-    assert_eq!(
+    assert!(matches!(
         recognised,
-        Some(CatalogQuery::Columns { schema: None, table: Some("orders".to_string()) })
-    );
+        Some(CatalogQuery::Columns { schema: None, ref table, .. }) if table.as_deref() == Some("orders")
+    ));
 
     let recognised = recognise(
         "SELECT table_name FROM information_schema.tables WHERE table_schema = 'sales'",
     );
-    assert_eq!(
+    assert!(matches!(
         recognised,
-        Some(CatalogQuery::Tables { schema: Some("sales".to_string()) })
-    );
+        Some(CatalogQuery::Tables { ref schema, .. }) if schema.as_deref() == Some("sales")
+    ));
 }
 
 #[test]
@@ -373,29 +373,29 @@ fn a_filter_is_read_from_the_where_clause_and_not_from_the_projection() {
     // the next character is a comma --- so taking the first occurrence dropped the filter and
     // returned every table in the warehouse. The client had asked for one schema and had no
     // way to tell it had been given all of them.
-    assert_eq!(
+    assert!(matches!(
         recognise(
             "SELECT table_schema, table_name FROM information_schema.tables \
              WHERE table_schema = 'sales'"
         ),
-        Some(CatalogQuery::Tables { schema: Some("sales".to_string()) })
-    );
-    assert_eq!(
+        Some(CatalogQuery::Tables { schema: Some(ref s), .. }) if s == "sales"
+    ));
+    assert!(matches!(
         recognise(
             "SELECT table_name, column_name FROM information_schema.columns \
              WHERE table_name = 'orders'"
         ),
-        Some(CatalogQuery::Columns { schema: None, table: Some("orders".to_string()) })
-    );
+        Some(CatalogQuery::Columns { schema: None, table: Some(ref t), .. }) if t == "orders"
+    ));
 }
 
 #[test]
 fn a_query_with_no_filter_narrows_to_nothing_rather_than_guessing() {
     // The other half: no `=` anywhere means no filter, not the first name that appeared.
-    assert_eq!(
+    assert!(matches!(
         recognise("SELECT table_schema, table_name FROM information_schema.tables"),
-        Some(CatalogQuery::Tables { schema: None })
-    );
+        Some(CatalogQuery::Tables { schema: None, .. })
+    ));
 }
 
 #[test]
@@ -403,16 +403,14 @@ fn a_column_query_that_names_a_schema_is_narrowed_to_it() {
     // `orders` may exist in several schemas. A client that asked about one of them and got
     // every one's columns interleaved has a wrong answer, not a wide one --- and no way to
     // tell which rows belong to the table it meant.
-    assert_eq!(
+    assert!(matches!(
         recognise(
             "SELECT column_name FROM information_schema.columns \
              WHERE table_schema = 'sales' AND table_name = 'orders'"
         ),
-        Some(CatalogQuery::Columns {
-            schema: Some("sales".to_string()),
-            table: Some("orders".to_string()),
-        })
-    );
+        Some(CatalogQuery::Columns { schema: Some(ref s), table: Some(ref n), .. })
+            if s == "sales" && n == "orders"
+    ));
 }
 
 #[test]
@@ -442,8 +440,13 @@ fn a_column_query_naming_a_schema_answers_about_that_schema_alone() {
     let result = answer(&query, VERSION, "public", &catalogue);
 
     assert_eq!(result.row_count(), 1, "only the archive table's column");
-    assert_eq!(cell(&result, 0, 0), Some("archive".to_string()));
-    assert_eq!(cell(&result, 0, 2), Some("archived_at".to_string()));
+    // The statement asked for **one** column, so one comes back and it is the one asked for.
+    // This read `cell(0, 0)` and expected the schema, which is what this module used to return
+    // whatever was projected --- and is the defect fixed on 2026-09-03: a driver reading
+    // `row[0]` after `SELECT column_name` was handed the schema and told nothing was wrong.
+    assert_eq!(result.fields.len(), 1, "one column asked for, one returned");
+    assert_eq!(result.fields.first().map(|f| f.name.as_str()), Some("column_name"));
+    assert_eq!(cell(&result, 0, 0), Some("archived_at".to_string()));
 
     // And without a schema, both are answered -- which is right, and is what makes the
     // narrowing above load-bearing rather than decorative.
@@ -453,4 +456,87 @@ fn a_column_query_naming_a_schema_answers_about_that_schema_alone() {
     .expect("recognised");
     let result = answer(&query, VERSION, "public", &catalogue);
     assert_eq!(result.row_count(), 3, "both tables' columns");
+}
+
+#[test]
+fn a_catalogue_query_gets_the_columns_it_asked_for_in_the_order_it_asked() {
+    // The defect: this module answered every catalogue query with the whole row, in its own
+    // order, whatever the client projected. `SELECT table_name FROM information_schema.tables`
+    // came back with three columns and the first of them was `table_schema` --- so a driver
+    // reading `row[0]`, which is what a driver does, was handed the schema and told it was the
+    // table name.
+    //
+    // Not a wide answer. A **wrong** one, with no error beside it: the client asked for one
+    // column, received three, and the value it read was a real string of the right shape.
+    let catalogue = tables();
+
+    let query = recognise("SELECT table_name FROM information_schema.tables").expect("known");
+    let result = answer(&query, VERSION, "public", &catalogue);
+    assert_eq!(result.fields.len(), 1, "one asked for, one returned");
+    assert_eq!(result.fields.first().map(|f| f.name.as_str()), Some("table_name"));
+    assert_eq!(cell(&result, 0, 0), Some("orders".to_string()));
+
+    // And in the order asked for, which is the half a column count cannot catch. Reversed
+    // against the canonical order on purpose: a client reading positionally gets what it wrote.
+    let query =
+        recognise("SELECT table_name, table_schema FROM information_schema.tables").expect("known");
+    let result = answer(&query, VERSION, "public", &catalogue);
+    let names: Vec<&str> = result.fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, vec!["table_name", "table_schema"]);
+    assert_eq!(cell(&result, 0, 0), Some("orders".to_string()));
+    assert_eq!(cell(&result, 0, 1), Some("sales".to_string()));
+}
+
+#[test]
+fn an_alias_is_what_the_client_will_look_for() {
+    // A tool writes `SELECT table_name AS name`, then reads the field called `name`. Returning
+    // it under the catalogue's own name is a column the client cannot find.
+    let catalogue = tables();
+    let query = recognise("SELECT table_name AS name FROM information_schema.tables")
+        .expect("known");
+    let result = answer(&query, VERSION, "public", &catalogue);
+    assert_eq!(result.fields.first().map(|f| f.name.as_str()), Some("name"));
+    assert_eq!(cell(&result, 0, 0), Some("orders".to_string()));
+}
+
+#[test]
+fn a_projection_this_cannot_read_falls_back_to_the_whole_row() {
+    // The safe direction, and it is deliberately the *wide* one. Tools generate wildly
+    // different projections --- `count(*)`, casts, `CASE`, `*` --- and a narrower guess would
+    // turn a query this module used to answer usefully into one it answers with nothing or
+    // with the wrong column. Anything unreadable gets exactly what it got before this change.
+    let catalogue = tables();
+    for statement in [
+        "SELECT * FROM information_schema.tables",
+        "SELECT count(*) FROM information_schema.tables",
+        "SELECT c.relname::text FROM pg_class c",
+    ] {
+        let Some(query) = recognise(statement) else {
+            continue;
+        };
+        let result = answer(&query, VERSION, "public", &catalogue);
+        assert!(
+            result.fields.len() > 1,
+            "`{statement}` must fall back to the whole row rather than be narrowed by a guess"
+        );
+    }
+}
+
+#[test]
+fn a_projected_column_this_system_does_not_model_is_answered_widely() {
+    // `information_schema.tables` has a dozen columns this system does not keep. A query naming
+    // one of them is better answered with what there is than with a hole where the column
+    // should be --- a null in a column the client asked for reads as "this table has no
+    // tablespace", which is a claim rather than an absence.
+    let catalogue = tables();
+    let query = recognise(
+        "SELECT table_name, self_referencing_column_name FROM information_schema.tables",
+    )
+    .expect("known");
+    let result = answer(&query, VERSION, "public", &catalogue);
+    assert_eq!(
+        result.fields.len(),
+        3,
+        "the whole row, rather than one column and one invention"
+    );
 }

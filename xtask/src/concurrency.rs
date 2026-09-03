@@ -31,6 +31,11 @@ pub fn check(root: &Path) -> bool {
         ("sankhya-publish", "scaling"),
         ("sankhya-readpath", "under_write_load"),
         ("sankhya-table-delta", "commit_scaling"),
+        // The query log's per-cube locks. Added 2026-09-03: it was the suite's one
+        // intermittent failure, passing alone and failing under load, because it was measuring
+        // contention *inside* a run that creates contention. Eight parallel runs of its own
+        // suite produced ratios of 0.54, 0.77 and 1.07 for code whose true ratio is above three.
+        ("sankhya-cube", "querylog"),
     ];
 
     // Build every binary *before* measuring any of them. `cargo test` compiles with as much

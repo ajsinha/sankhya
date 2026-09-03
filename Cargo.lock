@@ -3546,6 +3546,7 @@ dependencies = [
  "sankhya-error",
  "sankhya-graph-algo",
  "sankhya-math",
+ "sankhya-testkit",
  "serde",
  "serde_json",
  "tempfile",

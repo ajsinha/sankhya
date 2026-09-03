@@ -221,6 +221,7 @@ fn concurrent_records_of_one_cube_lose_nothing() {
     );
 }
 #[test]
+#[ignore = "a contention measurement: run alone by `check-concurrency`, because a measurement taken while `cargo test --workspace` saturates the machine describes the machine"]
 fn recording_against_different_cubes_does_not_contend() {
     // The choke point this replaces: `record` runs on every cube query and took a write lock
     // over the whole map, so every cube's navigation serialized against every other cube's.
@@ -233,11 +234,29 @@ fn recording_against_different_cubes_does_not_contend() {
     //
     // Measured here: **3.19** with per-cube locks, **1.06** with the map's write lock put back.
     // The threshold sits between them with room on both sides.
+    use sankhya_testkit::capacity::Window;
     use std::sync::{Arc, Barrier};
     use std::time::Instant;
 
     const RECORDERS: usize = 8;
     const EACH: usize = 40_000;
+
+    // Only on a machine quiet enough for the ratio to mean anything.
+    //
+    // This is a **contention** measurement: it compares eight threads on eight cubes against
+    // eight threads on one, and the whole claim is that the first is cheaper. Under
+    // `cargo test --workspace` other binaries start and finish continuously, so both arms are
+    // measuring the scheduler and the ratio wanders --- which is how this became the suite's
+    // one intermittent failure, passing in isolation and failing under load.
+    //
+    // The window brackets the measurement rather than preceding it, because a run can begin on
+    // an idle machine and finish on a saturated one. Skipped and *announced* rather than
+    // asserted on: a gate that fails at random is a gate that gets re-run until it passes, and
+    // then the number means nothing and nobody notices when it starts being wrong.
+    let Some(window) = Window::open("recording_to_different_cubes_does_not_contend", RECORDERS)
+    else {
+        return;
+    };
 
     let elapsed = |distinct: bool| -> u128 {
         let log = Arc::new(QueryLog::with_capacity(64));
@@ -270,14 +289,35 @@ fn recording_against_different_cubes_does_not_contend() {
         started.elapsed().as_micros().max(1)
     };
 
-    let distinct = elapsed(true);
-    let shared = elapsed(false);
+    // **The best of several alternating rounds, not one sample of each.**
+    //
+    // A single sample of each arm compares two different moments, and under any external load
+    // those moments differ by more than the effect being measured --- eight parallel runs of
+    // this suite produced ratios of 0.54, 0.77 and 1.07 for code whose true ratio is above
+    // three. The capacity window above is necessary and was not sufficient: this machine has
+    // enough cores to look idle while sixty-four threads are running on it.
+    //
+    // The **minimum** is the right estimator here rather than the mean. Interference only ever
+    // makes a run slower, so the fastest round of each arm is the one least disturbed by
+    // whatever else was running --- and alternating the arms means neither gets a systematically
+    // quieter part of the run.
+    const ROUNDS: usize = 5;
+    let mut distinct = u128::MAX;
+    let mut shared = u128::MAX;
+    for _ in 0..ROUNDS {
+        distinct = distinct.min(elapsed(true));
+        shared = shared.min(elapsed(false));
+    }
     let ratio = shared as f64 / distinct as f64;
+
+    if !window.held() {
+        return;
+    }
 
     assert!(
         ratio > 1.8,
-        "recording to eight different cubes took {distinct}us and to one took {shared}us, a \
-         ratio of {ratio:.2} --- so the cubes are contending with each other rather than only \
-         with themselves"
+        "recording to eight different cubes took {distinct}us at best and to one took \
+         {shared}us at best over {ROUNDS} rounds, a ratio of {ratio:.2} --- so the cubes are \
+         contending with each other rather than only with themselves"
     );
 }

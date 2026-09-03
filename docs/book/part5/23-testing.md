@@ -14,8 +14,8 @@ Four numbers describe the mechanised half of verification:
 
 | | |
 |---|---|
-| `cargo test --workspace` | 2,556 tests, none of which needs a database |
-| `python3 tools/mutation-audit.py` | 728 specific defects, applied one at a time |
+| `cargo test --workspace` | 2,562 tests, none of which needs a database |
+| `python3 tools/mutation-audit.py` | 729 specific defects, applied one at a time |
 | `cargo xtask check-all` | twenty repository invariants, each proven to fail when violated |
 | `cargo xtask check-performance` | the `NFR-PERF` objectives, as a gate that can fail |
 
@@ -339,11 +339,28 @@ magnitude — 1.2 s against 106 µs — where the share was a factor of a few. C
 `serialized < FLOOR`: **the serialized arm must fail the very threshold the free arm passes**,
 which reuses a number the test already demands rather than calibrating a second one.
 
-The final answer was to remove the interference rather than detect it. The four measurements
-are `#[ignore]`d, so the parallel suite skips them, and `check-concurrency` runs them one at a
-time as the only cargo process, with every binary built *before* any of them is measured —
-because `cargo test` compiles with as much parallelism as the machine has, and a measurement
-taken in the seconds after that compile is taken on a machine still finishing it.
+The final answer was to remove the interference rather than detect it. The measurements are
+`#[ignore]`d, so the parallel suite skips them, and `check-concurrency` runs them one at a time
+as the only cargo process, with every binary built *before* any of them is measured — because
+`cargo test` compiles with as much parallelism as the machine has, and a measurement taken in
+the seconds after that compile is taken on a machine still finishing it.
+
+**A fifth joined them on 2026-09-03**, and how it was found is the point. The query log's
+per-cube locking test was the suite's one intermittent failure — passing alone, failing under
+load — and it had the capacity window that the other four have. The window was not enough: this
+machine has enough cores to *look* idle while sixty-four threads are running on it, so
+`Window::open` returned a window and `held()` agreed the machine had stayed quiet. Eight parallel
+runs of its own suite produced ratios of **0.54, 0.77 and 1.07** for code whose true ratio is
+above three.
+
+Taking the best of five alternating rounds helped and did not fix it — the ratios rose to 1.08
+through 1.64, still under the threshold. The measurement was contending with a suite that exists
+to create contention, and no amount of estimator care removes that. It is `#[ignore]`d now and
+listed in `check-concurrency` beside the others, which is where a measurement that needs a quiet
+machine belongs.
+
+> A flaky gate is worse than a missing one. It gets re-run until it passes, and from then on the
+> number means nothing and nobody notices when it starts being wrong.
 
 One more thing had to be fixed, and it is the quietest failure in this chapter. The skips were
 written to be *"loud and by name"* and were neither: `eprintln!` inside a **passing** test goes
