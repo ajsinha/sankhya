@@ -22,6 +22,7 @@ python3 sdk/python/examples/01_connect_and_discover.py
 | [`08_snapshots_and_history.py`](08_snapshots_and_history.py) | naming an instant, reading it back, and the log underneath |
 | [`09_the_function_catalogue.py`](09_the_function_catalogue.py) | asking what the server can compute, and calling it |
 | [`10_value_at_risk.py`](10_value_at_risk.py) | value-at-risk over stored P&L vectors — and what it costs to compute it here against there |
+| [`11_matrix_columns.py`](11_matrix_columns.py) | a matrix column that declares its shape, factored and transposed where it sits |
 
 `_common.py` is imported by the rest and is not a script.
 

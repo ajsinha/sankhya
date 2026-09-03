@@ -103,14 +103,51 @@ pub(crate) fn write_warehouse(root: &std::path::Path) {
 /// A P&L vector per position is the shape a risk calculation actually has: five hundred
 /// simulated outcomes for one instrument, and a value-at-risk is a quantile of them. Small
 /// enough to check by hand, real enough to be the example.
+///
+/// # Why it also carries two plain numbers
+///
+/// A distribution reached with a literal is one value broadcast; the same distribution over a
+/// column is a `Float64Array` read once per row. Different marshalling, and the second is what
+/// a query does --- so a soak that called every scalar function on literals had never run the
+/// path that matters for two thirds of the catalogue.
+///
+/// The two columns are named for their **domains**, not for a use: `confidence` lies strictly
+/// inside `(0, 1)` and `exposure` is a positive real. A probability column and a scale column
+/// are not interchangeable --- `norm_inv` of an exposure is refused, and rightly --- so a
+/// fixture with one general-purpose number column would have produced a soak that compared
+/// refusals and reported agreement.
+///
+/// # And why one of its columns is a matrix
+///
+/// `ADR-0021` Decision 2 says a matrix column is a `FixedSizeList` whose **field metadata**
+/// carries the shape, because a run of sixteen values is a 4x4 or a 2x8 and nothing in the
+/// values says which. Nothing stored one. So the functions that refuse an undeclared shape ---
+/// transpose, multiply, applying a matrix to a vector --- were reachable only from a literal,
+/// and the one thing they exist for, a matrix that is *stored*, had never been tried.
 fn write_the_risk_table(root: &std::path::Path) {
     use arrow_array::builder::{FixedSizeListBuilder, Float64Builder};
 
     const OUTCOMES: i32 = 64;
+    /// The order of the stored covariance matrix, whose column declares its shape.
+    const ORDER: i32 = 4;
 
     let schema = Arc::new(Schema::new(vec![
         Field::new("position_id", DataType::Int64, false),
         Field::new("book", DataType::Utf8, false),
+        Field::new("exposure", DataType::Float64, false),
+        Field::new("confidence", DataType::Float64, false),
+        Field::new(
+            "covariance",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float64, true)),
+                ORDER * ORDER,
+            ),
+            false,
+        )
+        .with_metadata(sankhya_olap::matrices::tensor_metadata(
+            ORDER as usize,
+            ORDER as usize,
+        )),
         Field::new(
             "pnl",
             DataType::FixedSizeList(
@@ -127,8 +164,30 @@ fn write_the_risk_table(root: &std::path::Path) {
     let mut vectors = FixedSizeListBuilder::new(Float64Builder::new(), OUTCOMES);
     let mut ids: Vec<i64> = Vec::new();
     let mut books: Vec<&str> = Vec::new();
+    let mut exposures: Vec<f64> = Vec::new();
+    let mut confidences: Vec<f64> = Vec::new();
+    let mut covariances = FixedSizeListBuilder::new(Float64Builder::new(), ORDER * ORDER);
     for position in 0..12i64 {
         ids.push(position + 1);
+        #[allow(clippy::cast_precision_loss)]
+        let step = position as f64;
+        exposures.push(1.5 + step * 0.75);
+        // Strictly inside the open interval at both ends: a confidence of exactly one is
+        // refused by every inverse in the catalogue, and a fixture whose last row refused
+        // would look like a defect in the function.
+        confidences.push(0.90 + step * 0.004);
+
+        // Symmetric and positive definite by construction, so a Cholesky over the column is a
+        // real answer rather than a refusal the soak would count as agreement.
+        for row in 0..ORDER {
+            for column in 0..ORDER {
+                let (row, column) = (f64::from(row), f64::from(column));
+                let shared = (row + 1.0).min(column + 1.0);
+                let diagonal = if (row - column).abs() < 0.5 { 1.0 + step * 0.1 } else { 0.0 };
+                covariances.values().append_value(shared * 0.25 + diagonal);
+            }
+        }
+        covariances.append(true);
         books.push(if position % 3 == 0 { "rates" } else if position % 3 == 1 { "credit" } else { "equity" });
         // A spread that differs per position, so a quantile across positions is not the same
         // number twelve times --- which is what a fixture of identical rows would produce, and
@@ -151,6 +210,9 @@ fn write_the_risk_table(root: &std::path::Path) {
         vec![
             Arc::new(Int64Array::from(ids)),
             Arc::new(StringArray::from(books)),
+            Arc::new(Float64Array::from(exposures)),
+            Arc::new(Float64Array::from(confidences)),
+            Arc::new(covariances.finish()),
             Arc::new(vectors.finish()),
         ],
     )

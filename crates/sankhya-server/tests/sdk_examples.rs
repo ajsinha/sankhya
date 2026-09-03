@@ -100,6 +100,12 @@ fn every_python_example_runs_against_a_real_server() {
                 outcome.status.code(),
                 String::from_utf8_lossy(&outcome.stdout)
             ));
+        } else if String::from_utf8_lossy(&outcome.stdout).trim().is_empty() {
+            // An example that exits zero and prints nothing has demonstrated nothing. Every
+            // one of these guards its fixture and returns early when it is missing, which is
+            // right --- and which is also how an example stops running without anybody
+            // noticing that it stopped.
+            broken.push(format!("{name} exited zero and printed nothing, so it showed nothing"));
         } else if !complained.is_empty() {
             // A traceback the script caught and printed still means the example is teaching
             // somebody the wrong thing, so a clean exit with noise on stderr is a failure.

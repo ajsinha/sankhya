@@ -128,12 +128,24 @@ pub fn integrate_trapezoid(values: &[f64], spacing: f64) -> Result<f64, VectorEr
 /// both change the answer, and neither says so.
 pub fn integrate_simpson(values: &[f64], spacing: f64) -> Result<f64, VectorError> {
     let n = values.len();
-    if n < 3 || n % 2 == 0 {
-        return Err(VectorError::LengthMismatch {
-            left: n,
-            // The nearest valid count, so the message says what would work.
-            right: if n < 3 { 3 } else { n + 1 },
-        });
+    if n < 3 {
+        return Err(VectorError::Refused(format!(
+            "Simpson's rule needs at least three samples to have an interval to fit a curve \
+             over, and this series has {n}"
+        )));
+    }
+    if n % 2 == 0 {
+        // Not a `LengthMismatch`, which is what this was: rendered, that reads "cannot combine
+        // vectors of length 64 and 65", and the caller passed one vector and never wrote a
+        // sixty-fifth value. A message that describes something the reader did not do sends
+        // them to look for it.
+        return Err(VectorError::Refused(format!(
+            "Simpson's rule needs an odd number of samples, which is an even number of \
+             intervals, and this series has {n}. Refused rather than dropping the last sample \
+             or falling back to the trapezoid: both change the answer and neither says so. \
+             {} samples would work",
+            n + 1
+        )));
     }
     let mut terms: Vec<f64> = Vec::with_capacity(n);
     for (index, value) in values.iter().enumerate() {

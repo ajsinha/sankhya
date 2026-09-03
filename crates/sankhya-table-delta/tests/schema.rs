@@ -351,3 +351,49 @@ fn arrays_of_other_scalars_work_too() {
         );
     }
 }
+
+#[test]
+fn a_column_keeps_the_metadata_it_was_declared_with() {
+    // A matrix column declares its shape in field metadata and nowhere else --- sixteen values
+    // are a 4x4 or a 2x8, and nothing in the values says which (`ADR-0021` Decision 2). This
+    // writer kept only its own key and dropped everything else, so a matrix that was stored
+    // came back not being one: every function that deduces a square order still answered, and
+    // only the ones that need a *declared* shape refused. The table looked fine.
+    let mut declared = std::collections::HashMap::new();
+    declared.insert("ARROW:extension:name".to_owned(), "arrow.fixed_shape_tensor".to_owned());
+    declared.insert(
+        "ARROW:extension:metadata".to_owned(),
+        r#"{"shape":[4,4]}"#.to_owned(),
+    );
+    let field = Field::new(
+        "covariance",
+        DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, true)), 16),
+        false,
+    )
+    .with_metadata(declared.clone());
+
+    let json = schema_string(&Schema::new(vec![field])).expect("a representable column");
+    let read_back = sankhya_table_delta::schema_from_string(&json).expect("readable");
+    let restored = read_back.field(0);
+
+    assert_eq!(
+        restored.metadata().get("ARROW:extension:metadata"),
+        declared.get("ARROW:extension:metadata"),
+        "the shape must survive being written and read: {json}"
+    );
+    assert_eq!(
+        restored.metadata().get("ARROW:extension:name"),
+        declared.get("ARROW:extension:name"),
+        "and so must the extension it names: {json}"
+    );
+    // And the width is still expressed by the type, rather than being carried twice where the
+    // two could come to disagree.
+    assert_eq!(
+        restored.data_type(),
+        &DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, true)), 16)
+    );
+    assert!(
+        !restored.metadata().contains_key(sankhya_table_delta::FIXED_LENGTH_KEY),
+        "the fixed length is a rendering of the type, not metadata a caller set"
+    );
+}

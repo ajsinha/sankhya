@@ -4657,6 +4657,29 @@ CATALOGUE = [
      "        None => return None,",
      "sankhya-clone"),
 
+    # A column's declared metadata. A matrix column carries its shape there and nowhere else,
+    # so a writer or a reader that drops it stores a matrix that comes back not being one ---
+    # and the table still reads, which is what made it invisible.
+    ("delta: write only the fixed length, dropping every key the column declared",
+     "crates/sankhya-table-delta/src/schema.rs",
+     "        .filter(|(key, _)| key.as_str() != FIXED_LENGTH_KEY)\n        .map(|(key, value)| (key.as_str(), value.clone()))",
+     "        .filter(|(_, _)| false)\n        .map(|(key, value)| (key.as_str(), value.clone()))",
+     "sankhya-table-delta"),
+
+    ("delta: read a column back without the metadata it was stored with",
+     "crates/sankhya-table-delta/src/schema.rs",
+     "            Ok(if carried.is_empty() {\n                restored\n            } else {\n                restored.with_metadata(carried)\n            })",
+     "            Ok(restored)",
+     "sankhya-table-delta"),
+
+    # Simpson's rule. An even sample count has no answer under it, and both ways of pretending
+    # otherwise --- dropping a sample, falling back to the trapezoid --- return a number.
+    ("math: integrate an even sample count by Simpson's rule rather than refusing",
+     "crates/sankhya-math/src/calculus.rs",
+     "    if n % 2 == 0 {",
+     "    if false {",
+     "sankhya-math"),
+
 ]
 
 
