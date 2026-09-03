@@ -4723,6 +4723,21 @@ CATALOGUE = [
      "        cells\n            .addresses()\n            .map(|address| (address, cells.get(address, Rule::Sum)))\n            .collect()",
      "sankhya-server"),
 
+    # Authorization varying by subject. The identity travelled inward correctly for two days
+    # while every user was handed the same literal role, so nothing downstream could tell two
+    # subjects apart --- a plumbing job finished and a feature that was not.
+    ("server: hand every user the same role, whatever the operator wrote down",
+     "crates/sankhya-server/src/wiring.rs",
+     "        let held: Vec<Role> = if self.settings.roles.is_empty() {",
+     "        let held: Vec<Role> = if true {",
+     "sankhya-server"),
+
+    ("server: give a user the operator did not name a role anyway",
+     "crates/sankhya-server/src/wiring.rs",
+     "                .map(|names| names.iter().map(|name| Role::new(name.clone())).collect())\n                .unwrap_or_default()",
+     "                .map(|names| names.iter().map(|name| Role::new(name.clone())).collect())\n                .unwrap_or_else(|| vec![Role::new(\"reader\")])",
+     "sankhya-server"),
+
     # The binding's transport security. The refusal is the load-bearing half: a client that
     # asks for encryption, is told no, and continues has already sent the password it was
     # protecting.

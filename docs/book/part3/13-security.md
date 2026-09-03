@@ -267,6 +267,41 @@ an identifier must exist downstream, per-subject encryption keys permit cryptogr
 > deletes records that were legally required to persist. Chapter 15, *Maintenance, tiering and the
 > data lifecycle*, specifies the ladder that keeps them apart.
 
+## 13.6a Who a user is, and what that decides
+
+A connection presents a user, and `authenticate` refuses an empty one: an unattributable
+connection cannot be audited, and an audit chain that cannot say who is a log with extra steps.
+That subject travels inward on the `Caller`, and the audit chain's head differs when the same
+statement is run by two people.
+
+Until 2026-09-03 it decided nothing else. **Every user was handed the same role** — a literal
+`reader` — so the identity travelled a path nothing distinguished on. The plumbing was finished
+and the feature was not, and `STATUS` said so in as many words rather than implying otherwise.
+
+Roles are now the operator's:
+
+```yaml
+server:
+  users:
+    alice: reader, analyst
+    bob: reader
+```
+
+Rules grant by role (§13.1), so this is the whole of the connection between a person and what
+they may read. One line is worth reading twice:
+
+> **The presence of the map is the switch.** An operator who has written down no users has not
+> decided anything about roles, and gets the old behaviour: one role for everybody. An operator
+> who has written down *one* has decided that the list is the list — so a user absent from it
+> holds **no** role, and every rule that grants by role passes them by.
+
+A separate flag would be a flag somebody forgets, and forgetting it in this direction grants
+access. Adding a user is a change somebody notices; silently granting one is not.
+
+What this is still not is **federated identity**. The names here are an operator's list, not an
+assertion from an identity provider, and mutual TLS puts a client's certificate where a door can
+see it with nothing yet deriving a subject from it. That is `FR-SEC-03` and it is unbuilt.
+
 ## 13.7a The boundary a user-supplied function runs behind
 
 A user may write a function in Python and have SANKHYA compute it

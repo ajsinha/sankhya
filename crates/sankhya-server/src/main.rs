@@ -127,8 +127,27 @@ fn settings() -> Result<Settings, String> {
         .map_err(|error| error.to_string())?
         .and_then(|value| u64::try_from(value).ok())
         .unwrap_or(CUBOID_ROW_BUDGET);
+    // `server.users.<name>: role, role` --- the roles each user holds.
+    //
+    // Read as a section rather than as a list of known names, because the names are the
+    // operator's and this file has never seen them. Roles are comma-separated for the same
+    // reason every other list in this configuration is: a YAML sequence and a scalar are
+    // different shapes to read, and one shape is fewer.
+    let roles: std::collections::BTreeMap<String, Vec<String>> = config
+        .section("server.users")
+        .into_iter()
+        .map(|(user, named)| {
+            let held: Vec<String> = named
+                .split(',')
+                .map(|role| role.trim().to_owned())
+                .filter(|role| !role.is_empty())
+                .collect();
+            (user, held)
+        })
+        .collect();
     let transport_security = transport_security(&config)?;
     Ok(Settings {
+        roles,
         maintenance,
         transport_security,
         cuboid_budget_rows,

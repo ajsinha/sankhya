@@ -820,12 +820,20 @@ pub(crate) struct Session {
 impl Session {
     /// Open a connection and complete the handshake.
     pub(crate) fn open(port: u16) -> Self {
+        Self::open_as(port, "quickstart")
+    }
+
+    /// The same, as a named user.
+    ///
+    /// A separate constructor rather than a parameter on `open`, because almost every test
+    /// does not care who it is and the ones that do are about exactly that.
+    pub(crate) fn open_as(port: u16, user: &str) -> Self {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connecting");
         stream.set_nodelay(true).ok();
 
         let mut startup = Vec::new();
         let mut body = 196_608i32.to_be_bytes().to_vec();
-        body.extend_from_slice(b"user\0quickstart\0\0");
+        body.extend_from_slice(format!("user\0{user}\0\0").as_bytes());
         #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         startup.extend_from_slice(&((body.len() + 4) as i32).to_be_bytes());
         startup.extend_from_slice(&body);
