@@ -43,7 +43,19 @@ pub async fn publish_from_fact_table(
     measure: &Measure,
     snapshot: u64,
 ) -> Result<Absorbed> {
-    let frame = context.table(cube.fact_table()).await?;
+    // A named table, or a declared query. Both arrive as a `DataFrame` read through *this*
+    // session, which is what makes the authorization story one story: the query is planned
+    // against the same `SecuredTable`s a plain `SELECT` sees, so a cube over a query is
+    // filtered by the same rule as a cube over a table, with no second implementation.
+    let frame = if cube.fact_is_a_query() {
+        // Wrapped and aliased. A derived table is a `FROM` item, and the alias is what makes
+        // it one in every dialect rather than in some of them.
+        context
+            .sql(&format!("SELECT * FROM {} AS facts", cube.fact_table()))
+            .await?
+    } else {
+        context.table(cube.fact_table()).await?
+    };
 
     // Streamed, not collected.
     //

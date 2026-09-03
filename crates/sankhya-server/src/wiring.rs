@@ -200,8 +200,8 @@ pub struct Server {
     /// "halted" a state somebody has to act on --- and a state held in a task's local set is
     /// visible in the log line printed when it began and nowhere afterwards.
     feeds: Arc<sankhya_feed::state::Feeds>,
-    settings: Settings,
-    policy: PolicySet,
+    pub(crate) settings: Settings,
+    pub(crate) policy: PolicySet,
     quotas: Quotas,
     audit: parking_lot::Mutex<Chain>,
     tables: Vec<CatalogTable>,
@@ -220,7 +220,7 @@ pub struct Server {
     /// The probing now happens outside the lock and against a snapshot; the lock is taken only
     /// to publish a replacement list, and only when something actually moved. A reader holds it
     /// for the length of an `Arc::clone`.
-    servable: parking_lot::RwLock<Arc<Vec<ServableTable>>>,
+    pub(crate) servable: parking_lot::RwLock<Arc<Vec<ServableTable>>>,
     /// Which readers are inside the warehouse right now.
     ///
     /// Shared with the maintenance thread, which is the entire point: a registry the sweeper
@@ -257,7 +257,7 @@ pub struct Server {
     ///
     /// Writers are DDL and therefore rare; readers are every statement. That asymmetry is why
     /// this is an `RwLock` and not a `Mutex`.
-    cubes: std::sync::RwLock<Arc<Vec<sankhya_cube::model::Cube>>>,
+    pub(crate) cubes: std::sync::RwLock<Arc<Vec<sankhya_cube::model::Cube>>>,
     /// Cells already hydrated, keyed by everything that makes them an answer.
     ///
     /// Shared across statements, which is the point: `session_for` builds a context per
@@ -287,7 +287,7 @@ pub struct Server {
     /// small messages and making every method async would infect the whole state machine
     /// for one call. This is where the two worlds meet, and doing it in one place is what
     /// keeps the protocol code free of it.
-    runtime: tokio::runtime::Handle,
+    pub(crate) runtime: tokio::runtime::Handle,
 }
 
 /// Roll base-grain cells to the grain a cuboid names.
@@ -953,7 +953,7 @@ impl Server {
             // guard leaves the system correct and merely wasteful. A mutation test confirmed
             // exactly that by surviving its removal, which is why there is no catalogue entry
             // claiming otherwise.
-            let Some(scope) = self.scope_for(principal, cube.fact_table()) else {
+            let Some(scope) = self.scope_across(principal, cube.reads()) else {
                 continue;
             };
             // The table's *current* version, not the configured `read_as_of`.
@@ -967,7 +967,7 @@ impl Server {
             // property is worth nothing if the caller passes something that never changes,
             // which is the shape of defect this warehouse keeps finding: a guard that is
             // correct and never reached.
-            let snapshot = self.snapshot_of(cube.fact_table());
+            let snapshot = self.snapshot_across(cube.reads());
             for measure in cube.measures() {
                 let key = sankhya_cube_sql::hydrated::Key {
                     cube: cube.name().to_string(),
@@ -1022,7 +1022,11 @@ impl Server {
                 // the background refresher's output could not serve anybody at all until this
                 // existed --- it wrote scope 0 and every caller looked under a hash.
                 let mut scopes = vec![scope];
-                if self.withholds_nothing(principal, cube.fact_table()) {
+                if cube
+                    .reads()
+                    .iter()
+                    .all(|table| self.withholds_nothing(principal, table))
+                {
                     scopes.push(sankhya_cube::materialise::Key::UNRESTRICTED);
                 }
                 if let Some(published) = scopes
@@ -1096,7 +1100,7 @@ impl Server {
                 // charge an operator storage they did not ask for.
                 continue;
             };
-            let snapshot = self.snapshot_of(cube.fact_table());
+            let snapshot = self.snapshot_across(cube.reads());
             let base = sankhya_cube::algo::Cuboid::of(
                 &cube.dimensions().iter().map(|d| d.name.as_str()).collect::<Vec<&str>>(),
             );
@@ -1234,7 +1238,7 @@ impl Server {
             .map(|cube| {
                 (
                     cube.name().to_string(),
-                    self.snapshot_of(cube.fact_table()),
+                    self.snapshot_across(cube.reads()),
                 )
             })
             .collect();
@@ -1278,7 +1282,7 @@ impl Server {
                     cube.name(),
                     Arc::new(cube.clone()),
                     measure,
-                    self.snapshot_of(cube.fact_table()),
+                    self.snapshot_across(cube.reads()),
                 ))
         });
         hydrated.ok()?;
@@ -1324,7 +1328,7 @@ impl Server {
         // than as a special case.
         let behind = sankhya_maintenance::cuboid::lag(
             key.snapshot,
-            self.snapshot_of(cube.fact_table()),
+            self.snapshot_across(cube.reads()),
         );
         if !sankhya_maintenance::cuboid::within_target(cube.target_lag(), behind) {
             return None;
@@ -1640,6 +1644,35 @@ impl Server {
             .unwrap_or(0)
     }
 
+    /// The newest version among every table a cube reads.
+    ///
+    /// The newest rather than the oldest, and rather than the first: a cube over a join is
+    /// stale the moment **any** of its inputs moves, so keying on the newest is what makes a
+    /// commit to either side a cache miss. Keying on one of them would serve an answer built
+    /// from the other's previous version, and nothing about that answer would look wrong.
+    fn snapshot_across(&self, tables: &[String]) -> u64 {
+        tables.iter().map(|table| self.snapshot_of(table)).max().unwrap_or(0)
+    }
+
+    /// What this principal may see of every table a cube reads, as one value.
+    ///
+    /// `None` when there is one they may not read at all --- because a cube over a join is a
+    /// cube over both sides, and a caller allowed to read one of them is not allowed to read
+    /// what the join makes of the pair.
+    ///
+    /// The scopes are folded rather than added: this is a cache key, and two different sets
+    /// of scopes must not collide into one. Addition collides on the first pair that sums the
+    /// same way, and the collision serves one principal's rows to another.
+    pub(crate) fn scope_across(&self, principal: &Principal, tables: &[String]) -> Option<u64> {
+        let mut folded: u64 = 0xcbf2_9ce4_8422_2325;
+        for table in tables {
+            let scope = self.scope_for(principal, table)?;
+            folded ^= scope;
+            folded = folded.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        Some(folded)
+    }
+
     /// What this principal may see of a table, as a value.
     ///
     /// `None` when they may not read it at all.
@@ -1662,7 +1695,7 @@ impl Server {
         }
     }
 
-    fn scope_for(&self, principal: &Principal, table: &str) -> Option<u64> {
+    pub(crate) fn scope_for(&self, principal: &Principal, table: &str) -> Option<u64> {
         // Either name form, because both are names a client legitimately has: the catalogue
         // prints `sales.orders` and a session registers `orders`, and a statement may use
         // whichever it was given. Matching only the bare one meant a qualified name authorized
@@ -2115,173 +2148,6 @@ impl Server {
             })
     }
 
-    /// Run a `CREATE CUBE` or `DROP CUBE`.
-    ///
-    /// # Why the same failure is reported for "no such table" and "you may not read it"
-    ///
-    /// Because they must be indistinguishable. The query path already refuses to confirm a
-    /// table's existence to somebody who may not read it, and cube DDL naming a fact table
-    /// would be a way to ask the same question through a different door: a `CREATE CUBE` that
-    /// answered *"you may not read `payroll`"* has told you `payroll` exists.
-    ///
-    /// So the check is [`Self::scope_for`] --- the same authorization the query path uses,
-    /// with no second implementation to disagree with it --- and both answers are the one
-    /// sentence below.
-    fn run_cube_ddl(
-        &self,
-        statement: Result<sankhya_cube_sql::Statement, sankhya_cube_sql::DdlError>,
-        principal: &Principal,
-    ) -> Result<QueryResult, QueryFailure> {
-        use sankhya_error::protocol::sqlstate;
-
-        let statement = statement.map_err(|error| {
-            refusal(sqlstate::SYNTAX_ERROR.as_str(), &error.to_string())
-        })?;
-
-        match statement {
-            sankhya_cube_sql::Statement::Create(definition) => {
-                self.create_cube(*definition, principal)
-            }
-            sankhya_cube_sql::Statement::Drop { name, if_exists } => {
-                self.drop_cube(&name, if_exists, principal)
-            }
-        }
-    }
-
-    /// Validate a definition, persist it, and start serving it.
-    fn create_cube(
-        &self,
-        definition: sankhya_cube::model::Definition,
-        principal: &Principal,
-    ) -> Result<QueryResult, QueryFailure> {
-        use sankhya_error::protocol::sqlstate;
-
-        let name = definition.name.clone();
-
-        // A name already taken is refused rather than replaced, and there is no
-        // `OR REPLACE`. Replacing a cube orphans every cuboid it materialised, and the
-        // reclamation of those is a real operation with a real cost --- see
-        // `cuboid::retire_cube`. Hiding that inside a `CREATE` would make an expensive,
-        // irreversible thing happen because somebody re-ran a script. `DROP` then `CREATE`
-        // says it out loud.
-        if self.cubes().iter().any(|cube| cube.name() == name) {
-            return Err(refusal(
-                sqlstate::DATA_EXCEPTION.as_str(),
-                &format!(
-                    "the cube `{name}` already exists. Drop it first: replacing a cube \
-                     retires every cuboid it materialised, which is not something a \
-                     re-run of a script should do silently"
-                ),
-            ));
-        }
-
-        // Every table the cube reads, checked against the same authorization the query path
-        // uses. A cube whose fact table this principal cannot read would hydrate to nothing
-        // anyway; refusing here means the refusal names the statement rather than arriving
-        // later as an empty answer nobody can explain.
-        let mut tables = vec![definition.fact_table.clone()];
-        tables.extend(definition.dimensions.iter().map(|d| d.table.clone()));
-        for table in tables {
-            if self.scope_for(principal, &table).is_none() {
-                return Err(refusal(
-                    sqlstate::DATA_EXCEPTION.as_str(),
-                    &format!("there is no table `{table}` to build a cube on"),
-                ));
-            }
-        }
-
-        // The one validator, reporting every rejection rather than the first. A definition
-        // fixable in one sitting should be reported in one message.
-        let cube = definition.validate().map_err(|rejections| {
-            let why: Vec<String> = rejections.iter().map(ToString::to_string).collect();
-            refusal(
-                sqlstate::DATA_EXCEPTION.as_str(),
-                &format!("the cube `{name}` was not created: {}", why.join("; ")),
-            )
-        })?;
-
-        // Persisted before it is served, so a cube that answers a query is a cube that would
-        // survive a restart. The other order produces a cube that works until it does not,
-        // and the moment it stops is a restart nobody connects to the statement.
-        sankhya_cube::catalogue::save(&self.settings.warehouse, cube.definition()).map_err(
-            |error| refusal(sqlstate::IO_ERROR.as_str(), &error.to_string()),
-        )?;
-
-        if let Ok(mut cubes) = self.cubes.write() {
-            let mut next: Vec<_> = cubes.iter().cloned().collect();
-            next.push(cube);
-            *cubes = Arc::new(next);
-        }
-
-        // Audited as an insert against the cube's own name. There is no `Action` for DDL
-        // and inventing one would mean a second vocabulary for the audit reader to learn;
-        // creating a cube adds something that was not there, which is what `Insert` says.
-        self.record(principal, TableRef::new("", &name), Action::Insert, true);
-        Ok(acknowledged("CREATE CUBE"))
-    }
-
-    /// Stop serving a cube, remove its definition, and reclaim what it materialised.
-    fn drop_cube(
-        &self,
-        name: &str,
-        if_exists: bool,
-        principal: &Principal,
-    ) -> Result<QueryResult, QueryFailure> {
-        use sankhya_error::protocol::sqlstate;
-
-        let Some(cube) = self.cubes().iter().find(|cube| cube.name() == name).cloned() else {
-            if if_exists {
-                return Ok(acknowledged("DROP CUBE"));
-            }
-            return Err(refusal(
-                sqlstate::DATA_EXCEPTION.as_str(),
-                &format!("there is no cube `{name}`"),
-            ));
-        };
-
-        // Dropping a cube reads no table, so there is nothing to authorize against a fact
-        // table --- but a principal who cannot read what the cube is built on has no business
-        // removing it, and the check costs nothing. The refusal is the same sentence as
-        // everywhere else, for the same reason.
-        if self.scope_for(principal, cube.fact_table()).is_none() {
-            return Err(refusal(
-                sqlstate::DATA_EXCEPTION.as_str(),
-                &format!("there is no cube `{name}`"),
-            ));
-        }
-
-        // Out of the served set first, so no statement started after this point can resolve
-        // the cube and reach files that are about to go. A statement already running holds
-        // its files open and finishes against them.
-        if let Ok(mut cubes) = self.cubes.write() {
-            let next: Vec<_> =
-                cubes.iter().filter(|held| held.name() != name).cloned().collect();
-            *cubes = Arc::new(next);
-        }
-
-        let definition = sankhya_cube::catalogue::path_of(&self.settings.warehouse, name);
-        if let Err(error) = std::fs::remove_file(&definition) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                return Err(refusal(sqlstate::IO_ERROR.as_str(), &error.to_string()));
-            }
-        }
-
-        // And the cuboids, which nothing else will ever reclaim: `retire_superseded` keeps a
-        // cuboid whose cube has no known current version, deliberately and with a reason, so
-        // a dropped cube's materialised storage would otherwise be retained for good.
-        let swept = sankhya_maintenance::cuboid::retire_cube(&self.settings.warehouse, name);
-        if !swept.removed.is_empty() {
-            tracing::info!(
-                cube = name,
-                cuboids = swept.removed.len(),
-                bytes = swept.bytes_reclaimed,
-                "retired the cuboids of a dropped cube"
-            );
-        }
-
-        self.record(principal, TableRef::new("", name), Action::Delete, true);
-        Ok(acknowledged("DROP CUBE"))
-    }
 
     /// Everything `query` does, without the measuring.
     ///
@@ -2352,7 +2218,7 @@ impl Server {
         // and against tables they must be allowed to read; before the session, because none
         // of what `session_for` builds is any use to a statement that reads no data.
         if let Some(statement) = sankhya_cube_sql::parse_ddl(dispatch) {
-            return self.run_cube_ddl(statement, &principal);
+            return crate::cubes::run_ddl(self, statement, &principal);
         }
 
         // Clone DDL, for the same reason and at the same point. `CREATE TABLE x CLONE y` is

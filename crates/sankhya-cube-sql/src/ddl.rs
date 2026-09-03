@@ -145,12 +145,68 @@ struct Reader {
     next: usize,
     /// The offset just past the last token, for errors raised at the end.
     end: usize,
+    /// The statement as it was written, so a declared query can be taken back out of it
+    /// verbatim. The tokeniser throws away whitespace and quoting, and a query handed to the
+    /// engine has to be the text somebody wrote --- not a re-rendering of it.
+    sql: String,
 }
 
 impl Reader {
     fn new(sql: &str) -> Self {
         let tokens = tokenize(sql);
-        Self { tokens, next: 0, end: sql.len() }
+        Self { tokens, next: 0, end: sql.len(), sql: sql.to_owned() }
+    }
+
+    /// A parenthesised run of the statement, returned with its parentheses, or `None` if the
+    /// next token is not an opening one.
+    ///
+    /// Matched over the **raw text** rather than over tokens, because a `(` inside a string
+    /// literal is a character and not a nesting level: `WHERE label = '('` would otherwise
+    /// leave the depth counter one too deep and swallow the rest of the statement. The token
+    /// cursor is then advanced past everything inside the span.
+    fn parenthesised(&mut self) -> Option<Result<String, DdlError>> {
+        let opens = self.peek()?.at;
+        if !matches!(self.peek().map(|s| &s.token), Some(Token::Punct('('))) {
+            return None;
+        }
+        let mut depth = 0usize;
+        let mut quoted = false;
+        let mut closes = None;
+        for (at, c) in self.sql.char_indices().skip_while(|(at, _)| *at < opens) {
+            if quoted {
+                // A doubled quote is an escaped one and leaves the literal open, which the
+                // next iteration sees as a fresh opening quote. Same outcome, no lookahead.
+                if c == '\'' {
+                    quoted = false;
+                }
+                continue;
+            }
+            match c {
+                '\'' => quoted = true,
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        closes = Some(at);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(closes) = closes else {
+            return Some(Err(DdlError {
+                expected: "a closing `)` for the fact query".to_owned(),
+                found: None,
+                at: opens,
+            }));
+        };
+        // Past the span, whatever it contained. A token whose offset is inside the query
+        // belongs to the query, not to the cube's own grammar.
+        while self.peek().is_some_and(|spanned| spanned.at <= closes) {
+            self.next += 1;
+        }
+        Some(Ok(self.sql.get(opens..=closes).unwrap_or_default().to_owned()))
     }
 
     /// The first `n` words, without consuming anything.
@@ -303,7 +359,18 @@ impl Reader {
         self.keyword("CUBE")?;
         let name = self.name("a cube name")?;
         self.keyword("FROM")?;
-        let fact_table = self.qualified_name("the fact table's name")?;
+        // A name, or a parenthesised query. `ADR-0012`: a cube's fact source becomes a
+        // declared query rather than a name, and everything else about a cube is unchanged.
+        // Which tables that query reads is not decided here --- it needs a catalogue and the
+        // caller's guard, and this parser has neither.
+        let fact_query = match self.parenthesised() {
+            Some(query) => Some(query?),
+            None => None,
+        };
+        let fact_table = match &fact_query {
+            Some(query) => query.clone(),
+            None => self.qualified_name("the fact table's name")?,
+        };
 
         let mut dimensions = Vec::new();
         while self.peek_keyword("DIMENSION") {
@@ -325,6 +392,12 @@ impl Reader {
         }
 
         let mut definition = Definition::new(name, fact_table, dimensions, measures);
+        if fact_query.is_some() {
+            // Nothing yet, and said so: a query reads whatever it reads, and until somebody
+            // resolves it the cube is refused by `validate` rather than accepted with a
+            // dependency list that claims it reads its own text.
+            definition.reads = Vec::new();
+        }
         if self.optional_keyword("MAINTAINED") {
             self.keyword("WITHIN")?;
             let versions = self.number("a number of versions")?;

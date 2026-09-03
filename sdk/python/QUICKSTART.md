@@ -11,7 +11,7 @@
 
 **Document ID:** SNK-SDK-PY-001
 **Version:** 0.1.0
-**Status:** Implementation — M0–M8, M10 and M13 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14 and M17 in progress
+**Status:** Implementation — M0–M8, M10 and M13 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
 
 This binding is early: the wire-protocol client works, and the columnar path, TLS and typed
 refusals are being built in M14. Section 8 lists what it cannot do yet, by name.

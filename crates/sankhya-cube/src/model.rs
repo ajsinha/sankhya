@@ -94,6 +94,16 @@ impl Dimension {
     }
 }
 
+/// Whether a fact source is a declared query rather than a table name.
+///
+/// One definition, used by the model, by validation and by the reader, because three
+/// spellings of "does this look like a query" is how two of them come to disagree about a
+/// statement somebody actually typed.
+#[must_use]
+pub fn is_a_query(source: &str) -> bool {
+    source.trim_start().starts_with('(')
+}
+
 /// A cube as somebody wrote it down --- not yet checked, and not yet usable.
 ///
 /// Separate from [`Cube`] on purpose. A single type for both would mean every function
@@ -103,8 +113,36 @@ impl Dimension {
 pub struct Definition {
     /// The cube's name.
     pub name: String,
-    /// The published fact table.
+    /// Where the facts come from: a published table's name, or a **declared query**.
+    ///
+    /// A query is written parenthesised --- `FROM (SELECT …)` --- and is stored as it was
+    /// written, because it is what the fingerprint hashes and what a reader has to be shown.
+    ///
+    /// [ADR-0012](../../../docs/adr/0012-open-capabilities.md): the generalisation is small
+    /// under one rule --- an artefact that cannot say what it needs cannot be cached
+    /// correctly, checked against policy, or bounded. So a query does not widen what a cube
+    /// *is*; it widens what its fact source may be, and [`Definition::reads`] carries the
+    /// declaration that keeps the rest working unchanged.
     pub fact_table: String,
+    /// Every table this cube reads, which is what its authorization and its snapshot are
+    /// resolved against.
+    ///
+    /// # Why a list rather than the one name
+    ///
+    /// Because a declared query may read several, and each of the three things the fact
+    /// source is used for is a property of *all* of them:
+    ///
+    /// - **Authorization.** A principal must be allowed to read every table the query reads,
+    ///   not the first one. A cube over a join is a cube over both sides.
+    /// - **The snapshot.** The newest of its dependencies' snapshots, so the materialisation
+    ///   key keeps working with no new invalidation protocol.
+    /// - **The fingerprint.** A cube whose source query reads a different table is a
+    ///   different cube, and nothing in the query *text* alone says which tables those are.
+    ///
+    /// A named fact table is the one-element case, which is why nothing above is a special
+    /// path for it. Resolved by whoever creates the cube --- the query is planned under the
+    /// caller's guard, and the tables it turns out to read are recorded here.
+    pub reads: Vec<String>,
     /// Its dimensions.
     pub dimensions: Vec<Dimension>,
     /// Its measures, each declaring a rule per dimension.
@@ -157,9 +195,13 @@ impl Definition {
         dimensions: Vec<Dimension>,
         measures: Vec<Measure>,
     ) -> Self {
+        let fact_table = fact_table.into();
         Self {
+            // A name reads exactly itself. The list is never empty, which is what lets every
+            // reader iterate it rather than ask which kind of source this is.
+            reads: vec![fact_table.clone()],
             name: name.into(),
-            fact_table: fact_table.into(),
+            fact_table,
             dimensions,
             measures,
             // Declared, not maintained. Persisting a definition is cheap; materialising is
@@ -167,6 +209,28 @@ impl Definition {
             target_lag: None,
             pinned: Vec::new(),
         }
+    }
+
+    /// The same definition, over a **declared query** rather than a named table.
+    ///
+    /// `reads` is what the query was found to read, resolved by the caller. Given none, the
+    /// definition is refused by [`validate`](crate::validate) rather than accepted with an
+    /// empty dependency list --- a cube that cannot say what it reads cannot be authorized,
+    /// keyed, or invalidated, and is the exact artefact `ADR-0012` refuses.
+    #[must_use]
+    pub fn over_query(mut self, query: impl Into<String>, reads: Vec<String>) -> Self {
+        self.fact_table = query.into();
+        self.reads = reads;
+        self
+    }
+
+    /// Whether the fact source is a query rather than a table name.
+    ///
+    /// Asked of the text, because that is what was written down and stored: a declared query
+    /// is parenthesised, and a table name cannot be.
+    #[must_use]
+    pub fn fact_is_a_query(&self) -> bool {
+        is_a_query(&self.fact_table)
     }
 
     /// The same definition, held to a staleness target.
@@ -261,10 +325,22 @@ impl Cube {
         &self.definition.name
     }
 
-    /// The published fact table.
+    /// The published fact table, or the declared query, as it was written.
     #[must_use]
     pub fn fact_table(&self) -> &str {
         &self.definition.fact_table
+    }
+
+    /// Every table this cube reads.
+    #[must_use]
+    pub fn reads(&self) -> &[String] {
+        &self.definition.reads
+    }
+
+    /// Whether the fact source is a query rather than a table name.
+    #[must_use]
+    pub fn fact_is_a_query(&self) -> bool {
+        self.definition.fact_is_a_query()
     }
 
     /// Its dimensions.

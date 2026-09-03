@@ -12,7 +12,7 @@
 *A general-purpose unified OLTP + OLAP + Graph data server — one binary, written entirely in Rust.*
 
 [![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-M0--M8%2C%20M10%20and%20M13%20complete%2C%20M9%2C%20M14%20and%20M17%20in%20progress-yellow.svg)](docs/STATUS.md)
+[![Status](https://img.shields.io/badge/status-M0--M8%2C%20M10%20and%20M13%20complete%2C%20M9%2C%20M14%2C%20M17%20and%20M18%20in%20progress-yellow.svg)](docs/STATUS.md)
 [![Rust](https://img.shields.io/badge/rust-1.97%2B-b7410e.svg)](https://www.rust-lang.org)
 [![JVM](https://img.shields.io/badge/JVM-none-success.svg)](#design-principles)
 
@@ -154,7 +154,7 @@ Spark, Trino, DuckDB, Snowflake and Athena read these tables **directly**, with 
 
 ## Status
 
-**Implementation — M0 through M8, M10 and M13 complete; M9, M14 and M17 in progress.** M8 closed on
+**Implementation — M0 through M8, M10 and M13 complete; M9, M14, M17 and M18 in progress.** M8 closed on
 six of its eight exit criteria; the two that need a second machine, and the scale-out work behind
 them, moved to M12. M9's eleven work items are built and its exit criteria demonstrated, and
 **its gate is deliberately not cleared** — see below. **M10 — zero-copy cloning — is complete**:

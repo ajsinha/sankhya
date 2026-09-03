@@ -27,6 +27,8 @@ mod execute;
 mod adopt;
 #[path = "../src/clones.rs"]
 mod clones;
+#[path = "../src/cubes.rs"]
+mod cubes;
 #[path = "../src/driver.rs"]
 mod driver;
 #[path = "../src/warehouse.rs"]

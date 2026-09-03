@@ -898,20 +898,20 @@ CATALOGUE = [
      "sankhya-cube-sql"),
 
     ("cube ddl: check the fact table and let the dimension tables through",
-     "crates/sankhya-server/src/wiring.rs",
-     "        tables.extend(definition.dimensions.iter().map(|d| d.table.clone()));",
+     "crates/sankhya-server/src/cubes.rs",
+     "    tables.extend(definition.dimensions.iter().map(|d| d.table.clone()));",
      "        let _ = &definition.dimensions;",
      "sankhya-server"),
 
     ("cube ddl: let a name already taken be created a second time",
-     "crates/sankhya-server/src/wiring.rs",
-     "        if self.cubes().iter().any(|cube| cube.name() == name) {",
+     "crates/sankhya-server/src/cubes.rs",
+     "    if server.cubes().iter().any(|cube| cube.name() == name) {",
      "        if false {",
      "sankhya-server"),
 
     ("cube ddl: drop a cube and leave its cuboids behind",
-     "crates/sankhya-server/src/wiring.rs",
-     "        let swept = sankhya_maintenance::cuboid::retire_cube(&self.settings.warehouse, name);",
+     "crates/sankhya-server/src/cubes.rs",
+     "    let swept = sankhya_maintenance::cuboid::retire_cube(&server.settings.warehouse, name);",
      "        let swept = sankhya_maintenance::cuboid::Swept::default();",
      "sankhya-server"),
 
@@ -2653,7 +2653,7 @@ CATALOGUE = [
 
     ("server: key a cube's cells on read_as_of, so the snapshot never moves",
      "crates/sankhya-server/src/wiring.rs",
-     "            let snapshot = self.snapshot_of(cube.fact_table());",
+     "            let snapshot = self.snapshot_across(cube.reads());",
      "            let snapshot = self.settings.read_as_of.get();",
      "sankhya-server"),
 
@@ -2715,7 +2715,7 @@ CATALOGUE = [
 
     ("server: serve the unrestricted cuboid to a caller whose policy withholds rows",
      "crates/sankhya-server/src/wiring.rs",
-     "                if self.withholds_nothing(principal, cube.fact_table()) {\n                    scopes.push(sankhya_cube::materialise::Key::UNRESTRICTED);\n                }",
+     "                if cube\n                    .reads()\n                    .iter()\n                    .all(|table| self.withholds_nothing(principal, table))\n                {\n                    scopes.push(sankhya_cube::materialise::Key::UNRESTRICTED);\n                }",
      "                scopes.push(sankhya_cube::materialise::Key::UNRESTRICTED);",
      "sankhya-server"),
 
@@ -4674,6 +4674,21 @@ CATALOGUE = [
 
     # Simpson's rule. An even sample count has no answer under it, and both ways of pretending
     # otherwise --- dropping a sample, falling back to the trapezoid --- return a number.
+    # A cube over a declared query. Its dependency list is what authorization, the cache key
+    # and the invalidation are all decided against, and the query's *text* does not say what
+    # they are.
+    ("cube: accept a fact query whose answer can move on its own",
+     "crates/sankhya-cube/src/validate.rs",
+     "        if let Some(found) = non_deterministic(&definition.fact_table) {\n            out.push(Rejection::NotDeterministic { found });\n        }",
+     "        if false {\n            out.push(Rejection::NotDeterministic { found: String::new() });\n        }",
+     "sankhya-server"),
+
+    ("cube: forget what a fact query reads when the catalogue is read back",
+     "crates/sankhya-cube/src/catalogue.rs",
+     "        if !self.reads.is_empty() {\n            definition.reads = self.reads.clone();\n        }",
+     "        if false {\n            definition.reads = self.reads.clone();\n        }",
+     "sankhya-server"),
+
     ("math: integrate an even sample count by Simpson's rule rather than refusing",
      "crates/sankhya-math/src/calculus.rs",
      "    if n % 2 == 0 {",

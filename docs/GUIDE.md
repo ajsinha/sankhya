@@ -9,7 +9,7 @@
 
 # SANKHYA — a guide, by example
 
-**Status:** Implementation — M0–M8, M10 and M13 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14 and M17 in progress
+**Status:** Implementation — M0–M8, M10 and M13 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
 
 Every example here is **executed or accounted for by a test**.
 `crates/sankhya-server/tests/guide.rs` extracts the SQL from this page — this page, not a copy

@@ -44,6 +44,7 @@ mod doctor;
 mod execute;
 mod adopt;
 mod clones;
+mod cubes;
 mod driver;
 mod feeds;
 mod snapshots;

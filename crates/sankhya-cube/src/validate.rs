@@ -78,6 +78,22 @@ pub enum Rejection {
         /// What is missing.
         what: &'static str,
     },
+    /// A cube over a declared query that does not say which tables it reads.
+    ///
+    /// The whole of `ADR-0012`'s rule in one refusal: **an artefact that cannot say what it
+    /// needs cannot be cached correctly, checked against policy, or bounded.** The
+    /// dependencies are what authorization is decided against and what the materialisation
+    /// key is built from, so a cube with none of them would be authorized against nothing
+    /// and invalidated by nothing.
+    UndeclaredDependencies,
+    /// A declared query whose answer may change without its inputs changing.
+    ///
+    /// A cuboid built from such a query is a cache of one arbitrary answer, and every later
+    /// read serves it as though it were the answer.
+    NotDeterministic {
+        /// What was found, spelled as it appears.
+        found: String,
+    },
 }
 
 impl fmt::Display for Rejection {
@@ -113,6 +129,20 @@ impl fmt::Display for Rejection {
                 f,
                 "a cube with no {what} is a table; define it as one, or say what was meant"
             ),
+            Self::UndeclaredDependencies => write!(
+                f,
+                "this cube's facts come from a query, and nothing recorded which tables it \
+                 reads. Those tables are what a caller is authorized against and what the \
+                 materialisation key is built from, so a cube without them would be checked \
+                 against nothing and invalidated by nothing"
+            ),
+            Self::NotDeterministic { found } => write!(
+                f,
+                "this cube's fact query uses `{found}`, so the same query can answer \
+                 differently without any table changing. A cuboid built from it is a cache of \
+                 one arbitrary answer, and every later read would serve that answer as though \
+                 it were the answer"
+            ),
         }
     }
 }
@@ -135,6 +165,14 @@ pub fn inspect(definition: &Definition) -> Vec<Rejection> {
     }
     if definition.fact_table.trim().is_empty() {
         out.push(Rejection::Blank { what: "fact table", within: definition.name.clone() });
+    }
+    if definition.reads.iter().all(|table| table.trim().is_empty()) {
+        out.push(Rejection::UndeclaredDependencies);
+    }
+    if crate::model::is_a_query(&definition.fact_table) {
+        if let Some(found) = non_deterministic(&definition.fact_table) {
+            out.push(Rejection::NotDeterministic { found });
+        }
     }
 
     duplicates("dimension", definition.dimensions.iter().map(|d| d.name.as_str()), &mut out);
@@ -216,4 +254,42 @@ fn duplicates<'a>(
             out.push(Rejection::Duplicate { what, name: name.to_string() });
         }
     }
+}
+
+/// The first thing in a query that can change its answer without its inputs changing.
+///
+/// A list rather than a parser, and deliberately: this is the set of spellings that appear in
+/// the queries people actually write, and a name that merely *contains* one of them is not a
+/// match --- `now_owner` is a column. Anything this misses is caught the same way every other
+/// determinism claim is, by `ADR-0009`'s requirement that materialisation on and off agree by
+/// bits; this is the cheap check that says so at declaration time instead.
+fn non_deterministic(query: &str) -> Option<String> {
+    const MOVING: &[&str] = &[
+        "now", "current_timestamp", "current_date", "current_time", "random", "uuid",
+    ];
+    let lower = query.to_lowercase();
+    for name in MOVING {
+        let mut from = 0usize;
+        while let Some(at) = lower.get(from..).and_then(|rest| rest.find(name)) {
+            let at = from + at;
+            let before = lower.get(..at).and_then(|head| head.chars().next_back());
+            let after = lower.get(at + name.len()..).and_then(|tail| tail.chars().next());
+            let boundary = |c: Option<char>| {
+                c.is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
+            };
+            // A call, not a column: the name is a whole word, and what follows it --- past any
+            // spaces --- is an opening parenthesis. `current_timestamp` is the exception the
+            // standard makes, and it is spelled without one.
+            let called = after.is_some_and(|c| c == '(')
+                || lower
+                    .get(at + name.len()..)
+                    .is_some_and(|tail| tail.trim_start().starts_with('('))
+                || name.starts_with("current_");
+            if boundary(before) && boundary(after) && called {
+                return Some((*name).to_owned());
+            }
+            from = at + name.len();
+        }
+    }
+    None
 }
