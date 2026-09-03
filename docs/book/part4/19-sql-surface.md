@@ -267,33 +267,29 @@ whose region is null on 333 rows reports `completeness 0.667`, `withheld 333`, a
 differs between it and the default is a defect, not a tuning question, because materialisation is a
 cache and a cache that changes the answer is not one.
 
-### A defect you must know about before you declare a non-`SUM` measure
+### A defect that was here, and what it cost to leave it documented
 
-Verified against the running server. A measure declared `MEAN ALONG region` or `MAX ALONG region`
-returns the **sum**:
+Until 2026-09-01 a measure declared `MEAN ALONG region` or `MAX ALONG region` returned the
+**sum**: `15,687` where the maximum was `373.5`. The composability half of the rule was enforced
+correctly — rolling a `MEAN` or `NONE` measure *away* was refused with the right sentence — and
+the cell was then read with a hardcoded summation one layer below, so the declared rule never
+reached the number. That is the exact failure the cube model exists to prevent, arriving beneath
+where the model checks for it. An adversarial review found it; a unit test never would have,
+because the unit under test was right.
 
-```console
-$ psql … -c "CREATE CUBE m FROM \"probe_e.scratch\"
-               DIMENSION region … MEASURE amount (MAX ALONG region);"
-$ psql … -c "SELECT region, amount FROM cube_rollup('m','amount','by=region');"
- region | amount
---------+--------
- north  |  15687
- south  |  15438
+**It is fixed**, and `crates/sankhya-server/tests/cube_rules.rs` now pins it: a cube declaring
+`MAX`, `MEAN` and `MIN` is compared against `max()`, `avg()` and `min()` over the same rows, over
+the wire, on every build.
 
-$ psql … -c "SELECT region, max(amount) FROM probe_e.scratch WHERE region IS NOT NULL GROUP BY region;"
- region | max(probe_e.scratch.amount)
---------+-----------------------------
- north  |                       373.5
- south  |                       370.5
-```
+The two days between the fix and this paragraph are worth recording, because they are the shape
+of documentation rot this book is otherwise careful about. The defect was fixed and **nothing
+pinned the fix**, so this section went on describing it as live — correctly by its own lights,
+since no test said otherwise. Wrong documentation in the more damaging direction: it told people
+a working feature did not work, and the advice it gave (*only `SUM` measures return the number
+they claim*) would have kept somebody from declaring the measure they actually needed.
 
-The same holds for `MEAN`: the cube reports `15687` where the mean is `186.75`. The composability half
-of the rule is enforced correctly — rolling a `MEAN` or `NONE` measure *away* is refused with the
-right sentence — but the cell is read with a hardcoded summation
-(`crates/sankhya-cube-sql/src/functions.rs`), so the declared rule never reaches the value. Until it
-does, **only `SUM` measures return the number they claim.** That is the exact failure the cube model
-exists to prevent, arriving one layer below where the model checks for it.
+> **A defect that is fixed and unpinned is a defect that comes back**, and until it does, its
+> obituary is the thing that is wrong.
 
 ## 19.5a An aggregation of your own
 

@@ -26,5 +26,9 @@ serde_json        = { workspace = true }
 parking_lot       = { workspace = true }
 
 [dev-dependencies]
+# The quiet-machine window. A contention measurement taken while the rest of the suite is
+# running describes the scheduler's mood, and a gate that fails at random is a gate that gets
+# re-run until it passes.
+sankhya-testkit = { path = "../sankhya-testkit" }
 tempfile = { workspace = true }
 proptest = { workspace = true }

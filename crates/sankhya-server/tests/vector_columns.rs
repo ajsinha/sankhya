@@ -255,21 +255,21 @@ fn a_vector_column_reports_its_type_rather_than_text() {
          WHERE table_name = 'positions'",
     );
 
-    // **The projection is ignored.** A client writing `SELECT column_name, data_type` receives
-    // all six columns of `information_schema.columns`, in the catalogue's own order --- schema,
-    // table, column, ordinal, type, nullability. That is a real defect, recorded in `STATUS`,
-    // and this test indexes around it rather than pretending it is not there.
+    // Two columns asked for, two returned, in that order.
     //
-    // If it is ever fixed, this fails and says where to look, which is the right behaviour for
-    // a test written against a known-wrong surface.
-    assert_eq!(rows[0].len(), 6, "the projection is now honoured; this test can be simplified");
+    // This used to index around a defect and said so: the projection was ignored, so a client
+    // writing `SELECT column_name, data_type` received all six columns of
+    // `information_schema.columns` in the catalogue's own order. It asserted the six and left a
+    // note --- *if it is ever fixed, this fails and says where to look* --- which is exactly
+    // what happened on 2026-09-03.
+    assert_eq!(rows[0].len(), 2, "the projection is honoured: two asked for, two returned");
 
     let pnl = rows
         .iter()
-        .find(|row| row[2].as_deref() == Some("pnl"))
+        .find(|row| row[0].as_deref() == Some("pnl"))
         .unwrap_or_else(|| panic!("no `pnl` column in {rows:?}"));
     assert_eq!(
-        pnl[4].as_deref(),
+        pnl[1].as_deref(),
         Some("float8[]"),
         "the catalogue reports a vector column as something a client cannot decode"
     );
@@ -277,7 +277,7 @@ fn a_vector_column_reports_its_type_rather_than_text() {
     // And the ordinary columns beside it are untouched by the change.
     let id = rows
         .iter()
-        .find(|row| row[2].as_deref() == Some("position_id"))
+        .find(|row| row[0].as_deref() == Some("position_id"))
         .expect("a `position_id` column");
-    assert_eq!(id[4].as_deref(), Some("int8"));
+    assert_eq!(id[1].as_deref(), Some("int8"));
 }

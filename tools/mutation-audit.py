@@ -4712,6 +4712,17 @@ CATALOGUE = [
      "            return Ok(ScalarValue::Float64(Some(0.0)));",
      "sankhya-olap"),
 
+    # The declared rule reaching the value. An adversarial review on 2026-09-01 found a cube
+    # declaring `MAX ALONG region` answering the sum --- 15,687 where the maximum was 373.5 ---
+    # because the cell was read with a hardcoded summation one layer below where the model
+    # checks additivity. It was fixed and nothing pinned it, and the book went on documenting it
+    # as live for two days.
+    ("cube: read every cell as a sum, so a declared rule never reaches the value",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "        cells\n            .addresses()\n            .map(|address| (address, cells.get(address, rule)))\n            .collect()",
+     "        cells\n            .addresses()\n            .map(|address| (address, cells.get(address, Rule::Sum)))\n            .collect()",
+     "sankhya-server"),
+
     # A user's own aggregation as a cube measure.
     ("cube: let a cube assert a composability its function never claimed",
      "crates/sankhya-server/src/cubes.rs",

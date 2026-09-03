@@ -62,6 +62,11 @@ pub enum CatalogQuery {
     Tables {
         /// Which schema, if the query named one.
         schema: Option<String>,
+        /// The columns the query asked for, in the order it asked for them.
+        ///
+        /// `None` when the projection is anything but a list of bare column names, in which
+        /// case the whole row is returned --- see [`projection`].
+        wanted: Option<Vec<Projected>>,
     },
     /// The columns of a table.
     Columns {
@@ -71,6 +76,8 @@ pub enum CatalogQuery {
         /// client that asked about one of them must not be handed every one's columns
         /// interleaved --- which is a wrong answer, not a wide one.
         schema: Option<String>,
+        /// The columns the query asked for, in the order it asked for them.
+        wanted: Option<Vec<Projected>>,
         /// Which table, if the query named one.
         table: Option<String>,
     },
@@ -171,12 +178,15 @@ pub fn recognise(sql: &str) -> Option<CatalogQuery> {
         let text = normalised_compact(&normalised);
         return Some(CatalogQuery::Columns {
             schema: literal_after(&text, "table_schema"),
+            wanted: projection(&text),
             table: literal_after(&text, "table_name"),
         });
     }
     if compact.contains("pg_class") || compact.contains("information_schema.tables") {
+        let text = normalised_compact(&normalised);
         return Some(CatalogQuery::Tables {
-            schema: literal_after(&normalised_compact(&normalised), "table_schema"),
+            schema: literal_after(&text, "table_schema"),
+            wanted: projection(&text),
         });
     }
     if compact.contains("pg_namespace") || compact.contains("information_schema.schemata") {
@@ -186,6 +196,110 @@ pub fn recognise(sql: &str) -> Option<CatalogQuery> {
         return Some(CatalogQuery::Types);
     }
     None
+}
+
+/// One item of a catalogue query's projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Projected {
+    /// The catalogue column it reads.
+    pub column: String,
+    /// What the client will call it --- the alias, or the column's own name.
+    pub shown_as: String,
+}
+
+/// The columns a catalogue query asked for, in the order it asked for them.
+///
+/// # The defect this exists to fix
+///
+/// This module answered every catalogue query with the **whole row**, in its own order,
+/// whatever the client projected. `SELECT table_name FROM information_schema.tables` came back
+/// with three columns, and the first of them was `table_schema` --- so a driver reading
+/// `row[0]`, which is what a driver does, was handed the schema and told it was the table name.
+///
+/// Not a wide answer. A **wrong** one, and one no error accompanies: the client asked for one
+/// column, received three, and the value it read was a real string of the right shape.
+///
+/// # Why `None` is the safe answer and not an empty list
+///
+/// The recogniser is deliberately lenient about projections, because tools generate wildly
+/// different ones --- `count(*)`, `CASE` expressions, casts, `*`. Anything this cannot read as
+/// a plain list of column names returns `None`, and the caller falls back to the whole row,
+/// which is exactly what every client got before. A narrower guess would turn a query this
+/// module used to answer usefully into one it answers with nothing.
+#[must_use]
+pub fn projection(compact: &str) -> Option<Vec<Projected>> {
+    let lower = compact.to_lowercase();
+    let start = lower.find("select ")? + "select ".len();
+    let end = lower.get(start..)?.find(" from ")? + start;
+    let list = compact.get(start..end)?.trim();
+    if list.is_empty() || list.contains('*') || list.contains('(') {
+        return None;
+    }
+
+    let mut out = Vec::new();
+    for item in list.split(',') {
+        let item = item.trim();
+        // `x AS y`, and the bare `x y` form a few tools emit. Split on the alias so the field
+        // is named what the client will look for.
+        let lowered = item.to_lowercase();
+        let (source, alias) = match lowered.find(" as ") {
+            Some(at) => (item.get(..at)?, item.get(at + 4..)?),
+            None => match item.split_once(char::is_whitespace) {
+                Some((source, alias)) => (source, alias),
+                None => (item, item),
+            },
+        };
+        // A qualifier is the table's alias --- `c.table_name` --- and says nothing about which
+        // column is meant.
+        let column = source.trim().rsplit('.').next()?.trim().trim_matches('"');
+        let alias = alias.trim().trim_matches('"');
+        if column.is_empty()
+            || !column.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            || !alias.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            return None;
+        }
+        out.push(Projected { column: column.to_lowercase(), shown_as: alias.to_owned() });
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// Narrow a full catalogue answer to the columns the client asked for.
+///
+/// A projected name this answer does not have makes the whole narrowing `None`, and the caller
+/// returns the full row: a query naming a column of `information_schema.tables` that this
+/// system does not model is better answered widely than answered with a hole.
+fn narrowed(
+    fields: Vec<FieldDescription>,
+    rows: Vec<Vec<Option<String>>>,
+    wanted: Option<&Vec<Projected>>,
+) -> (Vec<FieldDescription>, Vec<Vec<Option<String>>>) {
+    let Some(wanted) = wanted else {
+        return (fields, rows);
+    };
+    let mut at = Vec::with_capacity(wanted.len());
+    for item in wanted {
+        let Some(found) = fields.iter().position(|field| field.name == item.column) else {
+            return (fields, rows);
+        };
+        at.push(found);
+    }
+    let narrowed_fields: Vec<FieldDescription> = wanted
+        .iter()
+        .zip(&at)
+        .map(|(item, index)| {
+            let mut field = fields.get(*index).cloned().unwrap_or_else(|| {
+                FieldDescription::text(item.shown_as.clone(), oid::TEXT, -1)
+            });
+            field.name = item.shown_as.clone();
+            field
+        })
+        .collect();
+    let narrowed_rows = rows
+        .into_iter()
+        .map(|row| at.iter().map(|index| row.get(*index).cloned().flatten()).collect())
+        .collect();
+    (narrowed_fields, narrowed_rows)
 }
 
 /// The statement with its whitespace collapsed, literals intact.
@@ -372,13 +486,13 @@ pub fn answer(
                 rows: names.into_iter().map(|n| vec![Some(n)]).collect(),
             }
         }
-        CatalogQuery::Tables { schema } => CatalogResult {
-            fields: vec![
+        CatalogQuery::Tables { schema, wanted } => {
+            let fields = vec![
                 FieldDescription::text("table_schema", oid::TEXT, -1),
                 FieldDescription::text("table_name", oid::TEXT, -1),
                 FieldDescription::text("table_type", oid::TEXT, -1),
-            ],
-            rows: tables
+            ];
+            let rows = tables
                 .iter()
                 .filter(|t| schema.as_ref().is_none_or(|s| &t.schema == s))
                 .map(|t| {
@@ -388,18 +502,20 @@ pub fn answer(
                         Some("BASE TABLE".to_string()),
                     ]
                 })
-                .collect(),
-        },
-        CatalogQuery::Columns { schema, table } => CatalogResult {
-            fields: vec![
+                .collect();
+            let (fields, rows) = narrowed(fields, rows, wanted.as_ref());
+            CatalogResult { fields, rows }
+        }
+        CatalogQuery::Columns { schema, table, wanted } => {
+            let fields = vec![
                 FieldDescription::text("table_schema", oid::TEXT, -1),
                 FieldDescription::text("table_name", oid::TEXT, -1),
                 FieldDescription::text("column_name", oid::TEXT, -1),
                 FieldDescription::text("ordinal_position", oid::INT4, 4),
                 FieldDescription::text("data_type", oid::TEXT, -1),
                 FieldDescription::text("is_nullable", oid::TEXT, -1),
-            ],
-            rows: tables
+            ];
+            let rows = tables
                 .iter()
                 .filter(|t| table.as_ref().is_none_or(|name| &t.name == name))
                 .filter(|t| schema.as_ref().is_none_or(|named| &t.schema == named))
@@ -417,8 +533,10 @@ pub fn answer(
                         ]
                     })
                 })
-                .collect(),
-        },
+                .collect();
+            let (fields, rows) = narrowed(fields, rows, wanted.as_ref());
+            CatalogResult { fields, rows }
+        }
         CatalogQuery::Types => CatalogResult {
             fields: vec![
                 FieldDescription::text("oid", oid::OID, 4),
