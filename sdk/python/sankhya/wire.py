@@ -12,22 +12,55 @@ It is deliberately small. ``ADR-0017`` Decision 1 says a binding may contain no 
 does not enforce, so this parses frames and does not interpret them: a refusal arrives as its
 fields rather than as an exception this module invented.
 
+Transport security
+------------------
+Built 2026-09-03. The server has offered TLS since 2026-08-31 and this binding did not ask for
+it, so a connection from anywhere but a loopback sent its password as typed.
+
+``sslmode`` takes PostgreSQL's own vocabulary, because a person configuring a client already
+knows it and a second vocabulary for one idea is one somebody gets wrong:
+
+============== ===============================================================================
+``disable``    Never ask. The connection is in the clear and says so.
+``prefer``     Ask; encrypt if the server offers it, continue if it does not.
+``require``    Ask, and **refuse** if the server declines. No verification of who answered.
+``verify-ca``  ``require``, and the server's certificate must be signed by ``sslrootcert``.
+``verify-full`` ``verify-ca``, and the certificate must be *for the host that was asked for*.
+============== ===============================================================================
+
+The default is ``prefer``, which is libpq's, and the honesty is elsewhere:
+:attr:`Connection.encrypted` says what actually happened. A binding that *silently* downgrades
+is the thing this repository refuses; one that downgrades and reports it is a client whose
+posture a caller can assert on --- and the quickstart does.
+
 What it does not do
 -------------------
-The extended query protocol, binary result formats, COPY, and TLS. Each is a real gap and each
-is named rather than half-implemented: a client that silently downgrades is worse than one that
-says it cannot.
+The extended query protocol, binary result formats, and COPY. Each is a real gap and each is
+named rather than half-implemented.
 """
 
 from __future__ import annotations
 
 import socket
+import ssl
 import struct
 from dataclasses import dataclass, field
 from typing import Iterator
 
 #: The protocol version this speaks: 3.0, as every PostgreSQL since 7.4.
 PROTOCOL_VERSION = 196608
+
+#: The message that asks a server whether it speaks TLS.
+#:
+#: Sent before the startup message and outside the ordinary framing: eight bytes, a length and
+#: a magic number, answered with a single ``S`` or ``N``. It is the same handshake every
+#: PostgreSQL client performs, which is why a server that declines can still be talked to.
+SSL_REQUEST_CODE = 80877103
+
+#: What ``sslmode`` may be, weakest first. Ordered, because `require` is `prefer` plus a refusal
+#: and `verify-full` is `verify-ca` plus a name check, and writing that as an order keeps the
+#: comparisons below from becoming a table of special cases.
+SSL_MODES = ("disable", "prefer", "require", "verify-ca", "verify-full")
 
 #: The client contract this binding speaks.
 #:
@@ -106,9 +139,18 @@ class Connection:
 
     def __init__(self, host: str = "127.0.0.1", port: int = 5432, user: str = "sankhya",
                  database: str = "sankhya", password: str | None = None,
-                 timeout: float = DEFAULT_TIMEOUT) -> None:
+                 timeout: float = DEFAULT_TIMEOUT, sslmode: str = "prefer",
+                 sslrootcert: str | None = None) -> None:
+        if sslmode not in SSL_MODES:
+            raise ValueError(
+                f"sslmode must be one of {', '.join(SSL_MODES)}, and {sslmode!r} is not. "
+                f"Refused rather than treated as the default: a mode nobody recognises is "
+                f"most likely a stronger one than this binding would have chosen"
+            )
         self._socket = socket.create_connection((host, port), timeout=timeout)
         self._socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        #: Whether this connection is encrypted. Read it rather than assuming.
+        self.encrypted = False
         self._buffer = b""
         self._parameters: dict = {}
         # Bytes over the socket, counted rather than estimated.
@@ -118,7 +160,61 @@ class Connection:
         # counter here lets an example show the difference instead of asserting it.
         self._sent = 0
         self._received = 0
+        self._negotiate(host, sslmode, sslrootcert)
         self._startup(user, database, password)
+
+    def _negotiate(self, host: str, sslmode: str, sslrootcert: str | None) -> None:
+        """Ask the server for TLS, and act on what it says.
+
+        The exchange is deliberately outside the ordinary framing --- it happens before either
+        side knows the other speaks this protocol --- so it is eight bytes out and one byte
+        back, and the byte is read directly rather than through the frame reader.
+        """
+        if sslmode == "disable":
+            return
+
+        self._socket.sendall(struct.pack("!ii", 8, SSL_REQUEST_CODE))
+        self._sent += 8
+        answer = self._socket.recv(1)
+        self._received += len(answer)
+
+        if answer != b"S":
+            if sslmode == "prefer":
+                # Declined, and the caller said they would take either. `encrypted` stays
+                # False, which is the whole of the honesty: nothing here pretends.
+                return
+            self._socket.close()
+            raise ConnectionError(
+                f"sslmode={sslmode} and this server declined TLS. Refused rather than "
+                f"continued in the clear: a password sent as typed cannot be un-sent, and a "
+                f"client that downgrades silently is how that happens. Configure "
+                f"`server.tls.certificate` and `server.tls.private_key`, or connect with "
+                f"sslmode=prefer if this connection is a loopback and you mean it"
+            )
+
+        # `require` encrypts and does not verify, which is libpq's meaning and is worth being
+        # explicit about: it stops a passive listener and not an active one. Verification needs
+        # something to verify *against*, and that is `sslrootcert`.
+        verifying = sslmode in ("verify-ca", "verify-full")
+        context = ssl.create_default_context(cafile=sslrootcert) if verifying \
+            else ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        if verifying:
+            if sslrootcert is None:
+                self._socket.close()
+                raise ValueError(
+                    f"sslmode={sslmode} verifies the server's certificate and there is nothing "
+                    f"to verify it against. Pass `sslrootcert=` the authority that signed it"
+                )
+            context.check_hostname = sslmode == "verify-full"
+            context.verify_mode = ssl.CERT_REQUIRED
+        else:
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+
+        self._socket = context.wrap_socket(
+            self._socket, server_hostname=host if sslmode == "verify-full" else None
+        )
+        self.encrypted = True
 
     # -- connecting ---------------------------------------------------------
 

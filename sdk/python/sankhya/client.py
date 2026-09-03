@@ -839,10 +839,17 @@ def open(  # noqa: A001 -- `open` is the natural verb, and this is a module-qual
     database: str = "sankhya",
     password: str | None = None,
     timeout: float = 30.0,
+    sslmode: str = "prefer",
+    sslrootcert: str | None = None,
 ) -> Sankhya:
     """Open a SANKHYA, with its capabilities as methods.
 
     ``sankhya.connect`` gives you the raw wire connection instead; this is the one to use.
+
+    ``sslmode`` is PostgreSQL's own: ``disable``, ``prefer``, ``require``, ``verify-ca``,
+    ``verify-full``. The default is ``prefer``, and ``db.connection.encrypted`` says what
+    actually happened --- because a client that downgrades *silently* is the thing to avoid, and
+    one that downgrades and reports it is a posture a caller can assert on.
     """
     return Sankhya(
         Connection(
@@ -852,6 +859,8 @@ def open(  # noqa: A001 -- `open` is the natural verb, and this is a module-qual
             database=database,
             password=password,
             timeout=timeout,
+            sslmode=sslmode,
+            sslrootcert=sslrootcert,
         )
     )
 

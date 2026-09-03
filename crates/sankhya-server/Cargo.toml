@@ -61,6 +61,9 @@ tracing-subscriber = { workspace = true }
 
 
 [dev-dependencies]
+# Certificates for the binding's TLS test. A dev-dependency, so the traversal that asks which
+# crates ship ignores it.
+sankhya-testkit = { path = "../sankhya-testkit" }
 parquet = { workspace = true }
 sankhya-cube-algo = { path = "../sankhya-cube-algo" }
 sankhya-publish = { path = "../sankhya-publish" }
