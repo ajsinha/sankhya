@@ -77,8 +77,59 @@ use wiring::{start, Posture, Settings, TransportSecurity, CUBOID_ROW_BUDGET};
 /// `SANKHYA_WAREHOUSE` and its siblings are documented and deployed, so they are mapped onto
 /// the settings they configure rather than dropped. They arrive as environment values, which
 /// is a higher precedence than a file --- which is what an operator setting one expects.
+/// What the binary prints when asked, and when told something it does not understand.
+///
+/// Written out rather than generated, because the environment variables below are otherwise
+/// documented in exactly one place --- a book chapter nothing links to --- and the first
+/// thing a stranger types when a binary refuses is `--help`.
+const USAGE: &str = "\
+SANKHYA --- an analytical warehouse that refuses rather than guesses.
+
+USAGE:
+    sankhya-server [start]     serve; the default when no subcommand is given
+    sankhya-server doctor      report on the warehouse and exit non-zero on a finding
+    sankhya-server backup      take a backup
+    sankhya-server drill       restore a backup and prove it reads
+    sankhya-server attest <store>
+                               attest a declared backup store
+    sankhya-server --help | --version
+
+ENVIRONMENT:
+    SANKHYA_CONFIG             configuration file(s), comma-separated
+                               (default: config/application.yaml, relative to the working
+                               directory --- a unit with no WorkingDirectory= gets none)
+    SANKHYA_WAREHOUSE          warehouse.path
+    SANKHYA_LISTEN             server.listen
+    SANKHYA_METRICS_LISTEN     server.metrics_listen
+    SANKHYA_READ_AS_OF         warehouse.read_as_of
+    SANKHYA_DATA_DIR           data.dir
+    SANKHYA_NO_PASSWORD        serve with no authentication; presence is the signal
+    SANKHYA_USER_FUNCTIONS     accept CREATE AGGREGATION, which runs supplied code
+                               (default: false)
+
+Configuration is refused rather than defaulted: a setting that silently becomes something
+else is a deployment behaving as though it were configured when it is not.";
+
 fn settings() -> Result<Settings, String> {
     let files = configuration_files();
+    // A file the operator *named* and that is not there stops the server.
+    //
+    // A missing file is otherwise skipped, which is right for the default path --- a server
+    // with no configuration file is a server run from a shell, and it works. It is wrong for
+    // `SANKHYA_CONFIG`: naming a file is a statement that the file is the configuration, so
+    // skipping it silently produces a server with no users, no roles, no policy, no TLS and
+    // no feeds that believes it is configured. The shipped systemd unit named no file at all
+    // and inherited `/` as its working directory, which is exactly that server.
+    if std::env::var("SANKHYA_CONFIG").is_ok() {
+        for file in &files {
+            if !file.exists() {
+                return Err(format!(
+                    "the configuration file `{}` named by SANKHYA_CONFIG does not exist.                      Refused rather than skipped: a named file that is not read is a server                      with no users, no roles and no policy that believes it is configured",
+                    file.display()
+                ));
+            }
+        }
+    }
     let config = sankhya_config::Configuration::load_with(
         &files,
         &legacy_environment(),
@@ -106,13 +157,31 @@ fn settings() -> Result<Settings, String> {
         .boolean("server.require_password")
         .map_err(|error| error.to_string())?
         .unwrap_or(true);
+    // Off unless an operator says otherwise. `CREATE AGGREGATION` runs code the caller
+    // supplied, and until the per-principal grant `ADR-0023` Decision 4 describes exists,
+    // the only honest default is a closed door.
+    let user_functions = config
+        .boolean("server.user_functions")
+        .map_err(|error| error.to_string())?
+        .unwrap_or(false);
     let warehouse: std::path::PathBuf = config.get_or("warehouse.path", "./warehouse").into();
+    // Absent means everything published, which is what a server running no ingest wants.
+    // A position that will not convert is refused rather than defaulted: falling back to
+    // `u64::MAX` would read "as of -5" as "read everything", which is the silent
+    // reinterpretation every other setting here refuses by name.
     let read_as_of = sankhya_types::Lsn::new(
-        config
+        match config
             .integer("warehouse.read_as_of")
             .map_err(|error| error.to_string())?
-            .and_then(|value| u64::try_from(value).ok())
-            .unwrap_or(u64::MAX),
+        {
+            None => u64::MAX,
+            Some(value) => u64::try_from(value).map_err(|_| {
+                format!(
+                    "`warehouse.read_as_of` must be a position at or after zero and holds \
+                     `{value}`. Leave it unset to read everything published"
+                )
+            })?,
+        },
     );
     // A fixed tenant until federated identity is wired in. Deterministic so that a restart
     // does not orphan the audit chain and the storage prefix from the previous run.
@@ -156,6 +225,7 @@ fn settings() -> Result<Settings, String> {
         read_as_of,
         tenant,
         require_password,
+        user_functions,
         flight_listen,
         metrics_listen,
     })
@@ -327,6 +397,7 @@ fn legacy_environment() -> BTreeMap<String, String> {
         ("SANKHYA_WAREHOUSE", "warehouse.path"),
         ("SANKHYA_READ_AS_OF", "warehouse.read_as_of"),
         ("SANKHYA_DATA_DIR", "data.dir"),
+        ("SANKHYA_USER_FUNCTIONS", "server.user_functions"),
     ];
     let mut out = BTreeMap::new();
     for (variable, setting) in MAPPED {
@@ -395,6 +466,23 @@ async fn main() -> std::io::Result<()> {
         )
         .init();
 
+    // What the binary is, before the configuration is consulted. Asking a program its
+    // version must not depend on a file being well formed --- when the shipped
+    // `config/application.yaml` held an unparseable position, the refusal reached `--help`
+    // too, so the one command a stranger types to get unstuck was the one that could not
+    // answer.
+    match std::env::args().nth(1).as_deref() {
+        Some("--help" | "-h" | "help") => {
+            println!("{USAGE}");
+            return Ok(());
+        }
+        Some("--version" | "-V" | "version") => {
+            println!("SANKHYA {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        _ => {}
+    }
+
     // A configuration that does not load stops the server here, with the reason, rather
     // than at whatever the missing setting was for. `sankhya-config` refuses a malformed
     // file, an unresolved reference and an unparseable value; each of those is a deployment
@@ -417,6 +505,11 @@ async fn main() -> std::io::Result<()> {
     // Subcommands before the server starts, because `doctor` must work when `start` would
     // not. One argument is the whole surface for now; more of them want a parser, and a
     // hand-rolled parser is how a flag comes to mean two things.
+    //
+    // Every arm is named, and the unnamed ones are refused. The fall-through this replaced
+    // served on any unrecognised argument, so `--help` bound the configured listeners and
+    // ran until killed --- a typo starting a second server on one warehouse, which is the
+    // two-committers race §15.3 names.
     let data = data_dir(&settings.warehouse);
     match std::env::args().nth(1).as_deref() {
         Some("doctor") => {
@@ -433,7 +526,13 @@ async fn main() -> std::io::Result<()> {
             &data,
             now_micros(),
         )),
-        _ => {}
+        // Serving is what no argument means, and `start` says it out loud. `--help` and
+        // `--version` returned above, before the configuration was read.
+        None | Some("start" | "--help" | "-h" | "help" | "--version" | "-V" | "version") => {}
+        Some(unrecognised) => {
+            eprintln!("sankhya: `{unrecognised}` is not a subcommand of this binary\n\n{USAGE}");
+            std::process::exit(2)
+        }
     }
 
     let configured_maintenance = settings.maintenance.clone();

@@ -94,7 +94,7 @@ impl Pg {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_write_is_visible_analytically_to_the_session_that_made_it() {
     let Some(pg) = Pg::from_env() else {
-        eprintln!("skipping: set SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run");
+        sankhya_testkit::skipped("read_your_own_writes", "set SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run");
         return;
     };
 

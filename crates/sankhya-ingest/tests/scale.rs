@@ -89,7 +89,7 @@ impl Pg {
 #[ignore = "minutes, and needs the loaded dataset"]
 fn captures_a_large_interleaved_workload_across_every_table() {
     let Some(pg) = Pg::from_env() else {
-        eprintln!("skipping: set SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run");
+        sankhya_testkit::skipped("scale", "set SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run");
         return;
     };
 

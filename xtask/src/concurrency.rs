@@ -107,5 +107,34 @@ pub fn check(root: &Path) -> bool {
         "   {taken} measurement(s) taken alone, {} skipped for want of a quiet machine",
         skipped.len()
     );
+
+    // Measuring nothing is not passing.
+    //
+    // Every one of these tests skips itself when the machine is busy --- correctly, because a
+    // throughput measurement taken beside a compiler measures the compiler. What was missing
+    // is what happens when *all* of them skip: this returned `ok` regardless, and
+    // `check-all` reported green having measured nothing at all. On a loaded machine the one
+    // check that can detect a lock regression was silently absent, and the build said fine.
+    //
+    // A shared CI runner genuinely cannot host these, so the escape is explicit, named and
+    // printed. What it is not is the default.
+    if taken == 0 {
+        if std::env::var("SANKHYA_CI").is_ok() {
+            println!(
+                "   NOT MEASURED   every measurement skipped and SANKHYA_CI is set, so this is \
+                 not a failure. Nothing here was checked: a lock regression would pass. Run \
+                 `cargo run -p xtask -- check-concurrency` on a quiet machine before believing \
+                 a green build about concurrency"
+            );
+            return ok;
+        }
+        eprintln!(
+            "  NOT MEASURED   0 measurements were taken, so this check proved nothing and \
+             reported success --- which is how a lock regression ships behind a green gate. \
+             Wait for the machine to go quiet, or set SANKHYA_CI=1 to accept an unmeasured \
+             run and have that said out loud"
+        );
+        return false;
+    }
     ok
 }

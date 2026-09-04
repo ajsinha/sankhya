@@ -1,0 +1,83 @@
+# The gate, run by a machine that is not the author's.
+#
+# There was no CI in this repository until 2026-09-03. `check-all` existed, was thorough, and
+# ran only when somebody chose to run it --- which is why a production-readiness audit found
+# 129 findings behind a green gate. "The gate passes" meant "it passed on one machine, once,
+# when somebody remembered".
+#
+# `--locked` throughout: a build that resolves a different dependency set from the one in
+# `Cargo.lock` is not the build that was tested.
+
+name: gate
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # A dependency that fails to fetch should fail the build, not retry forever.
+  CARGO_NET_RETRY: 2
+
+jobs:
+  gate:
+    name: check-all
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # The toolchain comes from rust-toolchain.toml, so this job and a developer's machine
+      # cannot be on different compilers without the file saying so.
+      - name: Show the toolchain
+        run: rustc --version && cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build, locked
+        run: cargo build --locked --workspace --all-targets
+
+      # Concurrency measurements need a quiet machine, and a shared runner is not one. The
+      # opt-out is explicit and loud rather than implied: `check-concurrency` reporting "0
+      # measured" as success is finding CLM-16's whole shape, and it must not come back.
+      - name: The gate
+        env:
+          SANKHYA_CI: "1"
+        run: cargo run --locked -p xtask -- check-all
+
+  advisories:
+    name: advisories and licences
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny
+
+      # Advisories, licences, and duplicate versions of one crate. `check-attribution`
+      # already proves every package is attributed; this proves the licences are ones we may
+      # ship at all, and that no advisory applies.
+      - name: cargo-deny
+        run: cargo deny --all-features check
+
+  minimum-supported-rust:
+    name: the version we claim to support
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+
+      # `Cargo.toml`'s `rust-version` is a promise to anybody depending on this. It said
+      # 1.90 for months while every build used 1.97, which made it a claim nothing checked.
+      # This job is what turns it back into a fact: lower it only when this passes.
+      - name: Build against the declared minimum
+        run: |
+          MSRV=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)
+          echo "declared rust-version = $MSRV"
+          rustup toolchain install "$MSRV" --profile minimal
+          cargo "+$MSRV" build --locked --workspace

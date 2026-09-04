@@ -9,6 +9,8 @@
 
 # Tutorials
 
+> **The book.** [`docs/book/`](../book/README.md) is the long-form companion to this document --- twenty-seven chapters, and the only complete table of `SANKHYA_*` environment variables (Chapter 17, *Packaging and deployment*).
+
 Hands-on, in order, each one about ten to fifteen minutes. They assume a running server —
 [`QUICKSTART.md`](../QUICKSTART.md) gets you one.
 

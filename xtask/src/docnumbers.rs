@@ -41,6 +41,8 @@ pub fn sync(root: &Path, docs: &[PathBuf]) -> bool {
         eprintln!("   FAILED: could not count the tests or the mutation catalogue");
         return false;
     };
+    let examples = example_scripts(root);
+    let checks = check_tasks(root);
 
     let mut rewritten = 0usize;
     let mut files = 0usize;
@@ -53,7 +55,12 @@ pub fn sync(root: &Path, docs: &[PathBuf]) -> bool {
         for (index, line) in text.lines().enumerate() {
             let mut line = line.to_string();
             for (claimed, unit) in claimed_numbers(&line) {
-                let actual = if unit == "tests" { tests } else { mutations };
+                let actual = match unit {
+                    "tests" => tests,
+                    "examples" => examples,
+                    "checks" => checks,
+                    _ => mutations,
+                };
                 if claimed != actual {
                     // Both spellings, because prose writes 1,659 and a command line writes
                     // 1659, and a fixer that knows only one leaves the other stale --- which
@@ -89,6 +96,35 @@ pub fn sync(root: &Path, docs: &[PathBuf]) -> bool {
 }
 
 
+/// The runnable examples the Python SDK ships.
+///
+/// `_common.py` is a helper the others import, not an example. Counted rather than declared,
+/// because the three documents quoting this number quoted three different values --- "eight",
+/// "ten" and "twelve" --- and one of them sat three lines above its own table of twelve.
+fn example_scripts(root: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(root.join("sdk/python/examples")) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.ends_with(".py") && !name.starts_with('_')
+        })
+        .count()
+}
+
+/// The invariants `check-all` runs, counted from the source that runs them.
+fn check_tasks(root: &Path) -> usize {
+    let Ok(text) = std::fs::read_to_string(root.join("xtask/src/main.rs")) else {
+        return 0;
+    };
+    text.lines()
+        .filter(|line| line.contains("run_all || task == \"check-"))
+        .count()
+}
+
 /// A number as prose writes it: grouped in threes.
 fn with_thousands(value: usize) -> String {
     let digits = value.to_string();
@@ -114,6 +150,8 @@ pub fn check(root: &Path, docs: &[PathBuf]) -> bool {
         eprintln!("   FAILED: could not count the tests");
         return false;
     };
+    let examples = example_scripts(root);
+    let checks = check_tasks(root);
 
     // `(number) tests` and `(number) specific|deliberate defects`, which are the two figures
     // documents actually quote.
@@ -127,7 +165,12 @@ pub fn check(root: &Path, docs: &[PathBuf]) -> bool {
         for (line_number, line) in text.lines().enumerate() {
             for (claimed, unit) in claimed_numbers(line) {
                 checked += 1;
-                let actual = if unit == "tests" { tests } else { mutations };
+                let actual = match unit {
+                    "tests" => tests,
+                    "examples" => examples,
+                    "checks" => checks,
+                    _ => mutations,
+                };
                 if claimed != actual {
                     eprintln!(
                         "  STALE NUMBER {rel}:{}: claims {claimed} {unit}, and there are \
@@ -146,15 +189,64 @@ pub fn check(root: &Path, docs: &[PathBuf]) -> bool {
 }
 
 
+/// A number written as an English word, if that is what this is.
+///
+/// # Why a gate that reads digits is half a gate
+///
+/// Every count that had drifted in this repository was spelled as a **word**. One document
+/// said "Eight runnable examples", another "Ten scripts" three lines above its own table of
+/// twelve, and `docs/QUICKSTART.md` said `check-all` runs "eleven invariants" when it runs
+/// twenty-two. This function walked back over *digits* to find the figure, so it could not
+/// see any of them --- the one gate built to catch a stale number was structurally blind to
+/// the form every stale number here took.
+fn word_number(word: &str) -> Option<usize> {
+    const WORDS: &[(&str, usize)] = &[
+        ("one", 1), ("two", 2), ("three", 3), ("four", 4), ("five", 5), ("six", 6),
+        ("seven", 7), ("eight", 8), ("nine", 9), ("ten", 10), ("eleven", 11),
+        ("twelve", 12), ("thirteen", 13), ("fourteen", 14), ("fifteen", 15),
+        ("sixteen", 16), ("seventeen", 17), ("eighteen", 18), ("nineteen", 19),
+        ("twenty", 20), ("thirty", 30), ("forty", 40), ("fifty", 50),
+    ];
+    let lowered = word.to_ascii_lowercase();
+    // "twenty-two" and the like, which is how prose writes them.
+    if let Some((tens, units)) = lowered.split_once('-') {
+        let tens = WORDS.iter().find(|(w, _)| *w == tens)?.1;
+        let units = WORDS.iter().find(|(w, _)| *w == units)?.1;
+        return (tens >= 20 && units < 10).then_some(tens + units);
+    }
+    WORDS.iter().find(|(w, _)| *w == lowered).map(|(_, n)| *n)
+}
+
 /// Every figure a line claims, as `(number, unit)`.
 fn claimed_numbers(line: &str) -> Vec<(usize, &'static str)> {
     let mut found = Vec::new();
-    for (marker, unit) in [
-        (" tests", "tests"),
-        (" specific defects", "mutations"),
-        (" deliberate defects", "mutations"),
-        (" sequential", "mutations"),
+    // The third column is whether a **word** may spell this figure.
+    //
+    // Not everywhere. Prose says "three tests hold it" about a local fact all the time, and
+    // reading that as a claim about the whole suite would fill the gate with false alarms ---
+    // which is how a check stops being read. Digits are safe there because nobody writes
+    // "two thousand five hundred and ninety-six tests" except as the global claim.
+    //
+    // Words are allowed exactly where the figure is *only* ever a global count: how many
+    // examples the SDK ships, how many invariants the gate runs. Those are the ones that
+    // drifted, and they drifted in words.
+    // The fourth column is a phrase the line must also contain.
+    //
+    // Without it, `" invariants"` matched "these two invariants" in prose about a single
+    // component and reported it as a stale claim about the whole gate. A marker is only safe
+    // when it can only ever mean the global figure; where it cannot, the context makes it so.
+    for (marker, unit, words, context) in [
+        (" tests", "tests", false, ""),
+        (" specific defects", "mutations", false, ""),
+        (" deliberate defects", "mutations", false, ""),
+        (" sequential", "mutations", false, ""),
+        (" runnable examples", "examples", true, ""),
+        (" example scripts", "examples", true, ""),
+        (" invariants", "checks", true, "check-all"),
     ] {
+        if !context.is_empty() && !line.contains(context) {
+            continue;
+        }
         let mut from = 0usize;
         while let Some(at) = line.get(from..).and_then(|rest| rest.find(marker)) {
             let end = from + at;
@@ -170,6 +262,14 @@ fn claimed_numbers(line: &str) -> Vec<(usize, &'static str)> {
                 .collect();
             if let Ok(value) = digits.replace(',', "").parse::<usize>() {
                 found.push((value, unit));
+            } else if words {
+                // Not digits. Take the word immediately before the marker, because prose
+                // writes small counts out --- and every count that drifted here was small.
+                let word = prefix.rsplit(|c: char| c.is_whitespace()).next().unwrap_or("");
+                let word = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
+                if let Some(value) = word_number(word) {
+                    found.push((value, unit));
+                }
             }
             from = end + marker.len();
         }

@@ -198,7 +198,21 @@ fn read_latency_is_flat_under_write_load() {
     // loses throughput to the scheduler rather than to a lock, and this would measure that;
     // with the cores present but already busy --- a full `cargo test --workspace` --- it would
     // measure the same thing while appearing to have enough. This test has failed that way.
-    let Some(window) = Window::open("read_latency_is_flat_under_write_load", WRITERS + 2) else {
+    //
+    // `WRITERS * 3` rather than `WRITERS + 2`, and the difference is the point. Six idle
+    // cores of twenty-four is a bar a machine clears while it is still busy --- this test
+    // failed in `check-all` immediately after a fifty-second full-suite run, with the window
+    // reporting the machine quiet, and passed alone minutes later on the same tree.
+    //
+    // Both arms suffer under residual load, but not equally: the free arm is the one that
+    // has anything to lose, so contention narrows the ratio the control depends on. The
+    // measurement does not need *some* headroom, it needs the free arm to be genuinely free,
+    // and that is what this number now says.
+    //
+    // Raising the bar rather than lowering the threshold, deliberately. The 20x separation is
+    // calibrated against measured runs --- 8.77s against 211us --- and tuning it downward
+    // until the gate stops failing is how a control arm stops controlling anything.
+    let Some(window) = Window::open("read_latency_is_flat_under_write_load", WRITERS * 3) else {
         return;
     };
 

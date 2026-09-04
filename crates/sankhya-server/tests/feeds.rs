@@ -147,3 +147,35 @@ fn load(configuration: &Path) -> (Vec<(String, std::path::PathBuf)>, Vec<String>
         complaints,
     )
 }
+
+#[test]
+fn a_readme_beside_the_feeds_is_not_a_broken_feed() {
+    // Found by starting the shipped server and reading its output. `config/feeds/README.md`
+    // explains what a feed declaration is; the loader read every file in the directory, so
+    // it parsed the explanation as a declaration and complained about it on **every**
+    // startup:
+    //
+    //   feed not loaded --- config/feeds/README.md: invalid type: string "One file per
+    //   feed. Each declares a source of newline-delimited JSON documents..."
+    //
+    // A complaint that is always present is one nobody reads, and the next complaint --- a
+    // feed that really is malformed --- arrives in the same place and looks the same. That
+    // is the damage: not the noise, but the real message it hides.
+    let dir = tempfile::tempdir().expect("a directory");
+    declare(dir.path(), "orders.yaml", SOUND);
+    std::fs::write(
+        dir.path().join("README.md"),
+        "One file per feed. Each declares a source of newline-delimited JSON documents.\n",
+    )
+    .expect("writing the readme");
+    std::fs::write(dir.path().join("notes.txt"), "scratch\n").expect("writing a note");
+
+    let (declared, complaints) = load(dir.path());
+
+    assert!(
+        complaints.is_empty(),
+        "a file that is not a declaration was read as a broken one: {complaints:?}"
+    );
+    assert_eq!(declared.len(), 1, "the real feed did not load");
+    assert_eq!(declared[0].0, "orders");
+}

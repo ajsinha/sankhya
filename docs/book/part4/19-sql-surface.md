@@ -297,6 +297,10 @@ A cube's measures compose along each dimension by a **declared rule**, and that 
 because the alternative produces plausible wrong figures. What it cannot express is the rule that
 is *this* firm's — a weighted average with their weighting, an exposure netted their way.
 
+> **Off by default.** `CREATE AGGREGATION` runs code the caller supplied, so a server refuses it
+> unless an operator sets `server.user_functions: true` (or `SANKHYA_USER_FUNCTIONS=true`). The
+> refusal carries `42501` and names the setting. `SHOW AGGREGATIONS` answers either way.
+
 ```sql
 CREATE AGGREGATION weighted_mean LANGUAGE PYTHON AS $$
 def initial():

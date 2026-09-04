@@ -28,6 +28,23 @@ use sankhya_table_delta::{commit, create, live_files, Action, AddFile, Metadata,
 use std::sync::Arc;
 use url::Url;
 
+// # What this file cannot check, and where that is checked instead
+//
+// This crate *defines* the log, so the crates that *write* one --- `sankhya-publish` and
+// `sankhya-maintenance` --- are above it in the dependency graph and cannot be reached from
+// here. Everything below is therefore hand-assembled: the schema is the constant on the next
+// line rather than anything `schema_string()` produced, the actions are built by the test,
+// and the data files are zero bytes.
+//
+// So these tests prove that a log this crate can *describe* is one the kernel can parse. They
+// cannot prove that the logs this workspace actually writes are readable, and for a while the
+// README said they did. When an auditor pointed the kernel at a real table, compaction was
+// committing `partitionValues: {}` inside a partition directory and the kernel stopped
+// mid-scan --- a defect no test here could see, because no test here has a partitioned table,
+// a real writer, or a row to read.
+//
+// `crates/sankhya-maintenance/tests/kernel_oracle.rs` is the test that can, and it lives
+// there because that is where the writers are.
 const SCHEMA: &str = r#"{"type":"struct","fields":[{"name":"id","type":"long","nullable":false,"metadata":{}},{"name":"amount","type":"long","nullable":false,"metadata":{}}]}"#;
 
 /// A table root with the log written, and one empty Parquet-shaped file per add so the

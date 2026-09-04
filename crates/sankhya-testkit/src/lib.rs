@@ -600,3 +600,67 @@ pub mod certificates {
         }
     }
 }
+
+/// Announce that a test did not run, in a way the build can count.
+///
+/// # Why a file, and not a `println!`
+///
+/// Because `cargo test` captures a **passing** test's output and never shows it. Fifteen
+/// PostgreSQL end-to-end tests announced themselves with `eprintln!("skipping: ...")` and
+/// passed, so the announcement went into a buffer that is discarded on success. The suite
+/// reported `ok`, the gate reported green, and nothing anywhere said that fifteen tests had
+/// declined to run --- among them `read_your_own_writes`, which is M1's headline property,
+/// asserted complete by nine documents.
+///
+/// That is the shape of the whole audit in one place: not a test that fails silently, a test
+/// that **passes** silently while proving nothing.
+///
+/// A line appended to a file survives capture. `check-tests` truncates it before the run and
+/// reads it after, so the count reaches the summary whether or not anybody passes
+/// `--nocapture`.
+///
+/// # Why this does not simply fail
+///
+/// Because a machine with no PostgreSQL is a legitimate machine to develop on, and a suite
+/// that cannot be run at all is a suite people stop running. What is not legitimate is being
+/// unable to tell the two apart. Set `SANKHYA_REQUIRE_E2E=1` --- as CI does, where the
+/// database is configured on purpose --- and a recorded skip becomes a failure.
+pub fn skipped(test: &str, reason: &str) {
+    eprintln!("skipping {test}: {reason}");
+    let Some(directory) = std::env::var_os("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            // The workspace's `target/`, found from this crate rather than from the working
+            // directory --- a test's working directory is its own crate, not the root.
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .ancestors()
+                .nth(2)
+                .map(|root| root.join("target"))
+        })
+    else {
+        return;
+    };
+    if std::fs::create_dir_all(&directory).is_err() {
+        return;
+    }
+    // Appended, not written: several test binaries run at once and each has something to
+    // say.
+    //
+    // **One `write_all` of one pre-formatted line**, not `writeln!`. `writeln!` on a `File`
+    // can issue more than one `write` syscall, and two processes appending concurrently then
+    // interleave --- which they did, on the first run of this mechanism:
+    //
+    //   DID NOT RUN    real_schemareal_schema: : database not configuredset SANKHYA_PG_BIN...
+    //
+    // A single `write` to a file opened `O_APPEND` is atomic for a line this short, so the
+    // records stay one per line and the count stays a count.
+    use std::io::Write;
+    let line = format!("{test}: {reason}\n");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(directory.join("sankhya-skipped.log"))
+    {
+        file.write_all(line.as_bytes()).ok();
+    }
+}

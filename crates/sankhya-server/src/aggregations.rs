@@ -204,6 +204,29 @@ pub(crate) fn run(
 ) -> Result<QueryResult, QueryFailure> {
     use sankhya_error::protocol::sqlstate;
 
+    // The capability check, before the statement is looked at. `CREATE AGGREGATION` runs
+    // code the caller supplied, and `ADR-0023` Decision 4 says it "requires a capability
+    // that is not granted by default". Nothing granted it and nothing checked it: the arm
+    // returned before the zero-role refusal, so a caller holding no roles reached it, and
+    // the code then wrote an audit entry asserting the decision had been allowed.
+    //
+    // A server-wide switch is not the per-principal grant that decision describes, and is
+    // not pretended to be. It is the half of it that can be honest today --- closed unless
+    // an operator opened it. `SHOW` is not gated: reading which functions exist is not
+    // running one, and an operator who has just closed the door needs to see what came in
+    // while it was open.
+    if !server.settings.user_functions && !matches!(statement, Statement::Show) {
+        let named = match &statement {
+            Statement::Create { name, .. } | Statement::Drop { name, .. } => name.clone(),
+            Statement::Show => String::new(),
+        };
+        server.record(principal, TableRef::new("", &named), Action::Insert, false);
+        return Err(refusal(
+            sqlstate::INSUFFICIENT_PRIVILEGE.as_str(),
+            "this server does not accept user-supplied aggregations. They run code this              server did not write, so the door is closed unless an operator opens it with              `server.user_functions: true`. `SHOW AGGREGATIONS` still lists what is declared",
+        ));
+    }
+
     match statement {
         Statement::Show => show(server),
         Statement::Drop { name, if_exists } => {

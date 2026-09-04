@@ -47,7 +47,7 @@ fn a_real_slot_is_read_and_assessed() {
         "SELECT pg_drop_replication_slot('{slot}') WHERE EXISTS
          (SELECT 1 FROM pg_replication_slots WHERE slot_name='{slot}')"
     )) else {
-        eprintln!("skipping: set SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run");
+        sankhya_testkit::skipped("real_slot", "set SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run");
         return;
     };
     psql(&format!(
@@ -125,7 +125,7 @@ fn the_policy_can_be_derived_from_the_databases_own_limit() {
     // The thresholds are fractions of the source's limit, so reading that limit is how
     // a deployment configures itself rather than being told a number that may not match.
     let Some(setting) = psql("SHOW max_slot_wal_keep_size") else {
-        eprintln!("skipping: database not configured");
+        sankhya_testkit::skipped("real_slot", "database not configured");
         return;
     };
     eprintln!("source retention limit: {setting}");

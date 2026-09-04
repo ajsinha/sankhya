@@ -151,6 +151,27 @@ fn an_expired_lease_cannot_be_renewed_only_reacquired() {
     };
     assert_eq!(expired_at, MINUTE);
     assert!(error.to_string().contains("entitled to delete"));
+
+    // And at *exactly* the expiry instant, not merely after it.
+    //
+    // The check above used `MINUTE + 1`, so a mutation changing `expires_at <= now` to
+    // `< now` survived: it only alters behaviour at the single instant the test skipped.
+    // `a_lease_holds_a_snapshot_until_it_expires` already asserts `is_held` is false at
+    // `MINUTE` --- so a lease that renews there is one the registry says is not held and the
+    // renewal says is, which is the disagreement that makes a released pin look live.
+    let mut leases = Leases::with_max_lifetime(10 * MINUTE);
+    leases.acquire("s2", tenant("acme"), 41, 0, MINUTE);
+    assert!(
+        !leases.is_held("s2", MINUTE),
+        "the fixture must be at the exclusive boundary"
+    );
+    assert!(
+        matches!(
+            leases.renew("s2", MINUTE, MINUTE),
+            Err(LeaseError::Expired { .. })
+        ),
+        "a lease renewed at the instant it expires outlives the pin it stands for"
+    );
 }
 
 #[test]

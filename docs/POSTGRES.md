@@ -9,7 +9,7 @@
 
 # What SANKHYA changes about PostgreSQL
 
-**Document ID:** SNK-PG-001 · **Version:** 0.1.0 · **Status:** Implementation — M0–M8, M10 and M13 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+**Document ID:** SNK-PG-001 · **Version:** 0.1.0 · **Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
 **Governs:** `sankhya-oltp-pg`, `sankhya-cdc-pg`
 **Decides with:** [DEC-02](REQUIREMENTS.md), [ADR-0021](adr/0021-vectors-matrices-across-the-tiers.md), [ADR-0001](adr/0001-dependency-pin-set.md)
 

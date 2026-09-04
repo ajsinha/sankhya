@@ -49,7 +49,7 @@ fn every_column_of_the_acceptance_schema_maps() {
            AND a.attnum > 0 AND NOT a.attisdropped
          ORDER BY c.relname, a.attnum",
     ) else {
-        eprintln!("skipping: set SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run");
+        sankhya_testkit::skipped("real_schema", "set SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run");
         return;
     };
 
@@ -127,7 +127,7 @@ fn declared_decimal_precision_matches_the_source() {
          WHERE n.nspname = 'public' AND c.relkind = 'r'
            AND a.atttypid = 1700 AND a.attnum > 0 AND NOT a.attisdropped",
     ) else {
-        eprintln!("skipping: database not configured");
+        sankhya_testkit::skipped("real_schema", "database not configured");
         return;
     };
 

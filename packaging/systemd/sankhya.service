@@ -6,7 +6,7 @@ Wants=network-online.target
 
 [Service]
 Type=exec
-ExecStart=/usr/local/bin/sankhya-server
+ExecStart=/usr/local/bin/sankhya-server start
 Restart=on-failure
 RestartSec=5s
 
@@ -29,6 +29,20 @@ ProtectHome=yes
 PrivateTmp=yes
 NoNewPrivileges=yes
 ReadWritePaths=/var/lib/sankhya
+# The configuration is read, never written. `ProtectSystem=strict` already makes /etc
+# read-only; this says the directory must exist, so a unit installed without one fails at
+# start rather than at the first feed that never runs.
+ReadOnlyPaths=/etc/sankhya
+
+# Both of these were missing, and their absence produced a server that started and was
+# configured by nothing. Configuration resolves to `config/application.yaml` *relative to the
+# working directory*, and systemd's default working directory is `/` --- so the unit read
+# `/config/application.yaml`, which does not exist, skipped it silently, and came up with no
+# users, no roles, no policy, no TLS and a feed directory that does not exist. Naming the file
+# is now also load-bearing: a `SANKHYA_CONFIG` that does not exist stops the server rather
+# than being skipped.
+WorkingDirectory=/var/lib/sankhya
+Environment=SANKHYA_CONFIG=/etc/sankhya/application.yaml
 
 Environment=SANKHYA_WAREHOUSE=/var/lib/sankhya/warehouse
 Environment=SANKHYA_DATA_DIR=/var/lib/sankhya/.sankhya

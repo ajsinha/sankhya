@@ -249,6 +249,14 @@ pub fn elsewhere() -> Vec<Entry> {
             "Fix one member and look at the rest of a cube"),
         Entry::new("cubes", "cube", 1, Takes::Numbers, Gives::Number,
             "Every cube this server serves, with its shape"),
+        // Registered by `sankhya-cube-sql`'s `describe::register` since derived cubes were
+        // built, and described nowhere until 2026-09-03. The test that should have caught it
+        // compared the catalogue against the list the catalogue is built from, so it was true
+        // of any catalogue at all. Nothing else notices a missing entry: the surface answers
+        // over the wire, and only the SDK binding --- which is generated from this list ---
+        // silently lacks the method.
+        Entry::new("derived", "cube", 1, Takes::Numbers, Gives::Number,
+            "Every derived cube, with its query, its dependencies and its lifetime"),
         Entry::new("functions", "catalogue", 1, Takes::Numbers, Gives::Number,
             "Every function this server offers, which is the list you are reading"),
         Entry::new("graph_cycles", "graph", 1, Takes::Numbers, Gives::Number,

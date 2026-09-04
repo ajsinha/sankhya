@@ -25,6 +25,7 @@ arrow-schema      = { workspace = true }
 parquet           = { workspace = true }
 
 [dev-dependencies]
+sankhya-testkit = { path = "../sankhya-testkit" }
 sankhya-cdc-model = { path = "../sankhya-cdc-model" }
 proptest   = { workspace = true }
 tempfile   = { workspace = true }

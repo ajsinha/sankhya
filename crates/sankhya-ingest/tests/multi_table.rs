@@ -85,7 +85,7 @@ impl Pg {
 #[tokio::test(flavor = "multi_thread")]
 async fn several_tables_capture_independently_and_reconcile() {
     let Some(pg) = Pg::from_env() else {
-        eprintln!("skipping: set SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run");
+        sankhya_testkit::skipped("multi_table", "set SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run");
         return;
     };
 

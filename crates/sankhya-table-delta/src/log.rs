@@ -69,6 +69,35 @@ pub struct AddFile {
     pub data_change: bool,
 }
 
+/// The partition values a Hive-style path implies.
+///
+/// `sank_data_date=2026-08-28/compacted-000001-0000.parquet` yields
+/// `{"sank_data_date": "2026-08-28"}`.
+///
+/// # Why a writer needs this
+///
+/// A table whose `metaData` declares a partition column, holding files that carry no value
+/// for it, is **malformed**. `sankhya-publish` supplies the values because it knows the
+/// partition it is writing into. Compaction did not: it wrote `partitionValues: {}` for
+/// files it had just created *inside* a partition directory.
+///
+/// The consequence is not symmetric between readers. A kernel-based reader hard-errors
+/// mid-scan. Spark's reader is more forgiving and returns `NULL` for the column instead ---
+/// so a query filtering on the partition **prunes the compacted file away and returns short
+/// results**, silently, and the shortfall grows with how well maintenance is working.
+///
+/// Derived from the path rather than threaded through the compaction plan because the path
+/// is what the writer just created and what an external reader resolves against; two
+/// sources for one fact are two sources that will one day disagree.
+#[must_use]
+pub fn partition_values_from(path: &str) -> BTreeMap<String, String> {
+    path.split('/')
+        .filter(|segment| !segment.is_empty())
+        .filter_map(|segment| segment.split_once('='))
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
+}
+
 impl AddFile {
     #[must_use]
     pub fn new(path: impl Into<String>, size: u64, modification_time: i64) -> Self {

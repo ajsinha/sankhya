@@ -148,6 +148,13 @@ fn a_sweeper_never_concludes_drained_while_a_reader_is_inside() {
         Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
+    // Opened before the arms run and checked after, because a run can begin on an idle
+    // machine and finish on a saturated one.
+    let window = sankhya_testkit::capacity::Window::open(
+        "a_sweeper_never_concludes_drained_while_a_reader_is_inside",
+        READERS,
+    );
+
     let (concluded, violated) = std::thread::scope(|scope| {
         for _ in 0..READERS {
             let leases = Arc::clone(&leases);
@@ -202,8 +209,39 @@ fn a_sweeper_never_concludes_drained_while_a_reader_is_inside() {
         (concluded, violated)
     });
 
+    // The safety property, unconditionally. It is a *count of violations*, so a busy machine
+    // makes it weaker evidence and never makes it wrong --- there is no load under which
+    // draining past a live reader becomes acceptable.
     assert_eq!(violated, 0, "a sweeper drained while an older reader was inside");
-    assert!(concluded > 0, "the sweeper never concluded anything, so this proved nothing");
+
+    // Progress is a different kind of claim, and it needs a machine that can make progress.
+    // The sweeper spins a bounded number of times per round; on a loaded box every round can
+    // exhaust that bound without concluding, and this assertion --- which exists to stop the
+    // test passing while proving nothing --- then fails for a reason that is not a defect.
+    //
+    // Observed: passes at load 3, fails at load 60, in the same working tree.
+    //
+    // Announced rather than relaxed. Raising the spin bound would be estimating the way out
+    // of a measurement problem, which this repository has already tried once and written down
+    // as a mistake. A skip that is recorded is honest; a bound tuned until it stops failing is
+    // a test that has been argued with until it agreed.
+    //
+    // Decided from the **machine**, not from the result. An earlier version of this fix
+    // skipped whenever `concluded == 0`, which would also have swallowed a genuine liveness
+    // regression --- the one thing this assertion exists to catch. The capacity window asks
+    // whether a progress measurement was possible at all, and only then insists on progress.
+    if window.is_some_and(|open| open.held()) {
+        assert!(
+            concluded > 0,
+            "the sweeper never concluded anything on a quiet machine, so this proved nothing"
+        );
+    } else {
+        sankhya_testkit::skipped(
+            "a_sweeper_never_concludes_drained_while_a_reader_is_inside",
+            "the machine was too busy to host a progress measurement. The safety half of \
+             this test still ran and held",
+        );
+    }
 }
 
 #[test]

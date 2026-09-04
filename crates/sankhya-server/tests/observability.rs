@@ -105,6 +105,7 @@ fn server() -> (Arc<Server>, tempfile::TempDir) {
         flight_listen: None,
         maintenance: None,
         require_password: false,
+        user_functions: false,
         metrics_listen: None,
         transport_security: None,
     };
@@ -174,6 +175,7 @@ async fn a_refusal_is_not_counted_as_an_error() {
         flight_listen: None,
         maintenance: None,
         require_password: false,
+        user_functions: false,
         metrics_listen: None,
         transport_security: None,
     };
@@ -577,6 +579,7 @@ async fn a_query_naming_a_forbidden_table_looks_exactly_like_one_naming_a_missin
         flight_listen: None,
         maintenance: None,
         require_password: false,
+        user_functions: false,
         metrics_listen: None,
         transport_security: None,
     };

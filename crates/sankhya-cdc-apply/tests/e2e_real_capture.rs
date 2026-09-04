@@ -111,7 +111,7 @@ impl Pg {
 #[test]
 fn captures_a_real_workload_and_reconciles_against_the_source() {
     let Some(pg) = Pg::from_env() else {
-        eprintln!("skipping: set SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run");
+        sankhya_testkit::skipped("e2e_real_capture", "set SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run");
         return;
     };
 

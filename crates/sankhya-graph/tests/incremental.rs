@@ -298,3 +298,54 @@ proptest! {
         prop_assert_eq!(edges_by_key(&incremental), edges_by_key(&full));
     }
 }
+
+/// The absolute edge bound rebuilds even when the fraction says not to.
+///
+/// # Why this was missing
+///
+/// A mutation that made `max_edges` unreachable survived the suite. The one test of
+/// `needs_rebuild` uses a base of five edges and one pending, which is a fifth --- the
+/// *fraction* path. Nothing exercised the absolute bound at all, so it could have been any
+/// number, or absent, and every test would still pass.
+///
+/// The two thresholds guard different failures and the second is the one that matters at
+/// scale. On a graph with a hundred million edges, a fifth is twenty million edges held in a
+/// second structure that every query reads and merges. `fraction_of_base` never fires there;
+/// the absolute bound is the only thing that does, which is exactly why its own doc comment
+/// says it exists "on a graph whose base is enormous".
+#[test]
+fn the_absolute_edge_bound_rebuilds_where_the_fraction_never_would() {
+    let base = hydrate_all(&[batch(&[
+        ("a".to_string(), "b".to_string(), 1, 1.0),
+        ("b".to_string(), "c".to_string(), 2, 1.0),
+        ("c".to_string(), "d".to_string(), 3, 1.0),
+        ("d".to_string(), "e".to_string(), 4, 1.0),
+        ("e".to_string(), "f".to_string(), 5, 1.0),
+    ])]);
+
+    // A fraction that can never trigger, so only the absolute bound can.
+    let threshold = RebuildThreshold {
+        fraction_of_base: f64::INFINITY,
+        max_edges: 2,
+    };
+    let mut overlay = Overlay::new(spec(), MemoryBudget::generous(), threshold);
+
+    overlay
+        .apply(&batch(&[("f".to_string(), "g".to_string(), 6, 1.0)]))
+        .expect("valid");
+    assert_eq!(overlay.pending_edges(), 1);
+    assert!(
+        !overlay.needs_rebuild(&base),
+        "one pending edge is below an absolute bound of two"
+    );
+
+    overlay
+        .apply(&batch(&[("g".to_string(), "h".to_string(), 7, 1.0)]))
+        .expect("valid");
+    assert_eq!(overlay.pending_edges(), 2);
+    assert!(
+        overlay.needs_rebuild(&base),
+        "the absolute bound is reached and the fraction can never fire, so nothing else \
+         would ever call for a rebuild"
+    );
+}

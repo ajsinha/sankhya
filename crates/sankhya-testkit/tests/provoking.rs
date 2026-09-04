@@ -113,6 +113,10 @@ fn workers_are_released_together_rather_than_merely_started() {
     let inside = Arc::new(AtomicU64::new(0));
     let peak = Arc::new(AtomicU64::new(0));
     let hammer = Hammer::new().workers(12);
+    let window = sankhya_testkit::capacity::Window::open(
+        "workers_are_released_together_rather_than_merely_started",
+        12,
+    );
 
     hammer.run(|_worker, jitter| {
         let now = inside.fetch_add(1, Ordering::SeqCst) + 1;
@@ -121,10 +125,26 @@ fn workers_are_released_together_rather_than_merely_started() {
         inside.fetch_sub(1, Ordering::SeqCst);
     });
 
-    assert!(
-        peak.load(Ordering::SeqCst) > 1,
-        "no two workers were ever inside at once, so the barrier is not releasing them together"
-    );
+    // Overlap is only observable on a machine with cores to overlap on. Under a loaded
+    // build, twelve workers released together can still be scheduled one at a time, and this
+    // assertion then reports a harness defect that is not there --- it failed in `check-all`
+    // at load 60 and passed alone at load 8, in the same working tree.
+    //
+    // Asked of the machine rather than of the result: a skip decided by the outcome would
+    // also swallow a barrier that genuinely stopped working, which is the whole point here.
+    if window.is_some_and(|open| open.held()) {
+        assert!(
+            peak.load(Ordering::SeqCst) > 1,
+            "no two workers were ever inside at once on a quiet machine, so the barrier is \
+             not releasing them together"
+        );
+    } else {
+        sankhya_testkit::skipped(
+            "workers_are_released_together_rather_than_merely_started",
+            "the machine had no spare cores, so two workers overlapping could not be \
+             observed either way",
+        );
+    }
 }
 
 #[test]

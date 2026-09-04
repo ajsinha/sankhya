@@ -17,7 +17,19 @@ server:
   # deployment's shape, so the safe choice is the one an operator gets by not deciding.
   metrics_listen: 127.0.0.1:9464
   # Spelled as an opt-*out*, so the insecure choice has to be made deliberately.
+  #
+  # Note what this does and does not do. It requires a password to be *presented*. It does
+  # not verify it --- no credential store is wired in --- so any non-empty password from any
+  # user is accepted. Do not put this server anywhere a stranger can reach it.
   require_password: true
+
+  # Whether `CREATE AGGREGATION` is accepted. It runs code the caller supplied, inside the
+  # sandbox `ADR-0023` describes, and the sandbox is a boundary rather than a guarantee.
+  #
+  # Off unless you turn it on. `ADR-0023` Decision 4 specifies a grant that is per principal
+  # rather than per server; that half is not built, and a server-wide switch that starts
+  # closed is the honest version of it until it is. `SHOW AGGREGATIONS` answers either way.
+  user_functions: false
 
   # Transport security. Both doors --- the wire protocol and Arrow Flight SQL --- present the
   # certificate configured here. One certificate rather than two: two would be two expiries,
@@ -47,9 +59,14 @@ server:
 warehouse:
   # Where published tables live: <path>/<schema>/<table>.
   path: ./warehouse
-  # The position to read as of. Everything published, for a server with no ingest running
-  # in this process to advance it.
-  read_as_of: 18446744073709551615
+  # The position to read as of. Left unset, which means everything published --- what a
+  # server with no ingest running in this process to advance it wants.
+  #
+  # Unset rather than spelled out: "everything" is `u64::MAX`, and a configuration file is
+  # read through a signed integer, so the literal 18446744073709551615 does not parse. It
+  # was written here once and refused every subcommand this binary has, `--version`
+  # included, until a first-run audit found it.
+  # read_as_of: 4102444800
 
 data:
   # Where the diagnostic keeps its observation history — beside the warehouse rather than

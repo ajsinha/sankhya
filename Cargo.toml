@@ -5,7 +5,7 @@ members = ["crates/*", "packs/*", "xtask"]
 [workspace.package]
 version      = "0.1.0"
 edition      = "2021"
-rust-version = "1.90"
+rust-version = "1.97"
 # Proprietary. `license-file` rather than `license`, because `license` takes an SPDX
 # identifier and there is no SPDX identifier for a licence owned by one person. A stale
 # `license = "Apache-2.0"` here would keep telling every tool that reads a manifest the

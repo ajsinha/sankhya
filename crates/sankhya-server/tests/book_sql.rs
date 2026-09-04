@@ -40,7 +40,7 @@
 
 mod common;
 
-use common::{start, write_warehouse, Session};
+use common::{start_with_user_functions, write_warehouse, Session};
 use std::path::{Path, PathBuf};
 
 /// The marker that excuses a block, and the reason that must follow it.
@@ -320,7 +320,16 @@ fn every_statement_the_book_shows_behaves_as_it_says() {
     let dir = tempfile::tempdir().expect("a directory");
     let warehouse = dir.path().join("warehouse");
     write_warehouse(&warehouse);
-    let server = start(&warehouse, &dir.path().join("data"));
+    // With user functions granted, because the book documents `CREATE AGGREGATION` and a
+    // reader following it will have set `server.user_functions: true` --- the prose beside
+    // every one of those blocks says so. Running the book against a server that refuses them
+    // would report the book as wrong about a feature it describes correctly.
+    //
+    // The *closed* server is not left untested: `tests/aggregations.rs` holds
+    // `a_server_nobody_opened_refuses_to_run_code_it_was_handed`, which is where a
+    // regression in the default would be caught. This one asks a different question --- does
+    // the SQL in the documentation do what the documentation says it does.
+    let server = start_with_user_functions(&warehouse, &dir.path().join("data"));
 
     let mut wrong = Vec::new();
     let mut ran = 0usize;

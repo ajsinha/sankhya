@@ -9,7 +9,9 @@
 
 # SANKHYA — a guide, by example
 
-**Status:** Implementation — M0–M8, M10 and M13 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+> **The book.** [`docs/book/`](book/README.md) is the long-form companion to this document --- twenty-seven chapters, and the only complete table of `SANKHYA_*` environment variables (Chapter 17, *Packaging and deployment*).
+
+**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
 
 Every example here is **executed or accounted for by a test**.
 `crates/sankhya-server/tests/guide.rs` extracts the SQL from this page — this page, not a copy
@@ -75,6 +77,13 @@ not mislead anyone reading it.
 `SANKHYA_NO_PASSWORD` is spelled as an opt-*out*, so the insecure choice has to be made
 deliberately — and the startup line prints `NO AUTHENTICATION` in capitals when it is in
 force, so an operator sees it rather than having to check.
+
+> **There is no credential store, and no password is ever verified.** Leaving
+> `SANKHYA_NO_PASSWORD` unset makes this server *demand* a password. It does not *check* one:
+> the test is that the string is non-empty, so any password from any user --- including a user
+> this server has never heard of --- connects. The startup line says `PASSWORD UNVERIFIED` for
+> exactly this reason. Do not put this server where a stranger can reach it. Building the check
+> is Phase 4 of [`REMEDIATION.md`](REMEDIATION.md); the disclosure is not waiting for it.
 
 ### Over TLS
 
@@ -1566,7 +1575,7 @@ admits less. [`STATUS.md`](STATUS.md) is the authoritative version.
 | **The pack loader in the server** | Not built. Packs load into a registry; nothing in the running process does that |
 | **Bloom filters, the result cache** | Not built. **Partitioning is** --- every published table writes `sank_data_date=YYYY-MM-DD/` directories and the log's `add` paths carry them. This row claimed otherwise until an adversarial review checked it on 2026-09-01, contradicting §4 of this same document |
 | **Most of `FR-OPS-16`'s checks** | Not built. `doctor` covers compaction debt end to end, reports how long a backup has been unproven, and — for a deployment that archives anything — how long its write-once controls have gone unattested; storage headroom and replication lag exist as checks with nothing feeding them |
-| **Lifecycle tiering, and purge from the source** | Not built, and **gated**. `sankhya-tiering` is deliberately empty; M9 is in progress and its first piece — an attestation drill that proves a write-once store still refuses writes — exists. **Destructive purge stays disabled until reconciliation has run clean in production**, which is a separate milestone. Building the purge path and arming it are two decisions |
+| **Lifecycle tiering, and purge from the source** | Partly built, and **gated**. `sankhya-tiering` holds 16 modules and about 5,100 lines of source (8,581 including its tests): the policy model, eligibility, canonical encoding, verification, quarantine, rehydration and the attestation drill. What is **not** built is the destructive half, purge from the source; M9 is in progress and the attestation drill that proves a write-once store still refuses writes exists. **Destructive purge stays disabled until reconciliation has run clean in production**, which is a separate milestone. Building the purge path and arming it are two decisions |
 | **Multi-node: leader election, executor scale-out, failover, replication** | Not built, and not reachable here. All of it moved to M12 on 2026-08-30, because proving it needs a second machine and a recovery objective measured on one host would exclude the failures the criterion exists to price |
 | **QR, SVD, eigendecomposition** | Deliberately absent. They are where an in-house implementation is worse than none — a subtly wrong SVD produces plausible singular values |
 

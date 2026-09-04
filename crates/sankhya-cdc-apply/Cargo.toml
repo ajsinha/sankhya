@@ -19,4 +19,5 @@ sankhya-error     = { path = "../sankhya-error" }
 sankhya-cdc-model = { path = "../sankhya-cdc-model" }
 
 [dev-dependencies]
+sankhya-testkit = { path = "../sankhya-testkit" }
 proptest = { workspace = true }

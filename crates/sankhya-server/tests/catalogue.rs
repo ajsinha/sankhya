@@ -69,15 +69,16 @@ fn every_function_a_server_registers_is_described() {
         .filter_map(|row| row[0].clone())
         .collect();
 
-    // What the session really has, from the engine's own view of itself.
-    let registered: BTreeSet<String> = sankhya_functions::catalogue::everything()
-        .iter()
-        .map(|entry| entry.name.to_owned())
-        .collect();
-
-    assert_eq!(
-        described, registered,
-        "the catalogue and the registrations disagree"
+    // The comparison this test used to make was against `catalogue::everything()` --- which
+    // is the same list `functions()` is *served from*. Both sides read one source, so the
+    // assertion held for any catalogue whatsoever, correct or not, and it had already missed
+    // an addition. The comment above claimed a real session; only the left-hand side was one.
+    //
+    // The engine's own registry is the ground truth, and it is read in
+    // `every_function_the_engine_registers_is_described` below.
+    assert!(
+        !described.is_empty(),
+        "the server described no functions at all"
     );
 
     // And each described function actually plans, which is the claim the catalogue makes.
@@ -113,4 +114,103 @@ fn the_catalogue_is_ordered_and_says_what_each_function_needs() {
             "{name}'s description is too short to choose by"
         );
     }
+}
+
+
+/// What the **engine** holds, against what the catalogue says it holds.
+///
+/// # Why the other test could not do this
+///
+/// `every_function_a_server_registers_is_described` compared `functions()` --- served from
+/// `catalogue::everything()` --- against `catalogue::everything()`. One source on both sides:
+/// the assertion was true of any catalogue at all, including a wrong one, and it had already
+/// let an addition through. A tautology is worse than no test, because the gate reports it as
+/// coverage.
+///
+/// The registry a `SessionContext` actually carries is a different source, and it is the one
+/// that decides whether a statement plans.
+///
+/// # Why the difference against a bare session
+///
+/// DataFusion registers about a hundred functions of its own --- `abs`, `coalesce`,
+/// `date_trunc`. Those are not ours to describe. Subtracting a bare session's names from the
+/// server's leaves exactly what SANKHYA added, which is exactly what the catalogue is a
+/// description of.
+#[test]
+fn every_function_the_engine_registers_is_described() {
+    use datafusion::prelude::SessionContext;
+
+    let names = |context: &SessionContext| -> BTreeSet<String> {
+        let state = context.state();
+        let mut out: BTreeSet<String> = BTreeSet::new();
+        out.extend(state.scalar_functions().keys().cloned());
+        out.extend(state.aggregate_functions().keys().cloned());
+        out.extend(state.window_functions().keys().cloned());
+        // Table functions too. Leaving them out was not a small omission: `cube_rollup`,
+        // `cube_slice`, `functions` and every `graph_*` entry are table functions, so a
+        // check that read only the scalar kinds would report eleven of the catalogue's most
+        // prominent entries as described-but-unregistered.
+        out.extend(state.table_functions().keys().cloned());
+        out
+    };
+
+    let bare = names(&SessionContext::new());
+
+    // The same registrations `crates/sankhya-server/src/execute.rs` makes, in the same order.
+    let context = SessionContext::new();
+    sankhya_olap::register_constructors(&context);
+    sankhya_olap::register_vector_functions(&context);
+    sankhya_olap::register_matrix_functions(&context);
+    sankhya_functions::register(&context);
+    sankhya_functions::describe::register(&context, sankhya_functions::catalogue::everything());
+    sankhya_graph_sql::functions::register(
+        &context,
+        std::sync::Arc::new(sankhya_graph_sql::catalog::GraphCatalog::new()),
+    );
+    // The cube surface, which `wiring.rs` registers rather than `execute.rs` --- against an
+    // empty catalogue, because which cubes exist does not change which *functions* exist.
+    //
+    // Replicated here, and that duplication is the one weakness of this test. It is
+    // self-policing in the direction that matters: a surface registered by the server and
+    // missing from this list shows up as "described and not registered", which is precisely
+    // how these five were found.
+    let cubes = std::sync::Arc::new(sankhya_cube_sql::catalog::CubeCatalog::new());
+    let log = std::sync::Arc::new(sankhya_cube::querylog::QueryLog::with_capacity(1));
+    sankhya_cube_sql::functions::register(
+        &context,
+        std::sync::Arc::clone(&cubes),
+        log,
+        None,
+    );
+    sankhya_cube_sql::describe::register(
+        &context,
+        std::sync::Arc::new(Vec::new()),
+        cubes,
+    );
+
+    let ours: BTreeSet<String> = names(&context).difference(&bare).cloned().collect();
+    let described: BTreeSet<String> = sankhya_functions::catalogue::everything()
+        .iter()
+        .map(|entry| entry.name.to_owned())
+        .collect();
+
+    let undescribed: Vec<&String> = ours.difference(&described).collect();
+    assert!(
+        undescribed.is_empty(),
+        "registered and not described --- no binding will offer these, and nothing else \
+         would have noticed: {undescribed:?}"
+    );
+
+    // The other direction matters too, but only for the kinds the registry can see. A
+    // catalogue entry for a function nobody registered becomes a binding method that does
+    // not plan.
+    let unregistered: Vec<&String> = described
+        .difference(&ours)
+        .filter(|name| !bare.contains(name.as_str()))
+        .collect();
+    assert!(
+        unregistered.is_empty(),
+        "described and not registered --- the binding will offer a method that cannot \
+         plan: {unregistered:?}"
+    );
 }

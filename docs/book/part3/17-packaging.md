@@ -149,7 +149,8 @@ Variable | Meaning
 `SANKHYA_DATA_DIR` | The root in §17.3
 `SANKHYA_LISTEN` | Wire-protocol address, default `127.0.0.1:5433`
 `SANKHYA_METRICS_LISTEN` | Metrics address, default `127.0.0.1:9464`
-`SANKHYA_NO_PASSWORD` | Spelled as an opt-**out**, so the insecure choice is deliberate
+`SANKHYA_NO_PASSWORD` | Spelled as an opt-**out**, so the insecure choice is deliberate. Note that leaving it unset does *not* authenticate anybody: no password is ever verified
+`SANKHYA_USER_FUNCTIONS` | Whether `CREATE AGGREGATION` is accepted. Off by default: it runs code the caller supplied
 `SANKHYA_READ_AS_OF` | The position to read as of
 `SANKHYA_FEED_INTERVAL_SECONDS` | How often a feed looks at its spool; 30 by default
 `SANKHYA_SOURCE_BACKUP`, `SANKHYA_SOURCE_DIGEST` | The transactional backup a manifest binds to
@@ -284,13 +285,19 @@ Subcommand | Effect | Exit statuses
 `drill` | Prove the manifest restores | `0` proven, `1` a table did not verify, `2` could not run
 `attest <path>` | Prove a write-once store still refuses writes | `0` attested, `1` allowed something, `2` nothing attempted
 
-> **Pitfall** — There is no `--help` and no `--version`. Argument parsing is a match on the first
-> argument with a fall-through, so **any unrecognised argument starts the server**. Verified:
-> `sankhya-server --help` binds the configured listeners and serves. On a machine already running a
-> SANKHYA that is two maintainers on one warehouse, which Chapter 15, *Maintenance, tiering and the
-> data lifecycle*, §15.3 names as two committers racing for the same version. The source is explicit
-> that one argument is the whole surface for now and that more of them want a parser; until then, type
-> the subcommand exactly.
+`--help`, `--version` | Say what this binary is | `0`, always
+anything else | Refused | `2`, with the usage text
+
+`--help` and `--version` are answered **before the configuration is read**, deliberately. Asking a
+program what it is must not depend on a file being well formed --- and for one release it did, which
+is how the pitfall below came to be written.
+
+> **Fixed** — This chapter previously recorded that there was no `--help` and no `--version`, that
+> argument parsing was a match with a fall-through, and that **any unrecognised argument started the
+> server** --- so a typo on a machine already running a SANKHYA was two maintainers on one warehouse,
+> the two-committers race §15.3 names. Every arm is now named and the unnamed ones exit `2`.
+> `crates/sankhya-server/tests/configured.rs` holds the tests, including one that runs the binary
+> with a configuration path that does not exist to prove `--version` still answers.
 
 ## 17.9 The runtime the architecture specifies, and what runs today
 

@@ -66,6 +66,7 @@ fn settings(warehouse: &std::path::Path) -> Settings {
         // once filled a disk.
         maintenance: None,
         require_password: false,
+        user_functions: false,
         metrics_listen: None,
         transport_security: None,
     }

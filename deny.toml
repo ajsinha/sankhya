@@ -1,0 +1,46 @@
+# What this repository will and will not ship, checked by a machine.
+#
+# `check-attribution` proves every third-party package is *attributed*. This proves the
+# licences are ones we may ship at all, and that no security advisory applies. The two are
+# different questions and both were unasked until 2026-09-03.
+
+[advisories]
+# An advisory against something in the graph fails the build. There are none today, and the
+# clean result is contingent: two `quick-xml` denial-of-service advisories and a yanked
+# `chacha20` are absent only because `object_store` resolves without its cloud features.
+# `sankhya-tiering` is designed around `s3://` archive URIs, so the day a cloud feature is
+# enabled all three arrive. This file is what will say so.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Every licence taken, spelled out. A package offering several is taken under the first of
+# these it offers --- `r-efi`, for instance, offers `MIT OR Apache-2.0 OR LGPL-2.1-or-later`,
+# and this list is why that is MIT rather than a copyleft obligation nobody noticed.
+confidence-threshold = 0.93
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "ISC",
+    "BSL-1.0",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[bans]
+# Duplicate versions are allowlisted in one place already --- `check-dupes` --- which knows
+# which families must be single-versioned and why. Warning here rather than denying keeps
+# one owner for that decision instead of two that will disagree.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

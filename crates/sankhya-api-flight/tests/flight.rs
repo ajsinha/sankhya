@@ -363,6 +363,34 @@ fn an_expired_ticket_says_to_plan_again() {
     assert!(refused.to_string().contains("Plan the query again"));
 }
 
+/// A lifetime that is not a lifetime cannot produce a ticket that outlives its snapshot.
+///
+/// # Why there is no mutation for the clamp
+///
+/// One was written --- remove `.max(0)` --- and it **survived**, correctly. Clamped, a
+/// negative lifetime gives `expires_at == now`; unclamped it gives something earlier. Both
+/// are expired at every instant, so no test can tell them apart, and the mutation describes
+/// no defect. It was removed rather than answered with a test contorted until it failed.
+///
+/// The property is still worth pinning. A ticket carries an authorization decision that is
+/// deliberately never re-checked, so its expiry is the entire bound on how long it works, and
+/// "a lifetime that is not a lifetime yields nothing usable" is the kind of thing that stops
+/// being true when the arithmetic around it is rewritten.
+#[test]
+fn a_nonsensical_lifetime_cannot_outlive_the_moment_it_was_issued() {
+    let issued_at = 1_000i64;
+    let ticket = Ticket::issue(tenant("acme"), "SELECT 1", 41, issued_at, -5_000);
+
+    assert!(
+        ticket.admit(&tenant("acme"), issued_at).is_err(),
+        "a ticket issued with a negative lifetime was admitted at the instant it was issued"
+    );
+    assert!(
+        ticket.admit(&tenant("acme"), issued_at + 1).is_err(),
+        "it must not become valid later either"
+    );
+}
+
 #[test]
 fn a_ticket_round_trips_and_a_tampered_one_does_not() {
     let ticket = Ticket::issue(tenant("acme"), "SELECT id FROM t", 41, 0, 1_000);
