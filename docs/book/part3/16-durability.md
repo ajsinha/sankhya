@@ -295,13 +295,50 @@ contended is a safety property nobody has tested.**
 Stated as a list, because a durability chapter whose exclusions are implied is not a durability
 chapter.
 
-**Not guaranteed: durability across power loss.** There is **no `fsync` in the write path.** Nothing
-in the workspace calls `fsync`, `sync_all` or `sync_data`. Commits are made atomic *with respect to
-other writers and to readers* by `link(2)` and by staging-then-rename, and that is a different
-property from being on the platter. A machine that loses power may lose recently committed versions
-and recently written Parquet, and the log may be readable while a file it names is not. This is not
-recorded in `ARCHITECTURE.md`, `STATUS.md` or any ADR, and it is stated here rather than left to be
-discovered.
+**Guaranteed since 2026-09-03: durability across power loss.** This paragraph used to read *"there
+is no `fsync` in the write path"*, and it was accurate: nothing in the workspace called `fsync`,
+`sync_all` or `sync_data`. Commits were atomic with respect to other writers and to readers, by
+`link(2)` and staging-then-rename, and that is a different property from being on the platter. A
+machine that lost power could lose recently committed versions and recently written Parquet, and
+the log could be readable while a file it named was not.
+
+Three writers now sync, and each syncs twice:
+
+| Writer | What it publishes |
+|---|---|
+| `sankhya-atomicfs` | everything the 299 source files that publish through it write |
+| `sankhya-table`'s Parquet writer | the data files a commit references |
+| `sankhya-table-delta`'s checkpoint | the file readers use *instead of* replaying the log |
+
+**Twice**, because the second one is the half that gets forgotten. The file is synced before the
+rename — a durable name over unsynced bytes leaves a file that exists, is the right length, and
+holds whatever those blocks held before, which is worse than a missing file because it reads. Then
+the *directory* is synced after it, because a rename is a directory modification that lives in the
+page cache like any other write: without it a crash can keep the blocks and lose the name, or lose a
+commit that was already acknowledged.
+
+This costs a real disk round trip per published file, and it is not optional. Every guarantee this
+system makes about a commit is a guarantee that the commit is still there afterwards.
+
+> **How this is held, and why not by a test.** `fsync` cannot be observed from inside the process
+> that calls it. Three mutations were written for these calls and all three survived — correctly,
+> because no test could catch them. `check-durability` asserts the source property instead, which is
+> the shape `check-atomic-writes` already takes for the same reason.
+
+**Guaranteed since 2026-09-04: a commit that was cut short is refused rather than believed.** A
+commit's first line declares how many actions follow, and a reader that counts something different
+refuses it. Without that, a body truncated by a crash replays as a *shorter* commit and an empty
+one as a commit that did nothing — and the damage is cemented rather than transient, because a
+retry at that version is refused as `VersionTaken` and the next commit lands on top of the wrong
+state. `hard_link` is not covered by ext4's `auto_da_alloc` heuristic, so the directory entry
+becoming durable while the data blocks are not is the ordinary case, not an exotic one.
+
+**Guaranteed since 2026-09-04: one server per warehouse.** A lock file in the data directory names
+the process serving the warehouse, and a second server refuses to start. `claim` serialises two
+committers *at a version* and maintenance lives entirely outside that scope: two servers each
+retire files against a lease registry that cannot see the other's readers. §6.4 has the mechanism,
+including why the holder's start time is recorded alongside its pid and why an unreadable lock
+refuses rather than being broken.
 
 **Not covered: the transactional half.** This system binds itself to a PostgreSQL backup somebody
 else took. It records the location and digest; it does not take one and does not verify one. **A

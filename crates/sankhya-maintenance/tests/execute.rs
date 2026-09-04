@@ -120,6 +120,7 @@ fn retirement_waits_out_the_grace_period() {
     let policy = RetentionPolicy {
         grace_ticks: 24,
         verify_replacement: true,
+        ..RetentionPolicy::default()
     };
     let retirement = retire_inputs(&outcome, &StillReferenced::nothing(), 23, &policy).expect("retiring");
 

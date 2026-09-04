@@ -249,6 +249,18 @@ pub struct TickReport {
     pub bytes_reclaimed: u64,
     pub bytes_before: u64,
     pub bytes_after: u64,
+    /// Why reclamation did not run this tick, when it did not.
+    ///
+    /// Empty on an ordinary tick. Non-empty means the pin set could not be established, so
+    /// nothing was deleted --- and an operator needs to know that, because from disk usage
+    /// alone "reclamation is declining" and "reclamation is broken" look identical.
+    pub declined: Vec<String>,
+    /// Merge inputs retired past a lease that never drained, each described.
+    ///
+    /// A lease is supposed to be released. Anything here says one was not, and the backstop
+    /// fired instead --- which keeps the warehouse from filling but is a defect report, not a
+    /// statistic.
+    pub presumed_leaked: Vec<String>,
 }
 
 impl TickReport {

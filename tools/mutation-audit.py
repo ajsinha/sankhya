@@ -246,8 +246,8 @@ CATALOGUE = [
 
     ("log: skip a malformed line instead of reporting it",
      "crates/sankhya-table-delta/src/log.rs",
-     "            let action: Action =\n                serde_json::from_str(line).map_err(|e| CommitError::Malformed {\n                    version,\n                    detail: e.to_string(),\n                })?;\n            out.push((version, action));",
-     "            if let Ok(action) = serde_json::from_str::<Action>(line) {\n                out.push((version, action));\n            }",
+     "            let action: Action =\n                serde_json::from_str(line).map_err(|e| CommitError::Malformed {\n                    version,\n                    detail: e.to_string(),\n                })?;\n            read += 1;\n            out.push((version, action));",
+     "            if let Ok(action) = serde_json::from_str::<Action>(line) {\n                read += 1;\n                out.push((version, action));\n            }",
      "sankhya-table-delta"),
 
     ("log: omit the required partitionValues field from an add",
@@ -631,6 +631,203 @@ CATALOGUE = [
     # it. Dropping the table functions hides `cube_rollup`, `cube_slice`, `functions` and every
     # `graph_*` entry --- eleven of the catalogue's most prominent surfaces --- which is the
     # state this check was in when it was first written.
+    # There are deliberately **no mutations for the fsync calls**.
+    #
+    # Three were written --- drop the file sync, drop the directory sync, drop the Parquet
+    # sync --- and all three survived, correctly. `fsync` cannot be observed from inside the
+    # process that calls it: a test can prove no reader sees a torn write, and nothing short
+    # of cutting the power distinguishes bytes that reached the medium from bytes the kernel
+    # has merely accepted.
+    #
+    # `check-durability` asserts the source property instead, which is the same shape
+    # `check-atomic-writes` already takes and for the same reason. A mutation nothing can
+    # catch is not evidence of coverage; it is a permanent survivor that trains people to
+    # ignore the survivor list.
+
+    # --- a name is used once ------------------------------------------------------------------
+
+    # The tick counter starts at zero on every start, so after a restart it reissues a name
+    # the log already holds. The planner then selects that file as its own input, the writer
+    # truncates it, and the commit adds and removes the same path --- taking the merged
+    # partition out of the live set.
+    ("maintenance: name compaction output from a counter that restarts at zero",
+     "crates/sankhya-maintenance/src/service.rs",
+     "            let sequence = next_compaction_sequence(table_root);",
+     "            let sequence = tick;",
+     "sankhya-maintenance"),
+
+    # Two flushes of one logical name inside one publisher. Without the version in the name
+    # the second write truncates the first while the first's `add` is still in the log, so
+    # rows that were acknowledged are gone from disk and the live set says they are there.
+    ("publish: write every flush under the caller's name",
+     "crates/sankhya-publish/src/publish.rs",
+     "            let unique = versioned_name(file_name, version);",
+     "            let unique = file_name.to_string();",
+     "sankhya-publish"),
+
+    # The version alone is not unique across writers: two publishers read the same
+    # `next_version`, so both intend the same version and both compute the same name from the
+    # same caller-supplied one. Dropping the token puts them back on a collision course, which
+    # `create_new` then turns into a spurious failure on a contended table.
+    ("publish: name a file from the version alone, which two writers can share",
+     "crates/sankhya-publish/src/publish.rs",
+     "    let mark = format!(\"v{version:07}-{:x}{token:x}\", std::process::id());",
+     "    let _ = token;\n    let mark = format!(\"v{version:07}\");",
+     "sankhya-publish"),
+
+    # The safety net under it. `File::create` truncates; a data file whose name already
+    # exists belongs to rows some log still refers to.
+    ("table: truncate an existing data file instead of refusing the name",
+     "crates/sankhya-table/src/write.rs",
+     "    let file = std::fs::File::create_new(&path).map_err(|e| {",
+     "    let file = std::fs::File::create(&path).map_err(|e| {",
+     "sankhya-table"),
+
+    # --- who is allowed to delete a file -----------------------------------------------------
+
+    # A lineage records `sales.orders`; a sweeper has a directory and knows only `orders`. With
+    # a bare `==` the comparison is false for every clone in every warehouse, the pin is
+    # invisible, and the clone reads short after the grace period with no error anywhere.
+    ("clone: compare a qualified pin against a bare directory name",
+     "crates/sankhya-clone/src/family.rs",
+     "            .filter(|lineage| same_table(&lineage.origin, table))",
+     "            .filter(|lineage| lineage.origin == table)",
+     "sankhya-clone"),
+
+    # The other direction, and the reason the fix is not "match on the leaf". Two schemas may
+    # each hold an `orders`, and a clone of one must not hold the other's files --- that trades
+    # a deletion defect for a warehouse that never reclaims.
+    ("clone: treat any two tables with the same leaf name as one table",
+     "crates/sankhya-clone/src/family.rs",
+     "        (Some(_), Some(_)) | (None, None) => false,",
+     "        (Some((_, a)), Some((_, b))) => a == b,\n        (None, None) => false,",
+     "sankhya-clone"),
+
+    # Retirement unions clone pins and snapshot pins; the orphan sweep read half the union. Not
+    # a race: retirement correctly declines a pinned file for ever, which *guarantees* it
+    # crosses the sweep's age threshold. Every snapshot older than the threshold lost its files.
+    ("maintenance: answer the reclamation question from clone pins only",
+     "crates/sankhya-maintenance/src/service.rs",
+     '                resolve(*version, "a snapshot", &mut pinned);',
+     "                let _ = version;",
+     "sankhya-maintenance"),
+
+    # And the other half of the same union.
+    ("maintenance: answer the reclamation question from snapshot pins only",
+     "crates/sankhya-maintenance/src/service.rs",
+     '                    resolve(version, "a clone", &mut pinned);',
+     "                    let _ = version;",
+     "sankhya-maintenance"),
+
+    # A pinned version that cannot be read used to be skipped, and skipping was justified by
+    # the orphan sweep's age threshold --- which retirement does not have. Retirement saw no
+    # paths, so it saw no reason to keep the file.
+    ("maintenance: skip a pinned version that cannot be read",
+     "crates/sankhya-maintenance/src/service.rs",
+     "                Err(error) => holes.push(format!(",
+     "                Err(error) => drop(format!(",
+     "sankhya-maintenance"),
+
+    # A pin that could not be read contributes nothing, and nothing is what a table with no
+    # snapshots also contributes. Without this gate the sweeper reclaims exactly the files whose
+    # protection it failed to read.
+    ("maintenance: reclaim while the pin set is unknown",
+     "crates/sankhya-maintenance/src/service.rs",
+     "        if !self.blind.is_empty() || !holes.is_empty() {",
+     "        if false {",
+     "sankhya-maintenance"),
+
+    # The backstop, written as it was: an `and`. One leaked lease then holds both copies of
+    # every compacted partition on disk for ever and one entry per merge in memory for ever.
+    ("maintenance: require the leases to drain before the leak backstop can fire",
+     "crates/sankhya-maintenance/src/service.rs",
+     "            if (old_enough && unreachable) || presumed_leaked {",
+     "            if old_enough && unreachable {",
+     "sankhya-maintenance"),
+
+    # And the direction that costs rows rather than disk: a backstop that ignores the grace
+    # period fires on a reader that is still inside the warehouse.
+    ("maintenance: presume a leak the moment a lease is seen",
+     "crates/sankhya-maintenance/src/service.rs",
+     "            let presumed_leaked = self.policy.retention.leak_ticks > 0\n                && age >= self.policy.retention.leak_ticks",
+     "            let presumed_leaked = self.policy.retention.leak_ticks > 0\n                && age >= 1",
+     "sankhya-maintenance"),
+
+    # The report a publisher hands back must name the file it wrote. Reporting the caller's
+    # name while the write, the add action and the error path all use the versioned one hands
+    # back a path that does not exist --- harmless to a caller that counts, and a missing file
+    # to any caller that opens it. Compaction is such a caller.
+    ("publish: report the name the caller asked for rather than the one on disk",
+     "crates/sankhya-publish/src/publish.rs",
+     '                file: format!("{directory}/{unique}"),',
+     '                file: format!("{directory}/{file_name}"),',
+     "sankhya-publish"),
+
+    # --- one server per warehouse -------------------------------------------------------------
+
+    # `create` replaces, so the second server writes its own name over the first's and both run.
+    # Each then retires files against a lease registry that cannot see the other's readers.
+    ("atomicfs: let a second server take a warehouse lock that is already held",
+     "crates/sankhya-atomicfs/src/exclusive.rs",
+     "        match std::fs::File::create_new(file) {",
+     "        match std::fs::File::create(file) {",
+     "sankhya-atomicfs"),
+
+    # The lock type working and the server never calling it look identical from inside the type.
+    ("server: start without taking the warehouse lock",
+     "crates/sankhya-server/src/main.rs",
+     "    let held = match sankhya_atomicfs::WarehouseLock::take(&data.join(\"warehouse.lock\")) {\n        Ok(lock) => lock,\n        Err(why) => {\n            eprintln!(\"sankhya: {why}\");\n            std::process::exit(3);\n        }\n    };",
+     "    let held = ();",
+     "sankhya-server"),
+
+    # A pid is reused. Checking only that *something* has that pid calls a crashed server live,
+    # so the lock is never broken and every restart is refused until somebody deletes the file
+    # by hand --- which teaches an operator to delete it on sight, which is no lock at all.
+    ("atomicfs: decide a lock holder is alive from the pid alone",
+     "crates/sankhya-atomicfs/src/exclusive.rs",
+     "    start_time(holder.pid).is_some_and(|started| started == holder.started)",
+     "    start_time(holder.pid).is_some()",
+     "sankhya-atomicfs"),
+
+    # --- what a timestamp means --------------------------------------------------------------
+
+    # The tick counter again. `deletionTimestamp: 3` is three milliseconds after 1970, so
+    # every superseded file is instantly past any retention interval and a conformant external
+    # VACUUM deletes the lot --- out from under readers holding leases, and reported safe by
+    # DRY RUN first.
+    ("maintenance: date a removal by the tick number instead of the clock",
+     "crates/sankhya-maintenance/src/service.rs",
+     "                let now = epoch_millis();",
+     "                let now = i64::try_from(tick).unwrap_or(i64::MAX);",
+     "sankhya-maintenance"),
+
+    # --- a commit that is all there ---------------------------------------------------------
+
+    # Without the seal, a body truncated by a crash is a commit that silently did less than it
+    # said --- and it is cemented, because a retry is refused as VersionTaken and the next
+    # version lands on top of the wrong state.
+    ("delta: write a commit with no seal to check it against",
+     "crates/sankhya-table-delta/src/log.rs",
+     "    let mut body = seal.to_string();\n    body.push('\\n');",
+     "    let mut body = String::new();",
+     "sankhya-table-delta"),
+
+    # An empty body and a body truncated to nothing are the same bytes. Reading one as "a
+    # commit that added nothing" drops every file the missing lines named.
+    ("delta: replay an action-less commit as a commit that did nothing",
+     "crates/sankhya-table-delta/src/log.rs",
+     "        if read == 0 {\n            return Err(CommitError::Malformed {",
+     "        if false {\n            return Err(CommitError::Malformed {",
+     "sankhya-table-delta"),
+
+    # The protocol's rule is that a reader passes over actions it does not understand. Being
+    # strict here made one Spark commit enough to render a table permanently unreadable.
+    ("delta: refuse a table because another engine wrote an action we lack",
+     "crates/sankhya-table-delta/src/log.rs",
+     "            if !matches!(kind.as_str(), \"protocol\" | \"metaData\" | \"add\" | \"remove\") {\n                continue;\n            }",
+     "            if !matches!(kind.as_str(), \"protocol\" | \"metaData\" | \"add\" | \"remove\") {\n                return Err(CommitError::Malformed { version, detail: kind });\n            }",
+     "sankhya-table-delta"),
+
     # --- the gRPC transport -----------------------------------------------------------------
 
     # A transport configured with a certificate that serves in the clear anyway. The failure
@@ -1783,14 +1980,14 @@ CATALOGUE = [
 
     ("clone: let a sweep discard the versions a clone still reads",
      "crates/sankhya-clone/src/family.rs",
-     "            .filter(|lineage| lineage.origin == table)",
-     "            .filter(|lineage| lineage.origin != table)",
+     "            .filter(|lineage| same_table(&lineage.origin, table))",
+     "            .filter(|lineage| !same_table(&lineage.origin, table))",
      "sankhya-clone"),
 
     ("maintenance: sweep a table without consulting the versions its clones pin",
      "crates/sankhya-maintenance/src/service.rs",
-     "        let reachable = self.pinned_by_clones(table_root);",
-     "        let reachable = BTreeSet::new();",
+     "        let (pinned, holes) = self.pins(table_root);",
+     "        let (pinned, holes) = (BTreeSet::new(), Vec::new());",
      "sankhya-maintenance"),
 
     ("maintenance: retire an input a clone still reads",
@@ -1801,8 +1998,8 @@ CATALOGUE = [
 
     ("maintenance: pin every version of a table rather than the ones clones name",
      "crates/sankhya-maintenance/src/service.rs",
-     "            .filter_map(|version| live_files_at(table_root, version).ok())",
-     "            .filter_map(|_version| live_files(table_root).ok())",
+     "            match live_files_at(table_root, version) {",
+     "            match live_files(table_root) {",
      "sankhya-maintenance"),
 
     ("clone: clone a table whose origin is being purged",
@@ -3817,13 +4014,13 @@ CATALOGUE = [
 
     ("docs: name a check in INVARIANTS.md that does not run",
      "xtask/src/main.rs",
-     "        if !KNOWN_CHECKS.contains(&check.as_str()) {",
+     "        if !known.contains(check.as_str()) {",
      "        if false {",
      "xtask"),
 
     ("docs: run a check that INVARIANTS.md documents nowhere",
      "xtask/src/main.rs",
-     "        if !named.contains(*check) {",
+     "        if !named.contains(check) {",
      "        if false {",
      "xtask"),
 
@@ -3851,13 +4048,13 @@ CATALOGUE = [
 
     ("docs: name a check in INVARIANTS.md that does not run",
      "xtask/src/main.rs",
-     "        if !KNOWN_CHECKS.contains(&check.as_str()) {",
+     "        if !known.contains(check.as_str()) {",
      "        if false {",
      "xtask"),
 
     ("docs: run a check that INVARIANTS.md documents nowhere",
      "xtask/src/main.rs",
-     "        if !named.contains(*check) {",
+     "        if !named.contains(check) {",
      "        if false {",
      "xtask"),
 

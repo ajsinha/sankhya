@@ -317,7 +317,15 @@ async fn a_tick_that_loses_the_version_race_is_refused() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let root = dir.path();
     commit(root, 0, &create(Metadata::new("orders", SCHEMA, 0))).expect("creating");
-    commit(root, 1, &[]).expect("someone else's commit");
+    // A real action, because an action-less commit is refused: an empty body and a body
+    // truncated to nothing are the same bytes, and replaying one as written drops every file
+    // the missing lines named. What this test needs is only that version 1 is taken.
+    commit(
+        root,
+        1,
+        &[Action::Add(AddFile::new("someone-else.parquet", 1, 0))],
+    )
+    .expect("someone else's commit");
 
     let report = sankhya_maintenance::TickReport::default();
     let err = commit_tick(root, 1, &report, 0).expect_err("the version is taken");

@@ -16,7 +16,7 @@
 use arrow_array::{Date32Array, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use sankhya_publish::Publication;
-use sankhya_table_delta::{commit, live_files, Action, AddFile};
+use sankhya_table_delta::{commit, live_files, Action, AddFile, RemoveFile};
 use sankhya_types::Lsn;
 use std::sync::Arc;
 
@@ -114,6 +114,60 @@ fn the_files_are_written_once_however_many_rebases_it_takes() {
         .flatten()
         .collect();
     assert_eq!(files.len(), 1, "{files:?}");
+}
+
+#[test]
+fn two_writers_publishing_one_logical_name_at_one_version_both_keep_their_rows() {
+    // `COR-06`, at the shape the concurrency tests could not see: they gave each writer a
+    // distinct file name, and this is what happens when two writers use the same one.
+    //
+    // Both read the same `next_version`, so both intend the same version. Before the fix the
+    // second `add` replaced the first on one path and the winner's acknowledged rows were gone
+    // from disk and from the log. Putting the version in the name does not fix this half ---
+    // the version is the same for both --- so the name carries a per-write token as well, and
+    // `create_new` under it turns any remaining collision into a refusal rather than a
+    // replacement.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path().join("events");
+    let publication = Publication::external(&root, "events").dated_by("event_date");
+    publication.create(&schema()).expect("created");
+
+    let start = publication.next_version();
+    let outcomes: Vec<_> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..2)
+            .map(|writer| {
+                let publication = &publication;
+                scope.spawn(move || {
+                    publication.append_rebasing(
+                        start,
+                        16,
+                        // The same name from both, which is the whole point.
+                        "part.parquet",
+                        &batch(writer * 100, 10),
+                        Lsn::new(u64::try_from(writer).unwrap_or(0) + 1),
+                    )
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().expect("no panic")).collect()
+    });
+
+    for outcome in &outcomes {
+        outcome.as_ref().expect("both writers were told they committed");
+    }
+
+    // Two files on disk, two `add` actions, and the names are different. One file would mean
+    // one writer wrote over the other; two adds naming one path would mean the log describes
+    // rows that are not there.
+    let live = live_files(&root).expect("the live set");
+    assert_eq!(live.files.len(), 2, "{:?}", live.files);
+    let mut named: Vec<_> = live.files.iter().map(|f| f.path.clone()).collect();
+    named.sort();
+    named.dedup();
+    assert_eq!(named.len(), 2, "two commits named one file: {named:?}");
+    for path in &named {
+        assert!(root.join(path).exists(), "the log names {path}, which is not there");
+    }
 }
 
 #[test]
@@ -215,7 +269,19 @@ fn the_next_version_follows_a_commit_that_added_no_files() {
         .append_rebasing(1, 4, "a.parquet", &batch(0, 10), Lsn::new(1))
         .expect("committed");
 
-    // A commit carrying no adds at all.
-    commit(&root, 2, &[]).expect("an empty commit");
-    assert_eq!(publication.next_version(), 3, "it must follow the empty commit");
+    // A commit carrying no *adds* --- which is what this test is about --- rather than no
+    // actions at all. An action-less commit is refused: its body is byte-identical to one a
+    // crash truncated to nothing, and replaying that as written drops every file the missing
+    // lines named.
+    commit(
+        &root,
+        2,
+        &[Action::Remove(RemoveFile::rewritten("a.parquet", 1))],
+    )
+    .expect("a commit with no adds");
+    assert_eq!(
+        publication.next_version(),
+        3,
+        "it must follow a commit that added nothing"
+    );
 }

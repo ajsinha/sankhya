@@ -111,16 +111,37 @@ fn the_add_action_carries_the_partition_value() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let root = dir.path().join("orders");
     let publication = Publication::external(&root, "orders").dated_by("order_date");
-    publish_table(&publication, &schema(), &[batch(vec![FIRST_OF_MARCH])]).expect("published");
+    let published =
+        publish_table(&publication, &schema(), &[batch(vec![FIRST_OF_MARCH])]).expect("published");
 
     let log = log_of(&root, 1);
     assert!(
         log.contains(r#""partitionValues":{"sank_data_date":"2024-03-01"}"#),
         "the add action has no partition value: {log}"
     );
+    // The name the publisher reported, not one this test predicts.
+    //
+    // It is not predictable, deliberately: the on-disk name carries the version *and* a token
+    // that makes it unique across writers, because two publishers reading the same
+    // `next_version` would otherwise compute one name from one caller-supplied name. Asserting
+    // a literal here would be asserting that the token does not exist.
+    //
+    // And it is the stronger assertion in any case. The report and the log must agree about
+    // where the rows are, and they did not: the report named the file the *caller* asked for
+    // while the write and the `add` used the unique one, so a caller that opened what it was
+    // handed found nothing there.
+    let reported = &published.first().expect("one file").file;
     assert!(
-        log.contains(r#""path":"sank_data_date=2024-03-01/part-00000.parquet""#),
-        "the path is not relative to the table root: {log}"
+        reported.starts_with("sank_data_date=2024-03-01/part-00000-v0000001-"),
+        "the reported name does not carry the partition and the version: {reported}"
+    );
+    assert!(
+        log.contains(&format!(r#""path":"{reported}""#)),
+        "the log names a different file from the report: {log}"
+    );
+    assert!(
+        root.join(reported).exists(),
+        "the report and the log agree about a file that is not there: {reported}"
     );
 
     // And the metadata still declares the column, so the two agree.
@@ -296,7 +317,7 @@ fn the_written_file_carries_the_date_of_the_partition_it_sits_in() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let root = dir.path().join("orders");
     let publication = Publication::external(&root, "orders").dated_by("order_date");
-    publish_table(
+    let published = publish_table(
         &publication,
         &schema(),
         &[batch(vec![FIRST_OF_MARCH, SECOND_OF_MARCH])],
@@ -307,9 +328,16 @@ fn the_written_file_carries_the_date_of_the_partition_it_sits_in() {
         ("2024-03-01", FIRST_OF_MARCH),
         ("2024-03-02", SECOND_OF_MARCH),
     ] {
-        let path = root
-            .join(format!("{DATA_DATE_COLUMN}={partition}"))
-            .join("part-00000.parquet");
+        // Opened by the name the publisher reported. The on-disk name carries a token that
+        // makes it unique across writers, so it is not something a test can predict --- and a
+        // test that opens what the caller was handed is the one that would have caught the
+        // report naming a file that does not exist.
+        let directory = format!("{DATA_DATE_COLUMN}={partition}");
+        let reported = published
+            .iter()
+            .find(|one| one.file.starts_with(&format!("{directory}/")))
+            .unwrap_or_else(|| panic!("nothing was reported for {partition}: {published:?}"));
+        let path = root.join(&reported.file);
         let file = std::fs::File::open(&path).expect("the partition file");
         let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)
             .expect("readable")
@@ -346,16 +374,19 @@ fn a_coarser_granularity_stamps_the_first_day_of_the_period() {
     let publication = Publication::external(&root, "orders")
         .dated_by("order_date")
         .partitioned_by(Granularity::Month);
-    publish_table(
+    let published = publish_table(
         &publication,
         &schema(),
         &[batch(vec![FIRST_OF_MARCH, SECOND_OF_MARCH])],
     )
     .expect("published");
 
-    let path = root
-        .join(format!("{DATA_DATE_COLUMN}=2024-03"))
-        .join("part-00000.parquet");
+    let path = root.join(
+        &published
+            .first()
+            .expect("one file for the one month these rows share")
+            .file,
+    );
     let file = std::fs::File::open(&path).expect("the partition file");
     let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)
         .expect("readable")

@@ -83,6 +83,28 @@ made against a state that no longer exists.
 > never returned. It went unseen because **every test had a single writer per version**.
 > §6.4 is the fix; [ADR-0013](../../adr/0013-concurrency-and-data-safety.md) is the record.
 
+### A commit says how long it is
+
+The first line of every commit is a `commitInfo` seal carrying the number of actions that
+follow. The reader counts what it reads and refuses the commit when the two disagree.
+
+The reason is that the alternative is indistinguishable from success. A commit body truncated
+by a crash — a partial write, a full disk, a killed process between the staging write and
+the sync — replays as a *shorter commit*, and a commit whose lines are all missing replays
+as a commit that did nothing. Neither is an error to a reader that simply parses the lines it
+finds. Worse, the state is cemented: a retry at the same version is refused as `VersionTaken`,
+so the next commit lands on top of the truncated one and every `add` the crash swallowed is
+gone from the live set for good.
+
+An action-less body is therefore rejected outright rather than read as an empty commit. SANKHYA
+never writes one, so the only way to observe one is the failure this seal exists to catch.
+
+Two properties come along with it. Lines are parsed as generic JSON before their `kind` is
+read, so an action from another engine is *counted and passed over* rather than turned into a
+parse failure that renders the table permanently unreadable — which is the protocol's own
+rule for forward compatibility. And the seal is itself an action for counting purposes, so a
+reader cannot satisfy the count by mistaking the header for data.
+
 ### The kernel as an oracle
 
 The Delta kernel is a **dev-dependency**, used as an independent oracle: it reads the log
@@ -210,6 +232,47 @@ wrong: `File::create_new` claims the name atomically but then writes *into* it, 
 opens between the claim and the last byte sees a partial file. The correct sequence is to write
 a staging file in full and then hard-link it into place.
 
+### Property 3 — a data file name is used once
+
+Atomic publication settles what a reader sees of *one* write. It says nothing about a second
+write to the same name, and that is a distinct hazard with a distinct fix: the publisher, not the
+caller, decides the name. A caller asking for `part.parquet` while attempting version 7 gets
+`part-v0000007-1a2f3.parquet`.
+
+The two halves of that name answer two different collisions.
+
+**The version** is the readable half, and it settles the single-publisher case. A publisher that
+flushes one logical name twice — which the accumulator does, once per round — used to write the
+same path twice, and the second write truncated the first while the first's `add` was still in
+the log: rows acknowledged to a caller were gone from disk while the live set insisted they were
+there. It records the commit the write was *attempting*, which is usually the commit it landed
+at; a writer that loses the race rebases onto a later version and keeps the file it has already
+written, because the bytes do not depend on which commit names them.
+
+**The token** — a process id and a per-process counter — is the half that makes the guarantee,
+and it is there because the version alone does not. Two publishers read the same `next_version`,
+so both intend the same version, so both compute the same name from the same caller-supplied one.
+That is the collision the concurrency tests could not see, because they gave every writer a
+distinct file name. It is the same scheme `atomicfs` uses for staging names, for the same reason:
+two writers racing for one destination must not be able to pick one temporary path.
+
+Compaction has the same requirement and a different key. Its output is named from a sequence,
+and that sequence was a counter that started at zero on every restart, so a restarted service
+reissued a name the log already held. The planner then chose that file as its own merge input,
+the writer truncated it, and the commit added and removed one path — taking the merged
+partition out of the live set. The sequence is now **recovered from the log**: the highest
+`compacted-NNNNNN` in the live set, plus one.
+
+Under both of these sits a floor. `write_parquet` opens with `create_new`, so a name that
+already exists is refused rather than truncated — because a data file whose name exists
+belongs to rows some log still refers to. This floor is what found the accumulator defect: the
+reasoning above is reconstructed from a test that started failing, not from a review.
+
+It found a second one, quieter. The publisher's *report* still named the file the caller had
+asked for, while the write, the `add` action and the error path all used the versioned name — so
+a caller was handed a path that does not exist. Harmless to a caller that counts the result, a
+missing file to any caller that opens it, and compaction is the second kind.
+
 ### The rule, stated so it can be checked
 
 > **No writer may make a file visible by writing to the path a reader will open, and no writer
@@ -245,6 +308,86 @@ failure met from the other direction.
 
 The registry's own summary states the property both ways round: *nothing is deleted while
 somebody is reading it, and no reader ever waits to say so.*
+
+### The backstop was written as an `and`
+
+The paragraph above is what the code said. What it did was `old_enough && unreachable`, with
+both as requirements — so the backstop was not a backstop. One leaked registration held every
+merge input on disk for ever *and* held the queue naming them in memory for ever, growing by one
+entry per merge, and nothing reported why.
+
+One number cannot mean both things, so there are two. The grace period is a **minimum**: nothing
+is retired before it, drained or not. The leak backstop is a **maximum**, and it applies only
+where the registry still claims a reader — past it, a registration that old is not a query, it is
+an announcement that was never withdrawn. The default is a hundred grace periods.
+
+Two things the backstop deliberately does not override. It fires only against the *lease* check;
+a clone pin and a snapshot pin still refuse the file, because those are not proxies for anything
+and there is no timeout at which they become wrong. And when it fires it says so in the tick
+report, because a backstop firing is never routine: it means a lease leaked, and that is a defect
+somewhere else that nothing else in the system would have surfaced.
+
+### Four ways to answer "nothing reads this" when something did
+
+Every defect the audit found in reclamation had the same shape, and none of them was a race.
+Each fired on a schedule, deleted data something was still reading, and reported nothing.
+
+| Where | The answer it gave | Why |
+|---|---|---|
+| A clone's pin | *no clone reads this* | The lineage records `sales.orders`; the sweeper had a directory, and a directory knows only its leaf |
+| The orphan sweep | *no snapshot reads this* | It honoured clone pins and not snapshot pins — while retirement, a hundred lines away, unioned both |
+| An unreadable snapshot | *this pins no files* | The document would not parse, and the failure was discarded |
+| A leaked lease | *this reader is still here* | Above |
+
+The first is worth dwelling on, because it was false in **every deployment** rather than
+sometimes. `discover` only ever walks `<warehouse>/<schema>/<table>`, so the qualified form is
+always what gets recorded — and the comparison against the bare directory name could therefore
+never be true. It survived because the one test covering it built its table at the warehouse root
+and recorded a bare name: the single shape in which the two forms cannot disagree.
+
+The second was not a race either, and in the opposite way to how that usually reads. Retirement
+correctly declines a pinned file *for ever*, which **guarantees** that file crosses the orphan
+sweep's age threshold. Every snapshot older than a week lost its files, reliably.
+
+> **Key idea**
+> A pin that could not be read now **stops reclamation** rather than contributing nothing.
+> Contributing nothing is indistinguishable from *"this protects no files"*, so the one case
+> where the system did not know what was protected was the case in which it deleted it. The
+> earlier reasoning here weighed a full disk against lost rows and got the order backwards:
+> reclamation that stops is visible in a report, costs storage, and is fixed by deleting one
+> file. Reclamation that runs on an unknown pin set is visible when somebody queries, and
+> nothing fixes it. Compaction continues either way — it adds files and removes none.
+
+### One server per warehouse
+
+`claim` serialises two committers **at a version**. That is the whole of its scope, and
+maintenance lives outside it.
+
+Two servers on one warehouse each plan compactions against a live set the other is changing, each
+retire merge inputs against a lease registry that cannot see the other's readers, and each sweep
+orphans against an age threshold that has no idea a file belongs to a commit the other has not
+written yet. None of that races at a version, so none of it was caught — and nothing prevented
+it: there was no lock file, no pid file and no advisory lock anywhere.
+
+`flock(2)` is the better primitive and is out of reach: `unsafe_code` is `forbid` at the
+workspace root and `libc` is confined to the sandbox crate by `check-layers`. So the lock is a
+file, claimed with the same exclusive create as everything else here and naming the process that
+holds it. What a file cannot do by itself is notice that its holder died, and a lock that refuses
+for ever after one crash is a lock an operator learns to delete on sight — which is no lock.
+
+Liveness is therefore established exactly, from `/proc`, and the recorded value is the holder's
+**start time** and not only its pid, because pids are reused and a lock broken on a reused pid is
+two servers on one warehouse:
+
+| What is found | What happens |
+|---|---|
+| No lock file | It is taken |
+| A pid with no process, or a pid whose start time differs | The holder is gone; the stale lock is taken |
+| A pid with the recorded start time | The holder is running; startup is refused, naming it |
+| A lock that cannot be parsed, or no `/proc` to ask | Startup is refused, and the operator is told to remove the file |
+
+The last row is deliberately the unhelpful one. Every automatic way out of it ends in two servers
+on one warehouse, which is the thing being prevented.
 
 ## 6.5 What the commit protocol buys, measured
 

@@ -391,7 +391,49 @@ pub fn commit(
         });
     }
 
-    let mut body = String::new();
+    // A commit that says nothing is not a commit this system writes, and accepting one here
+    // is what made a truncated body indistinguishable from an empty one. See `SEAL` below.
+    if actions.is_empty() {
+        return Err(CommitError::Io(
+            "a commit with no actions says nothing and would be indistinguishable from a \
+             truncated one on replay"
+                .to_string(),
+        ));
+    }
+
+    // The seal, **first**.
+    //
+    // # Why a commit needs one
+    //
+    // The body is newline-delimited JSON with no checksum, no length prefix and no
+    // end-of-record marker, so a short body is undetectable by construction. A crash that
+    // leaves three of five actions on disk produces a file every parser accepts, and replay
+    // reads it as a commit that did less than it did --- dropping the Parquet files the
+    // missing lines named. It is cemented rather than transient: a retry is refused as
+    // `VersionTaken` and the next version commits on top of the wrong state.
+    //
+    // # Why first and not last
+    //
+    // Last was the obvious place and it does not work. A truncation that removes the seal
+    // along with the actions leaves a shorter commit that is still internally consistent ---
+    // and indistinguishable from a commit written by another engine, which carries no seal at
+    // all and must still be readable. Written first, the count is present in every prefix
+    // long enough to contain anything, so losing actions always contradicts it.
+    //
+    // # Why `commitInfo` specifically
+    //
+    // It is the protocol's own action for writer-supplied metadata, and Spark writes one as
+    // the first line of every commit --- so this is the conventional layout as well as the
+    // detectable one. An external reader ignores the `sankhya` field inside it; this one
+    // uses it. A commit from another engine simply has no seal and is read as it is.
+    let seal = serde_json::json!({
+        "commitInfo": {
+            "operation": "SANKHYA",
+            "sankhya": { "actions": actions.len() },
+        }
+    });
+    let mut body = seal.to_string();
+    body.push('\n');
     for action in actions {
         let line = serde_json::to_string(action)
             .map_err(|e| CommitError::Io(format!("encoding an action: {e}")))?;
@@ -528,13 +570,106 @@ pub fn read_actions_after(
     for (version, path) in to_read {
         let text = std::fs::read_to_string(&path)
             .map_err(|e| CommitError::Io(format!("reading {}: {e}", path.display())))?;
+        let mut read = 0usize;
+        let mut sealed_at: Option<usize> = None;
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            // The kind first, as data. A line is only handed to `Action` once we know it is
+            // a kind this reader understands.
+            //
+            // # Why an unknown kind is skipped rather than fatal
+            //
+            // It used to be fatal. The protocol's own rule is that a reader ignores actions
+            // it does not understand when the protocol version permits it, and this reader
+            // did the opposite: **one commit written by Spark made the table permanently
+            // unreadable to SANKHYA**, because Spark writes a `commitInfo` on every commit
+            // and that was not a variant here. The openness was one-directional --- anybody
+            // could read what this system wrote, and this system could read only its own.
+            //
+            // The same strictness meant a future protocol action would take a whole table
+            // out rather than being passed over.
+            let value: serde_json::Value =
+                serde_json::from_str(line).map_err(|e| CommitError::Malformed {
+                    version,
+                    detail: e.to_string(),
+                })?;
+            let kind = value
+                .as_object()
+                .and_then(|object| object.keys().next().cloned())
+                .unwrap_or_default();
+
+            if kind == "commitInfo" {
+                // Ours carries the number of actions that preceded it. Anyone else's does
+                // not, and is simply passed over.
+                if let Some(declared) = value
+                    .get("commitInfo")
+                    .and_then(|info| info.get("sankhya"))
+                    .and_then(|ours| ours.get("actions"))
+                    .and_then(serde_json::Value::as_u64)
+                {
+                    sealed_at = Some(usize::try_from(declared).unwrap_or(usize::MAX));
+                }
+                continue;
+            }
+
+            if !matches!(kind.as_str(), "protocol" | "metaData" | "add" | "remove") {
+                continue;
+            }
+
             let action: Action =
                 serde_json::from_str(line).map_err(|e| CommitError::Malformed {
                     version,
                     detail: e.to_string(),
                 })?;
+            read += 1;
             out.push((version, action));
+        }
+
+        // The seal, checked.
+        //
+        // A commit body has no checksum, no length prefix and no end-of-record marker, so a
+        // crash that leaves three of five actions on disk produces a file every parser
+        // accepts --- and replay reads it as a commit that did less than it did, dropping the
+        // Parquet files the missing lines named. The failure is cemented rather than
+        // transient: a retry is refused as `VersionTaken` and the next version commits on top
+        // of the wrong state.
+        //
+        // A commit this system wrote ends with a `commitInfo` naming the count. Absent, the
+        // body is short. Wrong, it is short by a known amount.
+        //
+        // Commits written by another engine carry no seal and are not required to. That is
+        // the price of an open format and it is the right way round: this check hardens what
+        // this writer produces without refusing what anybody else's does.
+        // Zero actions is damage, whoever wrote it.
+        //
+        // This is the case the finding named: replay read an empty body as "a commit that
+        // added nothing", accepted it, and dropped every file the lost lines named. `commit`
+        // now refuses to write an action-less commit, so a file that yields none is either
+        // truncated to nothing or written by something that recorded a no-op --- and refusing
+        // loudly is the right answer to both. The alternative is silently serving a table
+        // that lost a commit's worth of files.
+        if read == 0 {
+            return Err(CommitError::Malformed {
+                version,
+                detail: "the commit contains no actions. This writer refuses to produce one, \
+                         so the body has been truncated --- and an empty commit replayed as \
+                         written drops every file the missing lines named"
+                    .to_string(),
+            });
+        }
+
+        match sealed_at {
+            Some(declared) if declared != read => {
+                return Err(CommitError::Malformed {
+                    version,
+                    detail: format!(
+                        "the commit declares {declared} action(s) and {read} are present. \
+                         The body is truncated: a crash between the write and the sync can \
+                         leave a prefix, and without this seal a short commit is a commit \
+                         that silently did less than it said"
+                    ),
+                });
+            }
+            _ => {}
         }
     }
 

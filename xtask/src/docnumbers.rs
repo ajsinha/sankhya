@@ -54,22 +54,33 @@ pub fn sync(root: &Path, docs: &[PathBuf]) -> bool {
         let mut touched = 0usize;
         for (index, line) in text.lines().enumerate() {
             let mut line = line.to_string();
-            for (claimed, unit) in claimed_numbers(&line) {
+            for (claimed, unit, spelled) in claimed_numbers(&line) {
                 let actual = match unit {
                     "tests" => tests,
                     "examples" => examples,
                     "checks" => checks,
                     _ => mutations,
                 };
-                if claimed != actual {
-                    // Both spellings, because prose writes 1,659 and a command line writes
-                    // 1659, and a fixer that knows only one leaves the other stale --- which
-                    // is worse than not running, since the check then passes on half a file.
-                    line = line
-                        .replace(&with_thousands(claimed), &with_thousands(actual))
-                        .replace(&claimed.to_string(), &actual.to_string());
-                    touched += 1;
+                if claimed == actual {
+                    continue;
                 }
+                // A figure spelled as a word is reported and not rewritten. "twenty-two
+                // invariants" cannot be corrected to "24" without making the sentence wrong,
+                // and correcting it by digits would edit an unrelated number on the line ---
+                // which is how six documents came to claim `2,626099` tests.
+                if !spelled.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                    continue;
+                }
+                // The exact text that was matched, replaced once, keeping its own comma
+                // style: prose writes 1,659 and a command line writes 1659, and each stays as
+                // it was written.
+                let replacement = if spelled.contains(',') {
+                    with_thousands(actual)
+                } else {
+                    actual.to_string()
+                };
+                line = line.replacen(&spelled, &replacement, 1);
+                touched += 1;
             }
             if index > 0 || !text.is_empty() {
                 out.push_str(&line);
@@ -163,7 +174,7 @@ pub fn check(root: &Path, docs: &[PathBuf]) -> bool {
         };
         let rel = path.strip_prefix(root).unwrap_or(path).display();
         for (line_number, line) in text.lines().enumerate() {
-            for (claimed, unit) in claimed_numbers(line) {
+            for (claimed, unit, _spelled) in claimed_numbers(line) {
                 checked += 1;
                 let actual = match unit {
                     "tests" => tests,
@@ -217,8 +228,13 @@ fn word_number(word: &str) -> Option<usize> {
     WORDS.iter().find(|(w, _)| *w == lowered).map(|(_, n)| *n)
 }
 
-/// Every figure a line claims, as `(number, unit)`.
-fn claimed_numbers(line: &str) -> Vec<(usize, &'static str)> {
+/// Every figure a line claims, as `(number, unit, the exact text that spelled it)`.
+///
+/// The third element exists because the rewriter used to do two global `replace` calls per
+/// figure --- one for `2,610` and one for `2610` --- and a line holding more than one number
+/// could have the second call edit text the first had just written. It produced `2,626099`
+/// across six documents. Replacing the exact substring that was matched, once, cannot.
+fn claimed_numbers(line: &str) -> Vec<(usize, &'static str, String)> {
     let mut found = Vec::new();
     // The third column is whether a **word** may spell this figure.
     //
@@ -261,14 +277,18 @@ fn claimed_numbers(line: &str) -> Vec<(usize, &'static str)> {
                 .rev()
                 .collect();
             if let Ok(value) = digits.replace(',', "").parse::<usize>() {
-                found.push((value, unit));
+                found.push((value, unit, digits.clone()));
             } else if words {
                 // Not digits. Take the word immediately before the marker, because prose
                 // writes small counts out --- and every count that drifted here was small.
                 let word = prefix.rsplit(|c: char| c.is_whitespace()).next().unwrap_or("");
                 let word = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
                 if let Some(value) = word_number(word) {
-                    found.push((value, unit));
+                    // The word itself, so the rewriter can tell it apart from a digit
+                    // spelling and leave it alone. Rewriting "twenty-two" into "24" would
+                    // make a sentence ungrammatical, and rewriting it by *digits* would edit
+                    // some unrelated number on the same line.
+                    found.push((value, unit, word.to_string()));
                 }
             }
             from = end + marker.len();
@@ -326,5 +346,49 @@ mod tests {
         assert_eq!(with_thousands(1_000), "1,000");
         assert_eq!(with_thousands(1_660), "1,660");
         assert_eq!(with_thousands(1_234_567), "1,234,567");
+    }
+}
+
+#[cfg(test)]
+mod rewriting {
+    use super::{claimed_numbers, with_thousands};
+
+    /// The exact text a figure was spelled with is what gets replaced.
+    ///
+    /// # The defect this pins
+    ///
+    /// The rewriter did two global `replace` calls per figure --- one for `2,610` and one for
+    /// `2610` --- so a line holding more than one number could have the second call edit text
+    /// the first had just written. It wrote `2,626099` into six documents at once, and the
+    /// check then reported all six as stale, which is how it was noticed at all.
+    #[test]
+    fn a_figure_is_matched_with_the_text_that_spelled_it() {
+        let found = claimed_numbers("2,610 tests and 773 deliberate defects");
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found[0], (2610, "tests", "2,610".to_string()));
+        assert_eq!(found[1], (773, "mutations", "773".to_string()));
+    }
+
+    /// A word-spelled figure is reported, and carries a word so the rewriter leaves it alone.
+    ///
+    /// Rewriting "twenty-two" to "24" makes the sentence wrong; rewriting it *by digits*
+    /// edits whatever unrelated number shares the line. Reported and not rewritten is the
+    /// only correct third option.
+    #[test]
+    fn a_word_spelled_figure_is_reported_but_not_rewritable() {
+        let found = claimed_numbers("`check-all` runs twenty-two invariants");
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0], (22, "checks", "twenty-two".to_string()));
+        assert!(
+            !found[0].2.starts_with(|c: char| c.is_ascii_digit()),
+            "the rewriter decides by this, so it must not look like digits"
+        );
+    }
+
+    /// Prose grouping and command-line grouping each stay as they were written.
+    #[test]
+    fn each_spelling_keeps_its_own_commas() {
+        assert_eq!(with_thousands(2610), "2,610");
+        assert_eq!(with_thousands(773), "773");
     }
 }

@@ -301,12 +301,27 @@ pub fn write_checkpoint(
         writer
             .write(&batch)
             .map_err(|e| CommitError::Io(format!("writing the checkpoint: {e}")))?;
-        writer
-            .close()
+        // Synced before the rename, for the same reason `atomicfs::publish` does it: the
+        // rename makes the name visible, and a name over unsynced bytes is a checkpoint that
+        // exists and parses into nothing. A checkpoint is the file readers use *instead of*
+        // replaying the log, so a corrupt one is not a slow read --- it is a wrong table.
+        let written = writer
+            .into_inner()
             .map_err(|e| CommitError::Io(format!("closing the checkpoint: {e}")))?;
+        written
+            .sync_all()
+            .map_err(|e| CommitError::Io(format!("syncing {}: {e}", staging.display())))?;
     }
     std::fs::rename(&staging, &path)
         .map_err(|e| CommitError::Io(format!("publishing {}: {e}", path.display())))?;
+    // And the directory entry the rename created.
+    if let Some(parent) = path.parent() {
+        if let Ok(directory) = std::fs::File::open(parent) {
+            directory
+                .sync_all()
+                .map_err(|e| CommitError::Io(format!("syncing {}: {e}", parent.display())))?;
+        }
+    }
 
     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     let actions = batch.num_rows();

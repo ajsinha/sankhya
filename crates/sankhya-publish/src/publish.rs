@@ -663,15 +663,29 @@ impl Publication {
                 detail: error.to_string(),
             })?;
 
+            // The version, in the name.
+            //
+            // # Why the caller's name is not enough
+            //
+            // A caller that publishes `part.parquet` twice used to write the same path twice,
+            // and `write_parquet` truncated. The second flush emptied the first file and
+            // committed an `add` for it, so the first flush's acknowledged rows were gone from
+            // disk while its `add` was still in the log --- the shape `COR-06` names, and the
+            // accumulator does exactly this: it flushes one logical name once per round.
+            //
+            // Two writers racing for one version cannot collide here either: the loser is
+            // refused the version by `atomicfs::claim` and rebases onto a new one, which
+            // gives it a new name as well.
+            let unique = versioned_name(file_name, version);
             let report = write_parquet(
                 &into,
-                file_name,
+                &unique,
                 &part,
                 covers_through,
                 self.writer,
             )
             .map_err(|error| PublishError::Write {
-                file: format!("{directory}/{file_name}"),
+                file: format!("{directory}/{unique}"),
                 detail: error.to_string(),
             })?;
 
@@ -683,7 +697,7 @@ impl Publication {
             let mut add = AddFile::with_statistics(
                 // Relative to the table root, which is what the Delta protocol means by a
                 // file path, and what an external reader resolves against.
-                format!("{directory}/{file_name}"),
+                format!("{directory}/{unique}"),
                 report.bytes,
                 0,
                 &sankhya_table_delta::from_column_stats(
@@ -699,7 +713,14 @@ impl Publication {
             actions.push(Action::Add(add));
 
             written.push(Published {
-                file: format!("{directory}/{file_name}"),
+                // The name that is **on disk**, which is the versioned one.
+                //
+                // This reported `file_name` while the write, the `add` action and the error
+                // path all used `unique`, so a caller was handed a path that does not exist ---
+                // and a caller that does anything with it, rather than counting it, gets a
+                // missing file. The kernel oracle's compaction fixture is exactly that caller:
+                // it builds its merge inputs from these names, and the merge failed.
+                file: format!("{directory}/{unique}"),
                 bytes: report.bytes,
                 rows: part.num_rows(),
                 version,
@@ -1248,4 +1269,52 @@ fn days_from_civil(year: i32, month: i32, day: i32) -> Option<i32> {
     let doy = (153 * mp + 2) / 5 + day - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     Some(era * 146_097 + doe - 719_468)
+}
+
+/// Writes made by this process, so no two of them can choose one name.
+///
+/// Paired with the process id below. Within a process the counter separates two writes; across
+/// processes the pid does. Neither alone is enough: a counter restarts at zero on every start,
+/// which is the shape `COR-02` took, and a pid is shared by every write one process makes.
+static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A file name no other write can already have used.
+///
+/// `part.parquet` at version 7 becomes `part-v0000007-1a2f3.parquet`, and an extension-less
+/// name simply gains the suffix.
+///
+/// # The version, which is the readable half
+///
+/// It records the commit this write was *attempting*, which is the number somebody reading a
+/// directory listing wants and is usually the commit it landed at. Usually, not always: a
+/// writer that loses the race rebases onto a later version and keeps the file it has already
+/// written, because the bytes do not depend on which commit names them.
+///
+/// # The token, which is the half that makes the guarantee
+///
+/// The version alone is **not** unique across writers, and that is the second half of `COR-06`.
+/// Two publishers read the same `next_version`, so both intend the same version, so both
+/// compute the same name from the same caller-supplied `file_name`. Before this, the second
+/// write replaced the first; with `create_new` under it, the second write now fails --- loudly,
+/// which is better, and still a spurious failure on a contended table that exit criterion 6
+/// says must degrade rather than fail.
+///
+/// A process id and a per-process counter make the name unique without any coordination, which
+/// is the same scheme `atomicfs` uses for staging names and for the same reason: two writers
+/// racing for one destination must not be able to pick one temporary path.
+///
+/// # Why the caller's name is not left alone
+///
+/// Because a caller may reasonably publish the same logical name more than once --- the
+/// accumulator flushes one name per round --- and before this the second write truncated the
+/// first file while its `add` stayed in the log. Rows that had been acknowledged were gone from
+/// disk and still described.
+#[must_use]
+fn versioned_name(file_name: &str, version: u64) -> String {
+    let token = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mark = format!("v{version:07}-{:x}{token:x}", std::process::id());
+    match file_name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() => format!("{stem}-{mark}.{extension}"),
+        _ => format!("{file_name}-{mark}"),
+    }
 }
