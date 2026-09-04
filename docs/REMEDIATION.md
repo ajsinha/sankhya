@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2,642 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2,648 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -372,9 +372,39 @@ testing.
 
 This is `COR-08`'s shape one level up: *the catalogue protects the constant and not the proof.*
 
+**3.2 A schema change reaches the log (`FMT-01`).** This was live data loss with one binary
+reading its own files. A compatible change updated the in-memory shape and incremented
+`schema_changes_applied`; `Publication::create` is the **only** writer of `schemaString` and every
+caller gates it on the table being new, so the added column's data was encoded, written into
+Parquet, and unreachable by every query, permanently — while the metric said the change had been
+applied. `warehouse.rs` carried a comment reading *"a schema evolution writes a new one"*,
+describing a function that did not exist.
+
+Two pieces were missing and both are now there. `latest_metadata` reads the table's declared
+shape back — nothing ever had, which is also why checkpoints cannot be written (`OPS-21`) — and
+`Publication::evolve` writes the current metadata back with the schema replaced, so the id, the
+partition columns and every configuration entry survive. The commit carries metadata **alone**: a
+schema change moves no rows.
+
+Ordering matters and is now enforced: everything captured under the old shape is published before
+the new one is adopted, so no batch spans two schemas.
+
+The two smaller holes beside it are closed too. A `NOT NULL` column arriving at the source
+classified as an ordinary addition, because the added-column arm never looked at nullability —
+the one route around the `ColumnTightened` refusal, surfacing later as a scan error. And
+`ColumnsReordered` was declared and **never constructed anywhere**, so a pure reorder returned
+*"compatible, and nothing changed"*.
+
+**Two pre-existing survivors closed on the way.** The file-sequence recovery parsed a whole file
+stem as a number, and Phase 2's naming change had quietly made that parse fail — so the sequence
+restarted at zero on every restart and nothing noticed, because the per-write token had taken over
+the job of keeping names unique. The recovery is repaired, its comment no longer claims a safety
+role it has handed over, and the property it does still deliver — that a directory listing is in
+the order the files were written — is now asserted.
+
 ### Still open in Phase 3
 
-`3.2` `3.3` `3.4` `3.6` `3.7` `3.8` are not started. Three pre-existing survivors in
+`3.3` `3.4` `3.6` `3.7` `3.8` are not started. Three pre-existing survivors in
 `sankhya-publish` and one entry whose mutation does not compile were found while verifying this
 work and are not yet closed; they are coverage gaps in the write path rather than defects in it.
 
