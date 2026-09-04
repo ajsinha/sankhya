@@ -759,6 +759,38 @@ pub fn live_files_at(table_root: &Path, version: Version) -> Result<LiveSet, Com
 /// # Errors
 ///
 /// Returns an error if the log cannot be read or is malformed.
+/// The table's metadata as the log currently declares it.
+///
+/// The **last** `metaData` action wins, which is what the protocol says: a schema evolution is
+/// a new `metaData` at a later version, and a reader that took the first would serve the shape
+/// the table had when it was created for ever.
+///
+/// # Why this did not exist
+///
+/// Nothing read metadata back. `create` wrote one and no code path ever asked what it said,
+/// which is why two things downstream were impossible: a schema could not be *changed*, because
+/// changing it means writing the current one back with one field replaced, and a checkpoint
+/// could not be written, because a checkpoint carries the metadata and a fabricated default
+/// would tell every external reader a schema the table does not have.
+///
+/// `FMT-01` is the first of those. A compatible schema change updated the in-memory shape and
+/// incremented a success counter; the only writer of `schemaString` is gated on version zero,
+/// so the new column's data was encoded, written into Parquet, and **unreachable by every
+/// query, permanently** — while the metric said the change had been applied.
+///
+/// # Errors
+///
+/// [`CommitError`] if the log cannot be read.
+pub fn latest_metadata(table_root: &Path) -> Result<Option<Metadata>, CommitError> {
+    let mut found = None;
+    for (_, action) in read_actions_after(table_root, None)? {
+        if let Action::Metadata(metadata) = action {
+            found = Some(metadata);
+        }
+    }
+    Ok(found)
+}
+
 pub fn advance(table_root: &Path, base: &LiveSet) -> Result<LiveSet, CommitError> {
     let mut replay = Replay::from(base.clone());
     replay.advance(table_root)?;

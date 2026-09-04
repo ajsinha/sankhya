@@ -74,6 +74,16 @@ pub enum SchemaChange {
     },
     /// A column became mandatory. Existing rows may violate it.
     ColumnTightened { name: String },
+    /// A column arrived that is mandatory, so every row already published lacks a value for it.
+    ///
+    /// # Why this is not [`Self::ColumnAdded`]
+    ///
+    /// The added-column arm never looked at nullability, so a `NOT NULL` column arriving at the
+    /// source classified as an ordinary addition and was adopted --- surfacing later as an
+    /// error when something tried to scan a column the schema says cannot be null and every
+    /// existing row leaves empty. That is precisely what [`Self::ColumnTightened`] exists to
+    /// refuse, arriving by the one route that did not check.
+    ColumnAddedMandatory { name: String },
     /// Row identity changed, so previously published rows may no longer be addressable.
     IdentityChanged,
     /// Columns were reordered, which is indistinguishable from a rename pair.
@@ -93,6 +103,11 @@ impl fmt::Display for SchemaChange {
                 write!(f, "column {name} retyped from {from:?} to {to:?}")
             }
             Self::ColumnTightened { name } => write!(f, "column {name} became mandatory"),
+            Self::ColumnAddedMandatory { name } => write!(
+                f,
+                "column {name} was added and is mandatory, and every row already published \
+                 has no value for it"
+            ),
             Self::IdentityChanged => write!(f, "row identity changed"),
             Self::ColumnsReordered => write!(f, "columns reordered"),
         }
@@ -149,10 +164,27 @@ pub fn classify_change(current: &LogicalSchema, incoming: &LogicalSchema) -> Com
     // Columns that appeared or changed.
     for field in &incoming.fields {
         match find(current, &field.name) {
-            None => changes.push(SchemaChange::ColumnAdded {
-                name: field.name.clone(),
-                logical: field.logical.clone(),
-            }),
+            None => {
+                // Nullability is checked on the way **in**, not only on the way across.
+                //
+                // This arm recorded `ColumnAdded` and looked no further, so a mandatory column
+                // appearing at the source was adopted as an ordinary addition --- and the
+                // failure surfaced later, as a scan error on a column the schema says cannot be
+                // null and every already-published row leaves empty. `ColumnTightened` exists
+                // to refuse exactly that, and this was the route around it.
+                if field.nullable {
+                    changes.push(SchemaChange::ColumnAdded {
+                        name: field.name.clone(),
+                        logical: field.logical.clone(),
+                    });
+                } else {
+                    let change = SchemaChange::ColumnAddedMandatory {
+                        name: field.name.clone(),
+                    };
+                    changes.push(change.clone());
+                    blocking.push(change);
+                }
+            }
             Some(existing) => {
                 if existing.logical != field.logical {
                     let change = if widens(&existing.logical, &field.logical) {
@@ -194,6 +226,24 @@ pub fn classify_change(current: &LogicalSchema, incoming: &LogicalSchema) -> Com
                     }
                 }
             }
+        }
+    }
+
+    // A pure reordering, which is a change and was reported as none at all.
+    //
+    // `ColumnsReordered` was declared and **never constructed anywhere**, so two schemas with
+    // the same fields in a different order fell through every arm above and returned
+    // `Compatible` with an empty change list --- *"compatible, and nothing changed"*. Nothing
+    // then rewrote the metadata, so the log kept declaring the old order for ever.
+    //
+    // Compatible rather than blocking: this format addresses fields by name, so a reader is
+    // unaffected. It is recorded because the declared order should follow the source's, and
+    // because a change nobody records is a change nobody can see happened.
+    if changes.is_empty() {
+        let here: Vec<&String> = current.fields.iter().map(|f| &f.name).collect();
+        let there: Vec<&String> = incoming.fields.iter().map(|f| &f.name).collect();
+        if here != there {
+            changes.push(SchemaChange::ColumnsReordered);
         }
     }
 

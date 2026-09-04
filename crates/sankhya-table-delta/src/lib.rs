@@ -48,7 +48,8 @@ pub use history::{describe, difference, history, Change, Difference, NoDifferenc
 pub use cache::{LogCache, Outcome};
 pub use checkpoint::{latest_checkpoint, read_checkpoint, write_checkpoint, CheckpointReport};
 pub use log::{
-    advance, commit, commits, create, live_files, live_files_at, newest_after, partition_values_from,
+    advance, commit, commits, create, latest_metadata, live_files, live_files_at, newest_after,
+    partition_values_from,
     read_actions, read_actions_after,
     Action, AddFile, CommitError, Format, LiveSet, Metadata, RemoveFile, Replay, Version,
 };

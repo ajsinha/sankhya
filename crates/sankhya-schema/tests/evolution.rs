@@ -235,3 +235,66 @@ fn one_incompatible_change_among_compatible_ones_still_quarantines() {
     ]);
     assert!(!classify_change(&base(), &mixed).may_continue());
 }
+
+#[test]
+fn adding_a_mandatory_column_is_refused_rather_than_adopted() {
+    // `FMT-01`'s smaller hole. The added-column arm never looked at nullability, so a
+    // `NOT NULL` column arriving at the source classified as an ordinary addition — the one
+    // route around `ColumnTightened`, which exists to refuse exactly this.
+    //
+    // Every row already published has no value for the column. Adopting it means a schema that
+    // says the column cannot be null over files in which it always is, and the failure surfaces
+    // later as a scan error rather than here, where a person is still looking.
+    let mut extended = base();
+    extended
+        .fields
+        .push(field("added", LogicalType::Int32, false, false));
+
+    let classification = classify_change(&base(), &extended);
+    assert!(
+        !classification.may_continue(),
+        "a mandatory column was adopted over rows that have no value for it"
+    );
+    let Compatibility::Incompatible { reason, .. } = classification else {
+        panic!("adding a mandatory column must not be compatible");
+    };
+    assert!(
+        reason.contains("added") && reason.contains("mandatory"),
+        "the refusal does not say which column or why: {reason}"
+    );
+}
+
+#[test]
+fn adding_a_nullable_column_is_still_applied_automatically() {
+    // The control. The fix must refuse the mandatory case without refusing the ordinary one,
+    // which is the whole reason additive change is automatic.
+    let mut extended = base();
+    extended
+        .fields
+        .push(field("added", LogicalType::Int32, true, false));
+    assert!(classify_change(&base(), &extended).may_continue());
+}
+
+#[test]
+fn reordering_columns_is_reported_as_a_change_rather_than_as_nothing() {
+    // `ColumnsReordered` was declared and **never constructed anywhere**, so two schemas with
+    // the same fields in a different order fell through every arm and returned
+    // *"compatible, and nothing changed"*. Nothing then rewrote the metadata, and the log kept
+    // declaring the old order for ever.
+    //
+    // Compatible, not blocking: this format addresses fields by name, so a reader is
+    // unaffected. But a change reported as no change is a change nobody can see happened.
+    let mut swapped = base();
+    swapped.fields.reverse();
+
+    let classification = classify_change(&base(), &swapped);
+    assert!(classification.may_continue(), "a reorder is not a breaking change");
+    let Compatibility::Compatible { changes } = classification else {
+        panic!("a reorder should be compatible");
+    };
+    assert_eq!(
+        changes,
+        vec![SchemaChange::ColumnsReordered],
+        "a reorder was reported as no change at all"
+    );
+}

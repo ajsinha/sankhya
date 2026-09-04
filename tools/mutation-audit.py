@@ -3832,8 +3832,17 @@ CATALOGUE = [
 
     ("publish: declare a partition column the schema does not contain",
      "crates/sankhya-publish/src/publish.rs",
-     "        let stored = with_date_column(schema);",
-     "        let stored = schema.clone();",
+     "        // reader written against the source schema still finds its columns where they were.\n        let stored = with_date_column(schema);",
+     "        // reader written against the source schema still finds its columns where they were.\n        let stored = schema.clone();",
+     "sankhya-publish"),
+
+    # The same derivation on the evolution path, which is a second site and a quieter failure:
+    # a table that loses the column it is partitioned on at the *first schema change* rather
+    # than at creation, where nothing was watching for it.
+    ("publish: drop the partition column when a schema change is adopted",
+     "crates/sankhya-publish/src/publish.rs",
+     "        // evolution and the table would stop declaring the column it is partitioned on.\n        let stored = with_date_column(schema);",
+     "        // evolution and the table would stop declaring the column it is partitioned on.\n        let stored = schema.clone();",
      "sankhya-publish"),
 
     ("publish: leave the date column out of the file it partitions by",
@@ -4739,6 +4748,53 @@ CATALOGUE = [
      "            if at + 1 < window {\n                return None;\n            }\n            values\n                .get(at + 1 - window..=at)\n                .map(|slice| deterministic_sum(slice) / divisor)",
      "            values\n                .get(at.saturating_sub(window - 1)..=at)\n                .map(|slice| deterministic_sum(slice) / divisor)",
      "sankhya-math"),
+
+    # --- Phase 3: a schema change that reached memory and not the log --------------------------
+
+    # `FMT-01`. `Publication::create` is the only writer of `schemaString` and every caller
+    # gates it on the table being new, so without this the added column's data is encoded,
+    # written into Parquet, and unreachable by every query for ever --- while
+    # `schema_changes_applied` says the change was applied. Compaction then refuses inputs that
+    # do not share a schema, so that partition fails maintenance on every tick, silently.
+    ("ingest: adopt a schema change in memory without writing it to the log",
+     "crates/sankhya-ingest/src/pipeline.rs",
+     "                if sankhya_publish::is_table(&directory) {",
+     "                if false {",
+     "sankhya-ingest"),
+
+    # The rows captured under the old shape are published first, or a batch spans two schemas
+    # and the metadata that follows describes files it does not match.
+    ("ingest: adopt a new shape before publishing what the old one captured",
+     "crates/sankhya-ingest/src/pipeline.rs",
+     "        if matches!(classified, Compatibility::Compatible { .. }) {\n            self.publish(true)?;\n        }",
+     "        if false {\n            self.publish(true)?;\n        }",
+     "sankhya-ingest"),
+
+    # Evolution writes the table's *current* metadata back with one field replaced. Building a
+    # fresh one loses the id, the partition columns and every configuration entry --- clone
+    # lineage, feed positions, table class, key columns.
+    ("delta: read the first metaData rather than the last when asking what a table declares",
+     "crates/sankhya-table-delta/src/log.rs",
+     "        if let Action::Metadata(metadata) = action {\n            found = Some(metadata);\n        }",
+     "        if let Action::Metadata(metadata) = action {\n            found = found.or(Some(metadata));\n        }",
+     "sankhya-table-delta"),
+
+    # A mandatory column arriving at the source has no value in any row already published.
+    # Adopting it is the one route around `ColumnTightened`, which exists to refuse exactly
+    # this, and the failure then surfaces as a scan error rather than at the change.
+    ("schema: adopt an added column without asking whether it is mandatory",
+     "crates/sankhya-schema/src/evolve.rs",
+     "                if field.nullable {",
+     "                if true {",
+     "sankhya-schema"),
+
+    # `ColumnsReordered` was declared and never constructed, so a pure reorder returned
+    # "compatible, and nothing changed" and nothing rewrote the metadata.
+    ("schema: report a reordering as no change at all",
+     "crates/sankhya-schema/src/evolve.rs",
+     "        if here != there {\n            changes.push(SchemaChange::ColumnsReordered);\n        }",
+     "        if false {\n            changes.push(SchemaChange::ColumnsReordered);\n        }",
+     "sankhya-schema"),
 
     # --- Phase 3: a plausible wrong number, rather than a refusal ------------------------------
 

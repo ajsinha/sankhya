@@ -266,6 +266,74 @@ impl Publication {
         Ok(())
     }
 
+    /// Record a widened schema on a table that already exists.
+    ///
+    /// # The write path `FMT-01` says does not exist
+    ///
+    /// [`Self::create`] is the **only** writer of `schemaString`, and every caller gates it on
+    /// the table being new. So a compatible schema change --- a column added at the source ---
+    /// updated the pipeline's in-memory shape, incremented `schema_changes_applied`, and wrote
+    /// the new column's data into Parquet under a log that still declared the old schema.
+    ///
+    /// The data was there and **unreachable by every query, permanently**, while the metric
+    /// said the change had been applied. `warehouse.rs` carried a comment reading *"a schema
+    /// evolution writes a new one"*, describing this function before it was written.
+    ///
+    /// It is live data loss with one binary reading its own files, and the knock-on is worse:
+    /// compaction refuses inputs that do not share a schema, so after one added column that
+    /// partition's compaction fails on every tick for ever, silently.
+    ///
+    /// # What it does and does not check
+    ///
+    /// It writes the table's **current** metadata back with the schema replaced, so the id, the
+    /// partition columns and every configuration entry --- clone lineage, feed positions, table
+    /// class, key columns --- survive. Rebuilding them would be inventing them.
+    ///
+    /// It does not judge whether the change is compatible. That decision belongs to the caller
+    /// that compared the two shapes and has the vocabulary to say *why* one is not adoptable;
+    /// this refuses only what it can see for itself, which is a schema the format cannot carry
+    /// and a table that is not there.
+    ///
+    /// The commit carries the metadata **alone**: no `add`, no `remove`. A schema change moves
+    /// no rows, and a reader replaying the log sees the same live set before and after.
+    ///
+    /// # Errors
+    ///
+    /// [`PublishError::UnrepresentableSchema`] for a schema the format cannot carry,
+    /// [`PublishError::Commit`] if there is no table to evolve or the version is taken.
+    pub fn evolve(&self, version: u64, schema: &Schema) -> Result<(), PublishError> {
+        // The same derivation `create` uses, or the date column would be lost on the first
+        // evolution and the table would stop declaring the column it is partitioned on.
+        let stored = with_date_column(schema);
+        let json =
+            schema_string(&stored).map_err(|error| PublishError::UnrepresentableSchema {
+                detail: error.to_string(),
+            })?;
+
+        let existing = sankhya_table_delta::latest_metadata(&self.root)
+            .map_err(|error| PublishError::Commit {
+                version,
+                detail: error.to_string(),
+            })?
+            .ok_or_else(|| PublishError::Commit {
+                version,
+                detail: "this table declares no metadata, so there is no schema to evolve; a \
+                         table is created before it is changed"
+                    .to_string(),
+            })?;
+
+        let mut metadata = existing;
+        metadata.schema_string = json;
+        commit(&self.root, version, &[Action::Metadata(metadata)]).map_err(|error| {
+            PublishError::Commit {
+                version,
+                detail: error.to_string(),
+            }
+        })?;
+        self.remember(version);
+        Ok(())
+    }
+
     /// Create a clone: version zero of a log carrying the origin's schema **verbatim** and the
     /// properties that record where it came from.
     ///

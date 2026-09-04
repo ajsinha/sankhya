@@ -217,6 +217,57 @@ fn a_restart_does_not_reuse_a_file_name() {
 }
 
 #[test]
+fn a_restart_continues_the_file_sequence_rather_than_starting_over() {
+    // What the sequence is *for*, now that it is no longer what makes a name safe.
+    //
+    // The publisher appends the version it was attempting and a per-write token, so two files
+    // asked for under the same name no longer collide whatever the sequence does — which is
+    // why the two mutations of this recovery survived: the test above proves names are unique,
+    // and they are unique for a different reason now.
+    //
+    // The sequence still earns its place, and this is the property it delivers: the stems are
+    // monotonic, so a directory listing is in the order the files were written. A restart that
+    // began again at zero would produce two `00000000-*` files that differ only by a token
+    // nobody can order, in a listing an operator reads to answer "what arrived when".
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let root = table_root(dir.path());
+
+    let mut first = pipeline(dir.path());
+    run(&mut first, &stream(0, 6, 10));
+    drop(first);
+
+    let mut second = pipeline(dir.path());
+    run(&mut second, &stream(6, 6, 10));
+
+    // The number capture asked for, which is the part before the version marker.
+    let mut stems: Vec<u64> = live_files(&root)
+        .expect("log")
+        .files
+        .iter()
+        .filter_map(|f| {
+            f.path
+                .rsplit('/')
+                .next()?
+                .split_once("-v")
+                .map(|(head, _)| head)?
+                .parse::<u64>()
+                .ok()
+        })
+        .collect();
+    assert!(stems.len() > 1, "the fixture must publish more than one file: {stems:?}");
+
+    let total = stems.len();
+    stems.sort_unstable();
+    stems.dedup();
+    assert_eq!(
+        stems.len(),
+        total,
+        "the sequence restarted, so two files carry the same number and only a token tells \
+         them apart"
+    );
+}
+
+#[test]
 fn a_restart_continues_the_version_sequence() {
     // Restarting at version zero would be told the table already exists, and the
     // pipeline would stop publishing entirely.

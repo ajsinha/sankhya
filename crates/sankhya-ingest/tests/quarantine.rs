@@ -122,6 +122,134 @@ fn an_added_column_is_applied_without_operator_involvement() {
     let files = p.publish(true).expect("publishes");
     assert_eq!(files.len(), 1, "capture continues under the new shape");
     assert_eq!(files[0].rows, 1);
+
+    // And the **log** says so, which is the half `FMT-01` was missing.
+    //
+    // `schema_changes_applied` above counts an in-memory adoption. `Publication::create` is
+    // the only writer of `schemaString` and every caller gates it on the table being new, so
+    // the added column's data was encoded, written into Parquet, and unreachable by every
+    // query for ever --- while this counter said the change had been applied. This assertion
+    // is the one that fails against that.
+    let root = warehouse.path().join("public").join("readings");
+    let metadata = sankhya_table_delta::latest_metadata(&root)
+        .expect("the log is readable")
+        .expect("a table that has been published to declares metadata");
+    assert!(
+        metadata.schema_string.contains("\"added\""),
+        "the log still declares the shape the table had before the column arrived: {}",
+        metadata.schema_string
+    );
+
+    // Every column, not just the new one: evolution writes the *current* metadata back with
+    // one field replaced, so losing a column here would mean losing the rest of the table.
+    for column in ["id", "label", "added", "sank_data_date"] {
+        assert!(
+            metadata.schema_string.contains(&format!("\"{column}\"")),
+            "the evolved schema dropped `{column}`: {}",
+            metadata.schema_string
+        );
+    }
+}
+
+#[test]
+fn rows_captured_under_the_old_shape_are_published_before_the_new_one_is_adopted() {
+    // The ordering, which is what keeps a batch from spanning two schemas.
+    //
+    // A relation message can arrive with rows still in the batcher. Those rows were captured
+    // under the old shape and their values line up with the old column list; adopting first
+    // means they are encoded against the new one. So they are published first, and the
+    // metadata that follows describes only files written after it.
+    let warehouse = tempfile::tempdir().expect("a temporary directory");
+    let mut p = pipeline(warehouse.path());
+
+    p.accept(&begin(1)).expect("accepts");
+    p.accept(&original()).expect("accepts");
+    p.accept(&insert(2)).expect("accepts");
+    p.accept(&commit(10)).expect("accepts");
+    p.publish(true).expect("publishes");
+
+    // Captured and **not** published: this is the row the ordering is about.
+    p.accept(&begin(2)).expect("accepts");
+    p.accept(&insert(2)).expect("accepts");
+    p.accept(&commit(20)).expect("accepts");
+
+    p.accept(&relation(vec![
+        column("id", 20, true),
+        column("label", 25, false),
+        column("added", 23, false),
+    ]))
+    .expect("accepts");
+
+    let root = warehouse.path().join("public").join("readings");
+    let actions = sankhya_table_delta::read_actions_after(&root, None).expect("the log");
+    let last_add = actions
+        .iter()
+        .filter(|(_, action)| matches!(action, sankhya_table_delta::Action::Add(_)))
+        .map(|(version, _)| *version)
+        .max()
+        .expect("rows were published");
+    let last_metadata = actions
+        .iter()
+        .filter(|(_, action)| matches!(action, sankhya_table_delta::Action::Metadata(_)))
+        .map(|(version, _)| *version)
+        .max()
+        .expect("the schema change reached the log");
+
+    assert!(
+        last_metadata > last_add,
+        "the new shape was adopted at version {last_metadata} while rows captured under the \
+         old one were still unpublished, and they landed at {last_add}"
+    );
+    assert_eq!(
+        sankhya_table_delta::live_files(&root).expect("a live set").files.len(),
+        2,
+        "both batches must be on disk: the one before the change and the one that forced it out"
+    );
+}
+
+#[test]
+fn an_added_column_leaves_the_table_readable_and_the_history_intact() {
+    // The consequence, rather than the mechanism. A schema change is a new `metaData` at a
+    // later version and moves no rows, so the live set must be exactly what it was --- and the
+    // rows written before the change must still be there.
+    //
+    // The knock-on `OPS-11` records is what makes this worth asserting separately: compaction
+    // refuses inputs that do not share a schema, so a table whose log and files disagree fails
+    // maintenance on every tick, for ever, silently.
+    let warehouse = tempfile::tempdir().expect("a temporary directory");
+    let mut p = pipeline(warehouse.path());
+
+    p.accept(&begin(1)).expect("accepts");
+    p.accept(&original()).expect("accepts");
+    p.accept(&insert(2)).expect("accepts");
+    p.accept(&commit(10)).expect("accepts");
+    p.publish(true).expect("publishes");
+
+    let root = warehouse.path().join("public").join("readings");
+    let before = sankhya_table_delta::live_files(&root).expect("a live set");
+    assert!(!before.files.is_empty(), "the fixture must publish something first");
+
+    p.accept(&begin(2)).expect("accepts");
+    p.accept(&relation(vec![
+        column("id", 20, true),
+        column("label", 25, false),
+        column("added", 23, false),
+    ]))
+    .expect("accepts");
+    p.accept(&commit(20)).expect("accepts");
+
+    let after = sankhya_table_delta::live_files(&root).expect("a live set");
+    assert_eq!(
+        after.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>(),
+        before.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>(),
+        "a schema change moved rows; it commits metadata alone"
+    );
+    assert!(
+        after.version > before.version,
+        "the change reached no version of the log: {:?} then {:?}",
+        before.version,
+        after.version
+    );
 }
 
 #[test]

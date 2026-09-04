@@ -316,15 +316,60 @@ impl Pipeline {
             }
         };
 
+        let Some(state) = self.tables.get(&relation.relation_id) else {
+            return Ok(());
+        };
+        let classified = classify_change(&state.onboarded.schema, &incoming.schema);
+
+        // Everything captured under the old shape is published **before** the new one is
+        // adopted, so no batch spans two schemas and the log's metadata always describes the
+        // files that precede it. Forced, because a partial batch under the old shape must not
+        // wait for a size threshold that the new shape will never contribute to.
+        if matches!(classified, Compatibility::Compatible { .. }) {
+            self.publish(true)?;
+        }
+
         let Some(state) = self.tables.get_mut(&relation.relation_id) else {
             return Ok(());
         };
 
-        match classify_change(&state.onboarded.schema, &incoming.schema) {
+        match classified {
             Compatibility::Unchanged => {}
             Compatibility::Compatible { changes } => {
-                // Publish what was captured under the old shape before adopting the
-                // new one, so no batch spans two schemas.
+                // The change reaches the **log**, not only this process's memory.
+                //
+                // `FMT-01`: this used to update `state.onboarded` and increment the counter,
+                // and `Publication::create` --- the only writer of `schemaString` --- is gated
+                // on the table being new. So the added column's data was encoded, written into
+                // Parquet, and unreachable by every query for ever, while the metric said the
+                // change had been applied. Compaction then refused inputs that do not share a
+                // schema, so that partition's compaction failed on every tick, silently.
+                //
+                // A table with no log yet is not evolved and does not need to be: the `create`
+                // that follows will carry the new shape, and there are no files under the old
+                // one to be orphaned by it.
+                let directory = self.warehouse.join(state.onboarded.location.relative_path());
+                if sankhya_publish::is_table(&directory) {
+                    let publication = Publication::external(
+                        &directory,
+                        state.onboarded.location.source_table.clone(),
+                    )
+                    .writing_with(self.writer);
+                    let at = if state.next_version == 0 {
+                        publication.next_version()
+                    } else {
+                        state.next_version
+                    };
+                    publication
+                        .evolve(at, &incoming.schema.arrow_schema())
+                        .map_err(|e| {
+                            Error::InvariantViolated(format!(
+                                "adopting the new shape of {}: {e}",
+                                state.onboarded.location.source_table
+                            ))
+                        })?;
+                    state.next_version = at.saturating_add(1);
+                }
                 state.onboarded = incoming;
                 self.stats.schema_changes_applied = self
                     .stats
@@ -463,9 +508,15 @@ impl Pipeline {
             //
             // A restart resets in-memory state, and both counters below are derived
             // rather than remembered — so they must come from the log, which is the only
-            // thing that survives. Without this the pipeline would restart at sequence
-            // zero and write `00000000.parquet` over a file that is still live, and
-            // restart at version zero and be told the table already exists.
+            // thing that survives. Without this the pipeline would restart at version zero
+            // and be told the table already exists.
+            //
+            // It would also restart the file sequence at zero. That used to mean writing
+            // `00000000.parquet` over a file that is still live; since the publisher began
+            // appending the version and a per-write token to the name it does not, and the
+            // sequence's remaining job is **order**: two files whose numbers repeat and whose
+            // only difference is a token nobody can sort are a directory listing that no
+            // longer answers "what arrived when".
             //
             // The sequence is the highest ever committed, not the highest still live: a
             // compacted-away file's name must not be reused while readers holding an
@@ -489,7 +540,19 @@ impl Pipeline {
                                 .rsplit('/')
                                 .next()
                                 .and_then(|name| name.strip_suffix(".parquet"))
-                                .and_then(|stem| stem.parse::<u64>().ok()),
+                                // The publisher decides the on-disk name, and it appends the
+                                // version it was attempting and a per-write token: what capture
+                                // asked to call `00000000.parquet` is committed as
+                                // `00000000-v0000002-1a2f3.parquet`. Parsing the whole stem
+                                // yields nothing, so the sequence restarts at zero --- which is
+                                // the failure the comment above records happening once already,
+                                // when partitioning put a directory in front of the name.
+                                //
+                                // The sequence is the part before the version marker, and it is
+                                // taken by splitting on it rather than by a fixed width, so a
+                                // caller that names files differently is skipped rather than
+                                // misread.
+                                .and_then(|stem| stem.split_once("-v").map_or(stem, |(head, _)| head).parse::<u64>().ok()),
                             _ => None,
                         })
                         .max();
