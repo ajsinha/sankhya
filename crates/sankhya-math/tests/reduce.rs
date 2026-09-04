@@ -106,6 +106,69 @@ fn a_different_partitioning_gives_the_same_total() {
 }
 
 #[test]
+fn a_total_that_cancels_is_exact_rather_than_nearly_right() {
+    // `COR-08`, as the four inputs the audit ran against the shipped binary.
+    //
+    // The fast path scales every term so the accumulator's last bit sits a hundred binary
+    // places under the **largest term**, and concluded from that that truncation could not
+    // move the answer. What is returned is the **total**, and cancellation makes the total
+    // arbitrarily smaller than the largest term --- so the margin was about 48 bits of
+    // cancellation, not 100, and past it the answer was quietly approximate.
+    //
+    // These are not exotic. A cumulative position that nets out, a hedge against its
+    // underlying, a reconciliation of two large sides: all of them cancel.
+    for (values, expected, was) in [
+        (vec![1e13, -1e13, 0.01], 0.01, "9.999999999999995e-3"),
+        (vec![1e18, -1e18, 0.01], 0.01, "9.999999999763531e-3"),
+        (vec![1e30, -1e30, 1e-5], 1e-5, "0"),
+        (vec![1.0, -1.0, 1e-25], 1e-25, "9.999995265034156e-26"),
+    ] {
+        let total = deterministic_sum(&values);
+        assert_eq!(
+            total, expected,
+            "{values:?} summed to {total:e} rather than {expected:e}; before the fix it was \
+             {was}, which is the figure that will not tie out and nobody can explain"
+        );
+    }
+}
+
+#[test]
+fn a_cancelled_total_is_the_same_however_the_work_was_divided() {
+    // The property the fix must not cost. The exact route is reached only by declining the
+    // fast one, and a fallback that depended on ordering would trade a wrong answer for two
+    // different answers.
+    let values = vec![1e18, 0.01, -1e18, 7.0, -7.0, 1e-9];
+    let baseline = deterministic_sum(&values);
+
+    let mut rotated = values.clone();
+    for _ in 0..values.len() {
+        rotated.rotate_left(1);
+        assert_eq!(
+            deterministic_sum(&rotated),
+            baseline,
+            "the order changed the total: {rotated:?}"
+        );
+    }
+
+    let mut reversed = values;
+    reversed.reverse();
+    assert_eq!(deterministic_sum(&reversed), baseline);
+}
+
+#[test]
+fn an_ordinary_sum_still_takes_the_fast_path() {
+    // The guard that makes the fix safe declines when the total has cancelled below the
+    // truncation floor. It must not decline on data that has not cancelled, or every sum in
+    // the system pays for an expansion it does not need.
+    //
+    // Checked through the answer rather than by inspecting which route ran: a hundred
+    // thousand terms of the same sign cannot cancel, and the exact total is known.
+    let values: Vec<f64> = (1..=100_000).map(f64::from).collect();
+    let expected = 100_000.0 * 100_001.0 / 2.0;
+    assert_eq!(deterministic_sum(&values), expected);
+}
+
+#[test]
 fn an_empty_sum_is_zero() {
     assert_eq!(deterministic_sum(&[]), 0.0);
 }

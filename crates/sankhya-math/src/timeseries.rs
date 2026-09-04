@@ -232,9 +232,24 @@ pub fn log_returns(values: &[f64]) -> Result<Vec<f64>, VectorError> {
 /// absolute, because a drawdown that is reported positive gets summed with returns by somebody
 /// eventually.
 ///
+/// # Why a non-positive peak is refused rather than divided by
+///
+/// A drawdown is a **proportion of a peak**, and a proportion of a non-positive base is not a
+/// smaller number --- it is a different question. `value / peak - 1.0` against a negative peak
+/// flips the sign: `[-100, -200]` returned `[0.0, 1.0]`, a **positive** drawdown for a series
+/// that doubled its loss, under a docstring promising a negative proportion. A peak of exactly
+/// zero returned `0.0`, so `max_drawdown([0, -50, -100])` was `0.0` --- a default substituted
+/// where a refusal was meant.
+///
+/// A cumulative profit-and-loss curve crossing zero is the ordinary input this happens on, and
+/// it is the one where the answer is read straight into a report. What such a series needs is
+/// an *absolute* drawdown, in currency; this function does not answer that question and now
+/// says so instead of answering a different one.
+///
 /// # Errors
 ///
-/// [`VectorError::Empty`] for an empty series.
+/// [`VectorError::Empty`] for an empty series, and [`VectorError::Refused`] for a series whose
+/// running peak is not positive.
 pub fn drawdown(values: &[f64]) -> Result<Vec<f64>, VectorError> {
     if values.is_empty() {
         return Err(VectorError::Empty);
@@ -245,7 +260,15 @@ pub fn drawdown(values: &[f64]) -> Result<Vec<f64>, VectorError> {
         if *value > peak {
             peak = *value;
         }
-        out.push(if peak != 0.0 { value / peak - 1.0 } else { 0.0 });
+        if peak <= 0.0 || !peak.is_finite() {
+            return Err(VectorError::Refused(format!(
+                "a drawdown is a proportion of a peak, and this series' peak at that point is \
+                 {peak}. Dividing by it reports a fall as a rise, and substituting zero reports \
+                 a series that only fell as one that never did. A cumulative profit-and-loss \
+                 curve wants an absolute drawdown, in its own units, not a proportion"
+            )));
+        }
+        out.push(value / peak - 1.0);
     }
     Ok(out)
 }

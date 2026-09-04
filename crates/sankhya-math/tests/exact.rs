@@ -322,3 +322,38 @@ fn a_total_of_nothing_and_a_total_of_zeroes_are_both_positive_zero() {
     assert_eq!(sankhya_math::exact_sum(&[0.0, -0.0]), Some(0.0));
     assert!(sankhya_math::exact_sum(&[-0.0, -0.0]).is_some_and(|t| t == 0.0 && t.is_sign_positive()));
 }
+
+#[test]
+fn an_infinity_taints_an_exact_sum_rather_than_becoming_a_nan_inside_it() {
+    // An expansion holds a sum as non-overlapping doubles, and `two_sum` on an infinity
+    // produces a `NaN` component --- so an expansion that admits one stops being an
+    // expansion of anything. The variant exists to notice that and hand the ordinary IEEE
+    // result back instead.
+    //
+    // This mutation survived the audit before this test: nothing asserted what an expansion
+    // does with a value it cannot represent, so the branch that decides was covered by
+    // nothing at all.
+    let mut exact = sankhya_math::Exact::zero();
+    exact.add(1e300);
+    exact.add(f64::INFINITY);
+    exact.add(-1e300);
+
+    assert!(!exact.is_exact(), "an expansion holding an infinity called itself exact");
+    let total = exact.to_f64();
+    assert!(
+        total.is_infinite() && total.is_sign_positive(),
+        "an infinity became {total} inside the expansion rather than propagating"
+    );
+
+    // A NaN propagates as a NaN, which is the other thing that must not turn into a number.
+    let mut with_nan = sankhya_math::Exact::zero();
+    with_nan.add(5.0);
+    with_nan.add(f64::NAN);
+    assert!(with_nan.to_f64().is_nan(), "a NaN was absorbed into a finite total");
+
+    // And combining a tainted expansion into a clean one taints it too, or a roll-up would
+    // launder the infinity one level up.
+    let mut clean = sankhya_math::Exact::of(&[1.0, 2.0]);
+    clean.combine(&exact);
+    assert!(!clean.is_exact(), "combining a tainted expansion left the result exact");
+}

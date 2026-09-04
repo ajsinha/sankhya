@@ -114,6 +114,43 @@ fn a_request_for_longer_than_the_maximum_is_clamped_and_the_grant_is_returned() 
 }
 
 #[test]
+fn a_renewal_is_clamped_to_the_maximum_the_same_way_a_grant_is() {
+    // The ceiling has two doors and only one of them was tested. A lease that cannot be
+    // *granted* past the maximum but can be *renewed* past it has no maximum: a client that
+    // renews on a timer holds a snapshot for as long as it likes, which is exactly the
+    // forgotten lease this registry exists to make impossible --- storage growing, compaction
+    // accumulating superseded files it may not delete, and the cause a connection somebody
+    // opened last March.
+    //
+    // The gap was invisible because the catalogue entry for the ceiling named a line that
+    // occurs at both sites and mutated the first. `check-mutations` now refuses an entry that
+    // does not name one site.
+    let mut leases = Leases::with_max_lifetime(MINUTE);
+    leases.acquire("s1", tenant("acme"), 41, 0, MINUTE);
+
+    let renewed = leases
+        .renew("s1", MINUTE / 2, 100 * MINUTE)
+        .expect("a live lease renews");
+    assert_eq!(
+        renewed.expires_at,
+        MINUTE / 2 + MINUTE,
+        "a renewal granted {} of the {} it asked for; the ceiling applies to renewal or it \
+         is not a ceiling",
+        renewed.expires_at - MINUTE / 2,
+        100 * MINUTE
+    );
+
+    // And renewing repeatedly never carries the expiry further than one maximum away from
+    // now, which is the property a timer-driven client would otherwise defeat.
+    let mut at = MINUTE / 2;
+    for _ in 0..10 {
+        at += MINUTE / 4;
+        let again = leases.renew("s1", at, 100 * MINUTE).expect("still live");
+        assert_eq!(again.expires_at, at + MINUTE, "a renewal walked past the ceiling");
+    }
+}
+
+#[test]
 fn there_is_no_way_to_construct_an_unbounded_registry() {
     // The unbounded case is the one that quietly stops a warehouse reclaiming space, so it
     // is not expressible. Even zero becomes one.

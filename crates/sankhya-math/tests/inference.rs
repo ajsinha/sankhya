@@ -346,3 +346,59 @@ fn a_regression_on_a_badly_conditioned_design_still_recovers_its_coefficients() 
         assert!(residual.abs() < 1e-4, "a residual of {residual} on exact data");
     }
 }
+
+#[test]
+fn a_small_f_statistic_reports_a_lower_tail_rather_than_zero() {
+    // `COR-10`. The module header states the rule --- every tail comes from `chisq_sf`, `f_sf`
+    // or `t_two_sided` rather than as `1 - cdf` --- and `f_test` took the lower tail as
+    // `1.0 - upper`. A double near one has no bits below about `1e-16`, so every lower-tail
+    // probability smaller than that was reported as **zero**: in the direction that makes a
+    // finding look stronger than it is.
+    //
+    // A variance ratio this extreme is what a comparison of a near-constant series against a
+    // volatile one produces, which is an ordinary thing to test.
+    // A variance ratio of a twentieth over sixty observations each. Chosen so the true lower
+    // tail is about `8e-24` --- small, and comfortably representable --- while `1.0 - upper`
+    // is **exactly zero**, because `upper` has rounded to one. That is the whole of the
+    // defect: not an approximation, a total loss.
+    let spread = 20.0f64.sqrt();
+    let tight: Vec<f64> = (0..60).map(|i| 100.0 + f64::from(i % 2)).collect();
+    let loose: Vec<f64> = (0..60).map(|i| 100.0 + f64::from(i % 2) * spread).collect();
+
+    let result = sankhya_math::inference::f_test(&tight, &loose).expect("a test");
+    let upper = sankhya_math::distribution::f_sf(result.statistic, 59.0, 59.0).expect("upper");
+    assert_eq!(
+        1.0 - upper,
+        0.0,
+        "the fixture must be one where the subtraction loses everything, or this test would \
+         pass against the defect it is about"
+    );
+    assert!(
+        result.p_value > 0.0,
+        "a p-value of exactly zero is the subtraction this module forbids, and it overstates \
+         the finding"
+    );
+    assert!(
+        result.p_value < 1e-20,
+        "the lower tail is about 8e-24, so a two-sided p-value near 1.5e-23 is the answer: {}",
+        result.p_value
+    );
+}
+
+#[test]
+fn the_f_test_is_symmetric_in_the_way_the_distribution_is() {
+    // Swapping the samples inverts the statistic, and a two-sided p-value must not care.
+    // This is the property the reciprocal identity buys, and the property `1 - upper` broke
+    // asymmetrically: it was accurate on one side and not the other.
+    let left: Vec<f64> = (0..40).map(|i| f64::from(i % 7)).collect();
+    let right: Vec<f64> = (0..40).map(|i| f64::from(i % 3) * 4.0).collect();
+
+    let forward = sankhya_math::inference::f_test(&left, &right).expect("a test");
+    let backward = sankhya_math::inference::f_test(&right, &left).expect("a test");
+    assert!(
+        (forward.p_value - backward.p_value).abs() < 1e-12,
+        "swapping the samples changed the two-sided p-value: {} against {}",
+        forward.p_value,
+        backward.p_value
+    );
+}

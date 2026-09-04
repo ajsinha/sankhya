@@ -271,6 +271,52 @@ gives the identical `f64`.
 The cost is a few doubles per cell and a pass over them per addition. It buys the one property a
 cache must have: not changing the answer.
 
+### The sum underneath it, and a proof that was wrong
+
+Everything above rests on the base sum being exact, and for eight weeks it was not.
+
+The reduction takes a fast path first: scale every term so the accumulator's least significant bit
+sits a hundred binary places under the **largest term**, add as integers — associative and
+commutative by construction, no sort needed — and scale back. Its docstring said truncation could
+not matter, because a term small enough to lose bits is *"more than 47 places below anything the
+returned `f64` can represent"*.
+
+That step is false. What is returned is the **total**, and cancellation makes the total
+arbitrarily smaller than the largest term. The margin was about forty-eight bits of cancellation,
+not a hundred, and past it the answer was quietly approximate:
+
+| Input | Returned | Correct |
+|---|---|---|
+| `[1e13, -1e13, 0.01]` | `9.999999999999995e-3` | `0.01` |
+| `[1e18, -1e18, 0.01]` | `9.999999999763531e-3` | `0.01` |
+| `[1e30, -1e30, 1e-5]` | `0` | `1e-5` |
+| `[1.0, -1.0, 1e-25]` | `9.999995265034156e-26` | `1e-25` |
+
+A cumulative position that nets out, a hedge against its underlying, a reconciliation of two large
+sides — all of them cancel, and none of them is exotic. The module's own text rejects a candidate
+fast path for a worst relative error of `5e-11` on the grounds that *"that is precisely the figure
+that will not tie out and nobody can explain"*; the shipped path produced `2.4e-11` on a
+three-element input.
+
+The premise cannot be repaired, because how far an input cancels is not knowable before summing
+it. So it is **checked afterwards**, against the total this run produced: each term is truncated
+toward zero and discards less than one unit of the scale, `k` truncations discard less than `k`
+units, and that is below half an ulp of the total only while the total exceeds `k · 2^53`. Where
+it does not, the route declines and the exact expansion answers instead.
+
+Two details decide whether the fix costs anything. `k` counts the terms that **actually** lost
+bits rather than every term — a term is truncated only when its scaled magnitude falls below
+`2^52`, so ordinary well-scaled data has `k = 0` and always takes the fast path, and the canonical
+hard case `[1e16, 1, -1e16, 1]` repeated, which cancels hard and truncates nothing, still does.
+And the fallback is the expansion above rather than compensated floating point, because the
+fallback is reached exactly when a fixed margin was not enough.
+
+> **Key idea**
+> The mutation catalogue held one entry for this code, and it changed the constant `100` to `20` —
+> which the random property test catches. **It protected the constant and not the proof.** The
+> property test spans about twenty-seven bits within a vector, and random data never cancels
+> forty-eight.
+
 > **Key idea**
 > **A cube that is faster and different is not a faster cube.** The bit-identical property is
 > load-bearing — it is what makes materialisation a cache rather than a second source of truth,

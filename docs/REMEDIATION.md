@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2,632 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2,642 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -323,6 +323,60 @@ The failure this product exists to prevent: a number of the right magnitude and 
 | 3.6 | `CLI-01` `CLI-05` | Every timestamp on the wire is a raw integer; a null inside an array reads as `0.0` |
 | 3.7 | `CLI-06` `CLI-07` `CLI-09` `RUN-07` | Silent no-ops: `SET SNAPSHOT` lost, unknown `by=` changing the grain, trailing comments returning a bogus empty row |
 | 3.8 | `COR-19`–`COR-29` | Remaining snapshot, cache and cube arithmetic |
+
+### Phase 3 — what has landed so far
+
+**3.1 `deterministic_sum` is exact again.** The fast path's proof concluded from a margin under
+the *largest term* that truncation could not move the answer, and what is returned is the
+**total**. All four inputs the audit ran now return the exact value; §10.4 of the book has the
+post-condition and why counting the terms that actually lost bits keeps the fast path free.
+
+The catalogue's one entry for this code changed the constant `100` to `20`, which the random
+property test catches — it protected the constant and not the proof.
+
+**3.5 `irr`, `drawdown`, `f_test` — three plausible wrong numbers.**
+
+- `irr` returned `Ok(10.0)` for a hundred-flow project whose true rate is eleven per cent, and
+  whose value at the returned rate is `-989`. Two defects: a discount factor that underflows near
+  a rate of minus one makes the value a `NaN`, and `NaN` compares false against everything, so
+  neither the refusal nor the bracket test could fire. And testing the extremes is only a bracket
+  when the function crosses once between them — this sequence has two roots, so the corrected
+  guard first refused a sequence every textbook answers. The range is now **scanned outward from
+  zero**, and the answer is checked against the equation it is defined by before it is returned.
+- `drawdown` divided by a non-positive peak, so `[-100, -200]` reported a **positive** drawdown
+  for a series that doubled its loss, and a peak of zero returned `0.0` — a default where a
+  refusal was meant. A cumulative profit-and-loss curve crossing zero is the ordinary input. It
+  now refuses and says what to reach for instead.
+- `f_test` took its lower tail as `1 - upper`, which the module header forbids by name. A double
+  near one has no bits below about `1e-16`, so every lower tail smaller than that was reported as
+  **zero** — in the direction that makes a finding look stronger. It now uses the distribution's
+  own reciprocal symmetry.
+
+### What the mutation catalogue turned out to be doing
+
+Verifying the new entries found a survivor whose *entry* was wrong rather than whose code was
+uncovered: it named `if !value.is_finite() {` and there are two of those in `reduce.rs`, so it had
+been mutating the early scan in `exact_sum` — where a second guard masks it — rather than the
+expansion it was written for.
+
+A mutation replaces the **first** occurrence, so this is mechanically checkable, and
+`check-mutations` now checks it. It immediately found **fifteen** entries naming text that occurs
+more than once, and one over-declared count where Phase 2's commit seal had removed a site.
+
+Fourteen were mislabels: the entry mutated whichever site came first. One was a hole. The lease
+ceiling is applied when a lease is **granted** and when it is **renewed**, the entry named text at
+both, and the renewal path was therefore covered by nothing — a lease that cannot be granted past
+the maximum but can be renewed past it has no maximum, which is the forgotten lease the registry
+exists to make impossible. Three entries were added for second sites that nothing had been
+testing.
+
+This is `COR-08`'s shape one level up: *the catalogue protects the constant and not the proof.*
+
+### Still open in Phase 3
+
+`3.2` `3.3` `3.4` `3.6` `3.7` `3.8` are not started. Three pre-existing survivors in
+`sankhya-publish` and one entry whose mutation does not compile were found while verifying this
+work and are not yet closed; they are coverage gaps in the write path rather than defects in it.
 
 ---
 

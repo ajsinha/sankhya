@@ -86,7 +86,7 @@ The rule is: widen the API, never the allowance.
 git clone https://github.com/ajsinha/sankhya.git && cd sankhya
 cargo build --workspace          # several minutes on a first build
 vendor/postgresql/build.sh       # ~2 min, idempotent, 35 MB installed
-cargo test --workspace           # 2,632 tests, none of which needs a database
+cargo test --workspace           # 2,642 tests, none of which needs a database
 ```
 
 Nothing is mocked. The Parquet is real Parquet, the Delta logs are read back by an independent
@@ -99,7 +99,7 @@ Five gates run outside or alongside the suite:
 ```bash
 cargo xtask check-all                        # every repository invariant (§27.4)
 cargo xtask check-concurrency                # ADR-0013's measurements, alone (also inside check-all)
-python3 tools/mutation-audit.py              # 789 deliberate defects, one at a time
+python3 tools/mutation-audit.py              # 798 deliberate defects, one at a time
 cargo xtask check-performance                # the NFR-PERF objectives, as a gate that can fail
 SANKHYA_RELEASE=1 cargo xtask check-package  # the release artifact's platform baseline
 crates/sankhya-cdc-apply/tests/run_e2e.sh    # capture against a live database
@@ -140,7 +140,7 @@ trace of which paragraph went missing — which happened to an owner decision in
 ## 27.5 The mutation audit
 
 ```bash
-python3 tools/mutation-audit.py            # the whole catalogue: 789 sequential cargo test runs
+python3 tools/mutation-audit.py            # the whole catalogue: 798 sequential cargo test runs
 python3 tools/mutation-audit.py splice     # only entries whose label matches
 ```
 
@@ -173,8 +173,31 @@ Four rules govern adding one.
    every build — no compilation, milliseconds — because four entries had already drifted through
    ordinary refactoring, and because an audit killed hard enough to defeat the in-flight record
    once left a deliberate defect in a commit.
-4. **A `SURVIVOR` is a gap in the tests, not necessarily a bug in the code.** The correct response
+4. **The `find` text must name *one* site**, or say how many it means. The same check counts
+   occurrences and refuses an entry that matches more often than its sixth element allows.
+5. **A `SURVIVOR` is a gap in the tests, not necessarily a bug in the code.** The correct response
    is usually a better test.
+
+> **Pitfall**
+> Rule 4 was added on 2026-09-04 and immediately found **fifteen** entries that named text
+> occurring twice. A mutation replaces the *first* occurrence, so each of them had been mutating
+> whichever site came first in the file — not necessarily the one the entry is about.
+>
+> `math: hide a non-finite value inside an exact sum` named `if !value.is_finite() {`, and there
+> are two of those in `reduce.rs`. It hit the early scan in `exact_sum`, where a second guard on
+> the scaled value masks it, rather than the expansion's — so it reported `SURVIVED` for years as
+> a mutation of a line nobody meant, and the survivor list carried it as *"the tests do not cover
+> this"* when the entry did not point at the code.
+>
+> One of the fifteen was a real hole rather than a mislabel. The lease ceiling is applied when a
+> lease is granted **and** when it is renewed; the entry named text at both and mutated the first,
+> so the renewal path was covered by nothing. A lease that cannot be granted past the maximum but
+> can be renewed past it has no maximum — which is the forgotten lease the registry exists to make
+> impossible. Another entry declared two occurrences where the commit seal had left one, and
+> replacing fewer than declared is silent.
+>
+> This is the same shape the audit recorded as `COR-08`: *the catalogue protects the constant and
+> not the proof.* Both are now mechanically checked.
 
 ## 27.6 Coding standards
 
