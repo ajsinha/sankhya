@@ -535,6 +535,37 @@ async fn main() -> std::io::Result<()> {
         }
     }
 
+    // One server per warehouse, decided here, before anything is opened.
+    //
+    // # What the commit protocol does not cover
+    //
+    // `atomicfs::claim` serialises two committers *at a version* and that is the whole of its
+    // scope. Maintenance lives outside it: two servers each plan compactions against a live
+    // set the other is changing, each retire merge inputs against a lease registry that cannot
+    // see the other's readers, and each sweep orphans against an age threshold that has no
+    // idea a file belongs to a commit the other has not written yet. Nothing there races at a
+    // version, so nothing there was caught --- `COR-15`, and the two name-reuse defects beside
+    // it are what leaked through the gap.
+    //
+    // In the data directory rather than the warehouse root, because the warehouse root holds
+    // published tables and refuses a foreign object at startup. A lock file there would be the
+    // foreign object.
+    if let Err(why) = std::fs::create_dir_all(&data) {
+        eprintln!("sankhya: the data directory {} could not be created: {why}", data.display());
+        return Err(why);
+    }
+    let held = match sankhya_atomicfs::WarehouseLock::take(&data.join("warehouse.lock")) {
+        Ok(lock) => lock,
+        Err(why) => {
+            eprintln!("sankhya: {why}");
+            std::process::exit(3);
+        }
+    };
+    // Bound for the length of `main`, not dropped. Dropping it here would release the lock
+    // immediately and leave the warehouse unprotected for the whole of the run, which is worse
+    // than never having taken it: the log would say it was locked.
+    let _warehouse_lock = held;
+
     let configured_maintenance = settings.maintenance.clone();
     // The cadence the pin refresh runs on, taken before the policy is moved into the sweeper.
     let configured_interval = configured_maintenance
@@ -592,7 +623,27 @@ async fn main() -> std::io::Result<()> {
         tokio::spawn(async move {
             loop {
                 let current = tokio::task::block_in_place(|| crate::snapshots::still_reading(&refreshing));
-                if let Ok(mut held) = reading.lock() {
+                // Poison is recovered from rather than skipped.
+                //
+                // `if let Ok(..)` here meant that one panic while this lock was held stopped
+                // the refresh **for ever**, silently, and the sweeper went on reclaiming
+                // against whatever pin set was current at the moment of the panic --- so a
+                // snapshot taken afterwards protected nothing. The maintenance side of this
+                // same lock already recovers; only the writing side did not.
+                //
+                // What poison means is that some thread panicked while holding this lock. The
+                // value under it is a whole `StillReading` written by a single assignment, so
+                // there is no half-updated state to inherit, and the assignment below replaces
+                // it outright.
+                //
+                // The braces are load-bearing: a `MutexGuard` alive across the `await` below
+                // makes this future `!Send`, and `tokio::spawn` requires `Send`. The block
+                // ends the guard's scope where the assignment ends, which is also where it
+                // ought to end.
+                {
+                    let mut held = reading
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     *held = current;
                 }
                 tokio::time::sleep(every).await;

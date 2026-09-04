@@ -145,6 +145,12 @@ pub struct Maintainer {
     /// Keyed by **root path** rather than by name, because that is what this already has and it
     /// removes every question about which naming a key is in.
     pinned: std::collections::BTreeMap<PathBuf, Vec<u64>>,
+    /// Pins the caller could not establish, each named. Non-empty stops reclamation.
+    ///
+    /// See [`StillReading::unreadable`]. It is a field rather than a check at one call site
+    /// because both deleting paths must honour it, and a rule written at one of them is the
+    /// shape `COR-03` already took.
+    blind: Vec<String>,
 }
 
 impl Maintainer {
@@ -158,6 +164,7 @@ impl Maintainer {
             leases: None,
             clones: sankhya_clone::Lineages::new(),
             pinned: std::collections::BTreeMap::new(),
+            blind: Vec::new(),
         }
     }
 
@@ -235,12 +242,33 @@ impl Maintainer {
                 duty_cycle_ticks_remaining: self.policy.duty_cycle_ticks,
             };
             let plan = plan_tick(&partitions, &self.policy.driver, &state);
-            let executed = execute_tick(&plan, table_root, tick, self.policy.writer.clone())?;
+            // The sequence comes from the **log**, not from this process's tick counter.
+            //
+            // It was `tick`, which starts at zero every time the server starts. After a
+            // restart, tick 1 recomputed a name tick 1 had already used --- and the planner
+            // selects any live file under the target size, so a previous output could be
+            // chosen as its own input, truncated in place, and then added and removed in one
+            // commit, taking the whole merged partition out of the live set.
+            //
+            // The identical defect had already been found and fixed on the ingest path.
+            // Nothing on this path recovered a sequence from anywhere.
+            let sequence = next_compaction_sequence(table_root);
+            let executed =
+                execute_tick(&plan, table_root, sequence, self.policy.writer.clone())?;
             if !executed.merged.is_empty() {
                 let at = live_files(table_root)
                     .map_err(|e| Error::InvariantViolated(e.to_string()))?;
                 let version = at.version.unwrap_or(0).saturating_add(1);
-                let now = i64::try_from(tick).unwrap_or(i64::MAX);
+                // Epoch milliseconds, which is what `deletionTimestamp` means.
+                //
+                // This was the tick counter --- 1, 2, 3 --- so a removal recorded
+                // `deletionTimestamp: 3`, three milliseconds after 1970. Every superseded
+                // file was therefore instantly older than any retention interval, and a
+                // conformant `VACUUM RETAIN 168 HOURS` run by any other engine would delete
+                // the lot immediately: out from under SANKHYA readers holding leases, and
+                // reported safe by `DRY RUN` first. The two retention mechanisms could not
+                // see each other because one of them was reading a counter as a clock.
+                let now = epoch_millis();
                 commit_tick(table_root, version, &executed, now)
                     .map_err(|e| Error::InvariantViolated(e.to_string()))?;
             }
@@ -258,13 +286,27 @@ impl Maintainer {
             self.pending.push((outcome.clone(), tick, marked));
         }
 
-        let retired = self.retire_due(tick, table_root)?;
+        // Compaction has run. Reclamation --- and **only** reclamation --- stops here if the
+        // pin picture has a hole in it.
+        //
+        // Compacting under an unknown pin set is safe: a merge adds a file and removes
+        // nothing. Deleting under one is the failure, so the two paths that delete are the two
+        // paths gated, together, at the one place where the condition is known.
+        let (pinned, holes) = self.pins(table_root);
+        if !self.blind.is_empty() || !holes.is_empty() {
+            report.declined.extend(self.blind.iter().cloned());
+            report.declined.extend(holes);
+            return Ok(report);
+        }
+
+        let retired = self.retire_due(tick, table_root, &pinned)?;
         report.bytes_reclaimed = report.bytes_reclaimed.saturating_add(retired.bytes_reclaimed);
         report.files_removed.extend(retired.files_removed);
+        report.presumed_leaked.extend(retired.presumed_leaked);
 
         // Files nothing refers to, on a slower cycle than compaction.
         if self.policy.orphan_sweep_every > 0 && tick % self.policy.orphan_sweep_every == 0 {
-            let swept = self.collect_orphans(table_root);
+            let swept = self.collect_orphans(table_root, &pinned);
             report.bytes_reclaimed = report.bytes_reclaimed.saturating_add(swept.bytes_reclaimed);
             report.files_removed.extend(swept.removed);
         }
@@ -302,7 +344,11 @@ impl Maintainer {
     /// what separates them, and it is why this is safe to run beside an active writer.
     ///
     /// Only files old enough to have no plausible commit still in flight are removed.
-    fn collect_orphans(&self, table_root: &Path) -> crate::orphans::OrphanReport {
+    fn collect_orphans(
+        &self,
+        table_root: &Path,
+        reachable: &BTreeSet<String>,
+    ) -> crate::orphans::OrphanReport {
         let Ok(live) = live_files(table_root) else {
             return crate::orphans::OrphanReport::default();
         };
@@ -314,15 +360,18 @@ impl Maintainer {
             return crate::orphans::OrphanReport::default();
         }
 
-        // Every file a clone of this table still reads. `ADR-0016`: a clone's log does not name
-        // the origin's files, it records a version --- so this is resolved from *this table's*
-        // log, which the sweep already reads, rather than by normalising another table's paths
-        // into this one's naming.
+        // The pin set is computed once per tick and handed to both deleting paths, which is
+        // the whole of the fix for `COR-03`.
         //
-        // Empty for a table nobody has cloned, and then the sweep does exactly what it did
-        // before any of this existed.
-        let reachable = self.pinned_by_clones(table_root);
-        let plan = plan_orphan_cleanup(&on_disk, &named, &reachable, &self.policy.orphans);
+        // This path used to compute its own, and computed only the clone half --- while
+        // retirement, a hundred lines below, unioned clones *and* snapshots under a comment
+        // reading *"two rules disagree eventually, and the one that loses deletes a file
+        // somebody is reading"*. This sweep was the second rule.
+        //
+        // It was not a race, either. Retirement correctly declines a pinned file for ever,
+        // which **guarantees** that file crosses this sweep's age threshold: every snapshot
+        // older than a week lost its files, on schedule.
+        let plan = plan_orphan_cleanup(&on_disk, &named, reachable, &self.policy.orphans);
         if plan.remove.is_empty() {
             return crate::orphans::OrphanReport::default();
         }
@@ -350,6 +399,7 @@ impl Maintainer {
     /// while the server runs must be honoured by the next sweep and not by the next restart.
     pub fn told(&mut self, reading: &StillReading, table_root: &Path) {
         self.clones = reading.clones.clone();
+        self.blind = reading.unreadable.clone();
         self.pinned = reading
             .snapshots
             .get(table_root)
@@ -376,31 +426,57 @@ impl Maintainer {
     /// version --- because the question is the same question: which of my files does something
     /// else still need? A version that cannot be read is skipped, which keeps files rather than
     /// removing them, and is the only safe direction.
-    fn pinned_by_snapshots(&self, table_root: &Path) -> BTreeSet<String> {
-        let Some(versions) = self.pinned.get(table_root) else {
-            return BTreeSet::new();
-        };
-        versions
-            .iter()
-            .filter_map(|version| live_files_at(table_root, *version).ok())
-            .flat_map(|live| live.files.into_iter().map(|file| file.path))
-            .collect()
-    }
+    /// Everything that still reads this table, and everything that could not be established.
+    ///
+    /// # One question, asked once
+    ///
+    /// Reclamation has exactly one question --- *does anything still read this?* --- and two
+    /// things that can answer yes. They are unioned here, once per tick, and handed to both
+    /// paths that delete. Each path computing its own answer is how `COR-03` happened: one of
+    /// them read half the union and deleted what the other half was protecting.
+    ///
+    /// # A version that cannot be read is a hole, not an empty answer
+    ///
+    /// Skipping it used to be justified as *"the sweep falls back to the age threshold that
+    /// protected everything before clones existed"*. That is true of the orphan sweep and
+    /// false of retirement, which has no age fallback --- a pinned version that could not be
+    /// resolved contributed no paths, so retirement saw no reason to keep the file and removed
+    /// it. The two paths had different fallbacks and one paragraph was written for both.
+    ///
+    /// So it is reported instead, and a hole stops reclamation for the pass.
+    fn pins(&self, table_root: &Path) -> (BTreeSet<String>, Vec<String>) {
+        let mut pinned = BTreeSet::new();
+        let mut holes = Vec::new();
 
-    fn pinned_by_clones(&self, table_root: &Path) -> BTreeSet<String> {
-        if self.clones.is_empty() {
-            return BTreeSet::new();
+        let mut resolve = |version: u64, who: &str, into: &mut BTreeSet<String>| {
+            match live_files_at(table_root, version) {
+                Ok(live) => into.extend(live.files.into_iter().map(|file| file.path)),
+                Err(error) => holes.push(format!(
+                    "{who} pins version {version} of {}, and that version could not be read \
+                     ({error}); which files it holds cannot be established",
+                    table_root.display()
+                )),
+            }
+        };
+
+        if let Some(versions) = self.pinned.get(table_root) {
+            for version in versions {
+                resolve(*version, "a snapshot", &mut pinned);
+            }
         }
-        let Some(table) = table_root.file_name().and_then(|name| name.to_str()) else {
-            return BTreeSet::new();
-        };
 
-        self.clones
-            .pinned_versions(table)
-            .into_iter()
-            .filter_map(|version| live_files_at(table_root, version).ok())
-            .flat_map(|live| live.files.into_iter().map(|file| file.path))
-            .collect()
+        // `ADR-0016`: a clone's log does not name the origin's files, it records a version ---
+        // so this is resolved from *this table's* log rather than by normalising another
+        // table's paths into this one's naming.
+        if !self.clones.is_empty() {
+            if let Some(table) = qualified_name(table_root) {
+                for version in self.clones.pinned_versions(&table) {
+                    resolve(version, "a clone", &mut pinned);
+                }
+            }
+        }
+
+        (pinned, holes)
     }
 
     /// Retire the inputs of merges that no reader can still name.
@@ -411,27 +487,46 @@ impl Maintainer {
     /// backstop for the case where a lease is leaked and never released, because a registry
     /// with a leak and no backstop reclaims nothing for ever, which is the failure this
     /// warehouse has already met from the other direction.
-    fn retire_due(&mut self, tick: u64, table_root: &Path) -> Result<TickReport> {
+    ///
+    /// # The backstop was written as an `and`, and an `and` is not a backstop
+    ///
+    /// The condition read `old_enough && unreachable`, with both as requirements. A leaked
+    /// lease --- a reader that announced itself and whose exit was never announced ---
+    /// therefore held every merge input on disk for ever *and* held one entry per merge in
+    /// `pending` for ever. The paragraph above described a backstop the code did not have.
+    ///
+    /// Two thresholds, because one number cannot mean both things. `grace_ticks` is the
+    /// **minimum** age and holds even for a reader set that is already drained. `leak_ticks`
+    /// is far larger and means *"no lease is legitimately this old"*: past it the registry is
+    /// presumed to have leaked and the inputs go.
+    ///
+    /// It overrides the **lease** check and nothing else. A clone pin and a snapshot pin still
+    /// refuse the file, because those are not proxies for anything and there is no timeout at
+    /// which they become wrong. And it is reported when it fires, because a backstop firing is
+    /// never routine: it says a lease leaked, which is a defect elsewhere that nothing else
+    /// here would surface.
+    fn retire_due(
+        &mut self,
+        tick: u64,
+        table_root: &Path,
+        pinned: &BTreeSet<String>,
+    ) -> Result<TickReport> {
         // Everything that may still need a file this table would otherwise reclaim, along both
         // axes that do not convert into each other: positions an *arrival buffer* pins, which
         // is a separate mechanism from reader leases and still empty here, and the files a
         // clone reads, which `ADR-0016` made a question about this table's own log.
         let referenced = StillReferenced {
             snapshots: BTreeSet::new(),
-            // Clones and snapshots, unioned. Reclamation has exactly **one** question ---
-            // *"does anything still read this?"* --- and a second thing that can answer yes is
-            // not a second rule. Two rules disagree eventually, and the one that loses deletes
-            // a file somebody is reading.
-            cloned: self
-                .pinned_by_clones(table_root)
-                .into_iter()
-                .chain(self.pinned_by_snapshots(table_root))
-                .map(|path| table_root.join(path))
-                .collect(),
+            // Clones and snapshots, unioned by `pins` and resolved once for the tick.
+            // Reclamation has exactly **one** question --- *"does anything still read this?"*
+            // --- and a second thing that can answer yes is not a second rule. Two rules
+            // disagree eventually, and the one that loses deletes a file somebody is reading.
+            cloned: pinned.iter().map(|path| table_root.join(path)).collect(),
         };
 
         let mut due = Vec::new();
         let mut waiting = Vec::new();
+        let mut leaked = Vec::new();
         for (outcome, merged_at, marked) in self.pending.drain(..) {
             let age = tick.saturating_sub(merged_at);
             let old_enough = age >= self.policy.retention.grace_ticks;
@@ -439,7 +534,23 @@ impl Maintainer {
                 .leases
                 .as_ref()
                 .is_none_or(|leases| leases.drained(marked));
-            if old_enough && unreachable {
+            // `leak_ticks == 0` disables the backstop, for a deployment that would rather fill
+            // a disk than ever take the chance. It is not the default, because the default it
+            // replaced was a warehouse that reclaimed nothing for ever after one leaked lease
+            // and said nothing about why.
+            let presumed_leaked = self.policy.retention.leak_ticks > 0
+                && age >= self.policy.retention.leak_ticks
+                && !unreachable;
+            if presumed_leaked {
+                leaked.push(format!(
+                    "a lease held {} merge input(s) of {} for {age} ticks, past the {}-tick \
+                     backstop; the registry has leaked and they were retired anyway",
+                    outcome.inputs_retained.len(),
+                    table_root.display(),
+                    self.policy.retention.leak_ticks,
+                ));
+            }
+            if (old_enough && unreachable) || presumed_leaked {
                 due.push((outcome, age));
             } else {
                 waiting.push((outcome, merged_at, marked));
@@ -449,7 +560,9 @@ impl Maintainer {
         if due.is_empty() {
             return Ok(TickReport::default());
         }
-        retire_completed(&due, &referenced, &self.policy.retention)
+        let mut report = retire_completed(&due, &referenced, &self.policy.retention)?;
+        report.presumed_leaked = leaked;
+        Ok(report)
     }
 }
 
@@ -580,6 +693,11 @@ pub struct MaintenanceHandle {
     stop: Arc<AtomicBool>,
     ticks: Arc<AtomicU64>,
     reclaimed: Arc<AtomicU64>,
+    /// Ticks that declined to reclaim because the pin set could not be established.
+    ///
+    /// Counted as well as printed, because a log line answers *"did this happen?"* and an
+    /// operator looking at a warehouse that is not shrinking needs *"is it still happening?"*.
+    declined: Arc<AtomicU64>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -594,6 +712,16 @@ impl MaintenanceHandle {
     #[must_use]
     pub fn bytes_reclaimed(&self) -> u64 {
         self.reclaimed.load(Ordering::Relaxed)
+    }
+
+    /// How many ticks declined to reclaim because a pin could not be established.
+    ///
+    /// Non-zero means the warehouse is deliberately not shrinking. That is the safe direction
+    /// and it is not a free one: it is a disk filling up while a snapshot document nobody can
+    /// read sits in the way, and it needs to be visible without reading a log.
+    #[must_use]
+    pub fn declined(&self) -> u64 {
+        self.declined.load(Ordering::Relaxed)
     }
 
     /// Hand the running thread a new policy.
@@ -664,7 +792,7 @@ pub fn spawn(tables: Vec<PathBuf>, policy: MaintenancePolicy) -> MaintenanceHand
 ///
 /// The running server's sweeper was told **neither**. `Maintainer::among` existed and only a
 /// soak test called it, so the maintenance thread ran with an empty lineage set --- and
-/// `pinned_by_clones` returns nothing for an empty set, which means a clone's files were
+/// the pin resolver returns nothing for an empty set, which means a clone's files were
 /// reclaimable by the sweeper of the table they belong to. The clone would then read a version
 /// whose files were gone.
 ///
@@ -677,6 +805,20 @@ pub struct StillReading {
     pub clones: sankhya_clone::Lineages,
     /// Versions a named snapshot still reads, by table root.
     pub snapshots: BTreeMap<PathBuf, Vec<u64>>,
+    /// Pins that could not be established, each named.
+    ///
+    /// # Why an empty list is not the same as an unknown one
+    ///
+    /// A snapshot document that will not parse, and a snapshot naming a table that resolves to
+    /// two, both used to contribute **nothing** --- and contributing nothing is
+    /// indistinguishable from *"this pins no files"*. The sweeper then reclaimed exactly the
+    /// files it could not see a pin for, which is the unsafe direction and the one that was
+    /// taken silently.
+    ///
+    /// Anything in this list stops reclamation for the pass. Reclamation not running costs
+    /// disk and is visible in a report; reclamation running on an unknown pin set costs rows
+    /// and is visible when somebody queries.
+    pub unreadable: Vec<String>,
 }
 
 pub fn spawn_watching(
@@ -701,16 +843,25 @@ pub fn spawn_watching_pins(
     let stop = Arc::new(AtomicBool::new(false));
     let ticks = Arc::new(AtomicU64::new(0));
     let reclaimed = Arc::new(AtomicU64::new(0));
+    let declined = Arc::new(AtomicU64::new(0));
     let shared = Arc::new(Mutex::new(policy.clone()));
 
     let thread = {
         let stop = Arc::clone(&stop);
         let ticks = Arc::clone(&ticks);
         let reclaimed = Arc::clone(&reclaimed);
+        let declined = Arc::clone(&declined);
         let shared = Arc::clone(&shared);
         std::thread::Builder::new()
             .name("warehouse-maintenance".to_string())
             .spawn(move || {
+                // What was last complained about, per table.
+                //
+                // An unreadable snapshot does not fix itself, so the same complaint is true on
+                // every tick --- and a line printed every tick is a line nobody reads. It is
+                // printed when the set *changes*, which is once when it starts and once when
+                // it stops, and those are the two moments an operator needs.
+                let mut complained: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
                 let mut maintainers: BTreeMap<PathBuf, Maintainer> = tables
                     .iter()
                     .map(|table| {
@@ -745,6 +896,36 @@ pub fn spawn_watching_pins(
                         match maintainer.tick(table) {
                             Ok(report) => {
                                 reclaimed.fetch_add(report.bytes_reclaimed, Ordering::Relaxed);
+                                // The complaints, which used to be dropped here.
+                                //
+                                // `OPS-13` is four ways to delete pinned data and every one of
+                                // them ended in a discarded error. A tick that declines to
+                                // reclaim looks exactly like a tick with nothing to reclaim
+                                // from disk usage alone, so declining silently is the same
+                                // failure wearing the safe direction's clothes.
+                                if complained.get(table) != Some(&report.declined) {
+                                    for why in &report.declined {
+                                        eprintln!(
+                                            "  maintenance is not reclaiming {}: {why}",
+                                            table.display()
+                                        );
+                                    }
+                                    if report.declined.is_empty() {
+                                        eprintln!(
+                                            "  maintenance is reclaiming {} again",
+                                            table.display()
+                                        );
+                                    }
+                                    complained.insert(table.clone(), report.declined.clone());
+                                }
+                                if !report.declined.is_empty() {
+                                    declined.fetch_add(1, Ordering::Relaxed);
+                                }
+                                // Never routine: it says a lease leaked, which is a defect
+                                // somewhere else that nothing else here would surface.
+                                for why in &report.presumed_leaked {
+                                    eprintln!("  maintenance backstop fired: {why}");
+                                }
                             }
                             // A table that cannot be maintained this tick is not a reason to
                             // stop maintaining the others, or to bring the thread down. The
@@ -778,6 +959,66 @@ pub fn spawn_watching_pins(
         stop,
         ticks,
         reclaimed,
+        declined,
         thread,
     }
+}
+
+/// Milliseconds since the epoch, which is what the Delta protocol means by a timestamp.
+///
+/// Its own function so the two commit paths in this crate cannot disagree about what a
+/// timestamp is --- which is exactly what happened when one of them used a tick counter.
+fn epoch_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| i64::try_from(since.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// One past the highest compaction sequence this table has ever used.
+///
+/// Recovered from the live set rather than counted in memory, because a counter that starts at
+/// zero on every start is a counter that reissues names --- and a reissued data-file name is a
+/// file some log still points at.
+///
+/// Reads the live files, not the directory: a name that has been retired from the table may
+/// still exist on disk during its grace period, and reusing it is exactly as wrong as reusing
+/// a live one. `live_files` replays the log, which is the record of every name ever committed
+/// that still matters.
+/// The name this table is known by, in the form the rest of the system records.
+///
+/// # Why the directory's own name is not it
+///
+/// `discover` only ever walks `<warehouse>/<schema>/<table>`, so a table's name in a lineage, in
+/// a snapshot and in a statement is `schema.table`. A directory carries only its leaf, and the
+/// sweeper used the leaf --- so the comparison against a recorded name was false in every
+/// deployment, and a clone's files were reclaimed while the clone still read them (`COR-01`).
+///
+/// A table root with no parent yields the bare leaf, and
+/// [`sankhya_clone::Lineages::pinned_versions`] handles the mixed comparison in the direction
+/// that keeps files.
+fn qualified_name(table_root: &Path) -> Option<String> {
+    let table = table_root.file_name().and_then(|name| name.to_str())?;
+    match table_root.parent().and_then(Path::file_name).and_then(|name| name.to_str()) {
+        Some(schema) => Some(format!("{schema}.{table}")),
+        None => Some(table.to_string()),
+    }
+}
+
+pub fn next_compaction_sequence(table_root: &std::path::Path) -> u64 {
+    let Ok(live) = live_files(table_root) else {
+        // Unreadable log: refuse to guess low. Zero would collide with the very first
+        // compaction this table ever made.
+        return u64::from(u32::MAX);
+    };
+    let highest = live
+        .files
+        .iter()
+        .filter_map(|file| {
+            let name = file.path.rsplit('/').next()?;
+            let rest = name.strip_prefix("compacted-")?;
+            rest.split('-').next()?.parse::<u64>().ok()
+        })
+        .max()
+        .unwrap_or(0);
+    highest.saturating_add(1)
 }

@@ -240,6 +240,29 @@ Three rules keep it out:
 **The measurement is exit criterion 5**, and it is stated in the form that catches this: read
 latency flat under write load. A global lock cannot pass it, however carefully it is written.
 
+### Amendment, 2026-09-04 — one process, which is not the lock this section forbids
+
+The audit's `COR-15` recorded that nothing prevented two servers on one warehouse. There is now
+a lock file, taken once at startup and held for the life of the process, and a second server
+refuses to start.
+
+It is worth saying why that is not the lock this section is about, because the words are the
+same and the properties are opposite. A GIL is a lock on the **data path**: every reader takes
+it, every sweeper takes it, and throughput is bounded by how long anyone holds it. This is taken
+**once, before anything is opened**, and no statement, no commit and no maintenance tick ever
+touches it. Exit criterion 5 — read latency flat under write load — cannot see it, because it is
+not on the path being measured.
+
+What it prevents is not contention but a class of defect the rest of this document assumes away.
+`claim` serialises two committers at a version; every guarantee here is stated about writers
+inside one process, sharing one lease registry. Two processes share no registry, so each retires
+files against readers the other cannot see — which is the same failure the reader registry exists
+to prevent, arriving by a route the registry cannot observe.
+
+`flock(2)` would be the better primitive and is unavailable: `unsafe_code` is `forbid` at the
+workspace root and `libc` is confined to `sankhya-sandbox` by `check-layers`, both of which are
+decisions this repository has already taken deliberately. §6.4 of the book has the mechanism.
+
 ## Techniques, and the sites that need them
 
 The owner:

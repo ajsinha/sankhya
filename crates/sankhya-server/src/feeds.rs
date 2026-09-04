@@ -202,7 +202,10 @@ pub(crate) fn expire_quarantine(
         return None;
     }
     let version = live.version.map_or(1, |version| version.saturating_add(1));
-    match sankhya_maintenance::expire::detach(&root, version, &live, &expired, now) {
+    // Milliseconds. `now` here is microseconds --- the unit the rest of this module works in
+    // --- and `deletionTimestamp` is defined in milliseconds, so passing it straight through
+    // dated every detached file about fifty thousand years into the future.
+    match sankhya_maintenance::expire::detach(&root, version, &live, &expired, now / 1_000) {
         Ok(_) => Some(Ok(format!(
             "{} partition(s), {} file(s), older than {retain} day(s)",
             expired.partitions.len(),

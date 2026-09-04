@@ -415,3 +415,51 @@ async fn measure_what_statistics_cost_at_compaction() {
         stats_best.as_secs_f64() / merge_best.as_secs_f64() * 100.0
     );
 }
+
+/// A data file is never written over one that already exists.
+///
+/// # Why this is a rule and not a courtesy
+///
+/// `File::create` truncates. A writer that empties a file some log still points at is the
+/// quietest way to lose data this system has: the log is unchanged, the file is the right
+/// name, and every reader gets nothing back from it.
+///
+/// It was reachable. Compaction's output sequence was a per-process counter starting at zero,
+/// so after a restart it recomputed a name it had already used --- and the planner selects any
+/// live file under the target size, so the earlier output could be chosen as its own input.
+/// The sequence is recovered from the log now, which is the root fix; this is the one that
+/// holds whatever the caller does.
+#[test]
+fn a_data_file_name_that_already_exists_is_refused_rather_than_truncated() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let first = write_parquet(
+        dir.path(),
+        "part-0000.parquet",
+        &batch(0, 100),
+        Lsn::new(1),
+        WriterConfig::default(),
+    )
+    .expect("the first write");
+    assert!(first.bytes > 0);
+
+    let again = write_parquet(
+        dir.path(),
+        "part-0000.parquet",
+        &batch(100, 50),
+        Lsn::new(2),
+        WriterConfig::default(),
+    );
+    assert!(
+        again.is_err(),
+        "a second write to the same name was accepted, and the first file's rows are gone"
+    );
+
+    // And the original is untouched --- not merely un-replaced.
+    let after = std::fs::metadata(dir.path().join("part-0000.parquet"))
+        .expect("the file is still there")
+        .len();
+    assert_eq!(
+        after, first.bytes,
+        "the refused write still truncated the file it refused to replace"
+    );
+}

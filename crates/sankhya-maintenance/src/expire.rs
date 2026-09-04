@@ -114,12 +114,17 @@ pub fn plan(live: &LiveSet, today: i32, retain_days: u32) -> Expired {
 ///
 /// [`CommitError`] when the commit cannot be made, including when another writer took the
 /// version --- which the caller retries with a later one, exactly as compaction does.
+/// `now_millis` is **milliseconds since the epoch**, because that is what the protocol means
+/// by `deletionTimestamp` and both callers previously meant something else: one passed a tick
+/// counter, so every removal claimed to have happened three milliseconds after 1970, and the
+/// other passed microseconds, putting them fifty thousand years in the future. A conformant
+/// `VACUUM` would have deleted everything in the first case and nothing in the second.
 pub fn detach(
     table_root: &Path,
     version: Version,
     live: &LiveSet,
     expired: &Expired,
-    now: i64,
+    now_millis: i64,
 ) -> std::result::Result<Version, CommitError> {
     let actions: Vec<Action> = live
         .files
@@ -129,7 +134,7 @@ pub fn detach(
         })
         // `rewritten` rather than a deletion marker: the data is leaving the live set, and
         // the files themselves are reclaimed by retirement after its grace period.
-        .map(|file| Action::Remove(RemoveFile::rewritten(file.path.clone(), now)))
+        .map(|file| Action::Remove(RemoveFile::rewritten(file.path.clone(), now_millis)))
         .collect();
     commit(table_root, version, &actions)
 }

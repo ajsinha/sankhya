@@ -50,9 +50,21 @@ fn document_at(warehouse: &Path, name: &str) -> PathBuf {
 /// failure.
 pub(crate) fn load(warehouse: &Path) -> (Vec<Snapshot>, Vec<String>) {
     let directory = warehouse.join(DIRECTORY);
-    let Ok(entries) = std::fs::read_dir(&directory) else {
-        // No directory is the ordinary case for every warehouse that has taken none.
-        return (Vec::new(), Vec::new());
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        // No directory is the ordinary case for every warehouse that has taken none, and it
+        // is the *only* case that may be reported as "there are none". A directory that
+        // exists and cannot be read is a snapshot set nobody can see, and answering "none"
+        // for it is how a pin disappears without anybody being told.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (Vec::new(), Vec::new())
+        }
+        Err(error) => {
+            return (
+                Vec::new(),
+                vec![format!("{}: {error}", directory.display())],
+            )
+        }
     };
 
     let mut found = Vec::new();
@@ -370,29 +382,52 @@ pub(crate) fn run_statement(
 /// has one input rather than two rules, and two rules disagree eventually: the one that
 /// loses deletes a file somebody is reading.
 ///
-/// An unreadable snapshot document contributes **nothing** here, and that is the unsafe
-/// direction stated plainly: it would let files it protects be reclaimed. `SHOW SNAPSHOTS`
-/// refuses outright when one cannot be read, so an operator sees it; making the sweeper
-/// refuse as well would stop reclamation warehouse-wide for one bad file, which is a worse
-/// failure and a louder one than it deserves.
+/// # What a hole in the answer means, which was the wrong thing
+///
+/// A snapshot document that will not parse, and a snapshot naming a table that resolves to
+/// two, both used to be **dropped with the complaint discarded**. The result was a smaller
+/// answer, and a smaller answer here reads to the sweeper as *"fewer files are pinned"* ---
+/// so the one case where this code did not know what a snapshot protected was the case in
+/// which its files were reclaimed.
+///
+/// An earlier comment here argued the other way: refusing warehouse-wide for one bad file
+/// was called a worse failure than skipping it. That weighed a full disk against lost rows
+/// and got the order backwards. Reclamation that stops is visible in a report, costs storage,
+/// and is fixed by deleting one file. Reclamation that runs on an unknown pin set is visible
+/// when somebody queries, and nothing fixes it.
+///
+/// So a hole is **carried** rather than dropped: named in
+/// [`StillReading::unreadable`](sankhya_maintenance::StillReading::unreadable), where it stops
+/// the sweeper's two deleting paths and appears in the tick report. Compaction continues,
+/// because compaction adds files and removes none.
 #[must_use]
 pub(crate) fn still_reading(server: &crate::wiring::Server) -> sankhya_maintenance::StillReading {
-    let (snapshots, _complaints) = load(server.warehouse_path());
+    let (snapshots, complaints) = load(server.warehouse_path());
     let pinned = pinned_versions(&snapshots, server.today());
 
     // Keyed by root path, because that is what the sweeper has and it removes every
     // question about which naming a key is in.
     let mut by_root = std::collections::BTreeMap::new();
+    let mut unreadable = complaints;
     for (qualified, versions) in pinned {
-        if let crate::warehouse::Resolved::One(root) =
-            crate::warehouse::resolve(server.warehouse_path(), &qualified)
-        {
-            by_root.insert(root, versions);
+        match crate::warehouse::resolve(server.warehouse_path(), &qualified) {
+            crate::warehouse::Resolved::One(root) => {
+                by_root.insert(root, versions);
+            }
+            // Not a hole. The table this snapshot named is gone, so there is nothing left for
+            // it to pin, and there are no files to protect from anybody.
+            crate::warehouse::Resolved::Absent => {}
+            crate::warehouse::Resolved::Ambiguous(candidates) => unreadable.push(format!(
+                "the snapshot of `{qualified}` names {} tables ({}), so which files it pins                  cannot be established",
+                candidates.len(),
+                candidates.join(", ")
+            )),
         }
     }
     sankhya_maintenance::StillReading {
         clones: server.lineages(),
         snapshots: by_root,
+        unreadable,
     }
 }
 

@@ -149,6 +149,14 @@ fn a_file_altered_after_the_backup_is_caught() {
         .expect("a utf-8 file name")
         .to_string();
     let partition = published.parent().expect("a parent directory");
+    // Removed first, because `write_parquet` refuses a name that already exists --- a data
+    // file is never written over one some log still points at, and that rule is what stops a
+    // restarted maintainer truncating its own earlier output.
+    //
+    // What this test simulates is not a publish. It is a **bad restore or a confused writer
+    // from outside this process**, which does not go through the guarded path, so going
+    // around it here is the faithful simulation rather than a way past an inconvenience.
+    std::fs::remove_file(&published).expect("removing the published file");
     write_parquet(partition, &name, &replacement, Lsn::new(3), WriterConfig::default())
         .expect("written");
 

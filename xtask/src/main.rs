@@ -18,6 +18,7 @@ mod concurrency;
 mod attribution;
 mod status;
 mod coverage;
+mod durability;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -207,6 +208,10 @@ fn main() -> ExitCode {
         }
     }
 
+    if run_all || task == "check-durability" {
+        failed |= !durability::check(&root);
+    }
+
     if run_all || task == "check-mutation-coverage" {
         failed |= !coverage::check(&root);
     }
@@ -282,6 +287,7 @@ fn main() -> ExitCode {
                 | "check-unsafety"
                 | "check-attribution"
                 | "check-mutation-coverage"
+                | "check-durability"
                 | "write-attribution"
                 | "check-doc-numbers"
                 | "check-writers"
@@ -305,7 +311,7 @@ fn main() -> ExitCode {
         eprintln!(
             "usage: cargo xtask \
              [check-all|check-tests|check-concurrency|check-invariants|check-writers|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
-             |check-features|check-lints|check-unsafety|check-attribution|check-mutation-coverage|write-attribution|check-mutations|check-doc-numbers\
+             |check-features|check-lints|check-unsafety|check-attribution|check-mutation-coverage|check-durability|write-attribution|check-mutations|check-doc-numbers\
              |check-catalogues|write-catalogues|check-logging|check-package|check-build-tree|check-surfaces|check-atomic-writes|check-lock-order|sweep|sweep-dry-run|sync-doc-numbers|check-performance]"
         );
         return ExitCode::from(2);
@@ -1400,7 +1406,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("docs")).expect("creating docs");
         // Every real check, plus one that does not exist.
         let mut text = String::from("| a rule | a reason | `check-imaginary` |\n");
-        for check in super::KNOWN_CHECKS {
+        for check in super::known_checks() {
             text.push_str(&format!("| r | w | `{check}` |\n"));
         }
         std::fs::write(dir.path().join("docs/INVARIANTS.md"), text).expect("writing");
@@ -1661,9 +1667,10 @@ fn check_invariants(root: &Path) -> bool {
         }
     }
 
+    let known = known_checks();
     let mut ok = true;
     for check in &named {
-        if !KNOWN_CHECKS.contains(&check.as_str()) {
+        if !known.contains(check.as_str()) {
             eprintln!(
                 "  UNKNOWN CHECK  docs/INVARIANTS.md names `{check}`, which xtask does not \
                  run. A document that can name a check nobody runs turns every rule in it \
@@ -1674,8 +1681,8 @@ fn check_invariants(root: &Path) -> bool {
     }
 
     // The reverse: a check that enforces something nobody wrote down.
-    for check in KNOWN_CHECKS {
-        if !named.contains(*check) {
+    for check in &known {
+        if !named.contains(check) {
             eprintln!(
                 "  UNDOCUMENTED   `{check}` runs on every build and docs/INVARIANTS.md does \
                  not say what it protects. A rule nobody can find is a rule nobody keeps"
@@ -1694,28 +1701,44 @@ fn check_invariants(root: &Path) -> bool {
 ///
 /// Listed once, so the documentation check and the dispatch cannot disagree about what
 /// exists.
-const KNOWN_CHECKS: &[&str] = &[
-    "check-invariants",
-    "check-writers",
-    "check-layers",
-    "check-loc",
-    "check-vocabulary",
-    "check-dupes",
-    "check-docs",
-    "check-features",
-    "check-lints",
-    "check-mutations",
-    "check-catalogues",
-    "check-logging",
-    "check-package",
-    "check-doc-numbers",
-    "check-surfaces",
-    "check-atomic-writes",
-    "check-lock-order",
-    "check-build-tree",
-    "check-tests",
-    "check-concurrency",
-];
+/// Every check `check-all` runs, read from the code that runs them.
+///
+/// # Why this is derived and not listed
+///
+/// It was a hand-maintained constant, and it had drifted: `check-unsafety` and
+/// `check-kernels` ran on every build and were absent from it, so the "undocumented" half of
+/// this check --- the half that catches a rule nobody wrote down --- could not see them. A
+/// list of checks that itself needs checking is the exact shape of the problem
+/// `INVARIANTS.md` exists to solve.
+///
+/// Read from this file's own source, compiled in. Self-referential, and that is the point:
+/// the dispatch is the only place that decides what runs, so a check added there is a check
+/// this list gains for free and a check removed there is one it loses.
+///
+/// `include_str!` rather than reading the path at runtime, because this is also called with a
+/// temporary directory as the root --- the tests below build a fake `INVARIANTS.md` to prove
+/// both halves of the check reject what they should, and there is no `xtask/src` under it.
+fn known_checks() -> BTreeSet<String> {
+    let text = include_str!("main.rs");
+    let mut out = BTreeSet::new();
+    for line in text.lines() {
+        let Some(rest) = line.trim().strip_prefix("if run_all || task == \"") else {
+            continue;
+        };
+        if let Some(name) = rest.split('"').next() {
+            if name.starts_with("check-") {
+                out.insert(name.to_string());
+            }
+        }
+    }
+    // `check-invariants` runs itself and is dispatched the same way; `check-tests` and
+    // `check-concurrency` are ordered separately in `run_all` rather than through that arm,
+    // so they are named here for the same reason the others are not.
+    out.insert("check-invariants".to_string());
+    out.insert("check-tests".to_string());
+    out.insert("check-concurrency".to_string());
+    out
+}
 
 /// Run the test suite.
 ///

@@ -333,3 +333,105 @@ fn a_file_that_is_not_a_commit_is_ignored() {
     assert_eq!(listed, vec![0]);
     assert_eq!(live_files(dir.path()).expect("reading").version, Some(0));
 }
+
+// --- a short commit, and what an open format has to tolerate --------------------------
+
+/// A truncated commit body is detected rather than read as a smaller commit.
+///
+/// # The failure this closes
+///
+/// A commit body is newline-delimited JSON with no checksum, no length prefix and no
+/// end-of-record marker, so **a short body is undetectable by construction**. A crash between
+/// the write and the sync can leave three of five actions on disk, and every parser accepts
+/// the result. Replay then reads a commit that did less than it did --- silently dropping the
+/// Parquet files the missing lines named.
+///
+/// It is cemented rather than transient. A retry is refused as `VersionTaken`, because the
+/// version exists, and the next commit lands on top of the wrong state.
+///
+/// The last line this writer emits is a `commitInfo` naming how many actions preceded it. If
+/// the last line is missing, so is the seal; if lines before it are missing, the count
+/// disagrees. Either way the commit refuses to replay instead of quietly shrinking.
+#[test]
+fn a_commit_that_lost_its_tail_is_refused_rather_than_read_as_a_smaller_one() {
+    let dir = root();
+    commit(dir.path(), 0, &create(Metadata::new("t", SCHEMA, 0))).expect("creating");
+    commit(dir.path(), 1, &[add("a.parquet"), add("b.parquet"), add("c.parquet")])
+        .expect("committing");
+    assert_eq!(live_files(dir.path()).expect("reading").files.len(), 3);
+
+    let path = dir.path().join("_delta_log").join("00000000000000000001.json");
+    let whole = std::fs::read_to_string(&path).expect("reading the commit");
+    let lines: Vec<&str> = whole.lines().collect();
+
+    // Every prefix short of the whole thing must be refused. The seal is the first line, so
+    // every prefix that contains anything at all contains the count it contradicts.
+    for keep in 0..lines.len() {
+        std::fs::write(&path, format!("{}\n", lines[..keep].join("\n"))).expect("truncating");
+        let outcome = live_files(dir.path());
+        assert!(
+            outcome.is_err(),
+            "a commit truncated to {keep} of {} lines was accepted, and would have dropped \
+             {} file(s) with no error",
+            lines.len(),
+            3 - keep.min(3)
+        );
+    }
+
+    // And the whole thing still reads.
+    std::fs::write(&path, &whole).expect("restoring");
+    assert_eq!(live_files(dir.path()).expect("reading").files.len(), 3);
+}
+
+/// A commit written by another engine does not make the table unreadable.
+///
+/// # Why this was the shape of the openness problem
+///
+/// Spark writes a `commitInfo` action on every commit. This reader rejected any action kind it
+/// did not have a variant for, so **one external write made the table permanently unreadable
+/// to SANKHYA** --- while everything SANKHYA wrote stayed readable to everybody else. The
+/// openness was one-directional, which is not openness.
+///
+/// The protocol's own rule is that a reader passes over actions it does not understand. The
+/// same strictness would also have taken a whole table out on the first new action a future
+/// protocol version defines.
+#[test]
+fn an_action_this_reader_does_not_know_is_passed_over_rather_than_fatal() {
+    let dir = root();
+    commit(dir.path(), 0, &create(Metadata::new("t", SCHEMA, 0))).expect("creating");
+    commit(dir.path(), 1, &[add("a.parquet")]).expect("committing");
+
+    // A commit shaped the way Spark writes one: its own commitInfo, and an action kind from
+    // a protocol version this reader has never seen.
+    let path = dir.path().join("_delta_log").join("00000000000000000002.json");
+    std::fs::write(
+        &path,
+        "{\"commitInfo\":{\"operation\":\"WRITE\",\"engineInfo\":\"Apache-Spark/3.5.0\"}}\n\
+         {\"domainMetadata\":{\"domain\":\"delta.something\",\"configuration\":\"{}\"}}\n\
+         {\"add\":{\"path\":\"b.parquet\",\"partitionValues\":{},\"size\":100,\
+         \"modificationTime\":0,\"dataChange\":true}}\n",
+    )
+    .expect("writing an external commit");
+
+    let live = live_files(dir.path()).expect("an external commit must not be fatal");
+    assert_eq!(
+        live.files.len(),
+        2,
+        "the add from the external commit was not read: {:?}",
+        live.paths()
+    );
+}
+
+/// A commit with nothing in it is refused at the point of writing.
+///
+/// An empty body and a body truncated to nothing are the same bytes. Refusing to write one is
+/// what lets the reader treat the other as damage.
+#[test]
+fn a_commit_with_no_actions_is_refused() {
+    let dir = root();
+    commit(dir.path(), 0, &create(Metadata::new("t", SCHEMA, 0))).expect("creating");
+    assert!(
+        commit(dir.path(), 1, &[]).is_err(),
+        "an empty commit is indistinguishable from a truncated one"
+    );
+}

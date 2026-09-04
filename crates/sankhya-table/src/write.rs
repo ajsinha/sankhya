@@ -92,17 +92,54 @@ pub fn write_parquet(
         .map_err(|e| Error::StorageUnavailable(format!("creating {}: {e}", directory.display())))?;
 
     let path = directory.join(file_name);
-    let file = std::fs::File::create(&path)
-        .map_err(|e| Error::StorageUnavailable(format!("creating {}: {e}", path.display())))?;
+    // `create_new`, not `create`. `File::create` **truncates** an existing file, and a writer
+    // that silently empties a file somebody else's log still points at is the quietest way to
+    // lose data this system has.
+    //
+    // It was reachable. Compaction's output sequence was a per-process counter starting at
+    // zero, so after a restart tick 1 recomputed a name tick 1 had already used --- and the
+    // planner selects any live file under the target size, so the previous output could be
+    // selected as its own input. It was truncated in place, and the commit that followed
+    // added and removed the same path, taking the merged partition out of the live set
+    // altogether.
+    //
+    // The sequence is recovered from the log now, which is the root fix. This is the one that
+    // holds whatever the caller does: a name that already exists is refused, loudly, rather
+    // than overwritten.
+    let file = std::fs::File::create_new(&path).map_err(|e| {
+        Error::StorageUnavailable(format!(
+            "creating {}: {e}. A data file is never overwritten --- a name that already \
+             exists belongs to rows some log still refers to",
+            path.display()
+        ))
+    })?;
 
     let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(config.properties()))
         .map_err(|e| Error::StorageUnavailable(format!("opening writer: {e}")))?;
     writer
         .write(batch)
         .map_err(|e| Error::StorageUnavailable(format!("writing batch: {e}")))?;
-    writer
-        .close()
+    // `close` writes the footer and drops the handle. It does not put anything on the
+    // medium, so the file that a commit is about to reference exists only in the page cache.
+    //
+    // The failure that matters is not a lost file --- a commit referencing a file that is not
+    // there is loud and refuses to read. It is a file that *is* there, is the right length,
+    // and holds whatever those blocks held before: a scan that returns rows nobody wrote, or
+    // a footer that parses into the wrong offsets. Synced here, before the caller is in a
+    // position to commit a log entry pointing at it.
+    let written = writer
+        .into_inner()
         .map_err(|e| Error::StorageUnavailable(format!("closing writer: {e}")))?;
+    written
+        .sync_all()
+        .map_err(|e| Error::StorageUnavailable(format!("syncing {}: {e}", path.display())))?;
+    // And the directory entry, which is a separate write and survives separately. A synced
+    // file with no name is a file the commit refers to and the filesystem cannot find.
+    if let Ok(handle) = std::fs::File::open(directory) {
+        handle
+            .sync_all()
+            .map_err(|e| Error::StorageUnavailable(format!("syncing {}: {e}", directory.display())))?;
+    }
 
     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     Ok(WriteReport {

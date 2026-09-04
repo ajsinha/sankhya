@@ -353,10 +353,15 @@ fn contention_on_one_table_is_bounded_and_loses_nothing() {
         })
         .collect();
     for writer in 0..WRITERS {
-        let name = format!("w{writer:02}.parquet");
+        // By stem, because the on-disk name carries the version it was committed at:
+        // `w00.parquet` published at version 3 is `w00-v0000003.parquet`. A caller may
+        // publish one logical name more than once, and before the version was in the name the
+        // second write truncated the first file while its `add` stayed in the log --- rows
+        // acknowledged, gone from disk, and still described.
+        let stem = format!("w{writer:02}-v");
         assert!(
-            published.contains(&name),
-            "writer {writer} was told it committed and {name} is not in the live set --- {}",
+            published.iter().any(|name| name.starts_with(&stem)),
+            "writer {writer} was told it committed and no {stem}* is in the live set --- {}",
             hammered.replay_with()
         );
     }

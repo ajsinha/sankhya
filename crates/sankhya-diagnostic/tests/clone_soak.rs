@@ -70,7 +70,11 @@ fn relentless() -> MaintenancePolicy {
         compact_every: 1,
         orphan_sweep_every: 1,
         orphans: OrphanPolicy { min_age_ticks: 0 },
-        retention: RetentionPolicy { grace_ticks: 0, verify_replacement: true },
+        retention: RetentionPolicy {
+            grace_ticks: 0,
+            verify_replacement: true,
+            ..RetentionPolicy::default()
+        },
         ..MaintenancePolicy::default()
     }
 }

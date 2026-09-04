@@ -81,6 +81,21 @@ pub struct RetentionPolicy {
     /// This must exceed the longest query the deployment permits, or a long-running
     /// scan can have a file vanish mid-read.
     pub grace_ticks: u64,
+    /// The age past which a lease that still has not drained is presumed **leaked**, and the
+    /// inputs it is holding are retired anyway. Zero disables it.
+    ///
+    /// # Why the grace period could not be this number
+    ///
+    /// `grace_ticks` is a minimum: nothing is retired before it, drained or not. The backstop
+    /// is a maximum, and it applies only when the lease registry still says a reader is there.
+    /// One number cannot be both --- setting `grace_ticks` high enough to be a credible leak
+    /// detector would delay every ordinary retirement by the same amount, and setting it low
+    /// enough for ordinary retirement makes it a backstop that fires on live readers.
+    ///
+    /// The default is a hundred times the default grace period. A reader that has been inside
+    /// the warehouse for a hundred grace periods is not a query; it is an announcement that was
+    /// never withdrawn.
+    pub leak_ticks: u64,
     /// Whether to require that the replacement re-verifies before anything is removed.
     ///
     /// Defaults on. Turning it off saves one footer read per retirement and is only
@@ -92,6 +107,7 @@ impl Default for RetentionPolicy {
     fn default() -> Self {
         Self {
             grace_ticks: 24,
+            leak_ticks: 2_400,
             verify_replacement: true,
         }
     }

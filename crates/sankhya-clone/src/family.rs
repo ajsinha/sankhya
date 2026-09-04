@@ -153,11 +153,24 @@ impl Lineages {
     ///
     /// Empty for a table nobody has cloned, which is every table that exists --- the sweep then
     /// does exactly what it does today.
+    ///
+    /// # The naming, which was wrong in every deployment
+    ///
+    /// A lineage records the **qualified** name --- `sales.orders` --- because that is what a
+    /// person typed and what the catalogue resolves. The sweeper asks from the other end: it
+    /// has a directory, and the only name a directory carries is its own. It asked for
+    /// `orders`, `origin == table` was false, and the answer was *"no clone reads this"* ---
+    /// not sometimes, but on every table in every warehouse, because `discover` only ever
+    /// walks `<warehouse>/<schema>/<table>`. A clone's files then aged past the grace period
+    /// and were deleted, and `SELECT` from the clone read short with no error.
+    ///
+    /// It survived because the one test that covered it built its table at the warehouse root
+    /// and recorded a bare name --- the single shape in which the two forms cannot disagree.
     #[must_use]
     pub fn pinned_versions(&self, table: &str) -> BTreeSet<u64> {
         self.by_table
             .values()
-            .filter(|lineage| lineage.origin == table)
+            .filter(|lineage| same_table(&lineage.origin, table))
             .map(|lineage| lineage.version)
             .collect()
     }
@@ -188,6 +201,32 @@ impl Lineages {
         let mut readers = self.readers_of(table)?;
         readers.remove(table);
         Ok(readers)
+    }
+}
+
+/// Whether two names name one table, when one of them may be unqualified.
+///
+/// # Why this is not `==`
+///
+/// The two ends of the reclamation question hold the name in different forms. A lineage is
+/// written from a statement and is qualified; a sweeper reads a directory and has only the
+/// leaf. Comparing them directly answers *no* for every clone that has ever been made, which
+/// is `COR-01`.
+///
+/// Both qualified, or both bare, is an exact comparison and stays one --- `sales.orders` and
+/// `hr.orders` are different tables and must not be conflated. Only the mixed case falls back
+/// to the table half, and it falls back in the direction that **keeps files**: an unqualified
+/// name carries no schema to disagree with, so treating it as a match can pin a file nothing
+/// reads, and can never fail to pin one something does.
+fn same_table(origin: &str, asked: &str) -> bool {
+    if origin == asked {
+        return true;
+    }
+    match (origin.rsplit_once('.'), asked.rsplit_once('.')) {
+        // Both carry a schema, or neither does. `==` above was the whole answer.
+        (Some(_), Some(_)) | (None, None) => false,
+        (Some((_, leaf)), None) => leaf == asked,
+        (None, Some((_, leaf))) => leaf == origin,
     }
 }
 

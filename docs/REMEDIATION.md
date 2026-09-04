@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2,605 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2,632 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -92,7 +92,7 @@ All ten, each with a test that fails without the fix, and `check-all` green.
 Three of them grew in the doing, and the growth is the interesting part:
 
 - **0.1 had a second mouth.** The parser's `unwrap_or(u64::MAX)` would have read
-  `read_as_of: -5` as *read everything published* --- the exact silent reinterpretation the
+  `read_as_of: -5` as *read everything published* — the exact silent reinterpretation the
   refusal text promises never happens. It now refuses.
 - **0.2 was coupled to 0.1.** `--help` was answered *after* the configuration loaded, so the
   broken config refused the one command a stuck stranger types. Help and version are now
@@ -102,7 +102,7 @@ Three of them grew in the doing, and the growth is the interesting part:
   symptom: the port answers.
 
 **0.7 caught a finding the audit missed.** Correcting the status line meant widening `check-docs`
-to recognise a *count of criteria* --- "four of five", "six of eight" --- as the mark of an
+to recognise a *count of criteria* — "four of five", "six of eight" — as the mark of an
 unsettled milestone. It immediately flagged a **fifth** wrong claim that none of the twelve audits
 found: **M13 is "substantially built"** in STATUS's own table, and every document called it
 complete. The corrected line was itself wrong until the widened gate said so.
@@ -112,7 +112,7 @@ correction it was written to enforce.
 
 **Two gates caught this work, which is the system behaving correctly.** `check-mutations` found
 that 0.5 had moved the source a catalogue entry names; the entry was updated and a **new mutation
-added** for the partition values themselves. And `book_sql` --- the gate built two days earlier ---
+added** for the partition values themselves. And `book_sql` — the gate built two days earlier ---
 found that 0.3 had made the book's `CREATE AGGREGATION` examples refuse. The book harness now runs
 as an operator who granted the capability, and the closed default is held by its own test.
 
@@ -163,7 +163,7 @@ table*. Widen it, and extend it to the claims it has never covered: performance 
 **1.1 The fixture and the recipe are one thing.** `make_warehouse` now calls
 `common::write_warehouse`, so they cannot drift by construction. Verified the way a reader
 does it: generate the warehouse, start a server, run every tutorial block. **3 of 21 became 21
-of 21** --- 17 answer, 4 refuse with the documented reason. QUICKSTART's own query returns its
+of 21** — 17 answer, 4 refuse with the documented reason. QUICKSTART's own query returns its
 printed output character for character.
 
 **1.2 CI exists.** `.github/workflows/gate.yml`: `--locked` builds, `check-all`, `cargo-deny`
@@ -180,7 +180,7 @@ different numbers for one fact.
 - The **kernel oracle** moved to where the production writers are. It fails without the
   `CNF-01` fix with `delta_kernel`'s own error.
 - The **catalogue drift test** compared the served list against the list it is served from.
-  Reading the engine's real registry instead immediately found `derived()` --- documented in
+  Reading the engine's real registry instead immediately found `derived()` — documented in
   the book, registered by the server, described nowhere, so no SDK binding offered it.
 
 **1.4 The doc gate reads words.** Every count that had drifted was spelled out, and the gate
@@ -197,7 +197,7 @@ Nine survived on first run. Each was a real gap, and closing them added tests fo
 **visit-budget boundary** in Dijkstra; the decoder's **negative-length and unknown-kind
 refusals**; the **absolute** overlay rebuild bound; **pack-versus-pack** name collision; lease
 renewal **at the exact expiry instant**; the sacrifice rung **at** its threshold; and
-`Trust::is_allowed` --- the two lines deciding whether third-party code runs in this
+`Trust::is_allowed` — the two lines deciding whether third-party code runs in this
 process, which nothing had ever called.
 
 Three mutations were **removed rather than answered**: a negative ticket lifetime, an
@@ -207,7 +207,7 @@ test contorted until it fails is worse than no test.
 
 ---
 
-# Phase 2 — Data loss
+# Phase 2 — Data loss — **DONE 2026-09-04**
 
 **Why before wrong answers:** a wrong number can be recomputed. Deleted bytes cannot.
 
@@ -221,6 +221,91 @@ test contorted until it fails is worse than no test.
 | 2.6 | `OPS-15` | A crash mid-commit reads as a successful **empty** commit |
 | 2.7 | `OPS-14` | A leaked lease stops reclamation for ever |
 | 2.8 | `CNF-05` | `deletionTimestamp` is a tick counter, so a conformant external `VACUUM` deletes every superseded file **immediately** |
+
+### Phase 2 — what landed
+
+All eight, each with a test written the way production calls it, and `check-all` green.
+
+**2.1 The kernel reads what compaction wrote.** Three oracle tests against `delta_kernel`, on a
+partitioned table built by the real publisher and merged by the real driver. The first fails
+without 0.5's fix with the kernel's own error — *"Found unmasked nulls for non-nullable
+StructArray field"* — which is what an external reader would have said instead of reading.
+
+**2.2 `fsync`, and the half that gets forgotten.** The file before the rename, the **directory**
+after it. Three mutations were written for these calls and all three survived, correctly: `fsync`
+cannot be observed from inside the process that calls it. `check-durability` asserts the source
+property instead, the same shape `check-atomic-writes` already takes and for the same reason. A
+mutation nothing can catch is a permanent survivor that teaches people to ignore the list.
+
+**2.3 Four ways to answer "nothing reads this" when something did.** None of them was a race;
+each fired on a schedule and reported nothing.
+
+- A clone's pin was recorded as `sales.orders` and the sweeper asked for `orders`. False in
+  **every deployment** — `discover` only ever walks `<warehouse>/<schema>/<table>` — and it
+  survived because the one test covering it built its table at the warehouse root, the single
+  shape in which the two forms cannot disagree. The new tests use production's layout.
+- The orphan sweep honoured clone pins and not snapshot pins. Retirement, a hundred lines below,
+  unioned both. The pin set is now resolved **once per tick** and handed to both paths, because
+  the defect was two paths each computing their own answer.
+- A snapshot document that would not parse, and a snapshot naming an ambiguous table, each
+  contributed nothing — and nothing is what a table with no snapshots contributes. Reclamation
+  now **stops** when the pin set is unknown and says so in the tick report.
+- A poisoned mutex silently stopped the pin refresh for ever, so the sweeper went on reclaiming
+  against whatever pins were current at the moment of the panic. Poison is recovered from now, as
+  the maintenance side of that same lock already did.
+
+**A fourth path the audit did not name.** `pinned_by_*` skipped a pinned version it could not
+read, justified as *"the sweep falls back to the age threshold"*. True of the orphan sweep, false
+of retirement, which has no age fallback: it saw no paths and so saw no reason to keep the file.
+One paragraph had been written for two mechanisms.
+
+**2.4 A data file name is used once.** The publisher, not the caller, decides the name: it
+carries the version being attempted **and** a per-write token, and compaction's sequence is
+recovered from the log rather than from a counter that restarts at zero. Under both,
+`write_parquet` opens with `create_new`, so a name that already exists is refused rather than
+truncated.
+
+The token is not decoration. The version settles one publisher flushing one name twice; it does
+nothing about two publishers, because both read the same `next_version` and so both intend the
+same version and compute the same name. That is the half `COR-06` is actually about, and the
+concurrency tests could not see it because they gave every writer a distinct file name. The new
+test gives them the same one.
+
+**That floor found a defect nothing else had.** The accumulator flushes one logical name once per
+round, so its second flush truncated the first file while the first's `add` was still in the log
+--- acknowledged rows gone from disk, and the live set insisting they were there. It also found
+that `Published.file` still reported the *caller's* name while the write, the `add` and the error
+path all used the versioned one, so a publisher handed back a path that does not exist. The
+kernel oracle is that caller, and its merge failed.
+
+**2.5 One server per warehouse.** `claim` serialises two committers at a version and that is its
+entire scope; maintenance lives outside it. `flock(2)` is out of reach — `unsafe_code` is
+`forbid` and `libc` is confined to the sandbox crate — so the lock is a file naming the process
+that holds it, and liveness is established from `/proc` using the holder's **start time** as well
+as its pid, because a lock broken on a reused pid is two servers on one warehouse. A lock that
+cannot be interpreted refuses startup rather than being broken; every automatic way out of that
+case ends in the failure being prevented.
+
+**2.6 A commit says how long it is.** The first line is a seal carrying the number of actions
+that follow, and a reader that counts something different refuses. A truncated body used to
+replay as a *shorter* commit and an empty one as a commit that did nothing — and it was
+cemented, not transient, because a retry is refused as `VersionTaken` and the next version lands
+on top. Lines are parsed as generic JSON before their kind is read, so another engine's action is
+counted and passed over rather than rendering the table permanently unreadable.
+
+**2.7 The backstop was written as an `and`.** Both conditions were requirements, so one leaked
+lease held both copies of every compacted partition on disk for ever and one entry per merge in
+memory for ever. Two thresholds now: `grace_ticks` is a minimum and `leak_ticks` a maximum. It
+overrides the lease check and **nothing else** — a clone pin and a snapshot pin still refuse the
+file, because there is no timeout at which those become wrong — and it is reported when it
+fires, because a backstop firing means a lease leaked.
+
+**2.8 A timestamp is a clock, not a counter.** `deletionTimestamp: 3` is three milliseconds after
+1970, so every superseded file was instantly past any retention interval and a conformant external
+`VACUUM RETAIN 168 HOURS` would have deleted the lot — out from under readers holding leases,
+and reported safe by `DRY RUN` first. The two retention mechanisms could not see each other
+because one was reading a counter as a clock.
+
 
 ---
 
