@@ -11,7 +11,7 @@
 # ADR-0023 — The sandbox a user's function runs in
 
 **Status:** Accepted · **Date:** 2026-09-03 · **Version:** 0.1.0 · **Milestone:** M18 — the design gate, before any implementation
-**Status of the system:** Implementation — M0–M8, M10 and M13 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+**Status of the system:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
 **Builds on:** [ADR-0010](0010-external-aggregations.md), [ADR-0012](0012-open-capabilities.md), [ADR-0022](0022-user-defined-functions.md), [ARCHITECTURE](../ARCHITECTURE.md) §5.7
 
 ## Context
@@ -123,6 +123,24 @@ Two consequences follow, and both are obligations on this system rather than on 
   was computed by. A function whose source cannot be read is a function nobody can audit.
 - **The grant is per principal, not per server.** A capability that turns the feature on for
   everybody once is the flag somebody sets during an incident and nobody unsets.
+
+### What is actually built, as of 2026-09-03
+
+**This decision was written and not implemented.** A production-readiness audit found that
+nothing granted the capability and nothing checked it: the `CREATE AGGREGATION` arm returned
+before the zero-role refusal, so a caller holding **no roles at all** ran arbitrary Python, and
+the code then wrote an audit entry asserting `allowed=true` for a decision that was never made.
+
+What exists today is `server.user_functions`, a **server-wide switch that defaults to off**.
+That is precisely the flag this decision's second bullet warns against, and it is not claimed to
+satisfy it. It is the half of the decision that can be honest without the per-principal
+authorization work: a closed door an operator must deliberately open, instead of an open door
+nobody was told about. The per-principal grant remains owed, and until it lands, turning the
+switch on grants every principal at once.
+
+`crates/sankhya-server/tests/aggregations.rs` holds the closed-door test. Every other test in
+that file opts in by name, because a suite where all servers have the capability is a suite that
+can never notice it was never checked --- which is how this survived.
 
 ## Decision 5 — The module set is declared, pinned, and part of the function's version
 

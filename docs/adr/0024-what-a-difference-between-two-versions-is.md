@@ -11,7 +11,7 @@
 # ADR-0024 — What a difference between two versions is
 
 **Status:** Accepted · **Date:** 2026-09-03 · **Version:** 0.1.0 · **Milestone:** M20 — the design gate, before any implementation
-**Status of the system:** Implementation — M0–M8, M10 and M13 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+**Status of the system:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
 **Builds on:** [ADR-0019](0019-named-snapshots.md), [ADR-0013](0013-concurrency-and-data-safety.md)
 
 ## Context

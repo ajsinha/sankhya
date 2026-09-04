@@ -9,7 +9,9 @@
 
 # SANKHYA — Quickstart
 
-**Status:** Implementation — M0–M8, M10 and M13 complete; M8's scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+> **The book.** [`docs/book/`](book/README.md) is the long-form companion to this document --- twenty-seven chapters, and the only complete table of `SANKHYA_*` environment variables (Chapter 17, *Packaging and deployment*).
+
+**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
 
 This guide reflects what works **today**, and says plainly what does not yet. Anything
 not listed here is not built.
@@ -23,7 +25,7 @@ object store and no cloud credentials.
 
 | | |
 |---|---|
-| Rust | 1.90 or later (`rustup` recommended) |
+| Rust | 1.97.1, pinned by `rust-toolchain.toml` (`rustup` recommended) |
 | C toolchain | `gcc`, `make`, `bison`, `flex`, `perl`, `pkg-config` |
 | Libraries | `readline`, `zlib`, `openssl`, `icu` development headers |
 | Disk | ~25 GB free if you run the full acceptance dataset |
@@ -88,7 +90,7 @@ availability event.
 ## 3. Run the tests
 
 ```bash
-cargo test --workspace          # 2,587 tests, none of which needs a database
+cargo test --workspace          # 2,605 tests, none of which needs a database
 ```
 
 Everything here runs without a database, in well under a minute. Nothing is mocked: the
@@ -112,7 +114,7 @@ TPC-H data is generated rather than fixtured.
 | Suite | What it establishes |
 |---|---|
 | `sankhya-table` | Text values become typed Arrow; an unparseable value is an error, never a null; compaction merges without changing what a query returns |
-| `sankhya-table-delta` | The log survives a torn write and a gap in the version sequence. **`tests/oracle.rs` is the one to read first**: it reads every log this crate writes back with `delta_kernel`, an independent implementation, because two of our own components agreeing proves nothing |
+| `sankhya-table-delta` | The log survives a torn write and a gap in the version sequence. `tests/oracle.rs` reads logs **this crate assembles** back with `delta_kernel`, an independent implementation, because two of our own components agreeing proves nothing. It cannot reach the production writers --- they are above it in the dependency graph --- so **`sankhya-maintenance/tests/kernel_oracle.rs` is the one to read first**: a real partitioned table, written by `sankhya-publish`, compacted by the real driver, and read row by row by the kernel |
 | `sankhya-table-memory` | The arrival buffer never releases a segment publication has not covered — the defect that made a mid-stream table claim positions it never held |
 | `sankhya-stats` | Recorded bounds are never narrower than the truth, including under NaN and integer overflow. A bound that is too *wide* costs a wasted read; one that is too narrow is a wrong answer |
 | `sankhya-maintenance` | Compaction converges; retirement refuses to remove a file a reader might still hold; orphan sweeping refuses to remove one a retained snapshot still reaches |
@@ -145,29 +147,36 @@ Three gates catch things a test suite structurally cannot. All three fail the bu
 ```bash
 cargo xtask check-all            # every repository invariant — see below
 cargo xtask check-concurrency    # ADR-0013's measurements, run alone (also inside check-all)
-python3 tools/mutation-audit.py  # 741 deliberate defects, applied one at a time
+python3 tools/mutation-audit.py  # 769 deliberate defects, applied one at a time
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
 SANKHYA_RELEASE=1 cargo xtask check-package   # the release artifact's platform baseline
 ```
 
-**`check-all`** runs eleven invariants: the layer graph is acyclic and points the right
+**`check-all`** runs twenty-three invariants: the layer graph is acyclic and points the right
 way, no file exceeds the length ceiling, no core crate names a domain concept, the
 dependency set has no critical duplicates, the documentation's links and version claims
 resolve and its status lines agree, test-only dependencies really are test-only, clippy
 is clean under the workspace's denied lints across every target, no mutation is left
 applied to the source, the generated metric and error catalogues still match their
 declarations and every declared metric is actually recorded somewhere, and every figure a
-document claims — test counts, catalogue sizes — still matches what the repository holds. Each is proven to fail when violated, not
-merely to pass.
+document claims — test counts, catalogue sizes — still matches what the repository holds, every
+crate writing `unsafe` is on a list that names why, every service unit says where its
+configuration is, and every third-party package is attributed with its licence. Each is proven to
+fail when violated, not merely to pass.
+
+> The count above said *eleven* until 2026-09-03, when a first-run audit counted the tasks. It was
+> spelled as a word, and `check-doc-numbers` walks back over **digits** — so the one gate built to
+> catch a stale figure could not see this one. Widening it is Phase 1 of
+> [`REMEDIATION.md`](REMEDIATION.md).
 
 **The mutation audit** is the answer to "the tests pass, but do they test anything?" It
-applies 741 specific defects one at a time and requires the suite to fail on each. Thirty-one
+applies 769 specific defects one at a time and requires the suite to fail on each. Thirty-one
 did not, the first time each was run — the most recent two were written for the tiering
 encoding, and both exposed tests that did not test what their names claimed: one compared two
 integer widths whose encodings already differ in length, so removing the type tag changed
 nothing, and one used a composite key that the framing bytes separate without any length
 prefix. That is precisely the silent-pass this tool exists to catch. Expect it to take a
-while — it is 741 sequential `cargo test` runs, and it edits your source files as it goes,
+while — it is 769 sequential `cargo test` runs, and it edits your source files as it goes,
 restoring each one after. Run it on a clean tree.
 
 **`check-concurrency`** is inside `check-all` and runs the four concurrency measurements
@@ -220,6 +229,13 @@ psql -h 127.0.0.1 -p 5433 -U you -d acme -c "\dt"
 
 `SANKHYA_NO_PASSWORD` is spelled as an opt-*out* so the insecure choice has to be made
 deliberately, and the startup line says `NO AUTHENTICATION` in capitals when it is in force.
+
+> **There is no credential store, and no password is ever verified.** Leaving
+> `SANKHYA_NO_PASSWORD` unset makes this server *demand* a password. It does not *check* one:
+> the test is that the string is non-empty, so any password from any user --- including a user
+> this server has never heard of --- connects. The startup line says `PASSWORD UNVERIFIED` for
+> exactly this reason. Do not put this server where a stranger can reach it. Building the check
+> is Phase 4 of [`REMEDIATION.md`](REMEDIATION.md); the disclosure is not waiting for it.
 
 Statements execute against the Parquet on disk:
 
@@ -359,8 +375,29 @@ SANKHYA_WAREHOUSE=./warehouse \
   cargo test -p sankhya-server --test make_warehouse -- --ignored
 ```
 
-That writes one table of 1,000 rows across four Parquet files, so the read path has
-something to prune and to parallelise over.
+That writes **the same warehouse every gate in this repository runs against** --- which is the
+point, and was not true until 2026-09-03:
+
+- `sales.orders`, 1,000 rows across four Parquet files, so the read path has something to prune
+  and to parallelise over. Columns `id`, `region`, `period`, `amount` and `margin_pct`.
+- `sales.regions`, the dimension table a roll-up joins to.
+- `risk.positions`, carrying a profit-and-loss **vector** per position and a stored covariance
+  **matrix**, so the function catalogue can be exercised on columns rather than on literals.
+- The feed quarantine, empty, so the example that reads it runs.
+- The **`sales` cube**, declared --- which is what every tutorial opens with.
+
+> **What this used to do.** This command wrote `sales.orders` with three columns and no cube,
+> while the fixture the gates ran against had five columns and a cube. So `guide.rs`,
+> `sdk_examples.rs` and `book_sql.rs` were all green against a warehouse no reader could
+> produce, and a reader following the tutorials got `no cube named 'sales'` on the first
+> statement of the first tutorial --- **three of twenty-one blocks ran**. The recipe now calls
+> the fixture's own writer, so there is one warehouse and it cannot drift again. See `RUN-03`
+> and `RUN-05` in [`AUDIT_REPORT.md`](AUDIT_REPORT.md).
+>
+> The command also used to write **eleven** tables across seven schemas, three of them named
+> `orders`, because `--ignored` ran a second fixture built to *create* ambiguous names for
+> adversarial review. That one now lives in its own binary
+> (`--test make_review_warehouse`), so this command does what this paragraph says.
 
 ---
 
@@ -618,7 +655,7 @@ that admits less.
 | Soak testing | **The harness works, is proven to detect a leak, and a forty-five-minute run at twenty gigabytes passes** — 1.16 billion rows scanned, resident memory flat, 21.5 GB reclaimed. The multi-day run is not done and moved to M12 with the rest of the scale-out work. A short run against the real server, under concurrent writes, queries and maintenance, runs on every build. See [`SOAK.md`](SOAK.md) |
 | Cubes | **Working, and declarable from SQL.** A cube is a declared model over a published table — dimensions, levels, hierarchies, and how each measure may combine along each dimension — answered on demand with no build step. Slice, dice, roll-up and drill-down are table functions; every row carries its snapshot, its completeness and whether it came from a cuboid. `CREATE CUBE` and `DROP CUBE` are statements, and a drop reclaims what the cube materialised. No MDX, deliberately |
 | Concurrency and data safety | **Working, and measured against a control.** Commits are per-table and atomic, files are published atomically, and reclamation never removes a file a reader holds. Each concurrency claim is measured twice in the same run — once as the code stands, once forced through one mutex — because a single warehouse lock satisfies every safety property while destroying concurrency. Leader election, executor scale-out and failover are **not built**: they need a second machine and moved to M12 |
-| Lifecycle tiering | **Not built, and gated.** `sankhya-tiering` is deliberately empty. M9 is in progress and its first piece exists — an attestation drill that proves a write-once store still refuses writes by attempting to overwrite, delete and truncate it. **Destructive purge stays disabled until reconciliation has run clean in production**; building the purge path and arming it are two decisions |
+| Lifecycle tiering | **Partly built, and gated.** `sankhya-tiering` holds 16 modules and about 5,100 lines of source (8,581 including its tests): the policy model, eligibility, canonical encoding, verification, quarantine, rehydration and the attestation drill. What is **not** built is the destructive half --- purge from the source. M9 is in progress and the attestation drill exists — an attestation drill that proves a write-once store still refuses writes by attempting to overwrite, delete and truncate it. **Destructive purge stays disabled until reconciliation has run clean in production**; building the purge path and arming it are two decisions |
 | Packaging | **Checks, not artifacts.** The platform baseline is declared and the built binary is measured against it; every deployment manifest's termination grace is compared with the server's drain deadline. Container images and signing are not built |
 | Upgrade and rollback | **Tested as far as one release allows.** Every on-disk format carries a version, an artefact from a newer release is refused by name rather than failing as a parse error, and a corpus of earlier-release artefacts is read on every build. Running the *previous binary* needs a previous binary |
 | The diagnostic | **Working for four checks.** `doctor` walks the warehouse, records what it sees, and projects a date for compaction debt once it has two runs to compare, and reports how long the backup has been unproven — and, for a deployment that archives anything, how long the write-once controls have gone unattested. Storage headroom and replication lag are built as checks with nothing feeding them observations. The rest of `FR-OPS-16` — conformance, replica identity, archival consistency — is not built |

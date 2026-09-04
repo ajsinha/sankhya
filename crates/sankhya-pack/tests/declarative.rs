@@ -467,3 +467,28 @@ fn a_digest_round_trips_through_the_hexadecimal_operators_configure() {
     assert_eq!(Digest::from_hex(&text), Some(digest));
     assert_ne!(digest, Digest::of(b"some bundle byteS"));
 }
+
+/// The verdict that decides whether third-party bytes are executed.
+///
+/// # Why this was untested
+///
+/// A mutation inverting `Trust::is_allowed` --- so every refusal became permission to load ---
+/// survived the whole suite. Nothing anywhere called it. The `Verifier` trait exists so that
+/// a deployment can pin digests or check a signature, and the one line that reads its answer
+/// had no test.
+///
+/// This is two lines of code and it is the gate on running somebody else's code in this
+/// process. A refusal that is not read is not a refusal.
+#[test]
+fn only_an_allowed_verdict_permits_loading() {
+    use sankhya_pack::verify::Trust;
+
+    assert!(Trust::Allowed.is_allowed());
+    assert!(
+        !Trust::Refused {
+            reason: "the digest is not on the allow-list".to_string(),
+        }
+        .is_allowed(),
+        "a refusal read as permission loads code the deployment did not vouch for"
+    );
+}

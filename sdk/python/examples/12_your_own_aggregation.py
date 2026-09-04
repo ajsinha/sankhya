@@ -4,6 +4,10 @@
 
 Read-only apart from declaring one function, which it drops again.
 
+Requires a server that accepts user-supplied aggregations: `server.user_functions: true`,
+or `SANKHYA_USER_FUNCTIONS=true`. It is off by default because declaring one runs code the
+server did not write. Without it this script is refused with `42501`, by design.
+
 The point of this file
 ----------------------
 A cube's measures compose along each dimension by a **declared rule** --- sum, last, max --- and

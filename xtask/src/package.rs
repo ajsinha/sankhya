@@ -313,14 +313,53 @@ pub fn check(root: &Path) -> bool {
     let releasing = std::env::var("SANKHYA_RELEASE").is_ok();
     let baseline = check_baseline(root, releasing);
     let grace = check_grace(root);
+    let configured = check_units_are_configured(root);
 
-    if baseline && grace {
+    if baseline && grace && configured {
         println!(
-            "   baseline GLIBC_{}.{}, manifests allow longer than the drain",
+            "   baseline GLIBC_{}.{}, manifests allow longer than the drain, units name a \
+             configuration",
             BASELINE_GLIBC.0, BASELINE_GLIBC.1
         );
     }
-    grace && (baseline || !releasing)
+    grace && configured && (baseline || !releasing)
+}
+
+/// Every service unit says where its configuration is.
+///
+/// # Why a unit that starts is not a unit that works
+///
+/// Configuration resolves to `config/application.yaml` **relative to the working
+/// directory**, and systemd's default working directory is `/`. The shipped unit set
+/// neither `WorkingDirectory=` nor `SANKHYA_CONFIG=`, so it read `/config/application.yaml`,
+/// found nothing, and started anyway --- with no users, no roles, no policy, no TLS, and a
+/// feed directory that does not exist. It looked healthy. Every request it served was
+/// unauthenticated and unpoliced.
+///
+/// Checked here rather than left to review because the failure has no symptom: the unit
+/// starts, the port answers, and the only evidence is a startup line nobody reads.
+fn check_units_are_configured(root: &Path) -> bool {
+    let mut ok = true;
+    for path in files_under(&root.join(MANIFESTS)) {
+        if path.extension().is_none_or(|e| e != "service") {
+            continue;
+        }
+        let Ok(unit) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let names_a_file = unit.contains("SANKHYA_CONFIG=");
+        let has_a_directory = unit.contains("WorkingDirectory=");
+        if !names_a_file && !has_a_directory {
+            eprintln!(
+                "  UNCONFIGURED UNIT  {} sets neither SANKHYA_CONFIG= nor WorkingDirectory=, \
+                 so it resolves `config/application.yaml` against `/` and starts with no \
+                 users, no roles and no policy",
+                path.display()
+            );
+            ok = false;
+        }
+    }
+    ok
 }
 
 /// The built binaries fit inside the declared baseline.

@@ -27,7 +27,7 @@ so it cannot rot, and it is the reason those steps can be quoted with a straight
 
 ## 18.2 Getting a server
 
-You need Rust 1.90 or later, a C toolchain (`gcc`, `make`, `bison`, `flex`, `perl`, `pkg-config`),
+You need Rust 1.97.1 --- pinned by `rust-toolchain.toml`, so `rustup` will fetch it --- a C toolchain (`gcc`, `make`, `bison`, `flex`, `perl`, `pkg-config`),
 the `readline`, `zlib`, `openssl` and `icu` development headers, about 25 GB of disk if you intend to
 run the full acceptance dataset, and 8 GB of memory.
 
@@ -64,10 +64,14 @@ posture in capitals when there is none, the transport posture in words, the audi
 doors and the maintenance settings. Chapter 17, *Packaging and deployment*, §17.5 explains why each
 line is there.
 
-> **Pitfall** — If you are running from the repository root, set `SANKHYA_CONFIG` to a configuration
-> file of your own. The shipped `config/application.yaml` currently carries a `warehouse.read_as_of`
-> value that the loader refuses as out of range, and the refusal — correctly — stops the process
-> rather than defaulting it. Chapter 17 §17.4 has the transcript.
+> **Fixed** — This chapter previously warned that the shipped `config/application.yaml` carried a
+> `warehouse.read_as_of` the loader refused as out of range, and told you to write your own file
+> instead. It did: `18446744073709551615` is `u64::MAX`, and a configuration file is read through a
+> signed integer. Because the configuration was loaded *before* the subcommand was dispatched, the
+> refusal reached `doctor`, `backup`, `drill`, `attest` and `--version` as well --- every entry point
+> the binary has. The setting is now left unset, which means everything published, and
+> `crates/sankhya-server/tests/configured.rs` runs `doctor` against the file this repository actually
+> ships so it cannot drift again.
 
 The rest of this chapter is written against a server on port `55432` whose warehouse holds a schema
 called `common`. Substitute your own port and names.

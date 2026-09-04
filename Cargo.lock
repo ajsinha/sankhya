@@ -3493,6 +3493,7 @@ dependencies = [
  "proptest",
  "sankhya-cdc-model",
  "sankhya-error",
+ "sankhya-testkit",
  "sankhya-types",
 ]
 
@@ -3511,6 +3512,7 @@ version = "0.1.0"
 dependencies = [
  "proptest",
  "sankhya-error",
+ "sankhya-testkit",
  "sankhya-types",
 ]
 
@@ -3715,6 +3717,7 @@ dependencies = [
  "sankhya-stats",
  "sankhya-table",
  "sankhya-table-delta",
+ "sankhya-testkit",
  "sankhya-types",
  "tempfile",
  "tokio",
@@ -3734,6 +3737,8 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "datafusion",
+ "delta_kernel",
+ "delta_kernel_default_engine",
  "parquet",
  "proptest",
  "sankhya-cdc-apply",
@@ -3757,6 +3762,7 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
+ "url",
 ]
 
 [[package]]
@@ -3797,6 +3803,7 @@ dependencies = [
  "sankhya-readpath",
  "sankhya-table",
  "sankhya-table-delta",
+ "sankhya-testkit",
  "sankhya-types",
  "sankhya-udf",
  "serde_json",
@@ -3901,6 +3908,7 @@ dependencies = [
  "proptest",
  "sankhya-cdc-model",
  "sankhya-error",
+ "sankhya-testkit",
  "sankhya-types",
 ]
 
@@ -3999,6 +4007,7 @@ dependencies = [
  "sankhya-error",
  "sankhya-schema",
  "sankhya-stats",
+ "sankhya-testkit",
  "sankhya-types",
  "tempfile",
  "tokio",

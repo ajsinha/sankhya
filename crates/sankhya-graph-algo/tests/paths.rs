@@ -378,3 +378,48 @@ fn a_cycle_result_carries_the_cost_of_going_round() {
     let cycle = found.found.first().expect("one cycle");
     assert_eq!(cycle.cost, 9.0, "2 + 3 + 4 all the way round");
 }
+
+/// The visit budget is a bound, and a bound is exact.
+///
+/// # Why this test exists, and why the obvious version of it does not work
+///
+/// A mutation that let the search run **one vertex past** `max_visits` survived the whole
+/// suite. Nothing pinned the boundary: tests gave the search either a budget so large it
+/// never bound, or one so small that an extra visit changed nothing observable.
+///
+/// The first attempt at this test found the smallest budget that reaches the destination and
+/// asserted that one less does not. That mutation **survived it too** --- and rightly, because
+/// off-by-one moves the boundary without removing it. A test that asserts *a* boundary exists
+/// is invariant to exactly the defect it is aimed at. It has to assert *where*.
+///
+/// So: a budget of zero must expand nothing. Under the defect, zero permits one expansion,
+/// which is the difference between a bound that holds and a bound that is nearly right --- and
+/// on a large graph "one more visit" is one more vertex's worth of edges, which is unbounded
+/// in the only case a budget is for.
+#[test]
+fn the_visit_budget_stops_exactly_where_it_says() {
+    // One edge. Reaching 1 from 0 requires expanding exactly one vertex.
+    let graph = build(2, &[edge(0, 1, 1.0)]);
+
+    let reached = |visits: usize| -> bool {
+        shortest_path(
+            &graph,
+            v(0),
+            v(1),
+            &any(),
+            &Budget::generous().with_max_visits(visits),
+        )
+        .expect("no negative weights")
+        .found
+        .is_some()
+    };
+
+    assert!(
+        !reached(0),
+        "a budget of zero visits expanded a vertex, so the bound permits one more than it says"
+    );
+    assert!(
+        reached(1),
+        "a budget of one visit could not cross one edge, so the bound is one too tight"
+    );
+}

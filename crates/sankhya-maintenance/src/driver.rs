@@ -414,12 +414,15 @@ pub fn commit_tick(
         // and the addition declared `true`, so a reader streaming changes saw every compacted
         // row as new --- the spurious stream `RemoveFile::rewritten` exists to prevent,
         // arriving through the other half of the same commit.
-        actions.push(Action::Add(AddFile::rewritten(
-            name(&outcome.output),
-            outcome.bytes,
-            now,
-            &statistics,
-        )));
+        // The partition the merged file was written into, declared. Without it the add
+        // says the file belongs to no partition while sitting in one, and a table whose
+        // `metaData` names a partition column and whose files do not carry it is malformed:
+        // strict readers stop, and forgiving ones read the column as null and prune the
+        // file out of exactly the queries that filter on it.
+        let output = name(&outcome.output);
+        let mut add = AddFile::rewritten(output.clone(), outcome.bytes, now, &statistics);
+        add.partition_values = sankhya_table_delta::partition_values_from(&output);
+        actions.push(Action::Add(add));
         for input in &outcome.inputs_retained {
             actions.push(Action::Remove(RemoveFile::rewritten(name(input), now)));
         }

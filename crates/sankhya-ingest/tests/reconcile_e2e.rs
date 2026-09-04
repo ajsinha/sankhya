@@ -118,7 +118,7 @@ fn digest_from_source(pg: &Pg, sql: &str) -> TableDigest {
 #[tokio::test(flavor = "multi_thread")]
 async fn captured_data_reconciles_against_the_source() {
     let Some(pg) = Pg::from_env() else {
-        eprintln!("skipping: set SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run");
+        sankhya_testkit::skipped("reconcile_e2e", "set SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run");
         return;
     };
 

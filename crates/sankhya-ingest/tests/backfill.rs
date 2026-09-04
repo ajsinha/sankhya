@@ -108,7 +108,7 @@ fn a_real_slot_reports_a_position_the_snapshot_can_be_read_at() {
         "SELECT pg_drop_replication_slot('{slot}') WHERE EXISTS
          (SELECT 1 FROM pg_replication_slots WHERE slot_name='{slot}')"
     )) else {
-        eprintln!("skipping: set SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run");
+        sankhya_testkit::skipped("backfill", "set SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run");
         return;
     };
 
@@ -158,7 +158,7 @@ fn creating_the_slot_after_the_snapshot_would_open_a_real_gap() {
     // Demonstrating the failure against a live database rather than asserting it.
     // Changes in the window between the two reach neither half.
     let Some(before) = psql("SELECT pg_current_wal_lsn()") else {
-        eprintln!("skipping: database not configured");
+        sankhya_testkit::skipped("backfill", "database not configured");
         return;
     };
     let snapshot_position = Lsn::parse(&before).expect("a position");

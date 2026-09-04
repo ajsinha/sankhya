@@ -18,4 +18,5 @@ sankhya-types = { path = "../sankhya-types" }
 sankhya-error = { path = "../sankhya-error" }
 
 [dev-dependencies]
+sankhya-testkit = { path = "../sankhya-testkit" }
 proptest = { workspace = true }

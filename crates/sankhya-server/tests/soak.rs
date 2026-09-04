@@ -171,6 +171,7 @@ async fn a_short_run_under_concurrent_load_is_judged() {
             flight_listen: None,
             maintenance: None,
             require_password: false,
+            user_functions: false,
             metrics_listen: None,
             transport_security: None,
         },

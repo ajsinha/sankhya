@@ -27,6 +27,13 @@ sankhya-cube      = { path = "../sankhya-cube" }
 sankhya-publish   = { path = "../sankhya-publish" }
 
 [dev-dependencies]
+# The kernel, as a *test* dependency only --- `check-features` holds that line. An
+# independent implementation of the protocol is the only thing that can say whether the logs
+# this workspace writes are readable by anybody else, and until now the one test that used it
+# lived where the production writers could not be reached.
+delta_kernel                = { workspace = true }
+delta_kernel_default_engine = { workspace = true }
+url                         = "2"
 sankhya-clone       = { path = "../sankhya-clone" }
 parquet = { workspace = true }
 sankhya-ingest = { path = "../sankhya-ingest" }

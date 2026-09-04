@@ -26,6 +26,7 @@ datafusion    = { workspace = true }
 serde_json    = { workspace = true }
 
 [dev-dependencies]
+sankhya-testkit = { path = "../sankhya-testkit" }
 sankhya-publish = { path = "../sankhya-publish" }
 arrow = { workspace = true }
 arrow-array = { workspace = true }

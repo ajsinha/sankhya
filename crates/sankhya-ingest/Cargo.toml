@@ -25,6 +25,7 @@ sankhya-table-delta = { path = "../sankhya-table-delta" }
 sankhya-plan      = { path = "../sankhya-plan" }
 
 [dev-dependencies]
+sankhya-testkit = { path = "../sankhya-testkit" }
 sankhya-maintenance = { path = "../sankhya-maintenance" }
 sankhya-stats = { path = "../sankhya-stats" }
 sankhya-table-delta = { path = "../sankhya-table-delta" }

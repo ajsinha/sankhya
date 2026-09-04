@@ -294,7 +294,7 @@ fn cases() -> Vec<Case> {
 #[tokio::test]
 async fn the_two_engines_differ_exactly_where_this_list_says() {
     let Some(pg) = Pg::from_env() else {
-        eprintln!("skipping: set SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run");
+        sankhya_testkit::skipped("cross_engine", "set SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run");
         return;
     };
     let ctx = SessionContext::new();

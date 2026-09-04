@@ -20,7 +20,7 @@
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use sankhya_maintenance::{
-    apply, execute_tick, plan_tick, retire_completed, StillReferenced, Class, CompactionPolicy, CompactionUrgency,
+    apply, commit_tick, execute_tick, plan_tick, retire_completed, StillReferenced, Class, CompactionPolicy, CompactionUrgency,
     DriverPolicy, FileStat, PartitionState, RetentionPolicy, SystemState,
 };
 use sankhya_table::{read_parquet_stats, write_parquet, WriterConfig};
@@ -599,6 +599,80 @@ fn applying_a_tick_retires_partitioned_inputs_from_the_live_set() {
             file.name.contains('/'),
             "a file lost its partition on the way into the live set: {}",
             file.name
+        );
+    }
+}
+
+#[test]
+fn a_compacted_file_declares_the_partition_it_was_written_into() {
+    // `a_merged_file_lands_inside_the_partition_its_rows_belong_to` says in its own comment
+    // that the add action "carries no partition value --- so an external reader sees a file
+    // belonging to no partition at all", and then asserts only the output *path*. The half
+    // it named and did not check was wrong for as long as it existed.
+    //
+    // A table whose `metaData` declares a partition column and whose files carry no value
+    // for it is malformed. `delta_kernel` stops mid-scan. Spark reads the column as `NULL`
+    // and **prunes the compacted file out of any query that filters on the partition**, so
+    // the answer is short rather than refused --- and gets shorter the better maintenance
+    // is working. `sankhya-publish` has supplied these values all along; compaction did not.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path();
+    let files = partitioned_table(root);
+
+    // A log that declares the partition column, which is what makes an empty
+    // `partitionValues` malformed rather than merely unhelpful.
+    let mut metadata = sankhya_table_delta::Metadata::new("t", "{}", 0);
+    metadata.partition_columns = vec!["sank_data_date".to_string()];
+    sankhya_table_delta::commit(root, 0, &sankhya_table_delta::create(metadata))
+        .expect("creating the table");
+    let adds: Vec<_> = files
+        .iter()
+        .map(|f| {
+            let mut add = sankhya_table_delta::AddFile::new(f.name.clone(), f.bytes, 0);
+            add.partition_values
+                .insert("sank_data_date".to_string(), "2026-08-28".to_string());
+            sankhya_table_delta::Action::Add(add)
+        })
+        .collect();
+    sankhya_table_delta::commit(root, 1, &adds).expect("publishing");
+
+    let plan = plan_tick(
+        &[PartitionState {
+            table: "t".to_string(),
+            partition: "sank_data_date=2026-08-28".to_string(),
+            files,
+            ticks_since_write: 0,
+        }],
+        &DriverPolicy {
+            compaction: CompactionPolicy {
+                small_file_bytes: 64 * 1024 * 1024,
+                ..CompactionPolicy::default()
+            },
+            ..DriverPolicy::default()
+        },
+        &quiet(),
+    );
+    let report = execute_tick(&plan, root, 1, WriterConfig::default()).expect("ticking");
+    assert!(!report.merged.is_empty(), "nothing was merged");
+    commit_tick(root, 2, &report, 1).expect("committing the tick");
+
+    // Read back what was committed, the way an external reader does.
+    let actions = sankhya_table_delta::read_actions(root).expect("replaying the log");
+    let compacted: Vec<_> = actions
+        .iter()
+        .filter_map(|(_version, action)| match action {
+            sankhya_table_delta::Action::Add(add) if add.path.contains("compacted") => Some(add),
+            _ => None,
+        })
+        .collect();
+    assert!(!compacted.is_empty(), "the tick committed no compacted file");
+    for add in compacted {
+        assert_eq!(
+            add.partition_values.get("sank_data_date").map(String::as_str),
+            Some("2026-08-28"),
+            "a compacted file declares no partition: {} carries {:?}",
+            add.path,
+            add.partition_values
         );
     }
 }

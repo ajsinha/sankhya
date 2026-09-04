@@ -18,13 +18,13 @@
 
 mod common;
 
-use common::{start, text_rows, write_warehouse, Running};
+use common::{start, start_with_user_functions, text_rows, write_warehouse, Running};
 
 fn running() -> (tempfile::TempDir, Running) {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let warehouse = dir.path().join("warehouse");
     write_warehouse(&warehouse);
-    let server = start(&warehouse, &dir.path().join("data"));
+    let server = start_with_user_functions(&warehouse, &dir.path().join("data"));
     (dir, server)
 }
 
@@ -120,7 +120,8 @@ fn it_survives_a_restart() {
     if !boundary_or_skip(server.port) {
         return;
     }
-    let again = start(&dir.path().join("warehouse"), &dir.path().join("data-again"));
+    let again =
+        start_with_user_functions(&dir.path().join("warehouse"), &dir.path().join("data-again"));
     let names: Vec<String> = text_rows(again.port, "SHOW AGGREGATIONS")
         .iter()
         .filter_map(|row| row.first().cloned().flatten())
@@ -292,4 +293,44 @@ fn a_cube_naming_an_aggregation_that_does_not_exist_is_refused() {
         said.contains("SHOW AGGREGATIONS"),
         "and the refusal says how to find out what it does have: {said}"
     );
+}
+
+
+/// The door is shut on a server nobody opened.
+///
+/// # Why this test is the point of the switch
+///
+/// Every other test in this file calls `start_with_user_functions`, so all of them exercise a
+/// server with the capability granted --- which is exactly how the defect survived. The
+/// statement ran arbitrary Python for any caller, including one holding no roles, and then
+/// recorded an audit entry saying the decision had been allowed. Nothing here asserted the
+/// closed case because nothing ever ran the closed case.
+///
+/// This uses `start`, which is what an operator who has decided nothing gets.
+#[test]
+fn a_server_nobody_opened_refuses_to_run_code_it_was_handed() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let warehouse = dir.path().join("warehouse");
+    write_warehouse(&warehouse);
+    let server = start(&warehouse, &dir.path().join("data"));
+
+    let refused = ask(server.port, WEIGHTED).expect_err("a closed server ran supplied code");
+    assert!(
+        refused.contains("does not accept user-supplied aggregations"),
+        "refused for the wrong reason: {refused}"
+    );
+    assert!(
+        refused.contains("42501"),
+        "a capability refusal must carry insufficient privilege: {refused}"
+    );
+
+    // Dropping is state too, and was equally ungated.
+    let dropped = ask(server.port, "DROP AGGREGATION weighted_mean")
+        .expect_err("a closed server accepted a DROP");
+    assert!(dropped.contains("does not accept user-supplied aggregations"), "{dropped}");
+
+    // Reading the list is not running one, so it still answers --- an operator who has just
+    // shut the door needs to see what came in while it was open.
+    let listed = ask(server.port, "SHOW AGGREGATIONS").expect("SHOW is not gated");
+    assert!(listed.is_empty(), "nothing was declared: {listed:?}");
 }

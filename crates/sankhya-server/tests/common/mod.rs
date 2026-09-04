@@ -346,6 +346,18 @@ pub(crate) fn start(warehouse: &std::path::Path, data: &std::path::Path) -> Runn
     start_with(warehouse, data, &[])
 }
 
+/// Start a server that accepts user-supplied aggregations.
+///
+/// Separate from `start`, and named, because `server.user_functions` is off by default and a
+/// test that quietly turned it on would be testing a server no operator gets. A test that
+/// wants the capability asks for it here, in one line, the way an operator does.
+pub(crate) fn start_with_user_functions(
+    warehouse: &std::path::Path,
+    data: &std::path::Path,
+) -> Running {
+    start_with(warehouse, data, &[("SANKHYA_USER_FUNCTIONS", "true")])
+}
+
 /// Start the binary with extra environment, and wait until it says which port it took.
 ///
 /// The environment is a slice rather than a struct of known keys: what a test needs to

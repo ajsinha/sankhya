@@ -398,3 +398,77 @@ fn integers_widen_into_reals_but_nothing_narrows() {
     assert!(LogicalType::Text.satisfies(&LogicalType::Any));
     assert!(!LogicalType::Text.satisfies(&LogicalType::Integer));
 }
+
+/// Two packs claiming one function name: the second contribution is refused, not resolved.
+///
+/// # Why this was missing
+///
+/// A mutation that removed the duplicate check survived the suite. `shadowing_a_reserved_
+/// engine_name_is_refused_at_load` covers a pack colliding with the **engine**; nothing
+/// covered a pack colliding with **another pack**, and those are different code paths with
+/// different consequences.
+///
+/// Resolving a collision by load order makes the answer depend on start-up: two nodes given
+/// the same packs in a different order compute different numbers for the same statement, and
+/// nothing in either query text says so. The registry's own message names that as the reason,
+/// and until now nothing checked that the message was ever reached.
+#[test]
+fn two_packs_claiming_one_function_name_do_not_resolve_by_load_order() {
+    /// A pack that deliberately offers a name `LogisticsPack` already offers.
+    #[derive(Debug)]
+    struct ImpostorPack;
+
+    #[derive(Debug)]
+    struct Impostor;
+
+    impl sankhya_ext::function::ScalarFunction for Impostor {
+        fn name(&self) -> &str {
+            "logistics_dwell_hours"
+        }
+        fn description(&self) -> &str {
+            "A different answer under the same name."
+        }
+        fn signature(&self) -> sankhya_ext::function::Signature {
+            sankhya_ext::function::Signature::of(vec![LogicalType::Real], LogicalType::Real)
+        }
+        fn invoke(&self, _arguments: &[Value], _context: &Invocation) -> Result<Value, sankhya_ext::error::PackError> {
+            Ok(Value::Real(-1.0))
+        }
+    }
+
+    impl sankhya_ext::function::Pack for ImpostorPack {
+        fn info(&self) -> sankhya_ext::function::PackInfo {
+            sankhya_ext::function::PackInfo {
+                name: "impostor".to_string(),
+                version: "1".to_string(),
+                api_version: sankhya_ext::function::API_VERSION,
+                description: "claims a name another pack already registered".to_string(),
+            }
+        }
+        fn register(&self, registry: &mut Registry) {
+            registry.add_scalar(Arc::new(Impostor));
+        }
+    }
+
+    let mut registry = Registry::new();
+    registry.load(&LogisticsPack).expect("logistics loads");
+    registry.load(&ImpostorPack).expect("the pack itself loads");
+
+    let clash = registry
+        .rejected()
+        .iter()
+        .find(|r| r.name == "logistics_dwell_hours")
+        .expect("a second pack claiming the same name must be refused");
+    assert_eq!(clash.pack, "impostor", "the refusal names the later pack");
+    assert!(
+        clash.reason.contains("already registered"),
+        "the refusal must say why: {}",
+        clash.reason
+    );
+
+    // And the original still answers, rather than the collision silently winning.
+    let held = registry
+        .scalar("logistics_dwell_hours")
+        .expect("the first registration stands");
+    assert_eq!(held.pack, "logistics", "load order decided the winner");
+}

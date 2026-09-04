@@ -1,6 +1,6 @@
 # Runnable examples
 
-Ten scripts, one per capability, each runnable on its own against a live SANKHYA.
+Twelve example scripts, one per capability, each runnable on its own against a live SANKHYA.
 
 ```
 pip install -e sdk/python

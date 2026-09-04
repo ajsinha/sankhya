@@ -20,4 +20,5 @@ sankhya-cdc-model = { path = "../sankhya-cdc-model" }
 arrow-schema      = { workspace = true }
 
 [dev-dependencies]
+sankhya-testkit = { path = "../sankhya-testkit" }
 proptest = { workspace = true }

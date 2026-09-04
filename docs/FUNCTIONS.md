@@ -54,6 +54,10 @@ The catalogue is what a hundred people need. The rule that is *this* firm's — 
 with their weighting, an exposure netted their way — will never be in it, and the answer is not
 to make them leave the warehouse:
 
+> **Off by default.** `CREATE AGGREGATION` runs code the caller supplied, so a server refuses it
+> unless an operator sets `server.user_functions: true` (or `SANKHYA_USER_FUNCTIONS=true`). The
+> refusal carries `42501` and names the setting. `SHOW AGGREGATIONS` answers either way.
+
 ```sql
 CREATE AGGREGATION weighted_mean LANGUAGE PYTHON AS $$
 def accumulate(state, values): ...

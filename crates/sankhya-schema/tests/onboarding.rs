@@ -236,7 +236,7 @@ fn stream_relations(slot: &str) -> Option<Vec<RelationDescriptor>> {
 #[test]
 fn every_table_in_the_real_dataset_onboards() {
     let Some(relations) = stream_relations("sankhya_onboard_all") else {
-        eprintln!("skipping: set SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run");
+        sankhya_testkit::skipped("onboarding", "set SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run");
         return;
     };
     assert!(!relations.is_empty(), "the stream described no relations");
@@ -294,7 +294,7 @@ fn every_table_in_the_real_dataset_onboards() {
 #[test]
 fn the_real_dataset_exercises_both_exact_and_inexact_columns() {
     let Some(relations) = stream_relations("sankhya_onboard_exact") else {
-        eprintln!("skipping: database not configured");
+        sankhya_testkit::skipped("onboarding", "database not configured");
         return;
     };
     let mut with_floats = 0usize;

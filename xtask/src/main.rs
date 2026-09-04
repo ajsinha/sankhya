@@ -15,6 +15,9 @@ mod surfaces;
 mod unsafety;
 mod package;
 mod concurrency;
+mod attribution;
+mod status;
+mod coverage;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -191,6 +194,27 @@ fn main() -> ExitCode {
     if run_all || task == "check-lints" {
         failed |= !check_lints(&root);
     }
+    if task == "write-attribution" {
+        match attribution::write(&root) {
+            Ok(count) => {
+                println!("wrote {} for {count} third-party package(s)", attribution::FILE);
+                return ExitCode::SUCCESS;
+            }
+            Err(why) => {
+                eprintln!("xtask: {why}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if run_all || task == "check-mutation-coverage" {
+        failed |= !coverage::check(&root);
+    }
+
+    if run_all || task == "check-attribution" {
+        failed |= !attribution::check(&root);
+    }
+
     if run_all || task == "check-unsafety" {
         failed |= !unsafety::check(&root);
     }
@@ -256,6 +280,9 @@ fn main() -> ExitCode {
                 | "check-lints"
                 | "check-mutations"
                 | "check-unsafety"
+                | "check-attribution"
+                | "check-mutation-coverage"
+                | "write-attribution"
                 | "check-doc-numbers"
                 | "check-writers"
                 | "check-invariants"
@@ -278,7 +305,7 @@ fn main() -> ExitCode {
         eprintln!(
             "usage: cargo xtask \
              [check-all|check-tests|check-concurrency|check-invariants|check-writers|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
-             |check-features|check-lints|check-unsafety|check-mutations|check-doc-numbers\
+             |check-features|check-lints|check-unsafety|check-attribution|check-mutation-coverage|write-attribution|check-mutations|check-doc-numbers\
              |check-catalogues|write-catalogues|check-logging|check-package|check-build-tree|check-surfaces|check-atomic-writes|check-lock-order|sweep|sweep-dry-run|sync-doc-numbers|check-performance]"
         );
         return ExitCode::from(2);
@@ -766,7 +793,7 @@ fn check_docs(root: &Path) -> bool {
     );
 
     ok &= check_named_sources(root, &docs);
-    ok &= check_status_agreement(root, &docs);
+    ok &= status::check_status_agreement(root, &docs);
     ok &= check_the_motto(root, &docs);
 
     ok
@@ -1228,166 +1255,6 @@ fn check_mutations(root: &Path) -> bool {
     }
 }
 
-/// Every document's `**Status:**` line says the same thing.
-///
-/// Documentation rot is usually not a false statement; it is two true-at-different-times
-/// statements sitting in different files. This catches the specific case that has
-/// actually happened here: four documents carried "Design phase" long after
-/// implementation started, and two of those had been half-updated into "Implementation —
-/// M0–M3 complete — no implementation has begun", which is a sentence that contradicts
-/// itself and which nobody reading one document in isolation would notice.
-///
-/// Only files declaring a `**Status:**` header line participate. Prose status paragraphs
-/// are left alone: this checks the machine-readable claim, not the writing.
-fn check_status_agreement(root: &Path, docs: &[PathBuf]) -> bool {
-    let mut seen: BTreeMap<String, Vec<String>> = BTreeMap::new();
-
-    for doc in docs {
-        // Architecture decision records carry their own status vocabulary — Accepted,
-        // Superseded — which is about the decision, not about the project. They are a
-        // different kind of claim and are excluded rather than forced to agree.
-        if doc.components().any(|c| c.as_os_str() == "adr") {
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(doc) else {
-            continue;
-        };
-        let name = doc
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        for line in text.lines().take(20) {
-            if let Some(rest) = line.strip_prefix("**Status:** ") {
-                seen.entry(rest.trim().to_string()).or_default().push(name);
-                break;
-            }
-        }
-    }
-
-    if seen.len() > 1 {
-        eprintln!("  DISAGREEMENT: documents state different statuses");
-        for (status, files) in &seen {
-            eprintln!("    {:<50} {}", status, files.join(", "));
-        }
-        return false;
-    }
-
-    let Some((status, files)) = seen.iter().next() else {
-        return true;
-    };
-
-    // Agreement is not accuracy.
-    //
-    // This check passed for a week while every document said "M0–M5 complete, M6 in
-    // progress" and M7 was half built. Seven documents agreeing is exactly what a stale
-    // line looks like: nothing disagrees with it, because they were all written at the same
-    // moment and none of them has moved since.
-    //
-    // So the agreed line is checked against something that *does* move --- STATUS.md's
-    // milestone table, which is edited as work lands. Every milestone that table calls
-    // unfinished must be named in the status line.
-    let unfinished = unfinished_milestones(root);
-    let mut ok = true;
-    for milestone in &unfinished {
-        if !status.contains(milestone.as_str()) {
-            eprintln!(
-                "  STALE STATUS  the status line does not mention {milestone}, which \
-                 docs/STATUS.md lists as in progress: {status:?}"
-            );
-            ok = false;
-        }
-    }
-    // The README carries the same claim as a badge and a paragraph rather than a
-    // `**Status:**` line, so the agreement check above cannot see it --- which is why it was
-    // the last document still saying "M5 complete" after every other had moved.
-    ok &= readme_names(root, &unfinished);
-
-    if ok {
-        println!(
-            "   {} documents agree on status, and it names every milestone in progress \
-             ({}): {status}",
-            files.len(),
-            if unfinished.is_empty() {
-                "none".to_string()
-            } else {
-                unfinished.join(", ")
-            }
-        );
-    }
-    ok
-}
-
-/// Whether the README's badge and status section name every milestone in progress.
-///
-/// A separate check because the README states its status in two places and in neither of the
-/// forms the rest of the documentation uses. Both are checked: a badge that disagrees with
-/// the prose beneath it is the version most people see.
-fn readme_names(root: &Path, in_progress: &[String]) -> bool {
-    let Ok(text) = std::fs::read_to_string(root.join("README.md")) else {
-        return true;
-    };
-    let badge: String = text
-        .lines()
-        .filter(|line| line.contains("img.shields.io/badge/status"))
-        .collect();
-    let status: String = text
-        .split("## Status")
-        .nth(1)
-        .map(|rest| rest.lines().take(6).collect())
-        .unwrap_or_default();
-
-    let mut ok = true;
-    for milestone in in_progress {
-        if !badge.contains(milestone.as_str()) {
-            eprintln!("  STALE STATUS  README.md's status badge does not mention {milestone}");
-            ok = false;
-        }
-        if !status.contains(milestone.as_str()) {
-            eprintln!("  STALE STATUS  README.md's Status section does not mention {milestone}");
-            ok = false;
-        }
-    }
-    ok
-}
-
-/// Milestones `docs/STATUS.md` describes as in progress.
-///
-/// Read from the milestone table rather than declared here, so that recording a milestone as
-/// finished in one place is what makes the status line allowed to stop mentioning it. The
-/// table is edited as work lands; the status line is not, which is the whole problem.
-fn unfinished_milestones(root: &Path) -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(root.join("docs/STATUS.md")) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if !trimmed.starts_with("| **M") {
-            continue;
-        }
-        let Some(name) = trimmed
-            .strip_prefix("| **")
-            .and_then(|rest| rest.split("**").next())
-        else {
-            continue;
-        };
-        // In progress, specifically --- not merely unfinished. A status line naming every
-        // milestone nobody has started yet is noise, and noise is what gets skipped when
-        // the line does need changing. What must be named is what is in flight.
-        if !trimmed.to_lowercase().contains("in progress") {
-            continue;
-        }
-        for part in name.split(['–', '-']) {
-            let part = part.trim().trim_start_matches("**");
-            if part.starts_with('M') && part.len() >= 2 {
-                out.push(part.to_string());
-            }
-        }
-    }
-    out.sort();
-    out.dedup();
-    out
-}
 
 /// Every source file a document names by path must exist.
 ///
@@ -1445,7 +1312,8 @@ fn named_source_paths(text: &str) -> Vec<String> {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
-    use super::{check_named_sources, named_source_paths, unfinished_milestones};
+    use super::{check_named_sources, named_source_paths};
+    use crate::status::unfinished_milestones;
 
 
     use std::path::Path;
@@ -1868,6 +1736,12 @@ const KNOWN_CHECKS: &[&str] = &[
 fn check_tests(root: &Path) -> bool {
     println!("== check-tests ==");
     let started = std::time::Instant::now();
+    // Emptied before the run, so what is in it afterwards belongs to this run. A test that
+    // declines to run records a line here through `sankhya_testkit::skipped`, because
+    // `cargo test` discards a **passing** test's output and fifteen PostgreSQL end-to-end
+    // tests used that to announce themselves into a buffer nobody ever saw.
+    let skip_log = root.join("target").join("sankhya-skipped.log");
+    std::fs::remove_file(&skip_log).ok();
     let output = std::process::Command::new(env!("CARGO"))
         .arg("test")
         .arg("--workspace")
@@ -1925,6 +1799,40 @@ fn check_tests(root: &Path) -> bool {
     }
     if !skips.is_empty() {
         println!("   {} measurement(s) skipped, and green means the rest", skips.len());
+    }
+
+    // The tests that ran and proved nothing.
+    //
+    // Distinct from the skips above, which announce themselves on a stream this function can
+    // read. These pass. `cargo test` shows a passing test's output to nobody, so fifteen
+    // end-to-end tests --- every one that needs a real PostgreSQL, including
+    // `read_your_own_writes`, which is M1's headline property --- returned `ok` having
+    // executed nothing, and no line anywhere said so.
+    let declined = std::fs::read_to_string(&skip_log).unwrap_or_default();
+    let mut declined: Vec<&str> = declined.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    declined.sort_unstable();
+    declined.dedup();
+    if !declined.is_empty() {
+        for line in &declined {
+            println!("   DID NOT RUN    {line}");
+        }
+        // A machine with no PostgreSQL is a legitimate machine to develop on. A machine that
+        // cannot tell you which tests it did not run is not.
+        if std::env::var("SANKHYA_REQUIRE_E2E").is_ok() {
+            eprintln!(
+                "  NOT RUN        {} test(s) declined to run while SANKHYA_REQUIRE_E2E is \
+                 set, which says this machine has the database configured on purpose. A \
+                 passing suite that skipped its end-to-end half is the failure this variable \
+                 exists to catch",
+                declined.len()
+            );
+            return false;
+        }
+        println!(
+            "   {} test(s) passed without running --- set SANKHYA_REQUIRE_E2E=1 on a machine \
+             with PostgreSQL configured to make that a failure",
+            declined.len()
+        );
     }
     true
 }

@@ -67,6 +67,7 @@ fn settings(warehouse: &std::path::Path) -> Settings {
         // maintain a warehouse it is also inspecting has become a second writer.
         maintenance: None,
         require_password: false,
+        user_functions: false,
         metrics_listen: None,
         transport_security: None,
     }

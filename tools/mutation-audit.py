@@ -612,8 +612,298 @@ CATALOGUE = [
 
     ("driver: commit a merge without the bounds it computed",
      "crates/sankhya-maintenance/src/driver.rs",
-     "        actions.push(Action::Add(AddFile::rewritten(\n            name(&outcome.output),\n            outcome.bytes,\n            now,\n            &statistics,\n        )));",
-     "        actions.push(Action::Add(AddFile::with_rows(\n            name(&outcome.output),\n            outcome.bytes,\n            now,\n            outcome.rows,\n        )));",
+     "        let mut add = AddFile::rewritten(output.clone(), outcome.bytes, now, &statistics);",
+     "        let mut add = AddFile::with_rows(output.clone(), outcome.bytes, now, outcome.rows);",
+     "sankhya-maintenance"),
+
+    # Removing this alone leaves a file sitting inside a partition directory while telling
+    # every reader it belongs to no partition. A kernel reader stops; Spark reads the column
+    # as null and prunes the file out of exactly the queries that filter on it, so the answer
+    # is short rather than refused --- and gets shorter the better maintenance is working.
+    # Removing the filter makes the loader read every file in the feed directory --- so
+    # `config/feeds/README.md`, which explains what a declaration is, is parsed as one, and
+    # the shipped server complains about it on every startup. A complaint that is always
+    # there hides the next one.
+    # The kernel oracle's own guard: if the row count after compaction is not asserted, the
+    # test degrades to listing paths --- which is what the old oracle did, and why
+    # `partitionValues: {}` survived. Paths and counts are unaffected by that defect.
+    # The de-tautologised catalogue check reads the engine's registry, and must read all of
+    # it. Dropping the table functions hides `cube_rollup`, `cube_slice`, `functions` and every
+    # `graph_*` entry --- eleven of the catalogue's most prominent surfaces --- which is the
+    # state this check was in when it was first written.
+    # --- the gRPC transport -----------------------------------------------------------------
+
+    # A transport configured with a certificate that serves in the clear anyway. The failure
+    # is quiet by construction: the port listens, TCP connections open, and only the *answer*
+    # reveals which door it is --- which is why the test asserts on the reply and not on the
+    # socket.
+    #
+    # There is deliberately no mutation for the `while` in `wait_for_shutdown`. One was
+    # written --- `while` to `if` --- and it survived, correctly: the watch channel is created
+    # inside `serve_until` and only ever carries a single `send(true)`, so the spurious
+    # wake-up the loop guards against cannot be produced through the public surface. It is
+    # defensive code for a case this crate does not reach, and a mutation of unreachable code
+    # is a test nobody can write.
+    ("api-grpc: serve in the clear despite being given a certificate",
+     "crates/sankhya-api-grpc/src/lib.rs",
+     "        self.encryption = Some(acceptor);\n        self",
+     "        let _ = acceptor;\n        self",
+     "sankhya-api-grpc"),
+
+    # --- the graph SQL surface --------------------------------------------------------------
+
+    # A seed key that names no vertex is a question about an entity this graph has never
+    # heard of. Skipping it silently answers as though that entity existed and was connected
+    # to nothing --- which is a plausible answer, and wrong.
+    ("graph-sql: skip unknown seed keys instead of refusing",
+     "crates/sankhya-graph-sql/src/functions.rs",
+     "    if !missing.is_empty() {\n        return plan_err!(",
+     "    if false {\n        return plan_err!(",
+     "sankhya-graph-sql"),
+
+    # --- the measurement harness ------------------------------------------------------------
+
+    # `enough` decides whether a throughput measurement means anything. Reading it
+    # permissively makes every capacity window hold on any machine, so the numbers describe
+    # the load rather than the code --- and the skip that says so never happens.
+    ("testkit: call any machine idle enough to measure on",
+     "crates/sankhya-testkit/src/lib.rs",
+     "        idle >= wanted",
+     "        idle >= 0.0 && wanted >= 0.0",
+     "sankhya-testkit"),
+
+    # --- the source-safety ladder ----------------------------------------------------------
+    #
+    # `sankhya-cdc-pg` decides when SANKHYA starts hurting the PostgreSQL it reads from. Every
+    # rung is a bound on somebody else's disk, and the crate had no mutation entry at all.
+
+    # `Sacrifice` is the rung where the unread log is abandoned deliberately rather than let
+    # the source remove the slot. Reached one byte late, it is reached after the source has
+    # already made the decision for us.
+    ("cdc-pg: enter the sacrifice rung one byte late",
+     "crates/sankhya-cdc-pg/src/safety.rs",
+     "    if retained >= policy.threshold(policy.sacrifice_fraction_percent)\n        || state.status == WalStatus::Unreserved",
+     "    if retained > policy.threshold(policy.sacrifice_fraction_percent)\n        || state.status == WalStatus::Unreserved",
+     "sankhya-cdc-pg"),
+
+    # An unusable slot means capture is not reading; the ladder must escalate on the *status*
+    # and not only on the byte count, because a stalled slot grows the source's log with no
+    # local symptom at all.
+    ("cdc-pg: ignore an unreserved slot unless the bytes also say so",
+     "crates/sankhya-cdc-pg/src/safety.rs",
+     "        || state.status == WalStatus::Unreserved",
+     "        || false",
+     "sankhya-cdc-pg"),
+
+    # --- generated data ---------------------------------------------------------------------
+
+    # The fixtures exist so a null is exercised on every nullable column. Generating none
+    # means every downstream test runs on data with no nulls in it, and null handling is the
+    # single most common source of a plausible wrong answer in this system.
+    ("datagen: never generate a null in a nullable column",
+     "crates/sankhya-datagen/src/generate.rs",
+     "        if column.nullable && row % 11 == 3 {",
+     "        if column.nullable && row % 11 == 3 && false {",
+     "sankhya-datagen"),
+
+    # --- Arrow Flight tickets -------------------------------------------------------------
+
+    # A ticket is a bearer credential: it carries the authorization decision made when it was
+    # issued, so it is never re-checked on redemption. Expiry is the only thing bounding how
+    # long a stolen or stale one works.
+    ("api-flight: redeem a ticket at the instant it expires",
+     "crates/sankhya-api-flight/src/ticket.rs",
+     "        if now >= self.expires_at {",
+     "        if now > self.expires_at {",
+     "sankhya-api-flight"),
+
+    # --- pack loading ---------------------------------------------------------------------
+
+    # `Trust` decides whether third-party bytes are executed. Anything other than `Allowed`
+    # is a refusal, and reading it permissively loads code the deployment did not vouch for.
+    ("pack: treat any trust verdict as permission to load",
+     "crates/sankhya-pack/src/verify.rs",
+     "        matches!(self, Self::Allowed)",
+     "        !matches!(self, Self::Allowed)",
+     "sankhya-pack"),
+
+    # --- session leases -------------------------------------------------------------------
+
+    # A lease that has expired is a lease whose pins have been released; renewing it hands
+    # back a claim on data the sweeper may already have collected. Boundary, not a range:
+    # `<=` at exactly `now` is the moment it stops being held.
+    ("session: renew a lease that has already expired",
+     "crates/sankhya-session/src/lease.rs",
+     "        if existing.expires_at <= now {",
+     "        if existing.expires_at < now {",
+     "sankhya-session"),
+
+    # The clamp is what stops a caller granting itself an unbounded lease, which is a pin
+    # nothing can reclaim behind.
+    ("session: grant whatever lifetime the caller asked for",
+     "crates/sankhya-session/src/lease.rs",
+     "        let granted = wanted_micros.clamp(0, self.max_lifetime_micros);",
+     "        let granted = wanted_micros.max(0);",
+     "sankhya-session"),
+
+    # --- the error protocol ---------------------------------------------------------------
+
+    # A client retrying a `User` error retries a statement that will never succeed; a client
+    # not retrying `Unavailable` gives up on one that would. The two protocols must agree,
+    # which is why this decision is made once for a class rather than per error site.
+    ("error: tell clients to retry anything that is not unavailable",
+     "crates/sankhya-error/src/protocol.rs",
+     "        matches!(self.grpc, GrpcStatus::Unavailable)",
+     "        !matches!(self.grpc, GrpcStatus::Unavailable)",
+     "sankhya-error"),
+
+    # --- the published extension API ------------------------------------------------------
+
+    # A pack built against a different API version has a different ABI. Loading it anyway
+    # postpones the failure into a query, where the cause is no longer visible --- which is
+    # what the refusal's own message says it exists to prevent.
+    ("ext: load a pack built against another API version",
+     "crates/sankhya-ext/src/registry.rs",
+     "        if info.api_version != API_VERSION {",
+     "        if false {",
+     "sankhya-ext"),
+
+    # A pack registering a core name changes what an existing query means without changing
+    # its text. There is no error at the call site; the answer is simply somebody else's.
+    ("ext: let a pack shadow a reserved engine name",
+     "crates/sankhya-ext/src/registry.rs",
+     "        if let Some(prefix) = RESERVED_PREFIXES.iter().find(|p| name.starts_with(**p)) {",
+     "        if let Some(prefix) = RESERVED_PREFIXES.iter().find(|p| name == **p) {",
+     "sankhya-ext"),
+
+    # Two packs claiming one name resolved by load order makes the answer depend on start-up
+    # ordering, which is the same statement returning different numbers on two nodes.
+    ("ext: resolve a duplicate function name by load order",
+     "crates/sankhya-ext/src/registry.rs",
+     "        if let Some(existing) = self.scalars.get(name) {",
+     "        if let Some(existing) = self.scalars.get(\"\") {",
+     "sankhya-ext"),
+
+    # --- graph overlays -------------------------------------------------------------------
+
+    # The overlay is a delta over a built epoch. Past the threshold a rebuild is cheaper, and
+    # never rebuilding means every query pays the whole accumulated delta, for ever.
+    ("graph: never conclude that an overlay needs rebuilding",
+     "crates/sankhya-graph/src/overlay.rs",
+     "        if self.pending_edges >= self.threshold.max_edges {",
+     "        if self.pending_edges > usize::MAX {",
+     "sankhya-graph"),
+
+    # --- schema evolution ----------------------------------------------------------------
+
+    # A decimal whose scale moved is a rescale of every stored value. Calling it a widening
+    # lets it through as compatible, and the column then reads a hundred times its value or a
+    # hundredth of it, silently, on data already written.
+    ("schema: treat a rescaled decimal as a widening",
+     "crates/sankhya-schema/src/evolve.rs",
+     "        (Decimal(a), Decimal(b)) => a.scale == b.scale && b.digits >= a.digits,",
+     "        (Decimal(a), Decimal(b)) => b.digits >= a.digits,",
+     "sankhya-schema"),
+
+    # Narrowing a nullable column to NOT NULL is blocking because rows already written may
+    # hold nulls. Accepting it makes the table's own declaration false about its contents.
+    ("schema: accept tightening a nullable column",
+     "crates/sankhya-schema/src/evolve.rs",
+     "                        let c = SchemaChange::ColumnTightened {\n                            name: field.name.clone(),\n                        };\n                        blocking.push(c.clone());\n                        c",
+     "                        SchemaChange::ColumnTightened {\n                            name: field.name.clone(),\n                        }",
+     "sankhya-schema"),
+
+    # A changed primary key changes what a row *is*. Every idempotence guarantee downstream
+    # is keyed on it, so a silent identity change makes replays merge the wrong rows.
+    ("schema: let an identity change through unblocked",
+     "crates/sankhya-schema/src/evolve.rs",
+     "                        changes.push(change.clone());\n                        blocking.push(change);",
+     "                        changes.push(change);",
+     "sankhya-schema"),
+
+    # --- the pgoutput decoder ------------------------------------------------------------
+    #
+    # The README singles this crate out as validated against a real PostgreSQL stream, and it
+    # had no mutation entry at all.
+
+    # `u` means "this column was TOASTed and did not change, so it is not in the message".
+    # Reading it as NULL blanks a column nobody touched --- the decoder's own comment calls
+    # this "the dangerous one", and nothing asked whether a test would notice.
+    ("cdc-model: read an unchanged TOAST value as NULL",
+     "crates/sankhya-cdc-model/src/decode.rs",
+     "                b'u' => TupleValue::Unchanged,",
+     "                b'u' => TupleValue::Null,",
+     "sankhya-cdc-model"),
+
+    # A negative length is a corrupt or hostile stream. Trusting it turns into a `take` of a
+    # length that wrapped, which is how a decoder reads past the end of what it was given.
+    ("cdc-model: trust a negative text length",
+     "crates/sankhya-cdc-model/src/decode.rs",
+     "                b't' => {\n                    let len = c.i32()?;\n                    if len < 0 {\n                        return Err(DecodeError::NegativeLength {\n                            at: c.pos - 4,\n                            value: len,\n                        });\n                    }",
+     "                b't' => {\n                    let len = c.i32()?;",
+     "sankhya-cdc-model"),
+
+    # An unrecognised tuple kind is a protocol version this decoder does not understand.
+    # Guessing one is how a stream is silently misread rather than refused.
+    ("cdc-model: guess at an unknown tuple kind instead of refusing",
+     "crates/sankhya-cdc-model/src/decode.rs",
+     "                other => {\n                    return Err(DecodeError::UnknownTupleKind {\n                        at: kind_at,\n                        kind: other,\n                    })\n                }",
+     "                _ => TupleValue::Null,",
+     "sankhya-cdc-model"),
+
+    # --- M4's graph algorithms -------------------------------------------------------
+    #
+    # Eighteen crates had no entry at all, about nineteen thousand lines, and this was the
+    # largest of them: 2,920 lines of algorithms in a milestone marked "Complete. Every exit
+    # criterion met." Seven hundred mutations reads as thorough and said nothing about where
+    # they were.
+
+    # A negative weight makes Dijkstra's settled set wrong --- it may finalise a vertex whose
+    # cheaper route has not been found yet. Refusing is the whole reason the precondition is
+    # checked before the search rather than inside it.
+    ("graph-algo: run Dijkstra over negative weights instead of refusing",
+     "crates/sankhya-graph-algo/src/paths.rs",
+     "    if graph.has_negative_weight() {\n        return Err(NegativeWeight);\n    }\n    Ok(dijkstra(graph, from, to, mask, budget))",
+     "    Ok(dijkstra(graph, from, to, mask, budget))",
+     "sankhya-graph-algo"),
+
+    # A truncated search reported as complete is the failure this whole crate is shaped
+    # against: an answer that is a subset of the truth, presented as the truth.
+    ("graph-algo: call a suppressed-vertex search complete",
+     "crates/sankhya-graph-algo/src/budget.rs",
+     "        !self.by_results && !self.by_visits && !self.by_depth && self.suppressed.is_empty()",
+     "        !self.by_results && !self.by_visits && !self.by_depth",
+     "sankhya-graph-algo"),
+
+    # Off by one on the visit budget: the search runs one vertex past what the caller allowed.
+    ("graph-algo: exceed the visit budget by one",
+     "crates/sankhya-graph-algo/src/paths.rs",
+     "        if visits > budget.max_visits {",
+     "        if visits > budget.max_visits + 1 {",
+     "sankhya-graph-algo"),
+
+    ("catalogue: read only the scalar kinds from the engine registry",
+     "crates/sankhya-server/tests/catalogue.rs",
+     "        out.extend(state.table_functions().keys().cloned());",
+     "",
+     "sankhya-server"),
+
+    ("kernel oracle: accept any row count after compaction",
+     "crates/sankhya-maintenance/tests/kernel_oracle.rs",
+     "    assert_eq!(\n        read, 1000,",
+     "    assert_eq!(\n        read, read,",
+     "sankhya-maintenance"),
+
+    ("feeds: read every file in the directory, not only declarations",
+     "crates/sankhya-server/src/feeds.rs",
+     "        .filter(|path| {\n            path.extension()\n                .is_some_and(|kind| kind.eq_ignore_ascii_case(\"yaml\") || kind.eq_ignore_ascii_case(\"yml\"))\n        })\n",
+     "",
+     "sankhya-server"),
+
+    ("driver: commit a compacted file that declares no partition",
+     "crates/sankhya-maintenance/src/driver.rs",
+     "        add.partition_values = sankhya_table_delta::partition_values_from(&output);",
+     "",
      "sankhya-maintenance"),
 
     ("publish: publish a file without the statistics it could have carried",

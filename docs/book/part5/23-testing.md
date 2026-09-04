@@ -14,8 +14,8 @@ Four numbers describe the mechanised half of verification:
 
 | | |
 |---|---|
-| `cargo test --workspace` | 2,587 tests, none of which needs a database |
-| `python3 tools/mutation-audit.py` | 741 specific defects, applied one at a time |
+| `cargo test --workspace` | 2,605 tests, none of which needs a database |
+| `python3 tools/mutation-audit.py` | 769 specific defects, applied one at a time |
 | `cargo xtask check-all` | twenty repository invariants, each proven to fail when violated |
 | `cargo xtask check-performance` | the `NFR-PERF` objectives, as a gate that can fail |
 
@@ -594,3 +594,31 @@ described above was added after something got through the mechanisms that preced
 did not catch what the mutation audit caught; the mutation audit did not catch what the gate
 caught; the gate did not catch what the soak caught; and the soak did not catch what four people
 with a `psql` binary caught in a day. Nothing here suggests the sequence has ended.
+
+## A test that passes without running
+
+`cargo test` shows a **passing** test's output to nobody. That is ordinarily a kindness, and it
+was the hiding place for the worst measurement defect in this repository.
+
+Fifteen end-to-end tests need a real PostgreSQL. Given none, each printed `skipping: set
+SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run` and returned `ok`. The print went into a buffer
+that is discarded on success, so the suite reported a pass, `check-all` reported green, and
+nothing anywhere said that fifteen tests had declined to do anything --- among them
+`read_your_own_writes`, which is **M1's headline property**, asserted complete by nine
+documents.
+
+This is not a test that fails silently. It is a test that **passes** silently while proving
+nothing, which is strictly worse: a failure at least argues with you.
+
+`sankhya_testkit::skipped` records the decision to a file instead, because a file survives
+capture. `check-tests` empties it before the run and reads it after:
+
+```
+   DID NOT RUN    read_your_own_writes: set SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET to run
+   15 test(s) passed without running --- set SANKHYA_REQUIRE_E2E=1 on a machine with
+   PostgreSQL configured to make that a failure
+```
+
+A machine with no PostgreSQL is a legitimate machine to develop on, so this is reported rather
+than refused. A machine that **cannot tell you** which tests it did not run is not legitimate,
+which is why the report is unconditional and why CI sets `SANKHYA_REQUIRE_E2E=1`.

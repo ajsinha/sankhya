@@ -57,10 +57,24 @@ pub(crate) fn load(configuration_dir: &Path) -> (Vec<Declared>, Vec<String>) {
 
     let mut declared = Vec::new();
     let mut complaints = Vec::new();
+    // YAML only. Every file in the directory used to be read as a declaration, so
+    // `config/feeds/README.md` --- the file that explains what a feed declaration is ---
+    // was parsed as one, and the shipped configuration complained on every single startup:
+    //
+    //   feed not loaded --- config/feeds/README.md: invalid type: string "One file per
+    //   feed. Each declares a source of newline-delimited JSON documents..."
+    //
+    // A complaint that is always there is a complaint nobody reads, which is worse than
+    // none: the next one, about a feed that really is malformed, arrives in the same place
+    // and looks the same. A file that is not a declaration is not a broken declaration.
     let mut paths: Vec<PathBuf> = entries
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| path.is_file())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("yaml") || kind.eq_ignore_ascii_case("yml"))
+        })
         .collect();
     paths.sort();
 

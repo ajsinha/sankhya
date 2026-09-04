@@ -135,6 +135,7 @@ fn settings(require_password: bool, warehouse: &std::path::Path) -> Settings {
         flight_listen: None,
         maintenance: None,
         require_password,
+        user_functions: false,
         metrics_listen: None,
         transport_security: None,
     }
@@ -216,8 +217,13 @@ async fn an_insecure_configuration_looks_wrong_in_the_startup_line() {
     );
     assert!(open.describe().contains("NO AUTHENTICATION"));
 
+    // Not "password required". A password is *demanded* and never *verified* --- there is no
+    // credential store, so any non-empty string from any user is accepted. An operator who
+    // reads "password required" opposite a capitalised "NO AUTHENTICATION" concludes the
+    // first one authenticates, and this line is the only place they would learn otherwise.
+    // The startup banner is the disclosure until the check itself is built.
     let (closed, _warehouse) = server(PolicySet::new());
-    assert!(closed.describe().contains("password required"));
+    assert!(closed.describe().contains("PASSWORD UNVERIFIED"));
     assert!(!closed.describe().contains("NO AUTHENTICATION"));
 }
 

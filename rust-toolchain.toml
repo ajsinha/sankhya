@@ -1,0 +1,14 @@
+# The toolchain this repository is built and gated with.
+#
+# Pinned because "whatever the machine has" is not a build. Until this file existed, the
+# README's badge said 1.97+, `Cargo.toml` said `rust-version = "1.90"`, and
+# `docs/QUICKSTART.md` said "1.90 or later" --- three numbers for one fact, and nothing that
+# could tell you which was true, because every build anybody had ever run used the toolchain
+# that happened to be installed.
+#
+# A lower minimum is a claim, and this repository does not ship claims: raising or lowering
+# it means a CI job that builds against that version and passes. Until there is one, the
+# supported version is the version that is tested, which is this one.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]

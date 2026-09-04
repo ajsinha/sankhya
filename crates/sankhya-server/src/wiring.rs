@@ -104,6 +104,20 @@ pub struct Settings {
     /// one --- and because making it explicit means the log can say which it is, so nobody
     /// discovers by accident that their server is open.
     pub require_password: bool,
+    /// Whether this server will accept `CREATE AGGREGATION`, which runs supplied code.
+    ///
+    /// # Why this defaults to off
+    ///
+    /// `ADR-0023` Decision 4 says the capability "is not granted by default" and that "the
+    /// grant is per principal, not per server". The per-principal half is not built. Until it
+    /// is, a server-wide switch that starts closed is the honest version of that sentence ---
+    /// the alternative, which shipped, was a statement that ran arbitrary Python for any
+    /// caller including one holding no roles at all, while writing an audit entry saying the
+    /// decision had been allowed.
+    ///
+    /// A switch rather than silence, so an operator who wants user functions turns them on and
+    /// knows they did.
+    pub user_functions: bool,
     /// Where the metrics endpoint listens, or `None` not to serve one.
     ///
     /// Its own address rather than a path on the wire-protocol port, so it can be bound to
@@ -781,8 +795,13 @@ impl Server {
     /// something an operator has to go and check.
     #[must_use]
     pub fn describe(&self) -> String {
+        // "PASSWORD UNVERIFIED", not "password required". The check below is that a
+        // password is *non-empty*; nothing is compared against anything, because no
+        // credential store is wired in. An operator reading "password required" beside the
+        // capitalised "NO AUTHENTICATION" alternative concludes the first one authenticates.
+        // It does not, and this line is where they would have found that out.
         let auth = if self.settings.require_password {
-            "password required"
+            "PASSWORD UNVERIFIED — any non-empty password is accepted from any user"
         } else {
             "NO AUTHENTICATION — every connection is accepted"
         };
@@ -910,6 +929,10 @@ impl Handler for Server {
                 "no user was supplied; an unattributable connection cannot be audited",
             ));
         }
+        // Presence, not correctness. There is no credential store, so this accepts any
+        // non-empty password from any user --- including one this server has never heard
+        // of. It is a placeholder that reads like a check, which is why the startup line
+        // says PASSWORD UNVERIFIED rather than "password required".
         if self.settings.require_password && password.is_none_or(<[u8]>::is_empty) {
             return Err(refusal(
                 statuses_for_unauthenticated().sqlstate.as_str(),

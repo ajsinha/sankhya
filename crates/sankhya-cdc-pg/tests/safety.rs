@@ -209,6 +209,54 @@ fn slot_lag_arithmetic_never_underflows() {
     assert!(state.is_current());
 }
 
+/// The sacrifice rung is entered *at* its threshold, not one byte after it.
+///
+/// # Why the property test misses this
+///
+/// `the_source_is_always_protected_at_the_threshold` generates retained bytes in whole
+/// gigabytes, so it never lands on the threshold exactly --- and a mutation changing `>=` to
+/// `>` survived it. That mutation is the difference between protecting the source at its
+/// limit and protecting it one byte past, which is one byte after the source has begun making
+/// the decision itself.
+///
+/// The whole ladder is expressed with `>=` for that reason: these are bounds on **somebody
+/// else's disk**, and a bound that is nearly right is one that fires after the thing it was
+/// meant to prevent.
+#[test]
+fn the_sacrifice_rung_is_entered_at_the_threshold_not_after_it() {
+    let policy = SafetyPolicy::default();
+    // Multiply *then* divide, which is what `SafetyPolicy::threshold` does. Written the
+    // other way round --- as the property test above writes it --- integer division truncates
+    // first and the result is a few bytes lower, so "exactly the threshold" is not exactly
+    // the threshold and this test fails against correct code. Worth stating because that
+    // near-miss is the same class of defect the test is aimed at.
+    let threshold = policy
+        .retention_limit_bytes
+        .saturating_mul(u64::from(policy.sacrifice_fraction_percent))
+        .saturating_div(100);
+
+    let at = assess(
+        &policy,
+        &slot(threshold, WalStatus::Reserved),
+        Duration::from_secs(0),
+    );
+    assert!(
+        at.sacrifice_analytics,
+        "exactly at the threshold the source must already be protected"
+    );
+
+    let below = assess(
+        &policy,
+        &slot(threshold - 1, WalStatus::Reserved),
+        Duration::from_secs(0),
+    );
+    assert!(
+        !below.sacrifice_analytics,
+        "one byte below the threshold is not yet the sacrifice rung, or the bound is not \
+         the number it says it is"
+    );
+}
+
 proptest! {
     /// Severity is monotonic in retained volume: more log held can never mean less
     /// concern.

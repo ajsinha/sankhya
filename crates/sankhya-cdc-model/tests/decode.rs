@@ -314,3 +314,63 @@ proptest! {
         prop_assert_eq!(new.values, vals);
     }
 }
+
+/// A length the stream says is negative is refused, not trusted.
+///
+/// # Why this was missing
+///
+/// A mutation that deleted the negative-length guard survived the whole suite. Every test
+/// here builds a well-formed message, and `corrupting_any_single_byte_never_panics` asserts
+/// only the absence of a panic --- which a decoder that quietly read a wrong number of bytes
+/// also satisfies.
+///
+/// The guard is not defensive decoration. `usize::try_from(len)` on a negative value fails,
+/// the code falls back to `0`, and the decoder then reads a value of length zero where the
+/// stream said something else entirely --- so every subsequent field is read from the wrong
+/// offset and the rest of the transaction decodes into plausible nonsense. This is a
+/// replication stream: "plausible nonsense" is rows written to a warehouse.
+#[test]
+fn a_negative_length_is_refused_rather_than_read_as_zero() {
+    for kind in [b't', b'b'] {
+        let mut bytes = vec![b'I'];
+        bytes.extend_from_slice(&16384u32.to_be_bytes());
+        bytes.push(b'N');
+        bytes.extend_from_slice(&1i16.to_be_bytes()); // one column
+        bytes.push(kind);
+        bytes.extend_from_slice(&(-1i32).to_be_bytes()); // the lie
+        bytes.extend_from_slice(b"x");
+
+        match Decoder::new().decode(&bytes) {
+            Err(DecodeError::NegativeLength { value, .. }) => assert_eq!(value, -1),
+            other => panic!(
+                "a negative length for kind {} was not refused: {other:?}",
+                kind as char
+            ),
+        }
+    }
+}
+
+/// A tuple kind this decoder does not know is refused, not guessed.
+///
+/// # Why guessing is the worse failure
+///
+/// PostgreSQL may add a tuple kind, as it added `b` for binary. A decoder that maps anything
+/// unrecognised onto `Null` does not fail; it writes nulls over real columns and keeps going,
+/// and the stream position stays valid so nothing downstream notices. Refusing stops the feed
+/// with a message naming the byte, which is the outcome `ADR-0018` requires for a record that
+/// does not fit.
+#[test]
+fn an_unknown_tuple_kind_is_refused_rather_than_guessed() {
+    let mut bytes = vec![b'I'];
+    bytes.extend_from_slice(&16384u32.to_be_bytes());
+    bytes.push(b'N');
+    bytes.extend_from_slice(&1i16.to_be_bytes());
+    bytes.push(b'z'); // no such kind
+    bytes.extend_from_slice(&1i32.to_be_bytes());
+    bytes.extend_from_slice(b"x");
+
+    match Decoder::new().decode(&bytes) {
+        Err(DecodeError::UnknownTupleKind { kind, .. }) => assert_eq!(kind, b'z'),
+        other => panic!("an unknown tuple kind was not refused: {other:?}"),
+    }
+}

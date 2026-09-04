@@ -12,7 +12,7 @@
 *A general-purpose unified OLTP + OLAP + Graph data server — one binary, written entirely in Rust.*
 
 [![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-M0--M8%2C%20M10%20and%20M13%20complete%2C%20M9%2C%20M14%2C%20M17%20and%20M18%20in%20progress-yellow.svg)](docs/STATUS.md)
+[![Status](https://img.shields.io/badge/status-M0%2C%20M1%2C%20M3%2C%20M4%2C%20M7%2C%20M10%20complete%3B%20M2%2C%20M5%2C%20M6%2C%20M8%2C%20M13%20partial%3B%20M9%2C%20M14%2C%20M17%2C%20M18%20in%20progress-yellow.svg)](docs/STATUS.md)
 [![Rust](https://img.shields.io/badge/rust-1.97%2B-b7410e.svg)](https://www.rust-lang.org)
 [![JVM](https://img.shields.io/badge/JVM-none-success.svg)](#design-principles)
 
@@ -154,13 +154,19 @@ Spark, Trino, DuckDB, Snowflake and Athena read these tables **directly**, with 
 
 ## Status
 
-**Implementation — M0 through M8, M10 and M13 complete; M9, M14, M17 and M18 in progress.** M8 closed on
-six of its eight exit criteria; the two that need a second machine, and the scale-out work behind
+**Implementation — M0, M1, M3, M4, M7 and M10 complete; M2, M5, M6, M8 and M13 partial; M9, M14,
+M17 and M18 in progress.** This line used to read "M0 through M8 complete", which four rows of
+`docs/STATUS.md`'s own table contradicted: **M2** is substantially complete with the streaming
+partition path not started, **M5** closed on four of five exit criteria, **M6** on six of seven,
+**M8** on six of eight, and **M13** is *substantially built*. Ten documents carried the wrong version, and the gate that requires
+them to agree could not see it, because it looked for the literal words *in progress* and those
+rows say *substantially complete*, *closed* and *complete on six of eight*. M8's two remaining
+criteria need a second machine, and the scale-out work behind
 them, moved to M12. M9's eleven work items are built and its exit criteria demonstrated, and
 **its gate is deliberately not cleared** — see below. **M10 — zero-copy cloning — is complete**:
 its design gate was cleared by [ADR-0016](docs/adr/0016-zero-copy-cloning.md) before any code was
 written, and all five exit criteria are met. **M13 — config-driven ingest from files — is
-complete**: a YAML declaration names the source, the shape of what arrives and where it lands; a
+substantially built**: a YAML declaration names the source, the shape of what arrives and where it lands; a
 record that does not fit is quarantined whole into a table with a mandatory expiry, under
 [ADR-0018](docs/adr/0018-a-record-that-does-not-fit.md); and a feed that halts is visible and
 resumable from a client rather than only from a log line. **M14 — the client contract and the
@@ -260,6 +266,7 @@ Start here:
 |---|---|
 | [`docs/QUICKSTART.md`](docs/QUICKSTART.md) | Build it, load ten gigabytes, watch capture reconcile — and what does not work yet |
 | [`docs/tutorials/`](docs/tutorials/) | Hands-on, in order — start here. Every example executed by a test |
+| [`docs/book/`](docs/book/README.md) | The full book: twenty-seven chapters on how and why it works, including the only table of `SANKHYA_*` environment variables |
 | [`docs/GUIDE.md`](docs/GUIDE.md) | Every feature by worked example, each one executed by a test |
 | [`docs/STATUS.md`](docs/STATUS.md) | What is actually built today, what is not, and what broke along the way |
 | [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) | The amended, traceable functional and non-functional requirements |
@@ -267,6 +274,9 @@ Start here:
 | [`docs/POSTGRES.md`](docs/POSTGRES.md) | Exactly what SANKHYA changes about PostgreSQL, and what it will never do to it |
 | [`docs/FUNCTIONS.md`](docs/FUNCTIONS.md) | Every built-in function, where each is reachable from, and what is still planned |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | What each release is *for*, gated on exit criteria rather than dates |
+| [`docs/AUDIT_REPORT.md`](docs/AUDIT_REPORT.md) | Twelve production-readiness audits, 129 findings, every one open |
+| [`docs/REMEDIATION.md`](docs/REMEDIATION.md) | The sequenced plan that closes them |
+| [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) | Every third-party package, its licence, and the upstream `NOTICE` files |
 
 Generated from the code, and checked against it on every build:
 

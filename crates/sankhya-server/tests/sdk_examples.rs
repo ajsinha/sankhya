@@ -23,7 +23,7 @@
 
 mod common;
 
-use common::{start, write_warehouse};
+use common::{start_with_user_functions, write_warehouse};
 
 /// The repository root, from this crate's manifest.
 fn repository() -> std::path::PathBuf {
@@ -75,7 +75,12 @@ fn every_python_example_runs_against_a_real_server() {
     let dir = tempfile::tempdir().expect("a directory");
     let warehouse = dir.path().join("warehouse");
     write_warehouse(&warehouse);
-    let server = start(&warehouse, &dir.path().join("data"));
+    // With user functions granted: `12_your_own_aggregation.py` declares one, and the
+    // example's own header tells the reader to set `server.user_functions: true` first. A
+    // server that refuses it would report the example as broken when it is the default that
+    // is closed --- which is the point of the default, and is held by its own test in
+    // `tests/aggregations.rs`.
+    let server = start_with_user_functions(&warehouse, &dir.path().join("data"));
 
     let mut broken: Vec<String> = Vec::new();
     for script in &scripts {
