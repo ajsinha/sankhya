@@ -108,11 +108,23 @@ fn two_feeds_landing_in_one_table_do_not_overwrite_each_others_progress() {
 }
 
 #[test]
-fn a_partial_carries_the_count_of_what_is_published_not_what_is_read() {
-    // Read-but-unpublished records are not progress. If the count were of records *read*, a
-    // crash between reading and committing would move the position past rows nobody wrote.
-    let partial = Partial { source: "a.json".to_owned(), records: 10 };
+fn a_partial_carries_the_count_of_lines_read_because_that_is_what_a_resume_skips_by() {
+    // This test was named `a_partial_carries_the_count_of_what_is_published_not_what_is_read`
+    // and it locked in `ING-01`: the position held records **published** while the resume
+    // skipped by **line index**, and those are the same number only when every line so far
+    // fitted and there were no blanks.
+    //
+    // Its reasoning was sound about the thing it was worried about — a crash between reading
+    // and committing must not move the position past rows nobody wrote — and that concern is
+    // answered by *when* the position is written, not by what it counts. Rows and position go
+    // into one commit, so a crash before it leaves the old position untouched. The name
+    // identified the conflation exactly and then asserted it.
+    let partial = Partial { source: "a.json".to_owned(), read_through: 10 };
     let position = Position { through: String::new(), partial: Some(partial) };
 
-    assert_eq!(position.standing("a.json"), Standing::Resume(10), "skip ten, read the eleventh");
+    assert_eq!(
+        position.standing("a.json"),
+        Standing::Resume(10),
+        "ten lines read, so the eleventh is next"
+    );
 }

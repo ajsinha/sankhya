@@ -224,6 +224,39 @@ impl Pipeline {
             self.onboard(relation)?;
         }
 
+        // A truncation names its own relations and reaches them directly, not through the
+        // transaction fan-out below: it is not a boundary, and sending it to every table would
+        // quarantine tables the source did not truncate.
+        //
+        // `ING-05`: this used to fall into the batcher's `_ => {}`. The source table is
+        // emptied and the analytical copy keeps every row — permanent, silent divergence,
+        // with no counter. A test asserted the decoder *parses* truncate; nothing asserted
+        // that anything acted on it.
+        //
+        // Quarantined rather than applied. The analytical copy is an unfolded change log with
+        // no key-based fold, so there is no "delete every row" this pipeline can emit — and
+        // inventing one would be worse than saying so. Quarantine stops publication, leaves
+        // the last consistent version queryable, and keeps consuming events so the
+        // replication cursor still advances, which is the rule a quarantine has to obey.
+        if let Message::Truncate { relation_ids, .. } = message {
+            for relation_id in relation_ids {
+                if let Some(state) = self.tables.get_mut(relation_id) {
+                    if state.quarantine.is_none() {
+                        state.quarantine = Some(
+                            "the source truncated this table. Every row it held is gone there \
+                             and still present here, and this pipeline appends changes rather \
+                             than folding them, so it has no way to apply a truncation. \
+                             Reload the table, or exclude it"
+                                .to_owned(),
+                        );
+                        self.stats.tables_quarantined =
+                            self.stats.tables_quarantined.saturating_add(1);
+                    }
+                }
+            }
+            return Ok(());
+        }
+
         // Transaction boundaries must reach every table's batcher, because a
         // transaction may span several tables and each must seal at the same position.
         if matches!(

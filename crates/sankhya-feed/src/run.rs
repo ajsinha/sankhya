@@ -160,7 +160,10 @@ pub fn run(feed: &Feed, directory: &Path, mut at: Running<'_>) -> Result<Ran, Ru
         let arrived = records(&path, skip).map_err(RunError::Source)?;
         let mut fitted: Vec<Row> = Vec::new();
         let mut refused: Vec<Refused> = Vec::new();
-        let mut published_here = skip;
+        // Lines read, not rows published. `ING-01`: those are the same number only when every
+        // line so far fitted and there were no blanks, and where they differ the resume skips
+        // too few lines and republishes what it already published.
+        let mut read_through = skip;
         let mut opened = Instant::now();
         let closes_after = Duration::from_secs(feed.microbatch().seconds);
         let mut stopped = None;
@@ -191,17 +194,20 @@ pub fn run(feed: &Feed, directory: &Path, mut at: Running<'_>) -> Result<Ran, Ru
                 stopped = Some(reason);
             }
 
+            // Read through this record, whether it fitted or was refused. The line index is
+            // what `records` skips by, so it is what the position has to hold.
+            read_through = record.position.saturating_add(1);
+
             let full = fitted.len() as u64 >= feed.microbatch().rows;
             let stale = opened.elapsed() >= closes_after;
             if stopped.is_some() || full || stale {
-                published_here += fitted.len() as u64;
                 commit_batch(
                     feed,
                     &mut at,
                     &mut position,
                     &name,
                     &fitted,
-                    published_here,
+                    read_through,
                     false,
                 )?;
                 ran.published += fitted.len() as u64;
@@ -216,8 +222,7 @@ pub fn run(feed: &Feed, directory: &Path, mut at: Running<'_>) -> Result<Ran, Ru
         // Whatever is left, and the position moved to "this source is finished" — unless the
         // feed stopped part-way, in which case the partial position is what a restart needs.
         let finishing = stopped.is_none();
-        published_here += fitted.len() as u64;
-        commit_batch(feed, &mut at, &mut position, &name, &fitted, published_here, finishing)?;
+        commit_batch(feed, &mut at, &mut position, &name, &fitted, read_through, finishing)?;
         ran.published += fitted.len() as u64;
 
         ran.quarantined += refused.len() as u64;
@@ -247,7 +252,7 @@ fn commit_batch(
     position: &mut Position,
     source: &str,
     rows: &[Row],
-    published_here: u64,
+    read_through: u64,
     finishing: bool,
 ) -> Result<(), RunError> {
     // The position moves whether or not there are rows: finishing an all-quarantined source
@@ -255,7 +260,7 @@ fn commit_batch(
     if finishing {
         position.finished(source);
     } else {
-        position.part_way(source, published_here);
+        position.part_way(source, read_through);
     }
     let recorded = position
         .to_property()

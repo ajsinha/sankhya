@@ -204,7 +204,17 @@ fn encode_column(
             index,
             mutations,
             "float32",
-            |s: &str| s.parse::<f32>().ok()
+            // `parse::<f32>()` returns `Ok(inf)` for a value too large to represent rather
+            // than an error, so the capture path had `ING-07`'s defect by a second route: a
+            // number the source sent as finite arrives here as an infinity, silently.
+            //
+            // `None` is a refusal, which is what the surrounding macro does with it.
+            |s: &str| s.parse::<f32>().ok().filter(|value| {
+                value.is_finite() || s.trim().eq_ignore_ascii_case("inf")
+                    || s.trim().eq_ignore_ascii_case("-inf")
+                    || s.trim().eq_ignore_ascii_case("infinity")
+                    || s.trim().eq_ignore_ascii_case("-infinity")
+            })
         ),
         LogicalType::Float64 => numeric_column!(
             Float64Builder::with_capacity(n),

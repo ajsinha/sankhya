@@ -4749,6 +4749,50 @@ CATALOGUE = [
      "            values\n                .get(at.saturating_sub(window - 1)..=at)\n                .map(|slice| deterministic_sum(slice) / divisor)",
      "sankhya-math"),
 
+    # --- Phase 3: capture that lost or duplicated rows -----------------------------------------
+
+    # `ING-01`. The position held records *published* and the resume skipped by *line index*.
+    # Those agree only when every line so far fitted, so `[good, bad, good]` republished the
+    # third line on restart --- one duplicate per preceding refusal or blank, silently.
+    ("feed: record a resume position as rows published rather than lines read",
+     "crates/sankhya-feed/src/run.rs",
+     "            read_through = record.position.saturating_add(1);",
+     "            read_through = skip + ran.published + fitted.len() as u64;",
+     "sankhya-feed"),
+
+    # `ING-05`. The batcher's match ended in `_ => {}` and `Truncate` fell into it: the source
+    # table is emptied and the analytical copy keeps every row, permanently and silently.
+    ("ingest: consume a truncation without acting on it",
+     "crates/sankhya-ingest/src/pipeline.rs",
+     "                    if state.quarantine.is_none() {",
+     "                    if false {",
+     "sankhya-ingest"),
+
+    # And the other direction: a truncation names its own relations, so quarantining every
+    # table stops feeding tables the source never truncated.
+    ("ingest: quarantine every table when the source truncates one",
+     "crates/sankhya-ingest/src/pipeline.rs",
+     "                if let Some(state) = self.tables.get_mut(relation_id) {",
+     "                let _ = relation_id;\n                for state in self.tables.values_mut() {",
+     "sankhya-ingest"),
+
+    # `ING-07`. The binder refuses string-to-number, number-to-date, float-to-int and an
+    # over-scaled decimal --- and then `*value as f32` turned 1e308 into an infinity, one step
+    # after it had said the value fitted.
+    ("feed: narrow a float to a width that cannot hold it",
+     "crates/sankhya-feed/src/shape.rs",
+     "                        if value.is_finite() && !narrowed.is_finite() {",
+     "                        if false {",
+     "sankhya-feed"),
+
+    # The same defect by the capture route: `parse::<f32>()` returns `Ok(inf)` rather than an
+    # error for a value too large to represent.
+    ("table: parse a float too large to represent as an infinity",
+     "crates/sankhya-table/src/encode.rs",
+     "            |s: &str| s.parse::<f32>().ok().filter(|value| {\n                value.is_finite()",
+     "            |s: &str| s.parse::<f32>().ok().filter(|value| {\n                value.is_finite() || true",
+     "sankhya-table"),
+
     # --- Phase 3: materialisation that changed the answer --------------------------------------
 
     # `COR-04`. Without the measure in the key the first measure materialised writes each

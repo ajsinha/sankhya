@@ -444,3 +444,74 @@ fn one_quarantined_table_does_not_stop_the_others() {
     assert_eq!(files.len(), 1, "the healthy table must still publish");
     assert_eq!(files[0].table, "other");
 }
+
+#[test]
+fn a_truncate_quarantines_the_table_rather_than_being_discarded() {
+    // `ING-05`. The batcher's match ended in `_ => {}` and `Truncate` fell into it: the source
+    // table is emptied and the analytical copy keeps every row. **Permanent, silent
+    // divergence**, with no counter — and a test asserted the decoder *parses* truncate while
+    // nothing asserted that anything downstream acted on it.
+    //
+    // Applying one is not something this pipeline can do. The analytical copy is an unfolded
+    // change log with no key-based fold, so there is no "delete every row" to emit, and
+    // inventing one would be worse than saying so. What it must not do is carry on.
+    let warehouse = tempfile::tempdir().expect("a temporary directory");
+    let mut p = pipeline(warehouse.path());
+
+    p.accept(&begin(1)).expect("accepts");
+    p.accept(&original()).expect("accepts");
+    p.accept(&insert(2)).expect("accepts");
+    p.accept(&commit(10)).expect("accepts");
+    p.publish(true).expect("publishes");
+
+    assert!(p.quarantine_reason(RELATION).is_none(), "nothing is wrong yet");
+
+    p.accept(&Message::Truncate {
+        relation_ids: vec![RELATION],
+        cascade: false,
+        restart_identity: false,
+    })
+    .expect("accepts");
+
+    let reason = p
+        .quarantine_reason(RELATION)
+        .expect("a truncated table must not be left publishing as though nothing happened");
+    assert!(
+        reason.contains("truncated"),
+        "the reason does not say what happened: {reason}"
+    );
+
+    // And events keep being consumed, so the replication cursor still advances. A quarantine
+    // that stalls capture turns a schema problem into a source-availability problem, which is
+    // the coupling this crate's own module doc exists to prevent.
+    p.accept(&begin(2)).expect("accepts");
+    p.accept(&insert(2)).expect("accepts");
+    p.accept(&commit(20)).expect("accepts");
+    assert!(p.stats().dead_lettered >= 1, "a quarantined table stopped consuming");
+}
+
+#[test]
+fn a_truncate_of_another_table_does_not_quarantine_this_one() {
+    // The control. A truncation names its own relations, and sending it to every table would
+    // quarantine tables the source never truncated — which is the same silent divergence in
+    // the opposite direction: a table stops being fed for something that did not happen to it.
+    let warehouse = tempfile::tempdir().expect("a temporary directory");
+    let mut p = pipeline(warehouse.path());
+
+    p.accept(&begin(1)).expect("accepts");
+    p.accept(&original()).expect("accepts");
+    p.accept(&insert(2)).expect("accepts");
+    p.accept(&commit(10)).expect("accepts");
+
+    p.accept(&Message::Truncate {
+        relation_ids: vec![RELATION + 1],
+        cascade: false,
+        restart_identity: false,
+    })
+    .expect("accepts");
+
+    assert!(
+        p.quarantine_reason(RELATION).is_none(),
+        "a truncation of another relation quarantined this one"
+    );
+}

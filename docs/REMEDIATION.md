@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2,668 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2,673 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -455,9 +455,33 @@ reduces to one number at materialisation time, and rolling that up further is go
 reduction from partials — `Rule::None`, `Rule::Supplied` — is **not materialised at all**, rather
 than written as a zero, because that would be materialisation turning a refusal into a number.
 
+**3.3 Capture — three of five.**
+
+- `ING-01`: the position held records **published** while the resume skipped by **line index**.
+  Those are the same number only when every line so far fitted and there were no blanks, so a
+  source that stopped part-way republished a record on restart — one duplicate per preceding
+  refusal or blank, silently and permanently. `ADR-0018`'s amendment chose *never re-ingest* over
+  *never duplicate* for exactly this reason, and the test that existed asserted the conflation in
+  its own name. The field is now `read_through` and says what it holds.
+- `ING-05`: the batcher's match ended in `_ => {}` and `Truncate` fell into it. The source table
+  is emptied and the analytical copy keeps every row. A test asserted the decoder *parses*
+  truncate; nothing asserted anything acted on it. Applying one is not something this pipeline
+  can do — the copy is an unfolded change log with no key-based fold (`ING-09`) — so the table is
+  **quarantined**, which stops publication, leaves the last consistent version queryable, and
+  keeps consuming events so the replication cursor still advances.
+- `ING-07`: the binder is genuinely strict and then `*value as f32` turned `1e308` into an
+  infinity, one step after it had said the value fitted. The capture path had the same defect by
+  a second route, because `parse::<f32>()` returns `Ok(inf)` rather than an error. Both refuse
+  now, and an infinity the source *actually sent* still passes — dropping that would be the
+  reverse mistake.
+
+`ING-06` (a TOASTed unchanged value discards the whole row update) and `ING-10` are not done.
+`ING-06` needs a row-lookup path into published Parquet that does not exist anywhere, so it is a
+design piece rather than a repair.
+
 ### Still open in Phase 3
 
-`3.3` `3.6` `3.8` are not started. Three pre-existing survivors in
+`3.6` and `3.8` are not started, and `3.3` is three findings of five. Three pre-existing survivors in
 `sankhya-publish` and one entry whose mutation does not compile were found while verifying this
 work and are not yet closed; they are coverage gaps in the write path rather than defects in it.
 
