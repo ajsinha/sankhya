@@ -86,7 +86,7 @@ The rule is: widen the API, never the allowance.
 git clone https://github.com/ajsinha/sankhya.git && cd sankhya
 cargo build --workspace          # several minutes on a first build
 vendor/postgresql/build.sh       # ~2 min, idempotent, 35 MB installed
-cargo test --workspace           # 2,681 tests, none of which needs a database
+cargo test --workspace           # 2,682 tests, none of which needs a database
 ```
 
 Nothing is mocked. The Parquet is real Parquet, the Delta logs are read back by an independent

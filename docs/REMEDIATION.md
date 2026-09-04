@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2,681 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2,682 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -504,9 +504,35 @@ two agree means recording the zone in the log or normalising the read path to th
 a format decision, not a rendering fix. A test that passed against the present behaviour would
 pin the disagreement instead of the property, so there is none.
 
+**3.8 `COR-19` does not reproduce, and there is now a guard saying so.**
+
+The finding reads: the hydration cache key omits the grain, so `by=region` then
+`by=region|period` in one session returns region-level totals with no `period` column and no
+error. The key does omit the grain — that part is exactly as described.
+
+A test was built to reproduce it and could not. It took three attempts to make the test mean
+anything, and the first two are the more useful record:
+
+1. The first version used the shipped fixture cube, which is **not maintained**, so nothing was
+   ever served from a cuboid and the assertion passed against a path it never took.
+2. The second declared a maintained cube and still passed — because a maintained cube has no
+   cuboids until the refresher runs, and `materialised` came back `f` on every row. Only adding
+   *that* assertion exposed it.
+3. The third drives the server's own refresher, asserts a row came from a cuboid, and reads the
+   cache's hit count either side of the second query so a miss cannot pass for a hit.
+
+With all three conditions established, the finer query still answers correctly: the `period`
+column is present, the row count grows, and the two grains agree on the total.
+
+So the guard is kept and the finding is **not** claimed as fixed. What changed underneath it may
+be Phase 3.7's `by=` validation, which now refuses a grain the cells cannot answer instead of
+rolling the axis away — but that is a hypothesis, and the honest statement is that the described
+sequence does not produce the described answer. `COR-20`, `COR-21` and `COR-22` are not started.
+
 ### Still open in Phase 3
 
-`3.8` is not started, `3.3` is three findings of five, and one half of `3.6` is
+`3.8` is one finding of four and that one did not reproduce, `3.3` is three findings
+of five, and one half of `3.6` is
 recorded above as a format decision rather than a repair. Three pre-existing survivors in
 `sankhya-publish` and one entry whose mutation does not compile were found while verifying this
 work and are not yet closed; they are coverage gaps in the write path rather than defects in it.

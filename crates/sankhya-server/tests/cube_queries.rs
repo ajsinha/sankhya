@@ -1444,3 +1444,86 @@ async fn two_cubes_over_the_same_facts_answer_by_their_own_declared_rules() {
 fn anyone() -> Vec<(String, String)> {
     vec![("user".to_string(), "quickstart".to_string())]
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_coarse_cached_answer_is_not_served_to_a_finer_query() {
+    // `COR-19`. The hydration cache key holds the cube, the measure, the definition
+    // fingerprint, the snapshot and the scope — and **not the grain**. Cells that came from a
+    // materialised cuboid are at that cuboid's grain, so a second query in the same session
+    // wanting a finer one was served the coarse cells: region-level totals with no `period`
+    // column, and no error anywhere.
+    //
+    // The cuboid is built by the server's own refresher rather than by hand, at the scope and
+    // snapshot the server will look under: building it here would prove only that this test
+    // can agree with itself about a key.
+    let dir = maintained_warehouse();
+    let server = server_over(&dir, policy("reader", None));
+    let refreshed = server.refresh_maintained_cubes();
+    assert!(!refreshed.is_empty(), "the fixture must build a cuboid: {refreshed:?}");
+
+    // Coarse first, so what the cache ends up holding is at the coarse grain.
+    let coarse = server
+        .query(
+            "SELECT * FROM cube_rollup('sales', 'amount', 'by=region')",
+            &Caller::new(&anyone()),
+        )
+        .expect("the coarse rollup answers");
+    let coarse_rows = coarse.rows.len();
+    assert!(coarse_rows > 0, "the coarse rollup answered nothing");
+
+    // The fixture must actually take the path this test is about: coarse cells only reach the
+    // cache if the coarse answer came from a cuboid. Without this the test is green because
+    // nothing was ever materialised, which is the shape of assertion this repository keeps
+    // finding and removing.
+    let at = coarse
+        .fields
+        .iter()
+        .position(|field| field.name == "materialised")
+        .expect("cube_rollup reports where its answer came from");
+    assert!(
+        coarse.rows.iter().any(|row| row[at].as_deref() == Some("t")),
+        "no row came from a cuboid, so the cache never held coarse cells: {:?}",
+        coarse.rows
+    );
+
+    // Then finer, in the same session and therefore against the same cache. The hit count is
+    // read either side so this proves it *reached* the cached entry: an answer that is right
+    // because the lookup missed says nothing about what a cached entry is an answer to.
+    let (hits_before, _) = server.hydration_counts();
+    let fine = server
+        .query(
+            "SELECT * FROM cube_rollup('sales', 'amount', 'by=region|period')",
+            &Caller::new(&anyone()),
+        )
+        .expect("the finer rollup answers");
+
+    let (hits_after, _) = server.hydration_counts();
+    assert!(
+        hits_after > hits_before,
+        "the finer query missed the cache, so this test says nothing about what a cached \
+         entry is an answer to: {hits_before} then {hits_after}"
+    );
+
+    // The names first: a `period` column has to be there at all. Serving the coarse cells
+    // returned region-level totals under this query's names, which is the failure.
+    let named: Vec<&str> = fine.fields.iter().map(|field| field.name.as_str()).collect();
+    assert!(
+        named.contains(&"period"),
+        "a rollup by region and period has no period column: {named:?}"
+    );
+    assert!(
+        fine.rows.len() > coarse_rows,
+        "by region and period returned {} rows where by region alone returned {coarse_rows}; \
+         the finer query was answered from the coarser cells",
+        fine.rows.len()
+    );
+
+    // And the totals still agree, so the finer grain is a decomposition of the coarser one
+    // rather than a different number.
+    assert!(
+        (total_from(&fine) - total_from(&coarse)).abs() < 1e-9,
+        "the two grains disagree about the total: {} against {}",
+        total_from(&fine),
+        total_from(&coarse)
+    );
+}

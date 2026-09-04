@@ -1759,6 +1759,16 @@ impl Server {
         self.snapshot_of(table)
     }
 
+    /// Hits and misses on the hydration cache.
+    ///
+    /// Exposed so a test can prove it **reached** the cache rather than merely produced the
+    /// right answer twice. A test of what a cached entry is an answer to is worth nothing if
+    /// the second query missed, and a miss is invisible from the result.
+    #[must_use]
+    pub fn hydration_counts(&self) -> (u64, u64) {
+        self.hydrated.counts()
+    }
+
     /// The version a table's log currently stands at.
     ///
     /// Zero when the table cannot be found or its log cannot be read. Zero rather than
