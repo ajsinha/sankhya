@@ -4749,6 +4749,57 @@ CATALOGUE = [
      "            values\n                .get(at.saturating_sub(window - 1)..=at)\n                .map(|slice| deterministic_sum(slice) / divisor)",
      "sankhya-math"),
 
+    # --- Phase 4: a password checked against something -----------------------------------------
+
+    # `SEC-01`. Until this there was no credential store, no hash and no comparison anywhere in
+    # the workspace: the entire check was that a password had been *presented* and was
+    # non-empty, and the username is self-asserted.
+    ("server: accept any password once credentials are configured",
+     "crates/sankhya-server/src/wiring.rs",
+     "        let verified = self\n            .settings\n            .credentials\n            .get(user)\n            .is_some_and(|verifier| verifier.verifies(presented));",
+     "        let verified = !presented.is_empty();",
+     "sankhya-server"),
+
+    # A user with no credential must be refused, not waved through. Forgetting somebody in this
+    # direction grants them access, which is the rule `server.users` already states.
+    ("server: wave through a user who has no credential written down",
+     "crates/sankhya-server/src/wiring.rs",
+     "            .get(user)\n            .is_some_and(|verifier| verifier.verifies(presented));",
+     "            .values()\n            .any(|verifier| verifier.verifies(presented));",
+     "sankhya-server"),
+
+    # Telling "no such user" apart from "wrong password" turns the login into a directory of
+    # who exists here.
+    ("server: say whether the user exists when refusing a password",
+     "crates/sankhya-server/src/wiring.rs",
+     "                \"password authentication failed for this user\",",
+     "                &format!(\"no credential for `{user}`, or the password is wrong\"),",
+     "sankhya-server"),
+
+    # The derivation itself. A verifier that accepts anything is the defect wearing the fix's
+    # clothes, and nothing above this line would notice.
+    ("credential: accept any password against any verifier",
+     "crates/sankhya-credential/src/lib.rs",
+     "        .is_ok()\n    }",
+     "        .is_ok()\n            || true\n    }",
+     "sankhya-credential"),
+
+    # The iteration count is read from the stored line so a raised default does not invalidate
+    # existing credentials. Ignoring it makes every stored verifier fail to verify.
+    ("credential: derive with the current default rather than the stored count",
+     "crates/sankhya-credential/src/lib.rs",
+     "            self.iterations,\n            &self.salt,",
+     "            std::num::NonZeroU32::new(ITERATIONS).unwrap_or(self.iterations),\n            &self.salt,",
+     "sankhya-credential"),
+
+    # An empty salt makes every verifier of one password identical, which tells anybody holding
+    # the file who shares a password before any of them is cracked.
+    ("credential: make a verifier with no salt",
+     "crates/sankhya-credential/src/lib.rs",
+     "    if salt.is_empty() {\n        return None;\n    }",
+     "    if false {\n        return None;\n    }",
+     "sankhya-credential"),
+
     # --- Phase 3: snapshots, and what a cached answer is an answer to ---------------------------
 
     # There is deliberately **no mutation for the snapshot's second read** (`COR-22`).
@@ -4781,17 +4832,17 @@ CATALOGUE = [
     # promise is that it does not move, leaking into reads that promise the opposite.
     ("server: key a hydration without saying which position the session read from",
      "crates/sankhya-server/src/wiring.rs",
-     "        self.register_cubes(&context, &principal, sql, pin_digest(caller));",
+     "        self.register_cubes(&context, &principal, sql, caller.position_digest());",
      "        self.register_cubes(&context, &principal, sql, 0);",
      "sankhya-server"),
 
     # And the digest itself: folding rather than summing, because a cache key that collides
     # serves one session's position to another.
-    ("server: treat every pinned session as reading the same position",
-     "crates/sankhya-server/src/wiring.rs",
-     "        let pins = name.eq_ignore_ascii_case(\"snapshot\") || name.starts_with(\"version of \");",
-     "        let pins = false;",
-     "sankhya-server"),
+    ("session: treat every pinned session as reading the same position",
+     "crates/sankhya-api-pg/src/session.rs",
+     "            let pins = name.eq_ignore_ascii_case(\"snapshot\") || name.starts_with(\"version of \");",
+     "            let pins = false;",
+     "sankhya-api-pg"),
 
     # --- Phase 3: what a value looks like on the wire -------------------------------------------
 

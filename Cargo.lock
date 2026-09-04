@@ -3536,6 +3536,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sankhya-credential"
+version = "0.1.0"
+dependencies = [
+ "ring",
+]
+
+[[package]]
 name = "sankhya-cube"
 version = "0.1.0"
 dependencies = [
@@ -3933,6 +3940,7 @@ dependencies = [
  "sankhya-catalog",
  "sankhya-clone",
  "sankhya-config",
+ "sankhya-credential",
  "sankhya-cube",
  "sankhya-cube-algo",
  "sankhya-cube-sql",

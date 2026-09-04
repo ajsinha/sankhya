@@ -50,6 +50,13 @@ pub struct Settings {
     pub read_as_of: sankhya_types::Lsn,
     /// The tenant every connection belongs to, until federated identity is wired in.
     pub tenant: TenantId,
+    /// What each named user's password is checked against, from `server.credentials.<name>`.
+    ///
+    /// `SEC-01`: there was no credential store at all, and the check was that a password had
+    /// been *presented*. Empty means no user has one written down, which is the old behaviour
+    /// deliberately — an operator who has configured nothing has decided nothing. Non-empty
+    /// means the map is the map, and a user absent from it is refused. §13.6a has the rest.
+    pub credentials: std::collections::BTreeMap<String, sankhya_credential::Verifier>,
     /// The roles each named user holds, from `server.users.<name>`.
     ///
     /// # Why an empty map means *everybody is a reader*
@@ -484,44 +491,6 @@ fn grain_needed(sql: &str) -> Vec<String> {
 /// table function runs, so there is nothing better to read yet. An unrecognised value is
 /// **`AsConfigured`, never an error** --- refusing a whole statement over a hint about where
 /// an answer is computed would turn a performance control into an outage.
-/// A value standing for **where this session reads from**, when it reads from a position it
-/// chose rather than from the present.
-///
-/// Zero when it has chosen none, which is the ordinary case and must stay cheap: every session
-/// reading the present shares cache entries with every other one.
-///
-/// # Why the digest covers the settings rather than the versions they resolve to
-///
-/// Because the settings are what the session asked for, and two sessions that asked for the
-/// same thing are reading the same thing. Resolving to versions here would be a second place
-/// that has to agree with the read path about what a pin means, and two such places eventually
-/// disagree — which is the shape of defect this file keeps finding.
-///
-/// `COR-20`: without this a pinned session's cells went into the hydration cache under the
-/// *present* version, and the next unpinned session looking up that key was served them. A
-/// pinned read's whole promise is that it does not move, and it was leaking into reads that
-/// promise the opposite.
-pub(crate) fn pin_digest(caller: &sankhya_api_pg::session::Caller<'_>) -> u64 {
-    let mut folded: u64 = 0;
-    for (name, value) in caller.settings() {
-        let pins = name.eq_ignore_ascii_case("snapshot") || name.starts_with("version of ");
-        if !pins || value.is_empty() {
-            continue;
-        }
-        // FNV-1a over the setting and its value, folded rather than summed: a cache key that
-        // collides serves one session's position to another, which is the defect this exists
-        // to prevent arriving by arithmetic instead.
-        if folded == 0 {
-            folded = 0xcbf2_9ce4_8422_2325;
-        }
-        for byte in name.as_bytes().iter().chain(b"=").chain(value.as_bytes()) {
-            folded ^= u64::from(*byte);
-            folded = folded.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
-    folded
-}
-
 fn asked_of_materialisation(sql: &str) -> sankhya_cube::materialise::Session {
     use sankhya_cube::materialise::Session;
     let lowered = sql.to_ascii_lowercase().replace(' ', "");
@@ -833,19 +802,33 @@ impl Server {
     /// something an operator has to go and check.
     #[must_use]
     pub fn describe(&self) -> String {
-        // "PASSWORD UNVERIFIED", not "password required". The check below is that a
-        // password is *non-empty*; nothing is compared against anything, because no
-        // credential store is wired in. An operator reading "password required" beside the
-        // capitalised "NO AUTHENTICATION" alternative concludes the first one authenticates.
-        // It does not, and this line is where they would have found that out.
-        let auth = if self.settings.require_password {
-            "PASSWORD UNVERIFIED — any non-empty password is accepted from any user"
-        } else {
-            "NO AUTHENTICATION — every connection is accepted"
+        // Three postures, and the line names which one is in force.
+        //
+        // It used to name two, and the one it called `PASSWORD UNVERIFIED` was the truth: the
+        // check was that a password was *non-empty*, with nothing to compare it against
+        // anywhere in the workspace. `SEC-01`. That line was written in Phase 0 precisely so
+        // an operator reading "password required" beside the capitalised "NO AUTHENTICATION"
+        // could not conclude the first one authenticated.
+        //
+        // It now can, when there are credentials to check against — and the middle case is
+        // kept and still capitalised, because a server with `require_password` set and an
+        // empty credential map is in exactly the old posture and must still look wrong in a
+        // log rather than be something somebody has to go and check.
+        let auth = match (self.settings.require_password, self.settings.credentials.len()) {
+            (_, held) if held > 0 => format!("password verified for {held} user(s)"),
+            (true, _) => concat!(
+                "PASSWORD UNVERIFIED — no credentials are configured, so any non-empty ",
+                "password is accepted from any user"
+            )
+            .to_owned(),
+            (false, _) => "NO AUTHENTICATION — every connection is accepted".to_owned(),
         };
         // The bound address is printed separately by the caller, which is the only thing
         // that knows it. Repeating the *configured* one here printed ":0" beside the real
         // port, which is worse than saying nothing.
+        //
+        // One format string rather than one per posture: the copies drift, and the one that
+        // drifts is the one nobody reads.
         format!(
             "tenant {}, {auth}, {} policy rule(s), {} table(s) known",
             self.settings.tenant,
@@ -967,14 +950,35 @@ impl Handler for Server {
                 "no user was supplied; an unattributable connection cannot be audited",
             ));
         }
-        // Presence, not correctness. There is no credential store, so this accepts any
-        // non-empty password from any user --- including one this server has never heard
-        // of. It is a placeholder that reads like a check, which is why the startup line
-        // says PASSWORD UNVERIFIED rather than "password required".
         if self.settings.require_password && password.is_none_or(<[u8]>::is_empty) {
             return Err(refusal(
                 statuses_for_unauthenticated().sqlstate.as_str(),
                 "a password is required",
+            ));
+        }
+
+        // And **correctness**, which is `SEC-01`. Until this, the check above was the whole of
+        // it: presence, from a self-asserted username, with no credential store to check
+        // against anywhere in the workspace.
+        //
+        // One refusal for both "no such user" and "wrong password", deliberately. Telling them
+        // apart turns the login into a directory of who exists here, which is the first thing
+        // an attacker wants and the last thing this door should answer.
+        if self.settings.credentials.is_empty() {
+            // Nobody has a password written down, which is a decision an operator has not
+            // taken rather than one they have taken loosely. See `Settings::credentials`.
+            return Ok(());
+        }
+        let presented = password.unwrap_or_default();
+        let verified = self
+            .settings
+            .credentials
+            .get(user)
+            .is_some_and(|verifier| verifier.verifies(presented));
+        if !verified {
+            return Err(refusal(
+                statuses_for_unauthenticated().sqlstate.as_str(),
+                "password authentication failed for this user",
             ));
         }
         Ok(())
@@ -2516,7 +2520,7 @@ impl Server {
         // filtered by the same `SecuredTable` that filters a plain SELECT. That is the whole
         // authorization story for cubes: there is no second implementation of the rule, and
         // therefore no second implementation to disagree with the first.
-        self.register_cubes(&context, &principal, sql, pin_digest(caller));
+        self.register_cubes(&context, &principal, sql, caller.position_digest());
         crate::aggregations::register(self, &context);
         crate::cubes::register_derived(self, &context, &principal);
 

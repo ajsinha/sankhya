@@ -51,9 +51,6 @@ mod feeds;
 mod snapshots;
 mod flight;
 mod scrape;
-// Tests for `wiring::pin_digest`, in their own file because `wiring.rs` sits at the line
-// limit and a test module is the wrong thing to spend its last lines on.
-mod pin;
 mod warehouse;
 mod wiring;
 
@@ -95,6 +92,9 @@ USAGE:
     sankhya-server drill       restore a backup and prove it reads
     sankhya-server attest <store>
                                attest a declared backup store
+    sankhya-server hash-password
+                               read a password and print a verifier for
+                               server.credentials.<user>
     sankhya-server --help | --version
 
 ENVIRONMENT:
@@ -217,9 +217,34 @@ fn settings() -> Result<Settings, String> {
             (user, held)
         })
         .collect();
+    // `server.credentials.<name>: <verifier>` --- what each user's password is checked against.
+    //
+    // A separate section from `server.users`, which holds roles. One section holding two kinds
+    // of thing would mean a typo in a role name silently becoming a credential, or the reverse.
+    //
+    // Read the same way and for the same reason: the names are the operator's. A malformed
+    // verifier is refused **here**, at startup, with the line named --- not at the first login
+    // attempt, where the operator is not looking and the client is told only that its password
+    // was wrong.
+    let mut credentials: std::collections::BTreeMap<String, sankhya_credential::Verifier> =
+        std::collections::BTreeMap::new();
+    for (user, stored) in config.section("server.credentials") {
+        match sankhya_credential::Verifier::parse(&stored) {
+            Ok(verifier) => {
+                credentials.insert(user, verifier);
+            }
+            Err(why) => {
+                return Err(format!(
+                    "`server.credentials.{user}` is not a password verifier: {why}. Make one \
+                     with `sankhya-server hash-password`"
+                ))
+            }
+        }
+    }
     let transport_security = transport_security(&config)?;
     Ok(Settings {
         roles,
+        credentials,
         maintenance,
         transport_security,
         cuboid_budget_rows,
@@ -432,6 +457,67 @@ fn data_dir(warehouse: &std::path::Path) -> std::path::PathBuf {
     )
 }
 
+/// Read a password from standard input and print a verifier for `server.credentials.<user>`.
+///
+/// # Why this exists at all
+///
+/// Because without it the credential store is unusable. `SEC-01` is not closed by a server that
+/// *can* verify a password if somebody hand-derives PBKDF2 with the right parameters; it is
+/// closed by an operator being able to produce a line and paste it into a file.
+///
+/// # Read from standard input rather than taken as an argument
+///
+/// A password on a command line is in the shell history, in `ps` output for every user on the
+/// machine, and in whatever collects process telemetry. None of those are places a credential
+/// stops being a credential.
+///
+/// # Errors
+///
+/// If the password cannot be read, or the system cannot supply randomness for a salt — which is
+/// a machine that must not be used to make a credential rather than one that should get a
+/// predictable one.
+fn hash_password() -> std::io::Result<()> {
+    use std::io::BufRead;
+
+    eprintln!(
+        "Type the password and press enter. It is read from standard input rather than taken \
+         as an argument, because an argument is in your shell history and in `ps`."
+    );
+    let mut password = String::new();
+    std::io::stdin().lock().read_line(&mut password)?;
+    // The trailing newline only. A password may legitimately begin or end with a space, and
+    // trimming it here would produce a verifier for a password nobody can type again.
+    let password = password.strip_suffix('\n').unwrap_or(&password);
+    let password = password.strip_suffix('\r').unwrap_or(password);
+    if password.is_empty() {
+        eprintln!("sankhya: an empty password is not one");
+        std::process::exit(2);
+    }
+
+    let Some(salt) = sankhya_credential::fresh_salt() else {
+        eprintln!(
+            "sankhya: this machine could not supply randomness for a salt, so it must not be \
+             used to make a credential"
+        );
+        std::process::exit(1);
+    };
+    let Some(verifier) =
+        sankhya_credential::make(password.as_bytes(), &salt, sankhya_credential::ITERATIONS)
+    else {
+        eprintln!("sankhya: the verifier could not be derived");
+        std::process::exit(1);
+    };
+
+    // The line, and only the line, on standard output --- so it can be redirected into a file
+    // or piped without the explanation coming with it.
+    println!("{verifier}");
+    eprintln!(
+        "\nPut it in your configuration under `server.credentials`:\n\n  \
+         server:\n    credentials:\n      <user>: {verifier}\n"
+    );
+    Ok(())
+}
+
 /// The current time in microseconds, or zero if the clock is before the epoch.
 ///
 /// Read once, at the top of a run, so every observation in one run shares a timestamp.
@@ -483,6 +569,11 @@ async fn main() -> std::io::Result<()> {
             println!("SANKHYA {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
+        // Answered here, beside `--help`, because it reads no configuration. An operator whose
+        // configuration is broken is exactly the operator who may need to write a credential
+        // into it, and a subcommand that refused until the file parsed would be useless at the
+        // one moment it is wanted --- which is the failure `RUN-06` recorded for `--help`.
+        Some("hash-password") => return hash_password(),
         _ => {}
     }
 

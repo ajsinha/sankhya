@@ -18,10 +18,29 @@ server:
   metrics_listen: 127.0.0.1:9464
   # Spelled as an opt-*out*, so the insecure choice has to be made deliberately.
   #
-  # Note what this does and does not do. It requires a password to be *presented*. It does
-  # not verify it --- no credential store is wired in --- so any non-empty password from any
-  # user is accepted. Do not put this server anywhere a stranger can reach it.
+  # This requires a password to be *presented*. Whether it is *verified* depends on whether
+  # `credentials` below names anybody: with an empty list there is nothing to check against and
+  # any non-empty password from any user is accepted. The startup line says which of the two
+  # you have, in words, and capitalises the one that is not authentication.
   require_password: true
+
+  # What each user's password is checked against. `SEC-01` --- until 2026-09-04 there was no
+  # credential store at all, and the check was that a password was non-empty.
+  #
+  # Make a line with `sankhya-server hash-password`, which reads the password from standard
+  # input rather than taking it as an argument: an argument is in your shell history and in
+  # `ps` output for every user on the machine.
+  #
+  # Empty means no user has a password written down, and that is the old behaviour on purpose:
+  # an operator who has configured nothing has decided nothing. **Naming one user is deciding
+  # the list is the list** --- a user absent from it is then refused, which is the same rule as
+  # `users` above and for the same reason. Forgetting somebody must not grant them access.
+  #
+  # The verifier is PBKDF2-HMAC-SHA256 and carries its own iteration count, so raising the
+  # default does not invalidate the credentials already written down here.
+  #
+  # credentials:
+  #   ana: pbkdf2-sha256$600000$<salt>$<key>
 
   # Whether `CREATE AGGREGATION` is accepted. It runs code the caller supplied, inside the
   # sandbox `ADR-0023` describes, and the sandbox is a boundary rather than a guarantee.

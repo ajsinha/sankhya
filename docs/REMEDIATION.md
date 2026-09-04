@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2,691 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2,706 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -586,6 +586,66 @@ active hazard and the false impression. This phase makes the guarantees real.
 | 4.6 | `SEC-16`–`SEC-18` | Disclosure: DataFusion field lists, contested tables, five unfiltered listings |
 | 4.7 | `SEC-07` `SEC-08` | The audit record is structurally empty and volatile; `/metrics` enumerates every table **and a test asserts the leak** |
 | 4.8 | `SEC-15` | The shipped binary can only express "everything" or "nothing" |
+
+### Phase 4 — what has landed so far
+
+**4.1 A password is checked against something (`SEC-01`).** The entire check was that one had
+been *presented* and was non-empty. There was no credential store, no hash and no comparison
+anywhere in the workspace — and because the username is self-asserted, that means any client
+connected as any user, including one this server had never heard of, by sending any byte string.
+It was the single most serious finding in the report, and Phase 0.8 disclosed it in the startup
+line and the documentation rather than leaving it implied.
+
+`sankhya-credential` holds the verifier and nothing else: PBKDF2-HMAC-SHA256, in the four-field
+shape PostgreSQL's SCRAM verifier uses. It is the only crate that reaches for `ring`, the same
+way `sankhya-sandbox` is the only one that reaches for `libc` — a second crate deriving its own
+key material is a second chance to get an iteration count or a comparison wrong.
+
+Four decisions are worth stating.
+
+- **The same switch as roles.** An empty `server.credentials` is the old behaviour, because an
+  operator who has configured nothing has decided nothing and a server that began refusing every
+  connection on upgrade is a server nobody upgrades. Naming one user decides the list is the
+  list, and a user absent from it is refused.
+- **The iteration count is in the stored line**, so raising the default does not invalidate the
+  credentials already written down — which is what makes the default movable at all.
+- **One refusal for both failures.** "No such user" and "wrong password" are the same message;
+  telling them apart turns the login into a directory of who exists here.
+- **`hash-password` exists**, and is answered beside `--help` before any configuration is read,
+  because an operator whose configuration is broken is exactly the one who needs to write a
+  credential into it. It reads the password from standard input: an argument is in the shell
+  history and in `ps` output for every user on the machine.
+
+The startup line now names three postures rather than two, and still capitalises the one that is
+not authentication — `require_password` set with an empty credential map is exactly the old
+behaviour and must still look wrong in a log.
+
+**This is not SCRAM**, and §13.6a says so. PostgreSQL's challenge-response never sends the
+password; this verifies one the client sent in cleartext, which is why the transport posture is
+printed beside it. Getting from *never verified* to *verified against a stored key* closes
+`SEC-01`. Getting from *cleartext over TLS* to *challenge-response* is a protocol change.
+
+**The mutation catalogue found a break the test suite hid.** Three of the six new entries came
+back `no compile`, which looked like badly written mutations and was not: eight other test files
+construct `Settings` and none had the new field, so the whole server test build was broken while
+`cargo test --test wiring` passed happily. Running one target is not running the suite.
+
+**And the digest that says where a session reads from moved to where it is computed.** It began
+in `wiring.rs`, was extracted to its own module when that file reached the line limit, and broke
+the whole server test build --- eight test files pull the server's sources in by `#[path]`, so a
+sibling module the binary can see does not exist inside a test binary at all. It is now
+`Caller::position_digest`, in the crate that holds the settings it reads, which is where it
+belonged: it is a property of the caller, computed from what the caller said.
+
+That move exposed a hole the earlier work had left. Replacing the end-to-end `COR-20` test with
+unit tests on the key removed the only thing checking that the wiring **passes** the digest, and
+the mutation saying so came back `SURVIVED`. A cache key can be perfectly designed and never
+reached; this warehouse keeps finding that shape, and this time the mutation catalogue found it
+rather than a user. There is now a server test that a pinned session gains no cache hits where an
+unpinned one does --- counted in hits rather than misses, because not every measure is cached on
+every query and a rise in misses would therefore say nothing about whether an entry was shared.
+
+`4.2` through `4.8` are not started.
 
 ---
 

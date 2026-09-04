@@ -163,6 +163,7 @@ async fn a_short_run_under_concurrent_load_is_judged() {
     let server = Arc::new(Server::with_tables(
         Settings {
             roles: Default::default(),
+            credentials: Default::default(),
             listen: "127.0.0.1:0".to_string(),
             warehouse: warehouse_root.clone(),
             read_as_of: Lsn::new(u64::MAX),
