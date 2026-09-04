@@ -306,3 +306,71 @@ fn autocorrelation_is_one_at_no_lag_and_falls_away() {
     assert!(autocorrelation(&[5.0; 10], 1).is_err());
     assert!(autocorrelation(&series, 40).is_err());
 }
+
+#[test]
+fn a_long_flow_sequence_gives_the_rate_it_solves_for_or_refuses() {
+    // `COR-07`, at the length the audit ran. A hundred flows --- ninety-eight monthly
+    // receipts between an outlay and a decommissioning cost --- is an ordinary project, and
+    // any monthly series over five years is long enough.
+    //
+    // Near a rate of minus one the discount factor underflows: at `-0.999999` and period 55
+    // it is `1e-330`, which is zero, so a flow divided by it is an infinity and flows of both
+    // signs give a `NaN`. `NaN` compares false against everything, so neither the "no rate
+    // brings this to zero" refusal nor the bracket test inside the search could fire, and the
+    // search marched to the top of the interval and returned it: `Ok(10.0)`, a rate of a
+    // thousand per cent, where the value at that rate is `-989`.
+    let mut flows = vec![-1000.0];
+    flows.extend(std::iter::repeat_n(110.0, 98));
+    flows.push(-500.0);
+
+    match internal_rate_of_return(&flows) {
+        Ok(rate) => {
+            // Whatever it returns, it must solve the equation it is defined by.
+            let at = net_present_value_from_now(rate, &flows).expect("a value");
+            let scale = flows.iter().map(|f| f.abs()).fold(0.0f64, f64::max);
+            assert!(
+                at.abs() <= scale * 1e-6,
+                "returned a rate of {rate} at which the sequence is worth {at}, not zero"
+            );
+            // And it must be the rate a person would recognise, not merely *a* root.
+            assert!(
+                (0.10..0.12).contains(&rate),
+                "the true rate is about eleven per cent; got {rate}"
+            );
+        }
+        Err(refusal) => panic!("a solvable sequence was refused: {refusal}"),
+    }
+}
+
+#[test]
+fn a_rate_that_does_not_zero_the_sequence_is_refused_rather_than_returned() {
+    // The guard stated directly. Bisection converges on something whatever it is given, so
+    // the answer is checked against the question before it is returned.
+    let flows = vec![-1.0, 0.0, 0.0, 2.0];
+    let rate = internal_rate_of_return(&flows).expect("a rate");
+    let at = net_present_value_from_now(rate, &flows).expect("a value");
+    assert!(at.abs() <= 1e-6, "the returned rate leaves {at} on the table");
+}
+
+#[test]
+fn a_drawdown_against_a_non_positive_peak_is_refused() {
+    // `COR-09`. `value / peak - 1.0` against a negative peak flips the sign, so `[-100, -200]`
+    // reported `[0.0, 1.0]` --- a *positive* drawdown for a series that doubled its loss,
+    // under a docstring promising a negative proportion. A peak of zero returned `0.0`, so a
+    // series that only ever fell had a maximum drawdown of nothing.
+    //
+    // Both are the same mistake: a proportion of a non-positive base is a different question,
+    // and answering it with a number is worse than declining.
+    assert!(
+        drawdown(&[-100.0, -200.0]).is_err(),
+        "a proportion was reported against a negative peak"
+    );
+    assert!(
+        max_drawdown(&[0.0, -50.0, -100.0]).is_err(),
+        "a series that only fell reported no drawdown at all"
+    );
+
+    // A cumulative profit-and-loss curve crossing zero is the ordinary input this happens on.
+    assert!(drawdown(&[10.0, 5.0, -5.0, -20.0]).is_ok(), "a positive peak still works");
+    assert!(drawdown(&[-5.0, 10.0]).is_err(), "the peak is negative until the second point");
+}

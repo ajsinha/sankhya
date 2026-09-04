@@ -249,7 +249,26 @@ pub fn f_test(left: &[f64], right: &[f64]) -> Result<TestResult, InferenceError>
     // is as surprising when it is small as when it is large, and reporting only the upper tail
     // halves the p-value of a variance that is smaller rather than larger.
     let upper = f_sf(statistic, df_left, df_right)?;
-    let p_value = (2.0 * upper.min(1.0 - upper)).min(1.0);
+    // The lower tail through the *F* distribution's own reciprocal symmetry, not as
+    // `1.0 - upper`.
+    //
+    // The module header states the rule --- *"every tail here is taken from `chisq_sf`, `f_sf`
+    // or `t_two_sided` rather than as `1 - cdf`"* --- and this line broke it. A double near one
+    // has no bits left below about `1e-16`, so every lower-tail probability smaller than that
+    // was reported as **zero**: in the direction that makes a finding look stronger than it is,
+    // which is the direction nobody checks.
+    //
+    // `F(d1, d2)` and `1 / F(d2, d1)` are the same distribution, so the lower tail of the
+    // statistic is the upper tail of its reciprocal with the freedoms exchanged --- computed,
+    // like every other tail here, by the routine that computes tails.
+    let lower = if statistic > 0.0 {
+        f_sf(1.0 / statistic, df_right, df_left)?
+    } else {
+        // A first sample with no variation at all. The lower tail is zero exactly, and the
+        // reciprocal would be an infinity.
+        0.0
+    };
+    let p_value = (2.0 * upper.min(lower)).min(1.0);
     Ok(TestResult { statistic, freedom: df_left, p_value })
 }
 

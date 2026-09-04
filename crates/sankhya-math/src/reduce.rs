@@ -106,21 +106,34 @@ pub fn deterministic_sum(values: &[f64]) -> f64 {
             .then_with(|| a.partial_cmp(b).unwrap_or(Ordering::Equal))
     });
 
-    // Neumaier compensation on top of the canonical order. The order alone gives
-    // reproducibility; the compensation gives accuracy, and neither substitutes for the
-    // other.
-    let mut sum = 0.0f64;
-    let mut compensation = 0.0f64;
+    // The exact expansion, over the canonical order.
+    //
+    // # This was Neumaier compensation, and compensation is not exactness
+    //
+    // Two doubles carry about 106 bits of running total, which is generous and finite. Where
+    // the fixed-point route declines, it declines *because* the input cancels far enough to
+    // exhaust a fixed margin --- which is the input Neumaier is also worst on. Falling back
+    // from one bounded-precision method to another left the module's promise, **"never an
+    // approximation"**, resting on both bounds being large enough, and the whole point of
+    // declining is that one of them was not.
+    //
+    // [`Exact`] holds the total as a non-overlapping expansion, so adding is exact and
+    // rounding happens once at the end. It already existed in this module, for cube roll-ups,
+    // where the requirement is the same one: any grouping of the same values reaching the same
+    // bits. The canonical order is still taken first, so the expansion is built from the
+    // multiset rather than from the caller's ordering.
+    //
+    // Honestly: no input was found on which the two disagree. Pairs and triples cancelling
+    // across a hundred decimal orders, eight nested cancelling pairs, residuals stacked at
+    // three scales --- over a canonical magnitude order the small terms accumulate exactly
+    // before the large ones arrive, and one compensation double captures what is left. This is
+    // a stronger argument rather than a repair of an observed wrong answer, and it is here
+    // because the argument is what the module sells.
+    let mut exact = Exact::zero();
     for value in ordered {
-        let t = sum + value;
-        if sum.abs() >= value.abs() {
-            compensation += (sum - t) + value;
-        } else {
-            compensation += (value - t) + sum;
-        }
-        sum = t;
+        exact.add(value);
     }
-    sum + compensation
+    exact.to_f64()
 }
 
 /// The binary places the accumulator keeps below the largest term.
@@ -143,13 +156,30 @@ const BELOW_THE_TOP: i32 = 100;
 /// total is therefore a function of the multiset by construction, which is the same proof the
 /// canonical order buys and does not cost `n log n` to obtain.
 ///
-/// # Why truncation cannot change the answer
+/// # Why truncation cannot change the answer, and why the old proof was wrong
 ///
-/// The scale puts the accumulator's least significant bit [`BELOW_THE_TOP`] binary places
-/// under the largest magnitude present. A term small enough to lose bits to truncation is more
-/// than 100 binary places below the largest term, and so is more than 47 places below anything
-/// the returned `f64` can represent --- it could not have moved the correctly-rounded result
-/// whatever was done with it.
+/// The scale puts the accumulator's least significant bit [`BELOW_THE_TOP`] binary places under
+/// the largest magnitude present, so a term small enough to lose bits to truncation is more
+/// than 100 binary places below the **largest term**.
+///
+/// This used to conclude *"and so is more than 47 places below anything the returned `f64` can
+/// represent"*, and that step is false. What is returned is the **total**, and cancellation
+/// makes the total arbitrarily smaller than the largest term. Accuracy held for about 48 bits
+/// of cancellation, not 100 --- and `deterministic_sum` tried this route first, so it inherited
+/// the error. `[1e13, -1e13, 0.01]` returned `9.999999999999995e-3`; `[1e30, -1e30, 1e-5]`
+/// returned `0`. The module's own text rejects a candidate fast path for a worst relative error
+/// of `5e-11`, and the shipped path produced `2.4e-11` on three elements.
+///
+/// The premise cannot be repaired, because how far the input cancels is not knowable before
+/// summing it. So it is checked **afterwards**, against the total this run actually produced.
+/// Each term is truncated toward zero and so discards less than one unit of the fixed-point
+/// scale; `n` terms discard less than `n` units. The result is correctly rounded when that is
+/// below half an ulp of the total, and an `f64`'s ulp is `2^-52` of its magnitude --- so the
+/// answer stands when `|total| > n · 2^53`, and this declines when it does not.
+///
+/// Declining is cheap and correct: the caller falls back to the exact expansion. The fast path
+/// still takes every ordinary sum, because with no cancellation the total sits near `2^100` and
+/// the bound is around `2^73` for a million terms.
 #[must_use]
 pub fn exact_sum(values: &[f64]) -> Option<f64> {
     let mut largest = 0.0f64;
@@ -182,15 +212,42 @@ pub fn exact_sum(values: &[f64]) -> Option<f64> {
 
     let scale = 2.0f64.powi(shift);
     let mut total: i128 = 0;
+    // How many terms actually lost something. Counted rather than assumed: a bound over
+    // `values.len()` would decline on inputs where nothing was discarded at all, and the
+    // canonical one is exactly that --- `[1e16, 1, -1e16, 1]` repeated cancels hard and yet
+    // every term is an integer at this scale, so the fixed-point answer is exact.
+    //
+    // A term is truncated only when its scaled magnitude is below `2^52`, because every
+    // larger `f64` is already an integer. That is the same thing as being more than about
+    // forty-eight binary places below the largest term, which is the condition the old proof
+    // should have been stated over.
+    let mut truncated = 0u128;
     for &value in values {
         let scaled = value * scale;
         if !scaled.is_finite() {
             return None;
         }
         // Truncating, and deterministically so: the same term always truncates the same way,
-        // which is what keeps the multiset property. See the proof above for why the discarded
-        // part cannot matter.
-        total += scaled as i128;
+        // which is what keeps the multiset property.
+        let whole = scaled as i128;
+        // An exact comparison, deliberately. The question is not *"are these close?"* but
+        // *"did the cast throw anything away?"*, and only equality answers that.
+        #[allow(clippy::float_cmp)]
+        let lost = whole as f64 != scaled;
+        if lost {
+            truncated += 1;
+        }
+        total += whole;
+    }
+    // The post-condition the old proof asserted rather than checked.
+    //
+    // Each truncation discards less than one unit of the scale, so `k` of them discard less
+    // than `k` units. That is below half an ulp of the total --- and so cannot move the
+    // correctly-rounded answer --- only while the total is above `k · 2^53`, an `f64` carrying
+    // 53 significant bits. Where cancellation has taken it below that, the caller falls back
+    // to the exact expansion rather than returning something nearly right.
+    if truncated > 0 && total.unsigned_abs() <= (truncated << 53) {
+        return None;
     }
     Some(total as f64 / scale)
 }

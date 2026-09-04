@@ -112,31 +112,62 @@ pub fn internal_rate_of_return(flows: &[f64]) -> Result<f64, VectorError> {
         ));
     }
 
-    // The bracket, widened from a rate of zero. Bounded well below `-1`, where the discount
-    // factor changes sign and the function is no longer monotone.
-    let value = |rate: f64| net_present_value_from_now(rate, flows).unwrap_or(f64::NAN);
-    let mut low = -0.999_999;
-    let mut high = 10.0;
-    let (mut at_low, mut at_high) = (value(low), value(high));
+    // The bracket, found by scanning rather than assumed to span the whole range.
+    //
+    // # Every comparison here is guarded on being a number, and that is half the fix
+    //
+    // Near a rate of minus one the discount factor `(1 + r)^t` underflows: at `r = -0.999999`
+    // and `t = 55` it is `1e-330`, which is zero in a double, so a flow divided by it is an
+    // infinity --- and flows of both signs then give a `NaN`. `NaN` compares false against
+    // everything, so `at_low * at_high > 0.0` was false and the *"no rate brings this to
+    // zero"* refusal did not fire; inside the loop `at_low * at_middle <= 0.0` was false too,
+    // so the search took the `else` branch every time and marched to the top of the interval.
+    //
+    // A hundred flows of `[-1000, 110 x 98, -500]` --- a project with a decommissioning cost,
+    // which is an ordinary shape --- returned `Ok(10.0)`: a rate of a thousand per cent, where
+    // the true rate is eleven per cent and the value at the returned rate is `-989`. Any
+    // monthly series over five years is long enough to reach it.
+    let value = |rate: f64| {
+        let at = net_present_value_from_now(rate, flows).unwrap_or(f64::NAN);
+        at.is_finite().then_some(at)
+    };
 
-    let mut widened = 0;
-    while at_low * at_high > 0.0 && widened < 60 {
-        high *= 2.0;
-        at_high = value(high);
-        widened += 1;
-    }
-    if at_low * at_high > 0.0 {
+    // # Outward from zero, which is the other half
+    //
+    // Two endpoints and a sign test is only a bracket when the function crosses **once**
+    // between them, and a sequence with more than one sign change does not. This one has two
+    // roots: about eleven per cent, and another below zero. Testing the extremes finds the
+    // same sign at both and concludes there is no root at all, which is how the corrected
+    // guard first refused a sequence every textbook answers.
+    //
+    // So the range is scanned, and it is scanned **outward from zero**: the non-negative rate
+    // is reported when there is one. That is a convention rather than a derivation, and it is
+    // the conventional one --- a project's internal rate of return is the rate it earns, and a
+    // second root below minus one hundred per cent is an artefact of the polynomial rather than
+    // an alternative answer somebody would act on. It is stated here because a caller reading
+    // one number out of several needs to know which one it is.
+    let bracket = scan(&value, 0.0, 1_000.0).or_else(|| scan(&value, 0.0, -0.999_999));
+    let Some((mut low, mut high, mut at_low)) = bracket else {
         return Err(VectorError::Refused(
             "no rate between minus one and a very large one brings this sequence to zero. \
              Reported rather than answered with the nearest iterate, which would be a rate at \
              which the value is not zero"
                 .to_owned(),
         ));
-    }
+    };
 
     for _ in 0..200 {
         let middle = 0.5 * (low + high);
-        let at_middle = value(middle);
+        let Some(at_middle) = value(middle) else {
+            // Unevaluable, which only happens toward minus one. Give up that side rather than
+            // guess a sign for it: the bracket stays valid, it is just narrower.
+            if low < high {
+                low = middle;
+            } else {
+                high = middle;
+            }
+            continue;
+        };
         if at_low * at_middle <= 0.0 {
             high = middle;
         } else {
@@ -144,7 +175,64 @@ pub fn internal_rate_of_return(flows: &[f64]) -> Result<f64, VectorError> {
             at_low = at_middle;
         }
     }
-    Ok(0.5 * (low + high))
+    let rate = 0.5 * (low + high);
+
+    // The answer is checked against the question. Bisection converges on *something* whatever
+    // it was given, and the property asked for is that the present value at this rate is zero
+    // --- so that is what is verified, against the scale of the flows rather than against an
+    // absolute figure, because a sequence in millions and one in pennies do not share a
+    // tolerance.
+    let scale = flows.iter().map(|f| f.abs()).fold(0.0f64, f64::max).max(1.0);
+    match value(rate) {
+        Some(at) if at.abs() <= scale * 1e-6 => Ok(rate),
+        Some(at) => Err(VectorError::Refused(format!(
+            "the search converged on a rate of {rate} at which this sequence is worth {at}, \
+             not zero. Refused rather than returned: a rate that does not solve the equation \
+             it is defined by is not an internal rate of return"
+        ))),
+        None => Err(VectorError::Refused(
+            "the search converged on a rate at which this sequence's present value cannot be \
+             evaluated"
+                .to_owned(),
+        )),
+    }
+}
+
+/// The first interval between `from` and `towards` across which the value changes sign.
+///
+/// Returned as `(near, far, value_at_near)` with `near` the end closer to `from`, so bisection
+/// keeps its invariant whichever direction the scan ran in.
+///
+/// Geometric steps rather than uniform ones, because the interesting rates are bunched near
+/// zero and the range runs to a thousand: a uniform grid fine enough to separate eleven per
+/// cent from twelve would need a hundred thousand evaluations to reach the top.
+///
+/// A step whose value cannot be evaluated is skipped rather than treated as a sign: an endpoint
+/// that is not a number is not an endpoint, which is the whole of `COR-07`.
+fn scan(
+    value: &impl Fn(f64) -> Option<f64>,
+    from: f64,
+    towards: f64,
+) -> Option<(f64, f64, f64)> {
+    const STEPS: usize = 400;
+    let mut previous: Option<(f64, f64)> = value(from).map(|at| (from, at));
+    for step in 1..=STEPS {
+        #[allow(clippy::cast_precision_loss)]
+        let fraction = step as f64 / STEPS as f64;
+        // Geometric in the distance from `from`, so the grid is dense where the roots are.
+        let rate = from + (towards - from) * fraction * fraction * fraction;
+        let Some(at) = value(rate) else { continue };
+        if at == 0.0 {
+            return Some((rate, rate, at));
+        }
+        if let Some((before, at_before)) = previous {
+            if at_before * at < 0.0 {
+                return Some((before, rate, at_before));
+            }
+        }
+        previous = Some((rate, at));
+    }
+    None
 }
 
 /// The present value of a level annuity.

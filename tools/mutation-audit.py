@@ -237,12 +237,14 @@ CATALOGUE = [
     # race between checking and renaming. Removing only the fast path is an *equivalent
     # mutant* -- behaviour is unchanged, so no test can catch it, and an entry that can
     # never fail is noise that trains you to ignore survivors.
+    # The count was `2` and there is one site left: the commit seal replaced the other. Nothing
+    # noticed, because replacing fewer occurrences than declared is silent --- which is why the
+    # count is now checked rather than trusted.
     ("log: allow a second commit to overwrite an existing version",
      "crates/sankhya-table-delta/src/log.rs",
      "    if path.exists() {",
      "    if false {",
-     "sankhya-table-delta",
-     2),
+     "sankhya-table-delta"),
 
     ("log: skip a malformed line instead of reporting it",
      "crates/sankhya-table-delta/src/log.rs",
@@ -759,8 +761,8 @@ CATALOGUE = [
     # to any caller that opens it. Compaction is such a caller.
     ("publish: report the name the caller asked for rather than the one on disk",
      "crates/sankhya-publish/src/publish.rs",
-     '                file: format!("{directory}/{unique}"),',
-     '                file: format!("{directory}/{file_name}"),',
+     '                // it builds its merge inputs from these names, and the merge failed.\n                file: format!("{directory}/{unique}"),',
+     '                // it builds its merge inputs from these names, and the merge failed.\n                file: format!("{directory}/{file_name}"),',
      "sankhya-publish"),
 
     # --- one server per warehouse -------------------------------------------------------------
@@ -939,8 +941,18 @@ CATALOGUE = [
     # nothing can reclaim behind.
     ("session: grant whatever lifetime the caller asked for",
      "crates/sankhya-session/src/lease.rs",
-     "        let granted = wanted_micros.clamp(0, self.max_lifetime_micros);",
-     "        let granted = wanted_micros.max(0);",
+     "    ) -> Lease {\n        let granted = wanted_micros.clamp(0, self.max_lifetime_micros);",
+     "    ) -> Lease {\n        let granted = wanted_micros.max(0);",
+     "sankhya-session"),
+
+    # Renewal is the second site, and the one that matters more: a lease that cannot be
+    # *granted* past the ceiling but can be *renewed* past it has no ceiling at all. It was
+    # covered by nothing, because the entry above named text that appears at both and mutated
+    # only the first.
+    ("session: renew a lease for whatever lifetime the caller asked for",
+     "crates/sankhya-session/src/lease.rs",
+     "        let granted = wanted_micros.clamp(0, self.max_lifetime_micros);\n        let renewed = Lease {",
+     "        let granted = wanted_micros.max(0);\n        let renewed = Lease {",
      "sankhya-session"),
 
     # --- the error protocol ---------------------------------------------------------------
@@ -1111,14 +1123,14 @@ CATALOGUE = [
 
     ("publish: fail instead of rebasing on a version conflict",
      "crates/sankhya-publish/src/publish.rs",
-     "                Err(sankhya_table_delta::CommitError::VersionTaken(_)) => {",
-     "                Err(sankhya_table_delta::CommitError::VersionTaken(_)) if false => {",
+     "                Err(sankhya_table_delta::CommitError::VersionTaken(_)) => {\n                    // The version this writer wanted is taken",
+     "                Err(sankhya_table_delta::CommitError::VersionTaken(_)) if false => {\n                    // The version this writer wanted is taken",
      "sankhya-publish"),
 
     ("publish: retry a failure that is not a version race",
      "crates/sankhya-publish/src/publish.rs",
-     "                Err(error) => {\n                    return Err(PublishError::Commit {\n                        version,\n                        detail: error.to_string(),\n                    })\n                }",
-     "                Err(_) => {}",
+     "                    // then over the commits made since rather than over the whole history.\n                    self.remember(version);\n                    version = self\n                        .newest()\n                        .map_or(version.saturating_add(1), |v| v.saturating_add(1));\n                }\n                Err(error) => {\n                    return Err(PublishError::Commit {\n                        version,\n                        detail: error.to_string(),\n                    })\n                }",
+     "                    // then over the commits made since rather than over the whole history.\n                    self.remember(version);\n                    version = self\n                        .newest()\n                        .map_or(version.saturating_add(1), |v| v.saturating_add(1));\n                }\n                Err(_) => {}",
      "sankhya-publish"),
 
     ("log: replay by scanning the file list instead of indexing it",
@@ -2064,8 +2076,8 @@ CATALOGUE = [
 
     ("clone: ignore a clause the clone parser does not understand",
      "crates/sankhya-clone/src/ddl.rs",
-     "    if let Some(found) = words.get(at) {\n        return Err(DdlError::Trailing { found: found.clone() });\n    }",
-     "    if let Some(found) = words.get(at) {\n        let _ignored = found;\n    }",
+     "    if let Some(found) = words.get(at) {\n        return Err(DdlError::Trailing { found: found.clone() });\n    }\n    Ok(Statement::Drop { table, if_exists })",
+     "    if let Some(found) = words.get(at) {\n        let _ignored = found;\n    }\n    Ok(Statement::Drop { table, if_exists })",
      "sankhya-clone"),
 
     ("clone: read a clone with no version as version zero",
@@ -2076,8 +2088,8 @@ CATALOGUE = [
 
     ("clone: reserve the word CLONE as a table name",
      "crates/sankhya-clone/src/ddl.rs",
-     "    let table = identifier(words.get(at), \"a table name\")?;",
-     "    let table = identifier(words.get(at), \"a table name\").map(|name| name.to_ascii_lowercase())?;",
+     'fn read(words: &[String], mut at: usize) -> Result<Create, DdlError> {\n    let table = identifier(words.get(at), "a table name")?;',
+     'fn read(words: &[String], mut at: usize) -> Result<Create, DdlError> {\n    let table = identifier(words.get(at), "a table name").map(|name| name.to_ascii_lowercase())?;',
      "sankhya-clone"),
 
     ("server: leave CREATE TABLE ... CLONE unreachable from a client",
@@ -2608,8 +2620,8 @@ CATALOGUE = [
 
     ("diagnostic: treat a never-proven backup as merely approaching its objective",
      "crates/sankhya-diagnostic/src/check.rs",
-     "    let Some(last) = last_pass else {",
-     "    let Some(last) = last_pass.or(Some(now)) else {",
+     'docs/runbooks/restore-drill.md."\n        .to_string();\n    let Some(last) = last_pass else {',
+     'docs/runbooks/restore-drill.md."\n        .to_string();\n    let Some(last) = last_pass.or(Some(now)) else {',
      "sankhya-diagnostic"),
 
     ("server: print the configured address rather than the one actually bound",
@@ -3026,8 +3038,8 @@ CATALOGUE = [
 
     ("server: let a refused guide example pass as a query that matched nothing",
      "crates/sankhya-server/tests/common/mod.rs",
-     "    if count_tags(&buffer, b'E') > 0 {",
-     "    if false {",
+     "    read_until_ready(&mut stream, &mut buffer);\n\n    if count_tags(&buffer, b'E') > 0 {",
+     "    read_until_ready(&mut stream, &mut buffer);\n\n    if false {",
      "sankhya-server"),
 
     ("server: leave the analytical functions unregistered, so the guide documents nothing",
@@ -3140,8 +3152,8 @@ CATALOGUE = [
 
     ("server: key a cube's cells on read_as_of, so the snapshot never moves",
      "crates/sankhya-server/src/wiring.rs",
-     "            let snapshot = self.snapshot_across(cube.reads());",
-     "            let snapshot = self.settings.read_as_of.get();",
+     "            // correct and never reached.\n            let snapshot = self.snapshot_across(cube.reads());",
+     "            // correct and never reached.\n            let snapshot = self.settings.read_as_of.get();",
      "sankhya-server"),
 
     # --- the query log, and selecting from it ---------------------------------
@@ -3584,10 +3596,14 @@ CATALOGUE = [
      "    let error = 0.0;",
      "sankhya-math"),
 
+    # The find string used to be `if !value.is_finite() {` alone, and there are two of those
+    # in this file --- so it matched `exact_sum`'s early scan instead of the expansion's, where
+    # a second guard on the scaled value masks it. It survived for two years' worth of runs as
+    # a mutation of a line nobody meant.
     ("math: hide a non-finite value inside an exact sum",
      "crates/sankhya-math/src/reduce.rs",
-     "        if !value.is_finite() {",
-     "        if false {",
+     "        if !value.is_finite() {\n            // An infinity or a NaN makes the expansion meaningless",
+     "        if false {\n            // An infinity or a NaN makes the expansion meaningless",
      "sankhya-math"),
 
     ("math: keep zero components, so an expansion grows without bound",
@@ -3866,8 +3882,8 @@ CATALOGUE = [
 
     ("publish: write each deferred batch as its own file, defeating accumulation",
      "crates/sankhya-publish/src/publish.rs",
-     "        let combined = arrow_select::concat::concat_batches(&schema, batches)",
-     "        let combined = Ok::<_, arrow_schema::ArrowError>(batches[0].clone())",
+     "        // than five. Writing them separately would defeat the accumulation entirely.\n        let schema = batches.first().map_or_else(\n            || Arc::new(arrow_schema::Schema::empty()),\n            RecordBatch::schema,\n        );\n        let combined = arrow_select::concat::concat_batches(&schema, batches)",
+     "        // than five. Writing them separately would defeat the accumulation entirely.\n        let schema = batches.first().map_or_else(\n            || Arc::new(arrow_schema::Schema::empty()),\n            RecordBatch::schema,\n        );\n        let combined = Ok::<_, arrow_schema::ArrowError>(batches[0].clone())",
      "sankhya-publish"),
 
     ("publish: take the next version from the live set, missing an empty table's commits",
@@ -4303,16 +4319,25 @@ CATALOGUE = [
     # handler that implements it. Nothing below the socket could notice.
     ("wire: let the catalogue answer a statement the handler defines itself",
      "crates/sankhya-api-pg/src/session.rs",
-     "        if let Some(catalogue) = recognise(sql).filter(|_| !handler.claims(sql)) {",
-     "        if let Some(catalogue) = recognise(sql) {",
+     '        // "no such table" error for a query the client considers routine.\n        if let Some(catalogue) = recognise(sql).filter(|_| !handler.claims(sql)) {',
+     '        // "no such table" error for a query the client considers routine.\n        if let Some(catalogue) = recognise(sql) {',
+     "sankhya-api-pg"),
+
+    # The extended protocol's copy of the same decision, which was covered by nothing. Every
+    # driver that binds parameters --- pgjdbc, psycopg3, asyncpg, SQLAlchemy --- takes this
+    # path and not the simple one above.
+    ("wire: let the catalogue answer an extended-protocol statement the handler defines",
+     "crates/sankhya-api-pg/src/session.rs",
+     "    ) -> Result<QueryResult, QueryFailure> {\n        if let Some(catalogue) = recognise(sql).filter(|_| !handler.claims(sql)) {\n            let result = answer(",
+     "    ) -> Result<QueryResult, QueryFailure> {\n        if let Some(catalogue) = recognise(sql) {\n            let result = answer(",
      "sankhya-api-pg"),
 
     # And the other direction: a handler that claims one `SHOW` must not have claimed every
     # settings query a catalogue-browsing client sends on connection.
     ("wire: let a handler's claim swallow every catalogue query",
      "crates/sankhya-api-pg/src/session.rs",
-     "        if let Some(catalogue) = recognise(sql).filter(|_| !handler.claims(sql)) {",
-     "        if let Some(catalogue) = None::<crate::catalog::CatalogQuery> {",
+     "    ) -> Result<QueryResult, QueryFailure> {\n        if let Some(catalogue) = recognise(sql).filter(|_| !handler.claims(sql)) {",
+     "    ) -> Result<QueryResult, QueryFailure> {\n        if let Some(catalogue) = None::<crate::catalog::CatalogQuery> {",
      "sankhya-api-pg"),
 
     ("server: answer a feed command from the catalogue instead of the feed registry",
@@ -4427,8 +4452,8 @@ CATALOGUE = [
 
     ("cube: take the kept dimension's rule rather than the one being rolled away",
      "crates/sankhya-cube-sql/src/functions.rs",
-     "        .filter(|along| !kept.contains(&along.dimension))",
-     "        .filter(|along| kept.contains(&along.dimension))",
+     "    let applying: Vec<&Along> = measure\n        .rules\n        .iter()\n        .filter(|along| !kept.contains(&along.dimension))",
+     "    let applying: Vec<&Along> = measure\n        .rules\n        .iter()\n        .filter(|along| kept.contains(&along.dimension))",
      "sankhya-cube-sql"),
 
     ("cube: resolve disagreeing reduction rules by taking the first",
@@ -4552,8 +4577,16 @@ CATALOGUE = [
 
     ("server: keep pinning the files of a snapshot that has expired",
      "crates/sankhya-server/src/snapshots.rs",
-     "        if standing(snapshot, today) == Standing::Expired {\n            continue;\n        }",
-     "        if false {\n            continue;\n        }",
+     "    for snapshot in snapshots {\n        if standing(snapshot, today) == Standing::Expired {\n            continue;\n        }",
+     "    for snapshot in snapshots {\n        if false {\n            continue;\n        }",
+     "sankhya-server"),
+
+    # The second site: the listing that tells a person *which* snapshot is holding a version.
+    # An expired one appearing there sends somebody to drop a snapshot that is already gone.
+    ("server: name an expired snapshot as a reason a version is still pinned",
+     "crates/sankhya-server/src/snapshots.rs",
+     "    for snapshot in &snapshots {\n        if standing(snapshot, today) == Standing::Expired {\n            continue;\n        }",
+     "    for snapshot in &snapshots {\n        if false {\n            continue;\n        }",
      "sankhya-server"),
 
     ("server: replace a snapshot whose name is already taken",
@@ -4707,6 +4740,95 @@ CATALOGUE = [
      "            values\n                .get(at.saturating_sub(window - 1)..=at)\n                .map(|slice| deterministic_sum(slice) / divisor)",
      "sankhya-math"),
 
+    # --- Phase 3: a plausible wrong number, rather than a refusal ------------------------------
+
+    # `COR-08`. The fast path truncates every term at a scale set by the *largest* term, and
+    # the old proof concluded from that that truncation could not move the answer. What is
+    # returned is the **total**, which cancellation makes arbitrarily smaller. Removing the
+    # post-condition puts back a route that is quietly approximate exactly where the input
+    # cancels --- the figure that will not tie out and nobody can explain.
+    ("math: return a fixed-point total that cancellation has taken below the truncation floor",
+     "crates/sankhya-math/src/reduce.rs",
+     "    if truncated > 0 && total.unsigned_abs() <= (truncated << 53) {\n        return None;\n    }",
+     "    if false {\n        return None;\n    }",
+     "sankhya-math"),
+
+    # The other direction: a guard that counts every term rather than the ones that actually
+    # lost bits declines on inputs that were exact, so every ordinary sum pays for an expansion
+    # it does not need --- and the canonical hard case, which cancels hard and truncates
+    # nothing, stops taking the fast path at all.
+    ("math: count every term as truncated rather than the ones that lost bits",
+     "crates/sankhya-math/src/reduce.rs",
+     "        if lost {\n            truncated += 1;\n        }",
+     "        truncated += 1;",
+     "sankhya-math"),
+
+    # There is deliberately **no mutation for the fallback being the exact expansion** rather
+    # than sorted Neumaier compensation.
+    #
+    # One was written and it survived. Inputs were searched for that separate the two --- pairs
+    # and triples cancelling across a hundred decimal orders, eight nested cancelling pairs,
+    # residuals stacked at three scales --- and none was found: over a canonical magnitude
+    # order, the small terms accumulate exactly before the large ones arrive and a single
+    # compensation double captures what is left.
+    #
+    # So the change is a stronger *argument*, not an observable repair. It is kept because the
+    # fallback is reached exactly when a fixed margin was not enough, and a module promising
+    # "never an approximation" should not answer that with a second fixed margin. But an
+    # uncatchable mutation is not evidence of coverage, and the entry that carries `COR-08` is
+    # the post-condition above.
+
+    # `COR-07`. Two endpoints and a sign test is only a bracket when the function crosses once
+    # between them, and a sequence with more than one sign change does not. `[-1000, 110 x 98,
+    # -500]` has a root at eleven per cent and another below zero; the extremes have the same
+    # sign, so testing them concludes there is no root at all.
+    ("math: bracket an internal rate of return between the extremes rather than scanning",
+     "crates/sankhya-math/src/finance.rs",
+     "    let bracket = scan(&value, 0.0, 1_000.0).or_else(|| scan(&value, 0.0, -0.999_999));",
+     "    let bracket = match (value(-0.999_999), value(1_000.0)) {\n        (Some(low), Some(_)) => Some((-0.999_999, 1_000.0, low)),\n        _ => None,\n    };",
+     "sankhya-math"),
+
+    # And the convention, which is a choice rather than a derivation and so has to be pinned:
+    # the non-negative rate is the one reported. Scanning from minus one upward finds the other
+    # root first and returns it, which is a different number with the same name.
+    ("math: report the first root above minus one rather than the one above zero",
+     "crates/sankhya-math/src/finance.rs",
+     "    let bracket = scan(&value, 0.0, 1_000.0).or_else(|| scan(&value, 0.0, -0.999_999));",
+     "    let bracket = scan(&value, -0.999_999, 1_000.0);",
+     "sankhya-math"),
+
+    # There are deliberately **no mutations for two guards in `internal_rate_of_return`**: the
+    # `is_finite` filter on an endpoint, and the check that the value at the returned rate is
+    # actually zero.
+    #
+    # Both were written for `COR-07` and both survived, correctly. Once the bracket is found by
+    # scanning, it spans a genuine sign change of a function that is continuous everywhere in
+    # `(-1, infinity)` --- so bisection converges on a real root, the verification always
+    # passes, and no input reaches the non-finite region with a bracket around it. They are
+    # defence in depth against the domain boundary, not the load-bearing fix, and the two
+    # entries above are.
+    #
+    # A mutation nothing can catch is not evidence of coverage; it is a permanent survivor
+    # that trains people to ignore the survivor list. Same rule as the fsync calls.
+
+    # `COR-09`. A proportion of a non-positive base is a different question: dividing by a
+    # negative peak reports a fall as a rise, and substituting zero reports a series that only
+    # fell as one that never did.
+    ("math: report a drawdown against a peak that is not positive",
+     "crates/sankhya-math/src/timeseries.rs",
+     "        if peak <= 0.0 || !peak.is_finite() {",
+     "        if false {",
+     "sankhya-math"),
+
+    # `COR-10`. The module forbids `1 - cdf` by name. A double near one has no bits below
+    # about 1e-16, so every lower tail smaller than that is reported as zero --- in the
+    # direction that makes a finding look stronger.
+    ("math: take an F-test's lower tail by subtracting the upper one",
+     "crates/sankhya-math/src/inference.rs",
+     "        f_sf(1.0 / statistic, df_right, df_left)?",
+     "        1.0 - upper",
+     "sankhya-math"),
+
     ("math: measure a drawdown from the last value rather than the running peak",
      "crates/sankhya-math/src/timeseries.rs",
      "        if *value > peak {\n            peak = *value;\n        }",
@@ -4820,7 +4942,7 @@ CATALOGUE = [
 
     ("math: report only the upper tail of an F test, halving a small variance's p-value",
      "crates/sankhya-math/src/inference.rs",
-     "    let p_value = (2.0 * upper.min(1.0 - upper)).min(1.0);",
+     "    let p_value = (2.0 * upper.min(lower)).min(1.0);",
      "    let p_value = upper;",
      "sankhya-math"),
 
@@ -4980,8 +5102,8 @@ CATALOGUE = [
     # disagreed with the sorted one by a bit would move all of them at once.
     ("math: accumulate in floating point, losing the associativity the fixed point buys",
      "crates/sankhya-math/src/reduce.rs",
-     "    let mut total: i128 = 0;\n    for &value in values {\n        let scaled = value * scale;\n        if !scaled.is_finite() {\n            return None;\n        }",
-     "    let mut total: f64 = 0.0;\n    for &value in values {\n        let scaled = value * scale;\n        if !scaled.is_finite() {\n            return None;\n        }",
+     "        total += whole;",
+     "        total = ((total as f64) + (whole as f64)) as i128;",
      "sankhya-math"),
 
     ("math: keep fewer bits below the largest term than the answer can express",
@@ -5491,8 +5613,25 @@ def check_only():
         return 1
 
     absent = []
+    # A find string that appears more often than the entry says it should mutates the
+    # **first** occurrence, which need not be the one the entry is about.
+    #
+    # The sixth field exists for the case where an entry genuinely means every site --- a rule
+    # applied at a lower bound and an upper one, say --- and where it is absent the entry means
+    # exactly one. So the check is not *"does this appear twice?"* but *"does this appear more
+    # times than the entry accounts for?"*.
+    #
+    # `math: hide a non-finite value inside an exact sum` named `if !value.is_finite() {` with
+    # no count, and there are two of those in `reduce.rs`. It matched the early scan in
+    # `exact_sum`, where a second guard on the scaled value masks it, instead of the
+    # expansion's --- so it survived every run as a mutation of a line nobody meant, and the
+    # survivor list carried it as "the tests do not cover this" when the entry did not point at
+    # the code. That is the same shape the audit found in `COR-08`: an entry protecting a
+    # constant rather than the property. It is mechanically checkable, so it is checked.
+    ambiguous = []
     for entry in CATALOGUE:
         label, relpath, find = entry[0], entry[1], entry[2]
+        declared = entry[5] if len(entry) > 5 else 1
         path = os.path.join(ROOT, relpath)
         try:
             with open(path) as handle:
@@ -5500,14 +5639,23 @@ def check_only():
         except OSError:
             absent.append((label, relpath, "file is missing"))
             continue
-        if find not in source:
+        occurrences = source.count(find)
+        if occurrences == 0:
             absent.append((label, relpath, "the text it names is not there"))
+        elif occurrences != declared:
+            ambiguous.append((label, relpath, occurrences, declared))
     for label, relpath, why in absent:
         print(f"{'UNMATCHED':10} {label}\n{'':10} {relpath}: {why}")
-    if absent:
-        print(f"\n{len(absent)} of {len(CATALOGUE)} catalogue entries do not match the "
-              f"source. Either the code moved and the entry needs updating, or a killed "
-              f"run left its mutation applied -- check `git diff` before anything else.")
+    for label, relpath, occurrences, declared in ambiguous:
+        print(f"{'AMBIGUOUS':10} {label}\n{'':10} {relpath}: the text it names appears "
+              f"{occurrences} time(s) and this entry mutates {declared}. Widen the text with "
+              f"surrounding lines until it names the one site the entry is about, or declare "
+              f"the count as a sixth field if it genuinely means all of them")
+    if absent or ambiguous:
+        print(f"\n{len(absent) + len(ambiguous)} of {len(CATALOGUE)} catalogue entries do not "
+              f"name one site in the source. Either the code moved and the entry needs "
+              f"updating, the entry is ambiguous, or a killed run left its mutation applied "
+              f"-- check `git diff` before anything else.")
         return 1
     print(f"all {len(CATALOGUE)} catalogue entries match the source")
     return 0
