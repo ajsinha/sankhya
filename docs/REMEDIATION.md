@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2,673 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2,681 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -479,9 +479,35 @@ than written as a zero, because that would be materialisation turning a refusal 
 `ING-06` needs a row-lookup path into published Parquet that does not exist anywhere, so it is a
 design piece rather than a repair.
 
+**3.6 What a value looks like on the wire.**
+
+- `CLI-01`: microsecond timestamps — this project's own canonical unit — were rendered with
+  `.to_string()` on the raw `i64` under OID 1114/1184, so `psql` printed `1756545242000000` and
+  JDBC and psycopg raised. The other three units fell through to Arrow's display, which writes
+  `T` between date and time and `Z` for the zone where PostgreSQL writes a space and a numeric
+  offset. `bytea` went out as bare hex, which a driver decodes as the *characters*. **Zero tests
+  touched a timestamp.**
+- `CLI-05`: both array readers copied the raw value buffer, where Arrow writes `0.0` under a
+  null. The composition the documentation advertises is exactly the one that produces them —
+  `ts_max_drawdown(ts_rolling_mean(prices, 3))`, whose leading nulls are deliberate — so it was
+  reduced against a price of nothing. A null element now gives a null answer, which is what this
+  reader already did for a null vector and for the reason its own doc gives. The parity soak
+  could not see it because all three of its paths call the same kernel.
+
+**One half of `CLI-01` is not fixed, and the reason is worth recording.** The catalogue and the
+result set disagree about a **zone-aware** column because they read different sources: the result
+set types a column from the Arrow schema the scan produces, which comes from the Parquet footer
+and keeps the timezone, while the catalogue types it from the declared schema in the log — and
+`schemaString` writes `"timestamp"` for both zone-aware and naive, because the Delta protocol has
+one timestamp type. The catalogue's own mapping is corrected, and it is not enough. Making the
+two agree means recording the zone in the log or normalising the read path to the declaration:
+a format decision, not a rendering fix. A test that passed against the present behaviour would
+pin the disagreement instead of the property, so there is none.
+
 ### Still open in Phase 3
 
-`3.6` and `3.8` are not started, and `3.3` is three findings of five. Three pre-existing survivors in
+`3.8` is not started, `3.3` is three findings of five, and one half of `3.6` is
+recorded above as a format decision rather than a repair. Three pre-existing survivors in
 `sankhya-publish` and one entry whose mutation does not compile were found while verifying this
 work and are not yet closed; they are coverage gaps in the write path rather than defects in it.
 

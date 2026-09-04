@@ -543,10 +543,46 @@ fn render_value(array: &dyn Array, row: usize) -> String {
             .to_string(),
         DataType::Utf8 => array.as_string::<i32>().value(row).to_string(),
         DataType::LargeUtf8 => array.as_string::<i64>().value(row).to_string(),
-        DataType::Timestamp(TimeUnit::Microsecond, _) => array
-            .as_primitive::<types::TimestampMicrosecondType>()
-            .value(row)
-            .to_string(),
+        // Every timestamp unit, in **PostgreSQL's** text format rather than as a number or as
+        // ISO-8601. `CLI-01`.
+        //
+        // Microseconds are this project's canonical unit and were rendered with
+        // `.to_string()` on the raw `i64`, so `psql` printed `1756545242000000` and JDBC and
+        // psycopg raised on it. The other three units fell through to Arrow's display, which
+        // writes `T` between the date and the time and `Z` for the zone; PostgreSQL writes a
+        // space and a numeric offset, and a driver parsing text is parsing *that* grammar.
+        //
+        // **Zero tests touched a timestamp.**
+        DataType::Timestamp(unit, zone) => {
+            let raw = match unit {
+                TimeUnit::Second => array
+                    .as_primitive::<types::TimestampSecondType>()
+                    .value(row)
+                    .checked_mul(1_000_000),
+                TimeUnit::Millisecond => array
+                    .as_primitive::<types::TimestampMillisecondType>()
+                    .value(row)
+                    .checked_mul(1_000),
+                TimeUnit::Microsecond => Some(
+                    array
+                        .as_primitive::<types::TimestampMicrosecondType>()
+                        .value(row),
+                ),
+                // Truncated toward negative infinity rather than toward zero, so a
+                // pre-epoch instant does not round the wrong way across the boundary.
+                TimeUnit::Nanosecond => Some(
+                    array
+                        .as_primitive::<types::TimestampNanosecondType>()
+                        .value(row)
+                        .div_euclid(1_000),
+                ),
+            };
+            raw.map_or_else(String::new, |micros| timestamp_text(micros, zone.is_some()))
+        }
+        // `\x` first, which is what PostgreSQL's `bytea_output = hex` writes and what every
+        // driver strips before decoding. Bare hex is decoded as the *characters*.
+        DataType::Binary => format!("\\x{}", hex(array.as_binary::<i32>().value(row))),
+        DataType::LargeBinary => format!("\\x{}", hex(array.as_binary::<i64>().value(row))),
         // An array of doubles, in PostgreSQL's own text syntax rather than Arrow's.
         //
         // `{1,2,3}`, not `[1.0, 2.0, 3.0]`. This travels with the `_float8` OID in `pg_type`
@@ -567,6 +603,52 @@ fn render_value(array: &dyn Array, row: usize) -> String {
                 .unwrap_or_default()
         }
     }
+}
+
+/// Microseconds since the epoch, in PostgreSQL's text format.
+///
+/// `2026-08-30 09:14:02.000123`, and `+00` on the end when the column is zone-aware. That is
+/// the grammar a driver parses: a space rather than a `T`, a numeric offset rather than `Z`,
+/// and the fractional part omitted entirely when it is zero — which is what PostgreSQL does
+/// and therefore what a round-trip test against it compares against.
+///
+/// Always UTC. This server has no session `TimeZone` to render in, and inventing one would
+/// make the same instant print differently on two machines.
+fn timestamp_text(micros: i64, zoned: bool) -> String {
+    const DAY: i64 = 86_400 * 1_000_000;
+    // Floor division, so an instant before 1970 borrows from the day rather than truncating
+    // toward zero and landing a day late with a negative time of day.
+    let days = micros.div_euclid(DAY);
+    let within = micros.rem_euclid(DAY);
+    let Ok(days) = i32::try_from(days) else {
+        return String::new();
+    };
+    let (year, month, day) = sankhya_schema::civil_from_days(days);
+
+    let seconds = within / 1_000_000;
+    let fraction = within % 1_000_000;
+    let (hour, minute, second) = (seconds / 3_600, (seconds / 60) % 60, seconds % 60);
+
+    let mut out = format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}");
+    if fraction != 0 {
+        // Trailing zeroes trimmed, as PostgreSQL does: `.5` rather than `.500000`.
+        let digits = format!("{fraction:06}");
+        out.push('.');
+        out.push_str(digits.trim_end_matches('0'));
+    }
+    if zoned {
+        out.push_str("+00");
+    }
+    out
+}
+
+/// Bytes as lower-case hex, for `bytea`'s `\x` form.
+fn hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }
 
 /// One row's array of doubles, in PostgreSQL's array syntax.

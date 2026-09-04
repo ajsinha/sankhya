@@ -4749,6 +4749,50 @@ CATALOGUE = [
      "            values\n                .get(at.saturating_sub(window - 1)..=at)\n                .map(|slice| deterministic_sum(slice) / divisor)",
      "sankhya-math"),
 
+    # --- Phase 3: what a value looks like on the wire -------------------------------------------
+
+    # `CLI-01`. Microseconds are this project's canonical unit and went out as a raw integer
+    # under OID 1114/1184: `psql` printed 1756545242000000 and JDBC and psycopg raised. Zero
+    # tests touched a timestamp.
+    ("server: render a timestamp as the number of microseconds it is stored as",
+     "crates/sankhya-server/src/execute.rs",
+     "            raw.map_or_else(String::new, |micros| timestamp_text(micros, zone.is_some()))",
+     "            raw.map_or_else(String::new, |micros| micros.to_string())",
+     "sankhya-server"),
+
+    # Floor division, so an instant before 1970 borrows from the day. Truncating toward zero
+    # lands a day late with a negative time of day --- wrong on exactly one side of one
+    # boundary, which is why nobody meets it.
+    ("server: truncate a pre-epoch timestamp toward zero rather than toward the earlier day",
+     "crates/sankhya-server/src/execute.rs",
+     "    let days = micros.div_euclid(DAY);\n    let within = micros.rem_euclid(DAY);",
+     "    let days = micros / DAY;\n    let within = micros % DAY;",
+     "sankhya-server"),
+
+    # `bytea` went out as bare hex. A driver strips `\x` and decodes the rest; given bare hex
+    # it decodes the *characters*, so every byte comes back wrong and nothing errors.
+    ("server: send bytea as bare hex, with no marker for a driver to strip",
+     "crates/sankhya-server/src/execute.rs",
+     "        DataType::Binary => format!(\"\\\\x{}\", hex(array.as_binary::<i32>().value(row))),",
+     "        DataType::Binary => hex(array.as_binary::<i32>().value(row)),",
+     "sankhya-server"),
+
+    # `CLI-05`. Arrow writes 0.0 under a null, and this read the raw value buffer --- so the
+    # composition the documentation advertises, whose leading nulls are deliberate, was
+    # reduced against a price of nothing.
+    ("functions: read a null element of a vector as the zero Arrow left in the buffer",
+     "crates/sankhya-functions/src/rows.rs",
+     "                if doubles.null_count() > 0 {\n                    return None;\n                }",
+     "                if false {\n                    return None;\n                }",
+     "sankhya-functions"),
+
+    # The same, on the fixed-width path, where the child's nulls sit in this row's window.
+    ("functions: ignore a null element in a fixed-width vector",
+     "crates/sankhya-functions/src/rows.rs",
+     "                    if (start..start + *width).any(|at| at < child.len() && child.is_null(at)) {",
+     "                    if false {",
+     "sankhya-functions"),
+
     # --- Phase 3: capture that lost or duplicated rows -----------------------------------------
 
     # `ING-01`. The position held records *published* and the resume skipped by *line index*.

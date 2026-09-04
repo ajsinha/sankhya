@@ -3951,6 +3951,7 @@ dependencies = [
  "sankhya-plan",
  "sankhya-publish",
  "sankhya-readpath",
+ "sankhya-schema",
  "sankhya-session",
  "sankhya-snapshot",
  "sankhya-table",

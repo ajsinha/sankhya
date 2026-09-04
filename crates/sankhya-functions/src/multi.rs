@@ -251,6 +251,22 @@ fn fill(array: &ArrayRef, row: usize, function: &str, into: &mut Vec<f64>) -> Re
     let Some(doubles) = inner.as_any().downcast_ref::<Float64Array>() else {
         return exec_err!("{function} needs doubles, and this array holds {}", inner.data_type());
     };
+    // A null **element** is not a zero, and this read the raw value buffer — where Arrow
+    // writes `0.0` under a null. `CLI-05`.
+    //
+    // The composition the documentation advertises is exactly the one that produces them:
+    // `ts_max_drawdown(ts_rolling_mean(prices, 3))`, whose leading nulls are deliberate. Read
+    // as zeroes they became a drawdown against a price of nothing.
+    //
+    // Treated as a null *row*, which is what this function already returns for a null vector,
+    // and for the same reason its doc gives: a reduction over a value nobody knows is not a
+    // number, and an empty series is a definite statement that this is not. `sankhya-olap`
+    // refuses the same input outright, and the difference is deliberate — its inputs are
+    // literals a person typed, where a null element is a mistake to be told about, and these
+    // are computed columns where a leading null is the documented shape.
+    if doubles.null_count() > 0 {
+        return Ok(false);
+    }
     into.extend_from_slice(doubles.values());
     Ok(true)
 }

@@ -222,3 +222,74 @@ async fn a_null_vector_gives_a_null_answer_through_a_statement_too() {
     .await;
     assert!(!out.contains("0.0"), "a null series became a number: {out}");
 }
+
+#[test]
+fn a_null_element_is_not_a_zero() {
+    // `CLI-05`. The reader copied the raw value buffer, and Arrow writes `0.0` under a null,
+    // so a vector with a missing element was reduced as though that element were zero.
+    //
+    // The composition the documentation advertises is exactly the one that produces them —
+    // `ts_max_drawdown(ts_rolling_mean(prices, 3))`, whose leading nulls are deliberate — and
+    // read as zeroes they became a drawdown against a price of nothing. `sankhya-olap` refuses
+    // the same input with *"a vector contains a null element. There is no reading of that: it
+    // is not zero"*, so there were two conventions in one catalogue and the silent one was
+    // the default.
+    //
+    // The parity soak cannot see it: all three of its paths call this kernel.
+    let mut builder = FixedSizeListBuilder::new(Float64Builder::new(), 3);
+    builder.values().append_value(1.0);
+    builder.values().append_null();
+    builder.values().append_value(3.0);
+    builder.append(true);
+    let array: ArrayRef = Arc::new(builder.finish());
+
+    let mut vectors = Vectors::read(&array, "a_test").expect("a column of doubles");
+    assert_eq!(
+        vectors.row(0),
+        None,
+        "a vector holding a value nobody knows was reduced anyway, and the unknown read as zero"
+    );
+}
+
+#[test]
+fn a_vector_with_every_element_present_still_reads() {
+    // The control. Refusing a null element must not cost the ordinary case, which is every
+    // vector a scan produces.
+    let array = column(2, 3, &[]);
+    let mut vectors = Vectors::read(&array, "a_test").expect("a column of doubles");
+    assert_eq!(vectors.row(0), Some(&[0.0, 1.0, 2.0][..]));
+    assert_eq!(vectors.row(1), Some(&[100.0, 101.0, 102.0][..]));
+}
+
+#[test]
+fn a_null_element_in_a_variable_length_vector_is_not_a_zero_either() {
+    // The same rule on the other array shape. A `List` column is what an expression produces —
+    // `ts_rolling_mean` returns one — so this is the path the advertised composition actually
+    // takes, and it was covered by nothing: the fixed-width test above passes against a
+    // reader that ignores the null mask here.
+    use arrow_array::builder::ListBuilder;
+
+    let mut builder = ListBuilder::new(Float64Builder::new());
+    builder.values().append_value(1.0);
+    builder.values().append_null();
+    builder.values().append_value(3.0);
+    builder.append(true);
+    // A second row with nothing missing, so the reader is exercised on both and a blanket
+    // refusal would be visible.
+    builder.values().append_slice(&[4.0, 5.0]);
+    builder.append(true);
+    let array: ArrayRef = Arc::new(builder.finish());
+
+    let mut vectors = Vectors::read(&array, "a_test").expect("a column of doubles");
+    assert_eq!(
+        vectors.row(0),
+        None,
+        "a variable-length vector holding a value nobody knows was reduced as though the \
+         unknown were zero"
+    );
+    assert_eq!(
+        vectors.row(1),
+        Some(&[4.0, 5.0][..]),
+        "a vector with nothing missing was refused"
+    );
+}
