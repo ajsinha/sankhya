@@ -67,7 +67,22 @@ impl Handler for Fixture {
         }
     }
 
-    fn query(&self, sql: &str, _caller: &Caller<'_>) -> Result<QueryResult, QueryFailure> {
+    fn query(&self, sql: &str, caller: &Caller<'_>) -> Result<QueryResult, QueryFailure> {
+        // What the *session* is holding, so a test can assert that a `SET` took effect rather
+        // than only that it was acknowledged. Without this the two are indistinguishable from
+        // outside, which is how `CLI-06` lasted: the extended protocol answered `SET SNAPSHOT`
+        // with a success tag and never recorded it.
+        //
+        // Not spelled `SHOW`: the catalogue recognises those and answers them before the
+        // handler is asked, so the probe would report the catalogue's idea of a setting rather
+        // than the session's.
+        if let Some(name) = sql.strip_prefix("peek setting ") {
+            return Ok(QueryResult {
+                fields: vec![FieldDescription::text("value", oid::TEXT, -1)],
+                rows: vec![vec![caller.setting(name.trim()).map(ToOwned::to_owned)]],
+                tag: "SELECT 1".to_string(),
+            });
+        }
         // The statement is echoed back as a row, so a test can assert **what reached the
         // handler**. Without it, a bound parameter that never arrived is invisible: the
         // fixture answers the same two rows either way, and the test passes while the
@@ -778,4 +793,161 @@ async fn a_contract_that_is_not_a_number_is_refused_rather_than_ignored() {
     let result = client.read_until(b'E').await;
     let (_, said) = result.iter().find(|(tag, _)| *tag == b'E').expect("a refusal");
     assert!(String::from_utf8_lossy(said).contains("08004"));
+}
+
+/// Run one statement through Parse/Bind/Execute, the way every mainstream driver does.
+async fn extended(client: &mut Client, sql: &str) -> Vec<(u8, Vec<u8>)> {
+    let mut body = b"\0".to_vec();
+    body.extend_from_slice(sql.as_bytes());
+    body.push(0);
+    body.extend_from_slice(&0i16.to_be_bytes());
+    client.send(b'P', &body).await;
+
+    let mut bind = b"\0\0".to_vec();
+    bind.extend_from_slice(&0i16.to_be_bytes());
+    bind.extend_from_slice(&0i16.to_be_bytes());
+    bind.extend_from_slice(&0i16.to_be_bytes());
+    client.send(b'B', &bind).await;
+
+    let mut execute = b"\0".to_vec();
+    execute.extend_from_slice(&0i32.to_be_bytes());
+    client.send(b'E', &execute).await;
+    client.send(b'S', &[]).await;
+    client.read_until(b'Z').await
+}
+
+/// The single text value a `DataRow` carries, or `None` for a null.
+fn only_value(messages: &[(u8, Vec<u8>)]) -> Option<String> {
+    let (_, body) = messages.iter().find(|(tag, _)| *tag == b'D')?;
+    // Columns (2 bytes), then the first column's length (4) and its bytes.
+    let length = i32::from_be_bytes([body[2], body[3], body[4], body[5]]);
+    if length < 0 {
+        return None;
+    }
+    let end = 6 + usize::try_from(length).unwrap_or(0);
+    Some(String::from_utf8_lossy(&body[6..end]).into_owned())
+}
+
+#[tokio::test]
+async fn a_setting_changed_on_the_extended_protocol_takes_effect() {
+    // `CLI-06`. `remember_setting` was called only from the simple-`Query` arm, so a client
+    // using Parse/Bind/Execute got a success tag, the handler validated the value, and every
+    // subsequent statement in that session ran as though nothing had been set.
+    //
+    // pgjdbc, psycopg3, asyncpg and SQLAlchemy all use the extended protocol by default, so
+    // this was the path almost every real client takes — and there is no symptom: the reply is
+    // a `CommandComplete` either way.
+    let address = start(Fixture::open()).await;
+    let mut client = Client::connect(address).await;
+    client.startup("ana").await;
+    client.read_until(b'Z').await;
+
+    let acknowledged = extended(&mut client, "SET SNAPSHOT = 'eod'").await;
+    assert!(
+        tags(&acknowledged).contains(&'C'),
+        "the SET was not acknowledged at all: {:?}",
+        tags(&acknowledged)
+    );
+
+    // The assertion the acknowledgement cannot make. Asked through the *simple* protocol, so
+    // a failure here is about what the session remembers rather than about how it is read.
+    client.query("peek setting snapshot").await;
+    let answered = client.read_until(b'Z').await;
+    assert_eq!(
+        only_value(&answered).as_deref(),
+        Some("eod"),
+        "the session did not remember a setting the extended protocol acknowledged"
+    );
+}
+
+#[tokio::test]
+async fn a_setting_written_without_spaces_is_read_as_a_setting() {
+    // `CLI-07`. Both the protocol layer and the server took the second whitespace-delimited
+    // word as the setting's name, so `SET SNAPSHOT='eod'` named a setting called
+    // `snapshot='eod'` with an empty value — and fell through to the arm that accepts any
+    // `SET` as a no-op. No validation, no effect, no symptom.
+    let address = start(Fixture::open()).await;
+    let mut client = Client::connect(address).await;
+    client.startup("ana").await;
+    client.read_until(b'Z').await;
+
+    client.query("SET SNAPSHOT='eod'").await;
+    client.read_until(b'Z').await;
+
+    client.query("peek setting snapshot").await;
+    let answered = client.read_until(b'Z').await;
+    assert_eq!(
+        only_value(&answered).as_deref(),
+        Some("eod"),
+        "a setting written without spaces was acknowledged and did nothing"
+    );
+
+    // And the version form, which broke one token further along: the table name came out as
+    // `sales.orders=2`, so every table would have been the same setting.
+    client.query("SET VERSION OF sales.orders=2").await;
+    client.read_until(b'Z').await;
+    client.query("peek setting version of sales.orders").await;
+    let answered = client.read_until(b'Z').await;
+    assert_eq!(only_value(&answered).as_deref(), Some("2"));
+}
+
+#[tokio::test]
+async fn a_refused_setting_leaves_the_session_unchanged_on_the_extended_protocol() {
+    // The rule the simple path already held, now that the extended path records anything at
+    // all: storing before asking is how a refusal comes to have taken effect.
+    let address = start(Fixture::open()).await;
+    let mut client = Client::connect(address).await;
+    client.startup("ana").await;
+    client.read_until(b'Z').await;
+
+    let refused = extended(&mut client, "SET SNAPSHOT = 'boom'").await;
+    assert!(tags(&refused).contains(&'E'), "the fixture must refuse this: {:?}", tags(&refused));
+
+    client.query("peek setting snapshot").await;
+    let answered = client.read_until(b'Z').await;
+    assert_eq!(
+        only_value(&answered),
+        None,
+        "a setting the handler refused was remembered anyway"
+    );
+}
+
+#[tokio::test]
+async fn the_catalogue_split_holds_on_the_extended_protocol_too() {
+    // The same decision as the two tests above, at the path almost every real driver takes.
+    //
+    // `run` and `answer_now` each make it, and both were covered by one entry naming text that
+    // occurs in both — so whichever came first in the file was mutated and the other was tested
+    // by nothing. Every driver that binds parameters — pgjdbc, psycopg3, asyncpg, SQLAlchemy —
+    // reaches the second one and not the first.
+    let address = start(Fixture { password: None, claims: Some("SHOW FEEDS") }).await;
+    let mut client = Client::connect(address).await;
+    client.startup("ana").await;
+    client.read_until(b'Z').await;
+
+    // The whole row rather than its first column: the handler's answer is two columns and the
+    // word that identifies it is in the second.
+    let whole = |messages: &[(u8, Vec<u8>)]| {
+        messages
+            .iter()
+            .find(|(tag, _)| *tag == b'D')
+            .map(|(_, body)| String::from_utf8_lossy(body).into_owned())
+            .unwrap_or_default()
+    };
+
+    // Claimed by the handler: the catalogue must not answer it.
+    let claimed = whole(&extended(&mut client, "SHOW FEEDS").await);
+    assert!(
+        claimed.contains("first"),
+        "the catalogue answered a statement the handler claimed: {claimed:?}"
+    );
+
+    // Not claimed: the catalogue must still answer it, or a client browsing on connection gets
+    // "no such table" for a query it considers routine.
+    let ordinary = whole(&extended(&mut client, "SHOW server_version_num").await);
+    assert!(
+        !ordinary.contains("first"),
+        "the handler was asked a statement the catalogue owns: {ordinary:?}"
+    );
+    assert!(!ordinary.is_empty(), "the catalogue answered nothing");
 }

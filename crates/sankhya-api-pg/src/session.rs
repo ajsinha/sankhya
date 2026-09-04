@@ -671,48 +671,18 @@ impl Connection {
     /// would answer every later statement as of something that is not there --- storing first
     /// and asking afterwards is how a refusal comes to have taken effect.
     fn remember_setting(&mut self, sql: &str) {
-        let compact = sql.trim().trim_end_matches(';').trim();
-        let mut words = compact.split_whitespace();
-        let verb = words.next().unwrap_or_default().to_uppercase();
-        if verb != "SET" && verb != "RESET" {
-            return;
-        }
-        let Some(named) = words.next() else {
+        let Some(setting) = crate::setting::parse(sql) else {
             return;
         };
-        // `SET VERSION OF <table> = <n>` names two words before the value, so the setting's
-        // name is `version of <table>` rather than `version`. Kept general rather than special:
-        // a name that ends at the first word would make every `... OF <x>` setting the same
-        // setting, and the last one written would win.
-        let mut named = named.trim_end_matches('=').trim_matches('"').to_lowercase();
-        if named == "version" {
-            let mut rest = compact.split_whitespace().skip(2);
-            if rest.next().is_some_and(|word| word.eq_ignore_ascii_case("OF")) {
-                if let Some(table) = rest.next() {
-                    named = format!("version of {}", table.to_lowercase());
-                }
-            }
-        }
-        if verb == "RESET" {
-            if named == "all" {
+        if setting.reset {
+            if setting.name == "all" {
                 self.settings.clear();
             } else {
-                self.settings.remove(&named);
+                self.settings.remove(&setting.name);
             }
             return;
         }
-        // `SET name = value` and `SET name value` and `SET name TO value` are all spellings a
-        // client sends. The value is whatever follows, with its quoting removed.
-        let value: String = words
-            .filter(|word| {
-                *word != "=" && !word.eq_ignore_ascii_case("TO") && !word.eq_ignore_ascii_case("OF")
-            })
-            .skip(usize::from(named.starts_with("version of ")))
-            .collect::<Vec<&str>>()
-            .join(" ");
-        let value = value.trim_start_matches('=').trim();
-        let value = value.trim_matches(|c| c == '\'' || c == '"');
-        self.settings.insert(named, value.to_owned());
+        self.settings.insert(setting.name, setting.value);
     }
 
     /// Run one statement, answering from the catalogue where that is what was asked.
@@ -866,6 +836,21 @@ impl Connection {
         match self.answer_of(name, &portal, handler) {
             Err(failure) => self.report(&failure, output),
             Ok(result) => {
+                // The setting is remembered **here too**, and that is `CLI-06`.
+                //
+                // `remember_setting` was called only from the simple-`Query` arm. A client
+                // using Parse/Bind/Execute got a success tag, the handler validated the
+                // snapshot, and every subsequent query in that session read the *present* ---
+                // silently, with no symptom a caller could see.
+                //
+                // pgjdbc, psycopg3, asyncpg and SQLAlchemy all use the extended protocol by
+                // default, so this was the path almost every real client takes. It is exactly
+                // the failure `ADR-0019` Decision 6 is quoted against, one layer above where
+                // the check lives.
+                //
+                // After the answer, never before: the handler decides whether a setting may be
+                // set at all, and storing first is how a refusal comes to have taken effect.
+                self.remember_setting(&portal.sql);
                 // `max_rows` of zero means "all of them". A positive bound is honoured and
                 // answered with `PortalSuspended` rather than `CommandComplete`, because a
                 // client that asked for the first ten rows and was told the statement was

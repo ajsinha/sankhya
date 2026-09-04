@@ -278,6 +278,46 @@ async fn a_misspelled_option_is_refused_rather_than_taking_its_default() {
 }
 
 #[tokio::test]
+async fn a_misspelled_dimension_in_by_is_refused_rather_than_rolling_the_axis_away() {
+    // `CLI-09`, and the case the test above carried in a **comment** while testing a
+    // misspelled key instead.
+    //
+    // `bye=region` is an unknown option and was already refused. `by=regoin` is the known
+    // option with an unknown value, and the value was never checked: no dimension matched, so
+    // every dimension was rolled away and the query returned a grand total labelled as a
+    // breakdown. `where` was checked; `by` was not.
+    let (context, _) = session();
+    let refused = context
+        .sql("SELECT * FROM cube_rollup('figures', 'amount', 'by=regoin')")
+        .await
+        .expect_err("rolled the axis away for a dimension that does not exist");
+    let text = refused.to_string();
+    assert!(text.contains("regoin"), "the refusal does not name what was wrong: {text}");
+    assert!(text.contains("Refused rather than ignored"), "{text}");
+}
+
+#[tokio::test]
+async fn a_dimension_named_in_a_different_case_is_the_same_dimension() {
+    // The other half. Every keyword in the option parser is case-insensitive, and the
+    // dimension comparison was not --- so `by=Region` on a cube spelling it `region` matched
+    // nothing and collapsed the grain, which is the same failure by a route nobody would
+    // suspect of being a typo.
+    let (context, _) = session();
+    let rows = context
+        .sql("SELECT * FROM cube_rollup('figures', 'amount', 'by=Region')")
+        .await
+        .expect("a dimension named in a different case")
+        .collect()
+        .await
+        .expect("collected");
+    let total: usize = rows.iter().map(arrow_array::RecordBatch::num_rows).sum();
+    assert!(
+        total > 1,
+        "the axis collapsed to {total} row(s), which is what a grain that matched nothing does"
+    );
+}
+
+#[tokio::test]
 async fn a_restriction_on_a_dimension_the_cube_lacks_is_refused() {
     let (context, _) = session();
     let refused = context

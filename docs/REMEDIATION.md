@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2,648 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2,660 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -402,9 +402,35 @@ the job of keeping names unique. The recovery is repaired, its comment no longer
 role it has handed over, and the property it does still deliver — that a directory listing is in
 the order the files were written — is now asserted.
 
+**3.7 Statements that were acknowledged and did nothing.**
+
+- `CLI-06`: `remember_setting` was called only from the simple-`Query` arm, so a client using
+  Parse/Bind/Execute got a success tag, the handler validated the snapshot, and **every
+  subsequent query read the present**. pgjdbc, psycopg3, asyncpg and SQLAlchemy all use the
+  extended protocol by default, so this was the path almost every real client takes — and there
+  is no symptom, because the reply is a `CommandComplete` either way.
+- `CLI-07`: both the wire layer and the server split a `SET` on whitespace, so
+  `SET SNAPSHOT='eod'` named a setting called `snapshot='eod'` with an empty value and fell
+  through to the arm that accepts any `SET` as a no-op. `SET VERSION OF sales.orders=2` broke
+  the same way one token further along, making every table the same setting.
+- `CLI-09`: the `by` **value** was never checked against the cube's dimensions, and the
+  comparison was case-sensitive while every keyword in the file is not. `by=regoin` — or
+  `by=Region` on a cube spelling it `region` — kept no dimension, rolled the axis away, and
+  returned a subtotal labelled as a breakdown. `where` was checked; `by` was not, in the
+  function directly below the one that checks it.
+
+`CLI-07` was two parsers making the same mistake, written by the same hand within a week, and it
+is now **one function**. Two parsers agreeing is worth nothing when they are wrong together; one
+is what makes the wire layer's memory and the server's validation talk about the same statement
+by construction.
+
+**Two more survivors closed.** The catalogue-versus-handler split is decided in two places — the
+simple protocol and the extended one — and a single catalogue entry named text occurring in both,
+so the extended path, which almost every driver takes, was tested by nothing.
+
 ### Still open in Phase 3
 
-`3.3` `3.4` `3.6` `3.7` `3.8` are not started. Three pre-existing survivors in
+`3.3` `3.4` `3.6` `3.8` are not started. Three pre-existing survivors in
 `sankhya-publish` and one entry whose mutation does not compile were found while verifying this
 work and are not yet closed; they are coverage gaps in the write path rather than defects in it.
 

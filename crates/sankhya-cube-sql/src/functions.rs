@@ -249,10 +249,47 @@ fn narrowed(cells: &Cells, args: &Arguments) -> Result<Cells> {
 }
 
 /// Roll up to the dimensions the `by` option names, dropping the rest.
+///
+/// # A name that matches nothing rolls everything away
+///
+/// The `by` **value** was never checked against the cube's dimensions, and the comparison was
+/// case-sensitive while every keyword in this file is not. So `by=regoin` --- or `by=Region` on
+/// a cube that spells it `region` --- kept no dimension at all, rolled the axis away, and
+/// returned a subtotal labelled as a breakdown. `CLI-09`.
+///
+/// `where` was already checked, in the function directly above, under a comment reading *"a
+/// filter that silently did not apply is found in a reconciliation months later"*. The same
+/// sentence is true of a grain, and more so: a filter that did not apply returns too many rows,
+/// which somebody may notice, while a grain that collapsed returns one row that looks like an
+/// answer.
+///
+/// The test named `a_misspelled_option_is_refused_rather_than_taking_its_default` carried
+/// `by=regoin` in a comment and then tested a misspelled **key**.
 fn rolled(cells: &Cells, measure: &Measure, args: &Arguments) -> Result<Cells> {
-    let keep = args.list("by");
+    let asked = args.list("by");
     let order = args.list("order");
     let stated: Vec<&str> = order.iter().map(String::as_str).collect();
+
+    // Resolved case-insensitively, and refused when it resolves to nothing.
+    let available = cells.dimensions();
+    let mut keep: Vec<String> = Vec::with_capacity(asked.len());
+    let mut unknown: Vec<String> = Vec::new();
+    for wanted in &asked {
+        match available
+            .iter()
+            .find(|dimension| dimension.eq_ignore_ascii_case(wanted))
+        {
+            Some(dimension) => keep.push(dimension.clone()),
+            None => unknown.push(wanted.clone()),
+        }
+    }
+    if !unknown.is_empty() {
+        return plan_err!(
+            "cube has no dimension(s) {unknown:?}, named in the 'by' option. Refused rather \
+             than ignored: a grain that did not apply rolls the axis away and returns a \
+             subtotal labelled as a breakdown, which reads as an answer. It has {available:?}"
+        );
+    }
 
     let mut out = cells.clone();
     let dropping: Vec<String> = out

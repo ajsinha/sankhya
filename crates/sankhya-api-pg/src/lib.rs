@@ -6,6 +6,7 @@ pub mod catalog;
 pub mod listener;
 pub mod message;
 pub mod session;
+pub mod setting;
 
 pub use catalog::{answer, recognise, CatalogQuery, CatalogResult, CatalogTable, Unsupported};
 pub use listener::{serve, serve_with, Encryption, PgListener};

@@ -4749,6 +4749,51 @@ CATALOGUE = [
      "            values\n                .get(at.saturating_sub(window - 1)..=at)\n                .map(|slice| deterministic_sum(slice) / divisor)",
      "sankhya-math"),
 
+    # --- Phase 3: statements that were acknowledged and did nothing ----------------------------
+
+    # `CLI-06`. `remember_setting` was called only from the simple-`Query` arm, so a client
+    # using Parse/Bind/Execute got a success tag and every later statement read the present.
+    # pgjdbc, psycopg3, asyncpg and SQLAlchemy all take this path by default.
+    ("wire: acknowledge a setting on the extended protocol without recording it",
+     "crates/sankhya-api-pg/src/session.rs",
+     "                self.remember_setting(&portal.sql);",
+     "",
+     "sankhya-api-pg"),
+
+    # `CLI-07`. A whitespace splitter cannot see the `=` inside `SNAPSHOT='eod'`, so the name
+    # came out as `snapshot='eod'` and the value empty --- and the statement fell through to
+    # the arm that accepts any `SET` as a no-op.
+    ("wire: split a setting on whitespace before splitting it on its assignment",
+     "crates/sankhya-api-pg/src/setting.rs",
+     "    let (head, assigned) = match compact.split_once('=') {\n        Some((head, tail)) => (head.trim(), Some(tail.trim())),\n        None => (compact, None),\n    };",
+     "    let (head, assigned) = (compact, None::<&str>);",
+     "sankhya-api-pg"),
+
+    # And the name, which decides whether two tables are two settings or one.
+    ("wire: end a version setting's name at the first word",
+     "crates/sankhya-api-pg/src/setting.rs",
+     "        if let Some(table) = rest.get(1) {\n            name = format!(\"version of {}\", table.trim_matches('\"').to_lowercase());",
+     "        if let Some(_table) = rest.get(1) {\n            name = \"version\".to_string();",
+     "sankhya-api-pg"),
+
+    # `CLI-09`. The `by` value was never checked against the cube's dimensions, so a misspelling
+    # kept no dimension at all: the axis rolled away and a subtotal came back labelled as a
+    # breakdown. `where` was checked; `by` was not.
+    ("cube: roll up by a dimension the cube does not have",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "    if !unknown.is_empty() {",
+     "    if false {",
+     "sankhya-cube-sql"),
+
+    # And the comparison, which was case-sensitive while every keyword in the file is not ---
+    # so `by=Region` on a cube spelling it `region` collapsed the grain by a route nobody would
+    # suspect of being a typo.
+    ("cube: match a dimension name case-sensitively while every keyword is not",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "            .find(|dimension| dimension.eq_ignore_ascii_case(wanted))",
+     "            .find(|dimension| *dimension == wanted)",
+     "sankhya-cube-sql"),
+
     # --- Phase 3: a schema change that reached memory and not the log --------------------------
 
     # `FMT-01`. `Publication::create` is the only writer of `schemaString` and every caller
