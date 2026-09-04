@@ -253,3 +253,91 @@ fn a_cuboid_whose_rows_disagree_about_what_it_saw_is_refused() {
         "{error:?}"
     );
 }
+
+#[test]
+fn a_cuboid_stores_the_value_its_rule_produces_rather_than_the_sum() {
+    // `COR-05`. `to_batch` computed `contributions.exact_sum()` and used `rule` only in a
+    // fallback branch; `from_batch` read it back with `add_reduced`, and `reduce` early-returns
+    // the stored value for **every** rule. So a measure declared `MAX ALONG region` and
+    // maintained answered the sum.
+    //
+    // Every test in this file passed `Rule::Sum`, and every test in `cube_rules.rs` — the file
+    // written on 2026-09-01 to pin exactly this — declared its cube without `MAINTAINED`. The
+    // defect was resurrected one layer below where it was fixed.
+    for (rule, expected, wrong) in [
+        (Rule::Max, 40.0, 70.0),
+        (Rule::Min, 30.0, 70.0),
+        (Rule::Mean, 35.0, 70.0),
+        (Rule::First, 30.0, 70.0),
+        (Rule::Last, 40.0, 70.0),
+    ] {
+        let mut cells = over(&["region"]);
+        cells.add(address(&["north"]), 30.0).expect("well-formed");
+        cells.add(address(&["north"]), 40.0).expect("well-formed");
+
+        let live = cells.get(&address(&["north"]), rule).expect("a live answer");
+        assert_eq!(live, expected, "the fixture is wrong for {rule:?}");
+
+        let batch = store::to_batch(&cells, rule, &SAW_EVERYTHING).expect("storable");
+        let (read, _) = store::from_batch(&batch, cells.dimensions(), rule).expect("readable");
+        let materialised = read.get(&address(&["north"]), rule).expect("a stored answer");
+
+        assert_eq!(
+            materialised.to_bits(),
+            live.to_bits(),
+            "{rule:?} materialised to {materialised} where the live path answers {live}; the \
+             sum of these facts is {wrong}, which is what was stored"
+        );
+    }
+}
+
+#[test]
+fn a_sum_is_still_stored_unrounded_so_a_roll_up_composes() {
+    // The control on the fix. Only a sum composes without rounding, so only a sum keeps its
+    // expansion — and it must keep it, or `a_cell_survives_the_round_trip_exactly` is the only
+    // thing standing between a re-association and a penny.
+    //
+    // `CATASTROPHIC` is not the fixture for this: its exact total is `2.0`, which one double
+    // holds, so a correct expansion has one component. The property needs a total that **no**
+    // double can represent — `1e16 + 1.0` needs fifty-four significant bits — so that keeping
+    // it exactly requires keeping two.
+    let mut cells = over(&["region"]);
+    for value in [1e16, 1.0] {
+        cells.add(address(&["north"]), value).expect("well-formed");
+    }
+    let batch = store::to_batch(&cells, Rule::Sum, &SAW_EVERYTHING).expect("storable");
+    let (read, _) = store::from_batch(&batch, cells.dimensions(), Rule::Sum).expect("readable");
+    let stored = read
+        .contributions(&address(&["north"]))
+        .and_then(sankhya_cube::cells::Contributions::exact)
+        .expect("a stored expansion");
+    assert!(
+        stored.components().len() > 1,
+        "a sum no double can hold was flattened to one, so rolling it up rounds twice: {:?}",
+        stored.components()
+    );
+
+    // And a reader that wants one number still gets the right one.
+    assert_eq!(
+        stored.to_f64(),
+        1e16,
+        "the exact total rounds to 1e16, and that is what a reader of one number gets"
+    );
+}
+
+#[test]
+fn a_measure_with_no_reduction_from_partials_is_not_materialised() {
+    // `Rule::None` is the measure the ancestor-answerability machinery exists to refuse, and
+    // `Rule::Supplied` is computed by a worker in another process. Neither has a value this
+    // layer can compute from contributions, and writing a zero would be materialisation
+    // turning a refusal into a number — which is the whole shape of `COR-04` and `COR-05`.
+    let mut cells = over(&["region"]);
+    cells.add(address(&["north"]), 30.0).expect("well-formed");
+
+    let batch = store::to_batch(&cells, Rule::None, &SAW_EVERYTHING).expect("storable");
+    assert_eq!(
+        batch.num_rows(),
+        0,
+        "a measure that composes along nothing was materialised anyway"
+    );
+}

@@ -66,6 +66,25 @@ pub struct Key {
     /// lookup logic cannot serve one scope's rows to another, because the rows are not in
     /// the file being read.
     pub scope: u64,
+    /// **Which measure.**
+    ///
+    /// # Why a cuboid is not a shape alone
+    ///
+    /// A cube's measures are different questions over the same dimensions --- `amount` sums,
+    /// `ratio` may be a mean, and one may have no aggregation rule at all. Without this the
+    /// first measure to be materialised wrote each shape and every later one saw `exists()`
+    /// and skipped; reads then built the same measure-free key and labelled whatever came back
+    /// with the measure they had asked for.
+    ///
+    /// On the shipped fixture a maintained `sales` cube returned `amount`'s numbers under the
+    /// name `ratio` --- and answered a `Rule::None` measure out of a stored aggregate, which is
+    /// the one thing the ancestor-answerability machinery exists to prevent. Materialisation
+    /// turned an honest refusal into a plausible number, which is worse than either.
+    ///
+    /// The in-memory catalog had this exact defect and was fixed by keying on
+    /// `(cube, measure)`, with a comment explaining why. The on-disk key never got the same
+    /// treatment: `COR-04`.
+    pub measure: String,
     /// Which cuboid.
     pub cuboid: Cuboid,
 }
@@ -73,8 +92,14 @@ pub struct Key {
 impl Key {
     /// A key.
     #[must_use]
-    pub const fn new(definition: u64, snapshot: u64, scope: u64, cuboid: Cuboid) -> Self {
-        Self { definition, snapshot, scope, cuboid }
+    pub fn new(
+        definition: u64,
+        snapshot: u64,
+        scope: u64,
+        measure: impl Into<String>,
+        cuboid: Cuboid,
+    ) -> Self {
+        Self { definition, snapshot, scope, measure: measure.into(), cuboid }
     }
 
     /// The scope of a cuboid computed with nothing withheld.
@@ -91,8 +116,13 @@ impl Key {
     /// for this is asserting that the cells behind it were computed over every row, and that
     /// assertion should be legible at the call site.
     #[must_use]
-    pub const fn unrestricted(definition: u64, snapshot: u64, cuboid: Cuboid) -> Self {
-        Self::new(definition, snapshot, Self::UNRESTRICTED, cuboid)
+    pub fn unrestricted(
+        definition: u64,
+        snapshot: u64,
+        measure: impl Into<String>,
+        cuboid: Cuboid,
+    ) -> Self {
+        Self::new(definition, snapshot, Self::UNRESTRICTED, measure, cuboid)
     }
 
     /// The table this cuboid is published as.
@@ -107,11 +137,15 @@ impl Key {
     #[must_use]
     pub fn table(&self, cube: &str) -> String {
         let mut out = format!(
-            "__cube_{}_{cube}_{:016x}_{:016x}_{:016x}",
+            "__cube_{}_{cube}_{:016x}_{:016x}_{:016x}_{}_{}",
             cube.len(),
             self.definition,
             self.snapshot,
-            self.scope
+            self.scope,
+            // Length-prefixed for the reason the cube's name is: a measure called `a__b` and
+            // one called `a` on a cube called `_b` must not render to the same table.
+            self.measure.len(),
+            self.measure
         );
         for dimension in self.cuboid.dimensions() {
             out.push_str(&format!("_{}_{dimension}", dimension.len()));
@@ -148,7 +182,15 @@ pub fn parse(table: &str) -> Option<(String, Key)> {
     let rest = rest.strip_prefix('_')?;
     let (snapshot, rest) = rest.split_at_checked(16)?;
     let rest = rest.strip_prefix('_')?;
-    let (scope, mut rest) = rest.split_at_checked(16)?;
+    let (scope, rest) = rest.split_at_checked(16)?;
+
+    let rest = rest.strip_prefix('_')?;
+    let (length, rest) = rest.split_once('_')?;
+    let length: usize = length.parse().ok()?;
+    if rest.len() < length {
+        return None;
+    }
+    let (measure, mut rest) = rest.split_at(length);
 
     let mut dimensions: Vec<String> = Vec::new();
     while let Some(tail) = rest.strip_prefix('_') {
@@ -171,6 +213,7 @@ pub fn parse(table: &str) -> Option<(String, Key)> {
             definition: u64::from_str_radix(definition, 16).ok()?,
             snapshot: u64::from_str_radix(snapshot, 16).ok()?,
             scope: u64::from_str_radix(scope, 16).ok()?,
+            measure: measure.to_string(),
             cuboid: Cuboid::of(&dimensions),
         },
     ))

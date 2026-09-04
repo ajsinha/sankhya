@@ -110,7 +110,7 @@ use std::collections::BTreeMap;
 
 /// A cuboid on disk at a given snapshot.
 fn write_at(warehouse: &std::path::Path, cube: &str, snapshot: u64) -> Key {
-    let key = Key::unrestricted(1, snapshot, Cuboid::of(&["region"]));
+    let key = Key::unrestricted(1, snapshot, "amount", Cuboid::of(&["region"]));
     let mut cells = Cells::over(vec!["region".to_string()]);
     cells.add(vec!["north".to_string()], 1.0).expect("well-formed");
     // Stated rather than defaulted: a fixture's cells are its own, so "complete over the rows

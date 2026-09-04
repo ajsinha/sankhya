@@ -1287,6 +1287,11 @@ impl Server {
                 let key = sankhya_cube::materialise::Key::unrestricted(
                     cube.version(),
                     snapshot,
+                    // The measure is part of the key, and this loop is why. Without it the
+                    // first measure wrote each shape and every later one found `exists()` true
+                    // and skipped --- so a cube's second measure was served the first's
+                    // numbers under its own name.
+                    measure.name.clone(),
                     shape.clone(),
                 );
                 if sankhya_maintenance::cuboid::exists(
@@ -1632,6 +1637,7 @@ impl Server {
             definition: cube.version(),
             snapshot,
             scope,
+            measure: measure.name.clone(),
             cuboid: chosen.from,
         };
         let (cells, completeness) = self.materialised(&key, cube, measure)?;

@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2,660 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2,668 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -428,9 +428,36 @@ by construction.
 simple protocol and the extended one — and a single catalogue entry named text occurring in both,
 so the extended path, which almost every driver takes, was tested by nothing.
 
+**3.4 Materialisation that changed the answer.**
+
+- `COR-04`: the materialised cuboid's key carried the cube, the definition, the snapshot and
+  the scope — and **not the measure**. So the first measure to be materialised wrote each shape,
+  every later one found `exists()` true and skipped, and reads built the same measure-free key
+  and labelled whatever came back with the measure they had asked for. On the shipped fixture a
+  maintained `sales` cube returned `amount`'s numbers under the name `ratio`, and answered a
+  `Rule::None` measure out of a stored aggregate — the one thing the ancestor-answerability
+  machinery exists to prevent. The in-memory catalog had this exact defect and was fixed by
+  keying on `(cube, measure)`; the on-disk key never got the same treatment.
+- `COR-05`: `to_batch` stored `contributions.exact_sum()` whatever the rule said, and
+  `from_batch` read it back with `add_reduced`, which answers with the stored value for **every**
+  rule. A measure declared `MAX ALONG region` and maintained answered `70.0` over facts `30.0,
+  40.0` where the live path answers `40.0`; `MEAN` answered `70.0` against `35.0`.
+
+`COR-05` is the 2026-09-01 defect that `cube_rules.rs` was written to pin, resurrected one layer
+down — and the file could not see it, because **every test in it declares its cube without
+`MAINTAINED`** and so reads the live path. It now declares one both ways and compares them,
+which is the property exit criterion 3a states: materialisation changes *where* an answer is
+computed, never *what* it is.
+
+Only a sum composes without rounding, so only a sum keeps its expansion; every other rule
+reduces to one number at materialisation time, and rolling that up further is governed by
+`answerable_from`, which already refuses the rules that do not decompose. A rule with no
+reduction from partials — `Rule::None`, `Rule::Supplied` — is **not materialised at all**, rather
+than written as a zero, because that would be materialisation turning a refusal into a number.
+
 ### Still open in Phase 3
 
-`3.3` `3.4` `3.6` `3.8` are not started. Three pre-existing survivors in
+`3.3` `3.6` `3.8` are not started. Three pre-existing survivors in
 `sankhya-publish` and one entry whose mutation does not compile were found while verifying this
 work and are not yet closed; they are coverage gaps in the write path rather than defects in it.
 

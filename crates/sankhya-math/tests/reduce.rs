@@ -135,8 +135,8 @@ fn a_total_that_cancels_is_exact_rather_than_nearly_right() {
 #[test]
 fn a_cancelled_total_is_the_same_however_the_work_was_divided() {
     // The property the fix must not cost. The exact route is reached only by declining the
-    // fast one, and a fallback that depended on ordering would trade a wrong answer for two
-    // different answers.
+    // fast one, and a fallback that depended on ordering would replace one wrong answer with
+    // two different answers, which is worse.
     let values = vec![1e18, 0.01, -1e18, 7.0, -7.0, 1e-9];
     let baseline = deterministic_sum(&values);
 
