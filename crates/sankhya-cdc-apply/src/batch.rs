@@ -72,6 +72,25 @@ pub struct Batcher {
     age_ticks: u64,
     /// Rows whose withheld values could not be resolved.
     unresolvable: usize,
+    /// Relations the source truncated, which this pipeline cannot apply.
+    ///
+    /// # Why they are collected rather than swallowed
+    ///
+    /// The match ended in `_ => {}` and `Truncate` fell into it. The source table is emptied
+    /// and the analytical copy keeps every row: **permanent, silent divergence**, with no
+    /// counter and nothing for a reconciliation to catch until somebody compares totals.
+    ///
+    /// A test asserted the decoder *parses* truncate; nothing asserted that anything
+    /// downstream acted on it. That is `ING-05`, and it is the shape `ADR-0018` Decision 1
+    /// forbids by name: *a pipeline that discards what it cannot parse is one whose
+    /// correctness claim is "everything I kept was fine"*.
+    ///
+    /// Applying one is not something this layer can do — the analytical copy is an unfolded
+    /// change log with no key-based fold (`ING-09`), so there is no "delete every row" to
+    /// emit. What it can do is refuse to be silent, and that is what this is for: the caller
+    /// reads it and quarantines the tables, which stops publication and leaves the last
+    /// consistent version queryable while a person decides.
+    truncated: Vec<u32>,
 }
 
 impl Batcher {
@@ -86,7 +105,16 @@ impl Batcher {
             covers_through: Lsn::ZERO,
             age_ticks: 0,
             unresolvable: 0,
+            truncated: Vec::new(),
         }
+    }
+
+    /// Relations the source truncated since this was last asked, and forget them.
+    ///
+    /// Draining rather than reading: a truncation is an event, and a caller that saw it once
+    /// must not see it again on the next tick and quarantine the table twice.
+    pub fn take_truncated(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.truncated)
     }
 
     /// Rows sealed and ready to publish.
@@ -161,6 +189,14 @@ impl Batcher {
                 relation_id, old, ..
             } => {
                 self.push_row(*relation_id, Op::Delete, old, current_rows);
+            }
+            // Collected, not applied and not discarded. See `truncated`.
+            Message::Truncate { relation_ids, .. } => {
+                for relation in relation_ids {
+                    if !self.truncated.contains(relation) {
+                        self.truncated.push(*relation);
+                    }
+                }
             }
             _ => {}
         }

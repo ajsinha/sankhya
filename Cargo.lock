@@ -3640,6 +3640,7 @@ dependencies = [
  "arrow-schema",
  "sankhya-publish",
  "sankhya-schema",
+ "sankhya-table-delta",
  "sankhya-types",
  "serde",
  "serde_json",

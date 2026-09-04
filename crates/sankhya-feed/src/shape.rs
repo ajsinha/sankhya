@@ -133,7 +133,33 @@ fn column_of(column: &Shaped, rows: &[Row], index: usize) -> Result<ArrayRef, Un
                 match cell {
                     // Narrowed here rather than at binding, so the value the quarantine
                     // would have shown is the one the source sent.
-                    Some(Cell::Real(value)) => builder.append_value(*value as f32),
+                    //
+                    // And the narrowing is **checked**, which is `ING-07`. The binder is
+                    // genuinely strict — it refuses string-to-number, number-to-date,
+                    // float-to-int and an over-scaled decimal — and then `*value as f32`
+                    // turned `1e308` into `f32::INFINITY` silently, one step after it had
+                    // said the value fitted. The comment above records that the narrowing was
+                    // moved here deliberately; the consequence of moving it was not followed
+                    // through.
+                    //
+                    // Refused rather than clamped: an infinity is not a large number, and a
+                    // column declared `float32` that reports one is reporting something the
+                    // source did not say. A zero would be worse still.
+                    Some(Cell::Real(value)) => {
+                        let narrowed = *value as f32;
+                        if value.is_finite() && !narrowed.is_finite() {
+                            return Err(Unassembled {
+                                detail: format!(
+                                    "`{}` is declared float32 and the source sent {value}, \
+                                     which is finite and has no float32 that holds it. \
+                                     Refused rather than written as an infinity, which is not \
+                                     a large number",
+                                    column.name
+                                ),
+                            });
+                        }
+                        builder.append_value(narrowed);
+                    }
                     Some(Cell::Null) => builder.append_null(),
                     other => return Err(wrong(other)),
                 }

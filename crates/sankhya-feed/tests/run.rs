@@ -337,7 +337,68 @@ fn a_feed_that_stops_part_way_through_a_source_leaves_a_position_to_resume_from(
     assert_eq!(position.through, "", "no source has been finished");
     let partial = position.partial.expect("a partial position to resume from");
     assert_eq!(partial.source, "a.json");
-    assert!(partial.records >= 1, "it published what it had before stopping");
+    assert!(partial.read_through >= 1, "it read something before stopping");
+}
+
+#[test]
+fn a_resume_after_a_refusal_does_not_publish_the_same_record_twice() {
+    // `ING-01`. The position held the count of records **published** while the resume skipped
+    // by **line index**, and those are the same number only when every line so far fitted.
+    //
+    // The conflation only bites where a source does **not** finish, because a finished source
+    // is skipped whole. So this stops the feed part-way, which is the state a restart actually
+    // finds: two good lines published at 0 and 2, refusals between and after them, and a
+    // partial position that has to say *five lines read* rather than *two rows written*.
+    //
+    // Recorded as two, a restart skips two lines and re-reads line 2 — publishing it again.
+    // One duplicate row per preceding refusal or blank, silently and permanently.
+    // `ADR-0018`'s amendment chose *never re-ingest* over *never duplicate* for exactly this
+    // reason: duplication is the one that cannot be found afterwards.
+    let dir = tempfile::tempdir().expect("a directory");
+    let mut declaration = feed().declaration().clone();
+    declaration.quarantine.window = 4;
+    declaration.quarantine.stop_above = 0.5;
+    // One row per batch, so the position is written part-way rather than only at the end.
+    declaration.microbatch = Microbatch { rows: 1, seconds: 3_600 };
+    let stepwise = validate(declaration).expect("still sound");
+    let (table, quarantine) = tables(dir.path(), &stepwise);
+    let spool_at = dir.path().join("spool");
+    spool(
+        &spool_at,
+        &[("a.json", &[
+            r#"{"id": 1, "amount": "1.00"}"#,
+            r#"{"id": "x", "amount": "2.00"}"#,
+            r#"{"id": 3, "amount": "3.00"}"#,
+            r#"{"id": "x", "amount": "4.00"}"#,
+            r#"{"id": "x", "amount": "5.00"}"#,
+            r#"{"id": "x", "amount": "6.00"}"#,
+        ])],
+    );
+
+    let first = once(&stepwise, &spool_at, &table, &quarantine);
+    assert!(first.stopped.is_some(), "the fixture must stop part-way, not finish");
+    assert_eq!(first.published, 2, "lines 0 and 2 are the publishable ones");
+
+    let recorded = table.property(&key("orders")).expect("a position");
+    let position = Position::from_property(&recorded).expect("readable");
+    assert_eq!(position.through, "", "the source did not finish");
+    let partial = position.partial.clone().expect("a partial position to resume from");
+    assert!(
+        partial.read_through >= 3,
+        "the position says {} lines read, and line 2 was published — so a restart re-reads it",
+        partial.read_through
+    );
+
+    // The restart. Rows in the table is the assertion that matters: a duplicate is invisible
+    // in every counter the run reports, because `published` counts what was sent.
+    let _ = once(&stepwise, &spool_at, &table, &quarantine);
+    let live = sankhya_table_delta::live_files(&dir.path().join("orders")).expect("a live set");
+    let rows: u64 = live.files.iter().filter_map(sankhya_table_delta::AddFile::rows).sum();
+    assert_eq!(
+        rows, 2,
+        "the table holds {rows} rows for two publishable records; a resume that skips by the \
+         wrong unit republishes what it already wrote"
+    );
 }
 
 #[test]

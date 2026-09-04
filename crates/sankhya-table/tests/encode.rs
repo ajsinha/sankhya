@@ -380,3 +380,32 @@ proptest! {
         let _ = encode_batch(&s, &rows);
     }
 }
+
+#[test]
+fn a_float_too_large_for_float32_is_refused_rather_than_encoded_as_infinity() {
+    // `ING-07`, by the capture route. `str::parse::<f32>()` returns `Ok(inf)` for a value too
+    // large to represent rather than an error, so a number the source sent as finite arrived
+    // in the table as an infinity — silently, and after every other narrowing check had said
+    // the value was fine.
+    //
+    // The feed path had the same defect at its own narrowing, and both are refusals now: an
+    // infinity is not a large number, and a column declared `float32` reporting one is
+    // reporting something the source never said.
+    let s = schema(vec![("value", LogicalType::Float32, false)]);
+    let refused = encode_batch(&s, &[row(vec![Some("1e308")], 100)])
+        .expect_err("an infinity was encoded");
+    // `Unparseable`, which is the right shape: the value does not parse *as a float32*. It
+    // parses as an infinity, and an infinity is not what was written down.
+    assert!(
+        matches!(&refused, EncodeError::Unparseable { logical, value, .. }
+            if logical.contains("float32") && value == "1e308"),
+        "refused for the wrong reason: {refused:?}"
+    );
+
+    // A value that fits is still encoded, or the check has cost the column its range.
+    encode_batch(&s, &[row(vec![Some("1.5")], 100)]).expect("an ordinary float was refused");
+
+    // And an infinity the source *actually sent* is carried through rather than refused: it
+    // is what the source said, and dropping it would be the reverse mistake.
+    encode_batch(&s, &[row(vec![Some("inf")], 100)]).expect("an explicit infinity was refused");
+}

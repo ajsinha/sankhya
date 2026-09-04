@@ -62,8 +62,26 @@ pub struct Position {
 pub struct Partial {
     /// Which source.
     pub source: String,
-    /// How many of its records are published. The next record to read is this one.
-    pub records: u64,
+    /// How many of its **lines** have been read. The next line to read is this one.
+    ///
+    /// # Lines read, not records published
+    ///
+    /// This was `records`, and it held the count of records *published* while the resume
+    /// skipped by *line index*. Those are the same number only when every line so far fitted
+    /// and there were no blanks — so a source of `[good, bad, good]` published two, recorded
+    /// two, and on restart skipped lines 0 and 1 and resumed at line 2, **which it had already
+    /// published**. One duplicate row per preceding quarantined or blank line, silently.
+    ///
+    /// `ADR-0018`'s amendment chose *never re-ingest* over *never duplicate*, on the grounds
+    /// that duplication is silent and permanent. This produced exactly the outcome the ADR
+    /// ruled out, and the test that existed asserted the conflation in its own name.
+    ///
+    /// The serialised key is unchanged, so a position written by an older build is still read
+    /// — as a line count, which it under-states. A restart across that one upgrade therefore
+    /// re-reads at most the refusals-and-blanks so far in the single source that was part-way
+    /// at the time. That is bounded and one-off, where the defect it replaces was neither.
+    #[serde(rename = "records")]
+    pub read_through: u64,
 }
 
 /// What a source is, relative to a position.
@@ -109,7 +127,7 @@ impl Position {
     pub fn standing(&self, source: &str) -> Standing {
         if let Some(partial) = &self.partial {
             if partial.source == source {
-                return Standing::Resume(partial.records);
+                return Standing::Resume(partial.read_through);
             }
         }
         if self.through.is_empty() {
@@ -134,8 +152,11 @@ impl Position {
         self.partial = None;
     }
 
-    /// Record that `records` of `source` are published, with more to come.
-    pub fn part_way(&mut self, source: &str, records: u64) {
-        self.partial = Some(Partial { source: source.to_owned(), records });
+    /// Record that `read_through` lines of `source` have been read, with more to come.
+    ///
+    /// Lines rather than published records: see [`Partial::read_through`]. A caller passing a
+    /// count of what it published is the defect this field's name exists to prevent.
+    pub fn part_way(&mut self, source: &str, read_through: u64) {
+        self.partial = Some(Partial { source: source.to_owned(), read_through });
     }
 }

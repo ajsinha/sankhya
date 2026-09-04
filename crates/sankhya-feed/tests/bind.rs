@@ -237,3 +237,50 @@ fn bytes_are_refused_rather_than_guessed_at() {
     let refused = bind(&feed, &json!({"value": "aGVsbG8="})).expect_err("bytes are not decided");
     assert!(refused.to_string().contains("producer's decision"), "{refused}");
 }
+
+#[test]
+fn a_float_too_large_for_the_declared_width_is_refused_rather_than_written_as_infinity() {
+    // `ING-07`. The binder is genuinely strict — it refuses string-to-number,
+    // number-to-date, float-to-int and an over-scaled decimal — and then the narrowing to
+    // `f32` turned `1e308` into `f32::INFINITY`, one step after it had said the value fitted.
+    //
+    // The comment at that line records that the narrowing was moved there deliberately, so
+    // the quarantine would show the value the source sent. The consequence of moving it was
+    // not followed through: an infinity is not a large number, and a column declared `float32`
+    // that reports one is reporting something the source never said.
+    use sankhya_feed::declare::{Column, DateFrom, Declaration, Microbatch, Missing, Quarantine, Unknown};
+    use sankhya_feed::shape;
+
+    let feed = validate(Declaration {
+        name: "readings".to_owned(),
+        from: "/spool".to_owned(),
+        schema: "sensors".to_owned(),
+        table: "readings".to_owned(),
+        columns: vec![Column {
+            name: "value".to_owned(),
+            from: None,
+            written_type: "float32".to_owned(),
+            nullable: false,
+            missing: Missing::Refuse,
+        }],
+        date: Some(DateFrom::Ingest),
+        unknown: Unknown::Refuse,
+        microbatch: Microbatch { rows: 2, seconds: 3_600 },
+        quarantine: Quarantine { retain_days: 30, window: 100, stop_above: 0.5 },
+    })
+    .expect("a sound feed");
+
+    // The binder accepts it, which is the point: it is a perfectly good number.
+    let row = bind(&feed, &json!({"value": 1e308})).expect("the binder says it fits");
+
+    let refused = shape::batch(&feed, &[row]).expect_err("an infinity was written");
+    assert!(
+        refused.detail.contains("float32") && refused.detail.contains("infinity"),
+        "the refusal does not say what happened: {}",
+        refused.detail
+    );
+
+    // A value that does fit is still written, or the check has cost the column its range.
+    let ordinary = bind(&feed, &json!({"value": 1.5})).expect("binds");
+    assert!(shape::batch(&feed, &[ordinary]).is_ok(), "an ordinary float was refused");
+}
