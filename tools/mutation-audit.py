@@ -4749,6 +4749,50 @@ CATALOGUE = [
      "            values\n                .get(at.saturating_sub(window - 1)..=at)\n                .map(|slice| deterministic_sum(slice) / divisor)",
      "sankhya-math"),
 
+    # --- Phase 3: snapshots, and what a cached answer is an answer to ---------------------------
+
+    # There is deliberately **no mutation for the snapshot's second read** (`COR-22`).
+    #
+    # One was written --- replace the confirming pass with a copy of the first --- and it
+    # survived, correctly. The confirmation is only observable while something else is
+    # committing: on a quiet warehouse the two passes agree by construction, so a copy of the
+    # first is indistinguishable from a second read of the same thing.
+    #
+    # Catching it needs a writer committing continuously through the snapshot, and the
+    # assertion would then be "this eventually refuses" against five attempts --- which passes
+    # or fails on how fast the machine is. A test contorted until it fails is worse than no
+    # test, and a flaky gate is worse than an uncaught mutation.
+    #
+    # Same rule as the fsync calls: a mutation nothing can catch is not evidence of coverage,
+    # it is a permanent survivor that trains people to ignore the list. `COR-21`'s entry below
+    # covers the snapshot path that *is* observable.
+
+    # `COR-21`. `live_files_at` replays up to a version and stops, so asking for one beyond the
+    # log silently answers with the newest --- a version nobody has, served as though they had
+    # it. `SET VERSION OF` checks this; the snapshot path did not.
+    ("server: set a snapshot pinning a version its table no longer has",
+     "crates/sankhya-server/src/snapshots.rs",
+     "        if !commits.iter().any(|(at, _)| *at == pinned.version) {",
+     "        if false {",
+     "sankhya-server"),
+
+    # `COR-20`. Without the pin in the key, a pinned session's cells go into the cache under
+    # the *present* version and the next unpinned session is served them --- a read whose whole
+    # promise is that it does not move, leaking into reads that promise the opposite.
+    ("server: key a hydration without saying which position the session read from",
+     "crates/sankhya-server/src/wiring.rs",
+     "        self.register_cubes(&context, &principal, sql, pin_digest(caller));",
+     "        self.register_cubes(&context, &principal, sql, 0);",
+     "sankhya-server"),
+
+    # And the digest itself: folding rather than summing, because a cache key that collides
+    # serves one session's position to another.
+    ("server: treat every pinned session as reading the same position",
+     "crates/sankhya-server/src/wiring.rs",
+     "        let pins = name.eq_ignore_ascii_case(\"snapshot\") || name.starts_with(\"version of \");",
+     "        let pins = false;",
+     "sankhya-server"),
+
     # --- Phase 3: what a value looks like on the wire -------------------------------------------
 
     # `CLI-01`. Microseconds are this project's canonical unit and went out as a raw integer

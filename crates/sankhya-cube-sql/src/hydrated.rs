@@ -47,6 +47,26 @@ pub struct Key {
     /// From `Guard::scope_digest`, which covers what is visible and deliberately not who is
     /// asking — so principals with equal entitlements share an entry.
     pub scope: u64,
+    /// **What position this session reads from**, when it reads from one it chose.
+    ///
+    /// Zero for a session reading the present, and a digest of the `SET SNAPSHOT` and
+    /// `SET VERSION OF` settings otherwise.
+    ///
+    /// # Why the snapshot field is not enough
+    ///
+    /// `snapshot` holds the table's *present* version, deliberately: keying on the configured
+    /// `read_as_of` would make it a constant for the life of the process and the cache would
+    /// serve its first hydration for ever.
+    ///
+    /// A session with a pin reads at a different position and gets different cells — and put
+    /// them under the present version, which is what happened, and the next unpinned session
+    /// looking up the same key is served them. `COR-20`. A pinned read is the one kind of read
+    /// whose whole promise is that it does not move, and it was leaking into reads that
+    /// promise the opposite.
+    ///
+    /// A digest rather than the versions themselves because a session may pin several tables
+    /// separately, and the key has to be one value.
+    pub pin: u64,
 }
 
 /// Hydrated cells, bounded, keyed by everything that makes them an answer.

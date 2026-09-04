@@ -484,6 +484,44 @@ fn grain_needed(sql: &str) -> Vec<String> {
 /// table function runs, so there is nothing better to read yet. An unrecognised value is
 /// **`AsConfigured`, never an error** --- refusing a whole statement over a hint about where
 /// an answer is computed would turn a performance control into an outage.
+/// A value standing for **where this session reads from**, when it reads from a position it
+/// chose rather than from the present.
+///
+/// Zero when it has chosen none, which is the ordinary case and must stay cheap: every session
+/// reading the present shares cache entries with every other one.
+///
+/// # Why the digest covers the settings rather than the versions they resolve to
+///
+/// Because the settings are what the session asked for, and two sessions that asked for the
+/// same thing are reading the same thing. Resolving to versions here would be a second place
+/// that has to agree with the read path about what a pin means, and two such places eventually
+/// disagree — which is the shape of defect this file keeps finding.
+///
+/// `COR-20`: without this a pinned session's cells went into the hydration cache under the
+/// *present* version, and the next unpinned session looking up that key was served them. A
+/// pinned read's whole promise is that it does not move, and it was leaking into reads that
+/// promise the opposite.
+pub(crate) fn pin_digest(caller: &sankhya_api_pg::session::Caller<'_>) -> u64 {
+    let mut folded: u64 = 0;
+    for (name, value) in caller.settings() {
+        let pins = name.eq_ignore_ascii_case("snapshot") || name.starts_with("version of ");
+        if !pins || value.is_empty() {
+            continue;
+        }
+        // FNV-1a over the setting and its value, folded rather than summed: a cache key that
+        // collides serves one session's position to another, which is the defect this exists
+        // to prevent arriving by arithmetic instead.
+        if folded == 0 {
+            folded = 0xcbf2_9ce4_8422_2325;
+        }
+        for byte in name.as_bytes().iter().chain(b"=").chain(value.as_bytes()) {
+            folded ^= u64::from(*byte);
+            folded = folded.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    folded
+}
+
 fn asked_of_materialisation(sql: &str) -> sankhya_cube::materialise::Session {
     use sankhya_cube::materialise::Session;
     let lowered = sql.to_ascii_lowercase().replace(' ', "");
@@ -1031,7 +1069,13 @@ impl Server {
     /// conservative: a false positive costs one cache lookup, and a false negative is a query
     /// that fails to resolve a cube rather than one that answers wrongly. It is replaced by
     /// planning against a registered catalogue when the surface grows a resolver of its own.
-    fn register_cubes(&self, context: &SessionContext, principal: &Principal, sql: &str) {
+    fn register_cubes(
+        &self,
+        context: &SessionContext,
+        principal: &Principal,
+        sql: &str,
+        pin: u64,
+    ) {
         let cubes = self.cubes();
         // No early return on an empty set, and the omission was not free.
         //
@@ -1099,6 +1143,10 @@ impl Server {
                     definition_version: cube.version(),
                     snapshot,
                     scope,
+                    // What position this session reads from. See `Key::pin`: a pinned read's
+                    // cells were computed at a different position, and keying them under the
+                    // present version served them to the next unpinned session.
+                    pin,
                 };
                 // The in-memory cache, unless this caller asked for the base data and what
                 // is cached came from a cuboid.
@@ -2468,7 +2516,7 @@ impl Server {
         // filtered by the same `SecuredTable` that filters a plain SELECT. That is the whole
         // authorization story for cubes: there is no second implementation of the rule, and
         // therefore no second implementation to disagree with the first.
-        self.register_cubes(&context, &principal, sql);
+        self.register_cubes(&context, &principal, sql, pin_digest(caller));
         crate::aggregations::register(self, &context);
         crate::cubes::register_derived(self, &context, &principal);
 
