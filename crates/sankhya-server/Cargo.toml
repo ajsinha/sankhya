@@ -28,6 +28,10 @@ sankhya-alloc   = { path = "../sankhya-alloc" }
 sankhya-config     = { path = "../sankhya-config" }
 sankhya-diagnostic = { path = "../sankhya-diagnostic" }
 sankhya-api-pg   = { path = "../sankhya-api-pg" }
+# For `civil_from_days`, which turns a day number into a calendar date. The wire layer renders
+# timestamps in PostgreSQL's text format and needs the same conversion the date axis uses ---
+# a second copy of that arithmetic is a second place to be wrong about a leap year.
+sankhya-schema   = { path = "../sankhya-schema" }
 sankhya-authz    = { path = "../sankhya-authz" }
 sankhya-audit    = { path = "../sankhya-audit" }
 sankhya-catalog  = { path = "../sankhya-catalog" }

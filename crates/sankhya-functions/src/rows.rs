@@ -100,13 +100,35 @@ impl<'a> Vectors<'a> {
     /// `None` for a null row. A null vector gives a null answer, never a zero or an empty
     /// series: an empty series is a definite statement — *nothing was measured* — and a missing
     /// vector is not that.
+    ///
+    /// # A null **element** is the same answer, and used to be a zero
+    ///
+    /// This read the raw value buffer, where Arrow writes `0.0` under a null, so a vector with
+    /// a missing element was reduced as though that element were zero — `CLI-05`. The
+    /// composition the documentation advertises is exactly the one that produces them,
+    /// `ts_max_drawdown(ts_rolling_mean(prices, 3))`, whose leading nulls are deliberate: read
+    /// as zeroes they became a drawdown against a price of nothing.
+    ///
+    /// The parity soak could not see it, because all three of its paths call this kernel.
     pub fn row(&mut self, row: usize) -> Option<&[f64]> {
         match self {
             Self::Strided { flat, width, list } => {
                 if list.is_null(row) {
                     return None;
                 }
+                // The child's nulls, in this row's window. A `FixedSizeListArray`'s child is
+                // sliced with it, so the window starts at `row * width` in the child too.
                 let start = row * *width;
+                if let Some(child) = list
+                    .values()
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .filter(|child| child.null_count() > 0)
+                {
+                    if (start..start + *width).any(|at| at < child.len() && child.is_null(at)) {
+                        return None;
+                    }
+                }
                 flat.get(start..start + *width)
             }
             Self::Varying { list, buffer } => {
@@ -115,6 +137,9 @@ impl<'a> Vectors<'a> {
                 }
                 let values = list.value(row);
                 let doubles = values.as_any().downcast_ref::<Float64Array>()?;
+                if doubles.null_count() > 0 {
+                    return None;
+                }
                 buffer.clear();
                 buffer.extend_from_slice(doubles.values());
                 Some(buffer)

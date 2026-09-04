@@ -546,7 +546,13 @@ pub fn describe(tables: &[FoundTable]) -> Vec<sankhya_api_pg::catalog::CatalogTa
                         DataType::Float64 => ("float8", oid::FLOAT8),
                         DataType::Decimal128(_, _) => ("numeric", oid::NUMERIC),
                         DataType::Date32 => ("date", oid::DATE),
-                        DataType::Timestamp(_, _) => ("timestamp", oid::TIMESTAMP),
+                        // Zone-aware and naive are different types to a client, and the
+                        // result set already says so. The catalogue said `TIMESTAMP` for both,
+                        // so a client that describes a column and then reads it got two
+                        // answers about one column --- which is the half of `CLI-01` that is
+                        // about disagreement rather than about rendering.
+                        DataType::Timestamp(_, Some(_)) => ("timestamptz", oid::TIMESTAMPTZ),
+                        DataType::Timestamp(_, None) => ("timestamp", oid::TIMESTAMP),
                         DataType::Binary | DataType::LargeBinary => ("bytea", oid::BYTEA),
                         // A vector column is an array of doubles, and the catalogue said
                         // `text` --- so a client asking what type `pnl` was got the wrong
