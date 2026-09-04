@@ -51,6 +51,9 @@ mod feeds;
 mod snapshots;
 mod flight;
 mod scrape;
+// Tests for `wiring::pin_digest`, in their own file because `wiring.rs` sits at the line
+// limit and a test module is the wrong thing to spend its last lines on.
+mod pin;
 mod warehouse;
 mod wiring;
 

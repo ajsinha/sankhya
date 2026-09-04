@@ -249,6 +249,18 @@ impl<'a> Caller<'a> {
             .map(|(_, value)| value.as_str())
     }
 
+    /// Every setting this connection has changed, in name order.
+    ///
+    /// Exposed for callers that must react to a *class* of setting rather than to a named one:
+    /// `SET VERSION OF <table>` names a different setting per table, so there is no fixed name
+    /// to ask for, and a caller deciding whether this session reads from a chosen position has
+    /// to look at all of them.
+    pub fn settings(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.settings
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+    }
+
     /// The user this connection authenticated as.
     ///
     /// Empty only for a connection that sent none, which `authenticate` refuses --- so a

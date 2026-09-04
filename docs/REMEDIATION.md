@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2,682 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2,691 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -527,12 +527,44 @@ column is present, the row count grows, and the two grains agree on the total.
 So the guard is kept and the finding is **not** claimed as fixed. What changed underneath it may
 be Phase 3.7's `by=` validation, which now refuses a grain the cells cannot answer instead of
 rolling the axis away — but that is a hypothesis, and the honest statement is that the described
-sequence does not produce the described answer. `COR-20`, `COR-21` and `COR-22` are not started.
+sequence does not produce the described answer. **`COR-22` — a snapshot now verifies that it spans one instant.** `CREATE SNAPSHOT` read each
+table's version in a loop, so a writer committing between two of the reads left one table
+recorded before its commit and another after it: a snapshot describing a state the warehouse was
+never in. That is the crate's central claim — two figures quoted from one snapshot describe the
+same moment — and the old comment called it *"as close to one instant as this can make them"*,
+which is honest about the mechanism and does not match what the feature says it does.
+
+There is no warehouse-wide commit sequence to read, and locking every table would put a writer
+behind a reader. So the set is **confirmed**: read every version, read them all again, accept
+only if nothing moved. A set identical across that window was valid throughout it. A warehouse
+too busy for five attempts to agree gets a refusal rather than a snapshot that is quietly not
+one.
+
+**`COR-21` — a snapshot pinning a version its table no longer has is refused at the `SET`.**
+`SET VERSION OF` already checked this, under a comment saying why: `live_files_at` replays up to
+a version and stops, so asking for one beyond the log silently answers with the newest. The
+snapshot path read the same way and did not check, so such a snapshot read **the present** and
+said nothing — a report quoting it would be about now while claiming to be about then.
+
+**`COR-20` — a pinned session's cells are no longer served to an unpinned one.** The hydration
+key held the table's present version, deliberately, so a configured `read_as_of` could not
+freeze the cache for the life of the process; nothing in it said whether the session that filled
+it was reading from a position it had chosen. A pinned read's whole promise is that it does not
+move, and it was leaking into reads that promise the opposite. The key now carries a digest of
+the session's `SET SNAPSHOT` and `SET VERSION OF` settings — the settings rather than the
+versions they resolve to, because resolving here would be a second place that has to agree with
+the read path about what a pin means.
+
+**One mutation removed rather than answered.** The snapshot's confirming second read is only
+observable while something else is committing; on a quiet warehouse a copy of the first pass is
+indistinguishable from a second read. Catching it needs a writer committing continuously and an
+assertion that five attempts all fail, which passes or fails on how fast the machine is. Same
+rule as the `fsync` calls: a flaky gate is worse than an uncaught mutation.
 
 ### Still open in Phase 3
 
-`3.8` is one finding of four and that one did not reproduce, `3.3` is three findings
-of five, and one half of `3.6` is
+`3.8` is complete — three fixed and `COR-19` recorded as not reproducible — `3.3` is three
+findings of five, and one half of `3.6` is
 recorded above as a format decision rather than a repair. Three pre-existing survivors in
 `sankhya-publish` and one entry whose mutation does not compile were found while verifying this
 work and are not yet closed; they are coverage gaps in the write path rather than defects in it.

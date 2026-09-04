@@ -699,3 +699,62 @@ fn a_leading_comment_does_not_hide_a_statement_this_server_implements() {
     // claimed by whichever handler happens to match an empty string.
     assert!(session.run("-- only a comment").is_err());
 }
+
+#[test]
+fn a_snapshot_pinning_a_version_its_table_no_longer_has_is_refused_at_the_set() {
+    // `COR-21`. `SET VERSION OF` already checks that the version exists, under a comment saying
+    // why: `live_files_at` replays up to a version and stops, so asking for one beyond the log
+    // silently answers with the newest — a version nobody has, served as though they had it.
+    //
+    // The snapshot path reads exactly the same way and did not check, so a snapshot naming a
+    // version its table no longer holds read **the present** and said nothing. A report quoting
+    // that snapshot would be about now while claiming to be about then, which is the one thing
+    // a snapshot exists to rule out.
+    let (dir, server) = running();
+    query_outcome(server.port, "CREATE SNAPSHOT eod EXPIRE AFTER 90 DAYS").expect("taking");
+
+    // Rewrite the document to pin a version the table cannot have. Reaching past the statement
+    // surface deliberately: a snapshot whose table was rebuilt underneath it is the state this
+    // guard is for, and there is no statement that produces it.
+    let path = dir
+        .path()
+        .join("warehouse")
+        .join("_snapshots")
+        .join("eod.json");
+    let text = std::fs::read_to_string(&path).expect("the snapshot document");
+    let bumped = text.replace("\"version\":", "\"version\": 9999,\"was\":");
+    std::fs::write(&path, bumped).expect("rewriting");
+
+    let refused = query_outcome(server.port, "SET SNAPSHOT = 'eod'")
+        .expect_err("a snapshot pinning a version that does not exist was accepted");
+    let said = format!("{refused:?}");
+    assert!(
+        said.contains("9999") && said.contains("no longer has"),
+        "the refusal does not say which version is missing: {said}"
+    );
+}
+
+#[test]
+fn a_snapshot_records_versions_that_were_current_together() {
+    // `COR-22`. `CREATE SNAPSHOT` read each table's version in a loop, so a writer committing
+    // between two of the reads left one table recorded before its commit and another after it
+    // — a snapshot describing a state the warehouse was never in. That is the crate's central
+    // claim: two figures quoted from one snapshot describe the same moment.
+    //
+    // The versions are confirmed now rather than assumed: read, read again, and accept only if
+    // nothing moved. This asserts the property on a quiet warehouse, where the confirmation
+    // must succeed rather than turn an ordinary snapshot into a refusal.
+    let (_dir, server) = running();
+    query_outcome(server.port, "CREATE SNAPSHOT together EXPIRE AFTER 90 DAYS").expect("taking");
+
+    let listed = text_rows(server.port, "SHOW SNAPSHOTS");
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert!(
+        listed[0][5].as_ref().is_some_and(|count| count != "0"),
+        "it pinned nothing, so there is nothing to have been consistent: {listed:?}"
+    );
+
+    // And it is usable, which is the assertion that would fail if the confirmation were
+    // refusing on a warehouse nobody is writing to.
+    query_outcome(server.port, "SET SNAPSHOT = 'together'").expect("setting it");
+}

@@ -132,6 +132,77 @@ pub(crate) fn pinned_versions(
 /// [`QueryFailure`] when a snapshot of that name already exists, or when the document cannot be
 /// written. An existing name is refused rather than replaced: replacing one would silently move
 /// the instant every report quoting it reads from.
+/// Every table this principal may read, at versions that were **simultaneously** current.
+///
+/// # Why one pass is not one instant
+///
+/// A snapshot's whole claim is that the tables in it agree with each other: two figures quoted
+/// from one snapshot describe the same moment. Reading each table's version in a loop cannot
+/// deliver that. A writer committing between two of the reads leaves one table recorded before
+/// its commit and another after it, and the snapshot then describes a state the warehouse was
+/// never in. `COR-22`.
+///
+/// The old comment called it *"as close to one instant as this can make them"*, which is honest
+/// about the mechanism and does not match what the feature says it does.
+///
+/// # Verified rather than prevented
+///
+/// There is no warehouse-wide commit sequence to read, and taking a lock over every table would
+/// put a writer behind a reader — which this system refuses everywhere else for good reason.
+///
+/// So the set is **confirmed**: read every version, read them all again, and accept only if
+/// nothing moved. A set that is identical across the window was valid throughout it, and that
+/// is exactly what "one instant" means. A warehouse busy enough that two consecutive passes
+/// never agree gets a refusal rather than a snapshot that is quietly not one — the same choice
+/// this system makes wherever it cannot deliver what it says.
+fn at_one_instant(
+    server: &crate::wiring::Server,
+    principal: &Principal,
+) -> Result<Vec<(String, u64)>, QueryFailure> {
+    /// Enough that an ordinary commit landing mid-pass is retried through, and few enough that
+    /// a warehouse under continuous write load is told rather than waited on.
+    const ATTEMPTS: usize = 5;
+
+    let once = || -> Vec<(String, u64)> {
+        let servable = server.servable_now();
+        servable
+            .iter()
+            .filter(|table| {
+                let authority = table.authorize_as.as_ref().unwrap_or(&table.reference);
+                Guard::authorize(server.policy_set(), principal, authority, Action::Read).is_some()
+            })
+            .filter_map(|table| {
+                let qualified =
+                    crate::warehouse::qualified_name(&server.warehouse_path(), &table.root)?;
+                let version = sankhya_table_delta::live_files(&table.root)
+                    .ok()
+                    .and_then(|live| live.version)?;
+                Some((qualified, version))
+            })
+            .collect()
+    };
+
+    let mut moved = 0;
+    for _ in 0..ATTEMPTS {
+        let first = once();
+        let second = once();
+        if first == second {
+            return Ok(first);
+        }
+        moved += 1;
+    }
+    Err(refusal(
+        sankhya_error::protocol::sqlstate::SERIALIZATION_FAILURE.as_str(),
+        &format!(
+            "this warehouse committed during every one of {moved} attempts to read its tables \
+             at one instant, so a snapshot taken now would record versions that were never \
+             current together. Refused rather than taken: two figures quoted from one snapshot \
+             are supposed to describe the same moment. Try again, or take it when writing is \
+             quieter"
+        ),
+    ))
+}
+
 pub(crate) fn take(
     warehouse: &Path,
     name: &str,
@@ -329,32 +400,7 @@ pub(crate) fn run_statement(
             read_version(server, &table, version, principal)
         }
         Statement::Create { name, expiry } => {
-            // Every table this principal may read, at the version it stands at *now*. Read
-            // in one pass so the versions are as close to one instant as this can make
-            // them; a table that commits between two of these reads is why the position is
-            // recorded per table rather than as a single warehouse number.
-            let readable: Vec<(String, u64)> = {
-                let servable = server.servable_now();
-                servable
-                    .iter()
-                    .filter(|table| {
-                        let authority =
-                            table.authorize_as.as_ref().unwrap_or(&table.reference);
-                        Guard::authorize(server.policy_set(), principal, authority, Action::Read)
-                            .is_some()
-                    })
-                    .filter_map(|table| {
-                        let qualified = crate::warehouse::qualified_name(
-                            &server.warehouse_path(),
-                            &table.root,
-                        )?;
-                        let version = sankhya_table_delta::live_files(&table.root)
-                            .ok()
-                            .and_then(|live| live.version)?;
-                        Some((qualified, version))
-                    })
-                    .collect()
-            };
+            let readable = at_one_instant(server, principal)?;
             let taken = take(
                 warehouse,
                 &name,
@@ -627,6 +673,49 @@ pub(crate) fn check_setting(
             &sankhya_snapshot::expire::expired_message(snapshot),
         )));
     }
+
+    // Every version this snapshot pins must still **exist**, and that is `COR-21`.
+    //
+    // `SET VERSION OF` already checks this for the one table it names, under a comment saying
+    // exactly why: `live_files_at` replays up to a version and stops, so asking for one beyond
+    // the log silently answers with the newest — a version nobody has, served as though they
+    // had it. The snapshot path reads the same way and did not check, so a snapshot naming a
+    // version its table no longer has read the present and said nothing.
+    //
+    // Checked here rather than at the next query, for the reason the surrounding function
+    // exists: an operator who set a snapshot should learn it is unusable at the `SET`, not
+    // three statements later in a number that looks fine.
+    for (table, pinned) in &snapshot.tables {
+        let Some(root) = server.root_of(table) else {
+            return Some(Err(refusal(
+                "42P01",
+                &format!(
+                    "the snapshot `{wanted}` pins `{table}`, and there is no such table on \
+                     this server. Reading as of it would quietly leave that table out"
+                ),
+            )));
+        };
+        let Ok(commits) = sankhya_table_delta::commits(&root) else {
+            return Some(Err(refusal(
+                sankhya_error::protocol::sqlstate::DATA_EXCEPTION.as_str(),
+                &format!("the log of `{table}`, which `{wanted}` pins, could not be read"),
+            )));
+        };
+        if !commits.iter().any(|(at, _)| *at == pinned.version) {
+            let newest = commits.iter().map(|(at, _)| *at).max();
+            return Some(Err(refusal(
+                "42704",
+                &format!(
+                    "the snapshot `{wanted}` pins version {} of `{table}`, which that table \
+                     no longer has — its newest is {}. Refused rather than served the \
+                     present: a report quoting this snapshot would silently be about now",
+                    pinned.version,
+                    newest.map_or_else(|| "none".to_owned(), |at| at.to_string())
+                ),
+            )));
+        }
+    }
+
     Some(Ok(acknowledged("SET")))
 }
 

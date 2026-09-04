@@ -55,7 +55,14 @@ fn key(cube: &str, measure: &str, version: u64, snapshot: u64, scope: u64) -> Ke
         definition_version: version,
         snapshot,
         scope,
+        // Unpinned, which is what every existing test here means.
+        pin: 0,
     }
+}
+
+/// The same question asked by a session reading from a position it chose.
+fn pinned(cube: &str, measure: &str, version: u64, snapshot: u64, scope: u64, pin: u64) -> Key {
+    Key { pin, ..key(cube, measure, version, snapshot, scope) }
 }
 
 #[test]
@@ -180,4 +187,51 @@ fn hits_and_misses_are_countable() {
     let _ = cache.get(&key("figures", "amount", 1, 7, 12));
 
     assert_eq!(cache.counts(), (2, 1));
+}
+
+#[test]
+fn a_pinned_sessions_cells_are_not_served_to_an_unpinned_one() {
+    // `COR-20`. The key held the table's *present* version — deliberately, so that a
+    // configured `read_as_of` could not freeze the cache for the life of the process — and
+    // nothing in it said whether the session that filled it was reading from a position it had
+    // chosen. So a pinned session's cells went in under the present version, and the next
+    // unpinned session looking up that key was served them.
+    //
+    // A pinned read's whole promise is that it does not move. It was leaking into reads whose
+    // promise is the opposite, and neither session could tell.
+    let cache = Hydrated::default();
+    cache.put(pinned("figures", "amount", 1, 7, 99, 0xdead_beef), published("amount", 7));
+
+    assert!(
+        cache.get(&key("figures", "amount", 1, 7, 99)).is_none(),
+        "an unpinned session was served a pinned session's cells"
+    );
+    assert_eq!(cache.counts(), (0, 1), "and it was recorded as a miss");
+}
+
+#[test]
+fn two_sessions_pinned_to_the_same_position_share_one_entry() {
+    // The control, and the reason the pin is a digest of the settings rather than a session
+    // identifier: two sessions that asked for the same position are reading the same thing,
+    // and a key that separated them would make every pinned read a cold one.
+    let cache = Hydrated::default();
+    cache.put(pinned("figures", "amount", 1, 7, 99, 0xdead_beef), published("amount", 7));
+
+    assert!(
+        cache.get(&pinned("figures", "amount", 1, 7, 99, 0xdead_beef)).is_some(),
+        "two sessions pinned to the same position missed each other"
+    );
+}
+
+#[test]
+fn two_different_pins_are_two_entries() {
+    // And the other direction: `SET SNAPSHOT = 'eod'` and `SET SNAPSHOT = 'month_end'` are
+    // different positions, so serving one for the other is the same defect one step along.
+    let cache = Hydrated::default();
+    cache.put(pinned("figures", "amount", 1, 7, 99, 1), published("amount", 7));
+
+    assert!(
+        cache.get(&pinned("figures", "amount", 1, 7, 99, 2)).is_none(),
+        "one pinned position's cells were served to a session pinned elsewhere"
+    );
 }
