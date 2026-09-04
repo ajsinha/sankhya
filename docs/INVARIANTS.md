@@ -65,6 +65,7 @@ presented as an enforced one is the exact failure mode the rest of this document
 | **Could not run is not nothing found** | The two look identical in a report and mean opposite things | throughout; `sankhya-diagnostic` tests |
 | A measure with no declared aggregation rule is **refused**, never defaulted to summation | Summing a balance across time gives a figure that is plausible, wrong, and indistinguishable from a correct one | `sankhya-cube` tests |
 | Materialisation changes **where** an answer is computed, never **what** it is — compared by bits | A cache that changes results is not a cache. Two-stage roll-ups round twice, so partial aggregates are stored unrounded | `sankhya-cube-sql` exit-criteria tests |
+| **Acknowledged is not done** | `SET SNAPSHOT` was answered with a success tag on the protocol every real driver uses and never recorded, and a misspelled grain rolled the axis away and returned a subtotal labelled as a breakdown. A no-op that replies `CommandComplete` has no symptom at all | `sankhya-api-pg`, `sankhya-cube-sql` tests |
 
 ## 4. Documentation
 

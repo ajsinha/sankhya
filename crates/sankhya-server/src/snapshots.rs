@@ -587,25 +587,16 @@ pub(crate) fn check_setting(
     server: &crate::wiring::Server,
     sql: &str,
 ) -> Option<Result<QueryResult, QueryFailure>> {
-    let compact = sql.trim().trim_end_matches(';').trim();
-    let mut words = compact.split_whitespace();
-    let verb = words.next().unwrap_or_default().to_uppercase();
-    if verb != "SET" {
+    // The **same** parser the wire layer remembers settings with. There were two, and both
+    // split on whitespace, so both read `SET SNAPSHOT='eod'` as a verb and one word --- this
+    // one then decided the setting was not called `snapshot` and let the statement fall
+    // through to the handler that accepts any `SET` as a no-op. Acknowledged, unvalidated,
+    // and with no effect: `CLI-07`.
+    let setting = sankhya_api_pg::setting::parse(sql)?;
+    if setting.reset || !setting.name.eq_ignore_ascii_case("snapshot") {
         return None;
     }
-    let named = words.next().unwrap_or_default().trim_end_matches('=').trim_matches('"');
-    if !named.eq_ignore_ascii_case("snapshot") {
-        return None;
-    }
-    let value: String = words
-        .filter(|word| *word != "=" && !word.eq_ignore_ascii_case("TO"))
-        .collect::<Vec<&str>>()
-        .join(" ");
-    let wanted = value
-        .trim_start_matches('=')
-        .trim()
-        .trim_matches(|c| c == '\'' || c == '"')
-        .to_owned();
+    let wanted = setting.value;
     if wanted.is_empty() {
         return Some(Err(refusal(
             sankhya_error::protocol::sqlstate::SYNTAX_ERROR.as_str(),
