@@ -78,12 +78,18 @@ not mislead anyone reading it.
 deliberately — and the startup line prints `NO AUTHENTICATION` in capitals when it is in
 force, so an operator sees it rather than having to check.
 
-> **There is no credential store, and no password is ever verified.** Leaving
-> `SANKHYA_NO_PASSWORD` unset makes this server *demand* a password. It does not *check* one:
-> the test is that the string is non-empty, so any password from any user --- including a user
-> this server has never heard of --- connects. The startup line says `PASSWORD UNVERIFIED` for
-> exactly this reason. Do not put this server where a stranger can reach it. Building the check
-> is Phase 4 of [`REMEDIATION.md`](REMEDIATION.md); the disclosure is not waiting for it.
+> **A password is verified only if you have written one down.** Leaving `SANKHYA_NO_PASSWORD`
+> unset makes this server *demand* a password; whether it *checks* one depends on
+> `server.credentials`. With that list empty there is nothing to check against, so any password
+> from any user --- including a user this server has never heard of --- connects, and the
+> startup line says `PASSWORD UNVERIFIED` in capitals for exactly that reason.
+>
+> Write one with `sankhya-server hash-password` and paste the line under
+> `server.credentials.<user>`. Naming one user makes the list the list: a user absent from it is
+> refused. The startup line then reads `password verified for N user(s)`.
+>
+> Until 2026-09-04 there was no credential store at all --- that is `SEC-01`, and this paragraph
+> said so before the repair rather than after it.
 
 ### Over TLS
 

@@ -1,0 +1,26 @@
+[package]
+name         = "sankhya-credential"
+description  = "Verifying a password against a stored verifier, and nothing else."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license-file.workspace      = true
+repository.workspace   = true
+
+[package.metadata.sankhya]
+layer = 1
+
+[lints]
+workspace = true
+
+[dependencies]
+# The one crate in this workspace that reaches for a cryptographic primitive directly, and it
+# is confined here for the same reason `libc` is confined to `sankhya-sandbox`: a second crate
+# deriving its own key material is a second chance to get an iteration count or a comparison
+# wrong. `ring` rather than a hand-rolled PBKDF2 over `sha2`, which the workspace already
+# depends on --- writing HMAC and PBKDF2 by hand to avoid one dependency is the worse trade.
+#
+# `ring` is already resolved in this tree by rustls, so this adds no new supply chain.
+ring = { workspace = true }
+
+[dev-dependencies]

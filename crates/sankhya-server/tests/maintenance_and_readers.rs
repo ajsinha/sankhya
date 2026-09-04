@@ -214,6 +214,7 @@ async fn a_server_keeps_reading_across_its_own_maintenance() {
     let server = wiring::Server::with_tables(
         wiring::Settings {
             roles: Default::default(),
+            credentials: Default::default(),
             listen: "127.0.0.1:0".to_string(),
             warehouse: dir.path().to_path_buf(),
             read_as_of: Lsn::new(u64::MAX),
@@ -280,6 +281,7 @@ async fn a_statement_pins_the_warehouse_for_as_long_as_it_runs() {
     let server = wiring::Server::with_tables(
         wiring::Settings {
             roles: Default::default(),
+            credentials: Default::default(),
             listen: "127.0.0.1:0".to_string(),
             warehouse: dir.path().to_path_buf(),
             read_as_of: Lsn::new(u64::MAX),

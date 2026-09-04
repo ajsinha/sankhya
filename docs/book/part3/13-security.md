@@ -298,6 +298,55 @@ they may read. One line is worth reading twice:
 A separate flag would be a flag somebody forgets, and forgetting it in this direction grants
 access. Adding a user is a change somebody notices; silently granting one is not.
 
+### And what a password is checked against
+
+Until 2026-09-04 the answer was **nothing**. `authenticate` refused an empty user and then
+checked that a password was *present and non-empty*. There was no credential store, no hash and
+no comparison anywhere in the workspace, and because the username above is self-asserted, that
+means any client connected as any user — including one this server had never heard of — by
+sending any byte string. `SEC-01`, and the single most serious finding in the audit.
+
+It was disclosed before it was repaired: the startup line has said `PASSWORD UNVERIFIED` in
+capitals since Phase 0, beside the sentence explaining that an operator reading "password
+required" opposite "NO AUTHENTICATION" would conclude the first one authenticates.
+
+A password is now checked against a stored verifier:
+
+```yaml
+server:
+  credentials:
+    alice: pbkdf2-sha256$600000$<salt>$<key>
+```
+
+Four decisions in that line are worth stating.
+
+**The same switch as roles.** An empty list is the old behaviour, because an operator who has
+configured nothing has decided nothing and a server that began refusing every connection on
+upgrade is a server nobody upgrades. Naming one user decides the list is the list, and a user
+absent from it is refused.
+
+**The count is in the file.** A verifier says how it was made, so raising the default does not
+invalidate every credential already written down — which is what makes the default movable at
+all. Old verifiers keep working at the count they were made with; new ones are made at the
+current default.
+
+**One refusal for both failures.** "No such user" and "wrong password" are the same message.
+Telling them apart turns the login into a directory of who exists here, which is the first thing
+an attacker asks for and the last thing this door should answer.
+
+**The primitive lives in one crate.** `sankhya-credential` is the only crate that reaches for
+`ring`, the same way `sankhya-sandbox` is the only one that reaches for `libc`, and for the same
+reason: a second crate deriving its own key material is a second chance to get an iteration
+count or a comparison wrong.
+
+> **Key idea**
+> This is not SCRAM. PostgreSQL's challenge-response never sends the password, and it is the
+> right destination; this verifies a password the client sent in cleartext, which is why the
+> transport posture is printed beside it. Getting from *never verified* to *verified against a
+> stored key* closes `SEC-01`. Getting from *cleartext over TLS* to *challenge-response* is a
+> protocol change, and calling it done here would be the same overstatement this chapter exists
+> to avoid.
+
 What this is still not is **federated identity**. The names here are an operator's list, not an
 assertion from an identity provider, and mutual TLS puts a client's certificate where a door can
 see it with nothing yet deriving a subject from it. That is `FR-SEC-03` and it is unbuilt.

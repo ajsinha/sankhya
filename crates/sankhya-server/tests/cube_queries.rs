@@ -173,6 +173,7 @@ fn sales() -> Definition {
 fn settings(warehouse: &std::path::Path) -> Settings {
     Settings {
         roles: Default::default(),
+        credentials: Default::default(),
         listen: "127.0.0.1:0".to_string(),
         warehouse: warehouse.to_path_buf(),
         read_as_of: Lsn::new(u64::MAX),
@@ -1525,5 +1526,71 @@ async fn a_coarse_cached_answer_is_not_served_to_a_finer_query() {
         "the two grains disagree about the total: {} against {}",
         total_from(&fine),
         total_from(&coarse)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pinned_session_is_not_served_an_unpinned_session_cache_entry() {
+    // `COR-20`. The hydration cache key held the cube, the measure, the fingerprint, the
+    // snapshot and the scope — and nothing saying **where the session reads from**. A session
+    // that had pinned a version was therefore looked up under the *present* snapshot, so it
+    // was served cells computed at the present, and its own cells went back into that same
+    // entry for the next unpinned session to be served.
+    //
+    // A pinned read's whole promise is that it does not move. Two sessions promising opposite
+    // things must not share one cache entry, whatever the cells happen to be worth.
+    let (server, _dir) = server_with(policy("reader", None));
+    connect(&server, "ana");
+    let sql = "SELECT * FROM cube_rollup('sales', 'amount', 'by=region')";
+
+    server
+        .query(sql, &Caller::new(&anyone()))
+        .expect("the cube answers");
+    let (hits_before, misses_before) = server.hydration_counts();
+    assert!(
+        misses_before > 0,
+        "the first query must have reached the cache and missed; if it did not, this test \
+         proves nothing about a key it never built"
+    );
+
+    // The same statement from another unpinned session. This is the control: it establishes
+    // that the key *is* stable across sessions that read the same position, so the difference
+    // the pinned case shows below is the pin and not some other part of the key moving.
+    server
+        .query(sql, &Caller::new(&anyone()))
+        .expect("the cube answers again");
+    //
+    // Counted in hits rather than in misses. Not every measure of this cube ends up in the
+    // cache on a given query --- a caller that asked for the base data is refused an entry
+    // that came from a cuboid --- so misses rise on a repeat too, and a rise in misses would
+    // therefore say nothing about whether an entry was shared. A *hit* is the entry being
+    // shared, and it is the only one of the two figures that is.
+    let (hits_unpinned, misses_unpinned) = server.hydration_counts();
+    assert!(
+        hits_unpinned > hits_before,
+        "two unpinned sessions read the same position and must share the entry; \
+         {hits_before} -> {hits_unpinned} hits means the cache is unreachable and the \
+         pinned case below could not tell anybody anything"
+    );
+
+    // Now a session that pinned the fact table to a version that exists. The rows are the
+    // same rows — that is the point. The cells are *computed at a chosen position*, and a
+    // session reading the present must not be handed them, nor hand its own over.
+    let mut pinned = std::collections::BTreeMap::new();
+    pinned.insert("version of orders".to_string(), "2".to_string());
+    let parameters = anyone();
+    server
+        .query(sql, &Caller::with_settings(&parameters, &pinned))
+        .expect("the pinned session answers");
+    let (hits_pinned, misses_pinned) = server.hydration_counts();
+    assert_eq!(
+        hits_pinned, hits_unpinned,
+        "a pinned session must not be served the unpinned entry: hits went \
+         {hits_unpinned} -> {hits_pinned}"
+    );
+    assert!(
+        misses_pinned > misses_unpinned,
+        "it must miss and hydrate under its own key instead: misses stayed at \
+         {misses_unpinned}"
     );
 }

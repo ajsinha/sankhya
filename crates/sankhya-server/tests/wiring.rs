@@ -127,6 +127,7 @@ fn tenant() -> TenantId {
 fn settings(require_password: bool, warehouse: &std::path::Path) -> Settings {
     Settings {
         roles: Default::default(),
+        credentials: Default::default(),
         listen: "127.0.0.1:0".to_string(),
         warehouse: warehouse.to_path_buf(),
         read_as_of: Lsn::new(u64::MAX),
@@ -173,6 +174,23 @@ fn server(policy: PolicySet) -> (Server, tempfile::TempDir) {
     server_over(|_| policy.clone())
 }
 
+/// A server over the fixture warehouse, with settings the caller chose.
+///
+/// `server_over` builds its own settings, which is right for every test that does not care
+/// about them and wrong for the credential ones, whose whole subject is a setting.
+fn server_with(settings: Settings, policy: PolicySet) -> (Server, tempfile::TempDir) {
+    let dir = warehouse_with_a_table();
+    let mut settings = settings;
+    settings.warehouse = dir.path().to_path_buf();
+    let (found, refused) = warehouse::discover(dir.path());
+    assert!(refused.is_empty(), "the fixture table must open: {refused:?}");
+    let cache = sankhya_table_delta::LogCache::new();
+    let (servable, unreadable) = warehouse::servable(&found, Lsn::new(u64::MAX), &cache);
+    assert!(unreadable.is_empty(), "the fixture table must read: {unreadable:?}");
+    let tables = warehouse::describe(&found);
+    (Server::with_tables(settings, policy, tables, servable), dir)
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_connection_with_no_user_is_refused() {
     // An unattributable connection cannot be audited, and an audit that cannot name who
@@ -217,14 +235,101 @@ async fn an_insecure_configuration_looks_wrong_in_the_startup_line() {
     );
     assert!(open.describe().contains("NO AUTHENTICATION"));
 
-    // Not "password required". A password is *demanded* and never *verified* --- there is no
-    // credential store, so any non-empty string from any user is accepted. An operator who
-    // reads "password required" opposite a capitalised "NO AUTHENTICATION" concludes the
-    // first one authenticates, and this line is the only place they would learn otherwise.
-    // The startup banner is the disclosure until the check itself is built.
+    // A password demanded and never verified is still a posture this server can be left in ---
+    // `require_password` set with no credentials written down --- and it still has to look
+    // wrong in a log. An operator reading "password required" opposite a capitalised
+    // "NO AUTHENTICATION" concludes the first one authenticates.
     let (closed, _warehouse) = server(PolicySet::new());
     assert!(closed.describe().contains("PASSWORD UNVERIFIED"));
     assert!(!closed.describe().contains("NO AUTHENTICATION"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_with_credentials_says_so_rather_than_saying_unverified() {
+    // The third posture, and the one `SEC-01` is closed by. Until credentials existed there
+    // were two, and the honest word for both was that nothing was checked.
+    let dir = warehouse_with_a_table();
+    let mut settings = settings(true, dir.path());
+    settings.credentials.insert(
+        "ana".to_string(),
+        sankhya_credential::Verifier::parse(&verifier_for(b"open sesame")).expect("a verifier"),
+    );
+    let (server, _) = server_with(settings, PolicySet::new());
+
+    let said = server.describe();
+    assert!(said.contains("password verified for 1 user(s)"), "{said}");
+    assert!(!said.contains("UNVERIFIED"), "{said}");
+    assert!(!said.contains("NO AUTHENTICATION"), "{said}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wrong_password_is_refused_and_a_right_one_is_not() {
+    // `SEC-01`. The entire check was that a password had been *presented* and was non-empty:
+    // no credential store, no hash and no comparison anywhere in the workspace. The username
+    // is self-asserted, so any client connected as any user --- including one this server has
+    // never heard of --- by sending any byte string.
+    let dir = warehouse_with_a_table();
+    let mut settings = settings(true, dir.path());
+    settings.credentials.insert(
+        "ana".to_string(),
+        sankhya_credential::Verifier::parse(&verifier_for(b"open sesame")).expect("a verifier"),
+    );
+    let (server, _) = server_with(settings, PolicySet::new());
+
+    let as_user = |user: &str| vec![("user".to_string(), user.to_string())];
+
+    assert!(
+        server.authenticate(&as_user("ana"), Some(b"open sesame")).is_ok(),
+        "the right password was refused"
+    );
+    assert!(
+        server.authenticate(&as_user("ana"), Some(b"open sesam")).is_err(),
+        "a wrong password was accepted"
+    );
+    assert!(
+        server.authenticate(&as_user("ana"), Some(b"")).is_err(),
+        "an empty password was accepted"
+    );
+
+    // A user this server has never heard of is refused, and refused **the same way**. Telling
+    // "no such user" apart from "wrong password" turns the login into a directory of who
+    // exists here, which is the first thing an attacker wants.
+    let stranger = server
+        .authenticate(&as_user("mallory"), Some(b"open sesame"))
+        .expect_err("a user with no credential was accepted");
+    let known = server
+        .authenticate(&as_user("ana"), Some(b"wrong"))
+        .expect_err("a wrong password was accepted");
+    assert_eq!(
+        stranger.message, known.message,
+        "the refusal says whether the user exists: {} against {}",
+        stranger.message, known.message
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_with_no_credentials_keeps_the_behaviour_it_had() {
+    // The upgrade path, stated as a test. An operator who has configured nothing has decided
+    // nothing, and a server that began refusing every connection on upgrade is a server
+    // nobody upgrades --- so the empty map is the old posture, and the startup line above is
+    // what says so.
+    let (server, _dir) = server(PolicySet::new());
+    let as_user = vec![("user".to_string(), "anyone".to_string())];
+    assert!(server.authenticate(&as_user, Some(b"anything")).is_ok());
+    assert!(
+        server.authenticate(&as_user, Some(b"")).is_err(),
+        "and an empty password is still refused, because `require_password` is set"
+    );
+}
+
+/// A verifier for `password`, at a low iteration count.
+///
+/// Low **only here**: the shipped default is 600,000 and these run on every build, where a
+/// second of derivation per assertion buys nothing. The default is asserted from the constant
+/// in `sankhya-credential`'s own tests.
+fn verifier_for(password: &[u8]) -> String {
+    sankhya_credential::make(password, b"a fixed salt, so this is reproducible", 4096)
+        .expect("a verifier")
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -33,6 +33,9 @@ sankhya-api-pg   = { path = "../sankhya-api-pg" }
 # a second copy of that arithmetic is a second place to be wrong about a leap year.
 sankhya-schema   = { path = "../sankhya-schema" }
 sankhya-authz    = { path = "../sankhya-authz" }
+# Checking a password against a stored verifier --- `SEC-01`. The primitive lives there and
+# nowhere else, so this crate holds no key material and derives nothing itself.
+sankhya-credential = { path = "../sankhya-credential" }
 sankhya-audit    = { path = "../sankhya-audit" }
 sankhya-catalog  = { path = "../sankhya-catalog" }
 sankhya-readpath = { path = "../sankhya-readpath" }

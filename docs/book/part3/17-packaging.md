@@ -149,7 +149,7 @@ Variable | Meaning
 `SANKHYA_DATA_DIR` | The root in §17.3
 `SANKHYA_LISTEN` | Wire-protocol address, default `127.0.0.1:5433`
 `SANKHYA_METRICS_LISTEN` | Metrics address, default `127.0.0.1:9464`
-`SANKHYA_NO_PASSWORD` | Spelled as an opt-**out**, so the insecure choice is deliberate. Note that leaving it unset does *not* authenticate anybody: no password is ever verified
+`SANKHYA_NO_PASSWORD` | Spelled as an opt-**out**, so the insecure choice is deliberate. Leaving it unset makes a password *demanded*; it is *verified* only where `server.credentials` names the user. An empty list authenticates nobody, and the startup line capitalises that
 `SANKHYA_USER_FUNCTIONS` | Whether `CREATE AGGREGATION` is accepted. Off by default: it runs code the caller supplied
 `SANKHYA_READ_AS_OF` | The position to read as of
 `SANKHYA_FEED_INTERVAL_SECONDS` | How often a feed looks at its spool; 30 by default

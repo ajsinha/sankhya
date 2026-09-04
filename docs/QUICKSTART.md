@@ -90,7 +90,7 @@ availability event.
 ## 3. Run the tests
 
 ```bash
-cargo test --workspace          # 2,691 tests, none of which needs a database
+cargo test --workspace          # 2,706 tests, none of which needs a database
 ```
 
 Everything here runs without a database, in well under a minute. Nothing is mocked: the
@@ -147,7 +147,7 @@ Three gates catch things a test suite structurally cannot. All three fail the bu
 ```bash
 cargo xtask check-all            # every repository invariant — see below
 cargo xtask check-concurrency    # ADR-0013's measurements, run alone (also inside check-all)
-python3 tools/mutation-audit.py  # 826 deliberate defects, applied one at a time
+python3 tools/mutation-audit.py  # 832 deliberate defects, applied one at a time
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
 SANKHYA_RELEASE=1 cargo xtask check-package   # the release artifact's platform baseline
 ```
@@ -170,13 +170,13 @@ fail when violated, not merely to pass.
 > [`REMEDIATION.md`](REMEDIATION.md).
 
 **The mutation audit** is the answer to "the tests pass, but do they test anything?" It
-applies 826 specific defects one at a time and requires the suite to fail on each. Thirty-one
+applies 832 specific defects one at a time and requires the suite to fail on each. Thirty-one
 did not, the first time each was run — the most recent two were written for the tiering
 encoding, and both exposed tests that did not test what their names claimed: one compared two
 integer widths whose encodings already differ in length, so removing the type tag changed
 nothing, and one used a composite key that the framing bytes separate without any length
 prefix. That is precisely the silent-pass this tool exists to catch. Expect it to take a
-while — it is 826 sequential `cargo test` runs, and it edits your source files as it goes,
+while — it is 832 sequential `cargo test` runs, and it edits your source files as it goes,
 restoring each one after. Run it on a clean tree.
 
 **`check-concurrency`** is inside `check-all` and runs the four concurrency measurements
@@ -230,12 +230,18 @@ psql -h 127.0.0.1 -p 5433 -U you -d acme -c "\dt"
 `SANKHYA_NO_PASSWORD` is spelled as an opt-*out* so the insecure choice has to be made
 deliberately, and the startup line says `NO AUTHENTICATION` in capitals when it is in force.
 
-> **There is no credential store, and no password is ever verified.** Leaving
-> `SANKHYA_NO_PASSWORD` unset makes this server *demand* a password. It does not *check* one:
-> the test is that the string is non-empty, so any password from any user --- including a user
-> this server has never heard of --- connects. The startup line says `PASSWORD UNVERIFIED` for
-> exactly this reason. Do not put this server where a stranger can reach it. Building the check
-> is Phase 4 of [`REMEDIATION.md`](REMEDIATION.md); the disclosure is not waiting for it.
+> **A password is verified only if you have written one down.** Leaving `SANKHYA_NO_PASSWORD`
+> unset makes this server *demand* a password; whether it *checks* one depends on
+> `server.credentials`. With that list empty there is nothing to check against, so any password
+> from any user --- including a user this server has never heard of --- connects, and the
+> startup line says `PASSWORD UNVERIFIED` in capitals for exactly that reason.
+>
+> Write one with `sankhya-server hash-password` and paste the line under
+> `server.credentials.<user>`. Naming one user makes the list the list: a user absent from it is
+> refused. The startup line then reads `password verified for N user(s)`.
+>
+> Until 2026-09-04 there was no credential store at all --- that is `SEC-01`, and this paragraph
+> said so before the repair rather than after it.
 
 Statements execute against the Parquet on disk:
 

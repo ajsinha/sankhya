@@ -261,6 +261,51 @@ impl<'a> Caller<'a> {
             .map(|(name, value)| (name.as_str(), value.as_str()))
     }
 
+    /// A value standing for **where this session reads from**, when it reads from a position it
+    /// chose rather than from the present.
+    ///
+    /// Zero when it has chosen none, which is the ordinary case and must stay cheap: every
+    /// session reading the present shares cache entries with every other one.
+    ///
+    /// # Why the digest covers the settings rather than the versions they resolve to
+    ///
+    /// Because the settings are what the session asked for, and two sessions that asked for the
+    /// same thing are reading the same thing. Resolving to versions would be a second place that
+    /// has to agree with the read path about what a pin means, and two such places eventually
+    /// disagree — which is the shape of defect this repository keeps finding.
+    ///
+    /// # Why it is here rather than in the server
+    ///
+    /// It is a property of the caller, computed from what the caller said. The server consumes
+    /// it as one component of a cache key; deciding it there would put the meaning of `SET
+    /// SNAPSHOT` in two places again.
+    ///
+    /// `COR-20`: without this a pinned session's cells went into the hydration cache under the
+    /// *present* version, and the next unpinned session looking up that key was served them. A
+    /// pinned read's whole promise is that it does not move, and it was leaking into reads that
+    /// promise the opposite.
+    #[must_use]
+    pub fn position_digest(&self) -> u64 {
+        let mut folded: u64 = 0;
+        for (name, value) in self.settings() {
+            let pins = name.eq_ignore_ascii_case("snapshot") || name.starts_with("version of ");
+            if !pins || value.is_empty() {
+                continue;
+            }
+            // FNV-1a over the setting and its value, folded rather than summed: a cache key
+            // that collides serves one session's position to another, which is the defect this
+            // exists to prevent arriving by arithmetic instead.
+            if folded == 0 {
+                folded = 0xcbf2_9ce4_8422_2325;
+            }
+            for byte in name.as_bytes().iter().chain(b"=").chain(value.as_bytes()) {
+                folded ^= u64::from(*byte);
+                folded = folded.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        folded
+    }
+
     /// The user this connection authenticated as.
     ///
     /// Empty only for a connection that sent none, which `authenticate` refuses --- so a
@@ -1071,4 +1116,98 @@ fn substitute(sql: &str, parameters: &[Option<Vec<u8>>]) -> String {
         }
     }
     out
+}
+
+/// Where a session reads from, as a cache key.
+///
+/// `COR-20` was a hydration cache keyed without this: a pinned session's cells were stored
+/// under the present version and served to the next session that had pinned nothing. These
+/// are the properties the key has to hold for that not to recur.
+#[cfg(test)]
+mod position {
+    use super::Caller;
+    use std::collections::BTreeMap;
+
+    /// A caller with the given settings and no startup parameters.
+    fn caller(settings: &BTreeMap<String, String>) -> Caller<'_> {
+        Caller::with_settings(&[], settings)
+    }
+
+    /// Settings from pairs, so a test reads as the `SET`s it stands for.
+    fn set(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn a_session_that_has_pinned_nothing_reads_from_the_present() {
+        assert_eq!(caller(&set(&[])).position_digest(), 0);
+        // Settings that are not pins do not move it: they change how an answer is *rendered*,
+        // not which rows it is rendered from, and making them part of the key would split the
+        // cache by client library for no reason.
+        let noise = set(&[("application_name", "psql"), ("timezone", "UTC")]);
+        assert_eq!(caller(&noise).position_digest(), 0);
+    }
+
+    #[test]
+    fn a_pinned_session_does_not_share_a_key_with_an_unpinned_one() {
+        let pinned = set(&[("snapshot", "nightly")]);
+        assert_ne!(caller(&pinned).position_digest(), 0);
+    }
+
+    #[test]
+    fn two_sessions_that_asked_for_the_same_position_share_one() {
+        let one = set(&[("snapshot", "nightly")]);
+        let two = set(&[("snapshot", "nightly"), ("application_name", "psql")]);
+        assert_eq!(caller(&one).position_digest(), caller(&two).position_digest());
+    }
+
+    #[test]
+    fn asking_for_a_different_snapshot_is_a_different_position() {
+        let one = set(&[("snapshot", "nightly")]);
+        let two = set(&[("snapshot", "weekly")]);
+        assert_ne!(caller(&one).position_digest(), caller(&two).position_digest());
+    }
+
+    /// `SET VERSION OF <table>` names a different setting per table, so the *name* has to be
+    /// in the digest and not only the value --- otherwise pinning `sales` to 7 and pinning
+    /// `returns` to 7 are the same position, and one table's rows answer for the other's.
+    #[test]
+    fn the_table_a_version_was_pinned_for_is_part_of_the_position() {
+        let sales = set(&[("version of sales", "7")]);
+        let returns = set(&[("version of returns", "7")]);
+        assert_ne!(
+            caller(&sales).position_digest(),
+            caller(&returns).position_digest()
+        );
+    }
+
+    /// Two pins together are one position, and not either of them alone.
+    #[test]
+    fn pinning_two_tables_is_neither_of_the_two_single_pins() {
+        let both = set(&[("version of sales", "7"), ("version of returns", "9")]);
+        let sales = set(&[("version of sales", "7")]);
+        let returns = set(&[("version of returns", "9")]);
+        let together = caller(&both).position_digest();
+        assert_ne!(together, caller(&sales).position_digest());
+        assert_ne!(together, caller(&returns).position_digest());
+    }
+
+    /// A pin cleared by `RESET` is a session reading the present again, and must go back to
+    /// sharing the cache with every other such session rather than keeping a private key.
+    #[test]
+    fn clearing_a_pin_returns_the_session_to_the_present() {
+        let mut settings = set(&[("snapshot", "nightly")]);
+        assert_ne!(caller(&settings).position_digest(), 0);
+        settings.remove("snapshot");
+        assert_eq!(caller(&settings).position_digest(), 0);
+    }
+
+    /// A setting present but empty is one that was set to nothing, which pins nothing.
+    #[test]
+    fn a_pin_set_to_nothing_pins_nothing() {
+        assert_eq!(caller(&set(&[("snapshot", "")])).position_digest(), 0);
+    }
 }
