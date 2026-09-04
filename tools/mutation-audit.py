@@ -3018,8 +3018,8 @@ CATALOGUE = [
 
     ("cube: store a materialised cell rounded, so the fast path drifts from the slow one",
      "crates/sankhya-cube/src/store.rs",
-     "        for component in sum.components() {\n            exact.values().append_value(*component);\n        }",
-     "        exact.values().append_value(sum.to_f64());",
+     "        for component in stored.components() {\n            exact.values().append_value(*component);\n        }",
+     "        exact.values().append_value(stored.to_f64());",
      "sankhya-cube"),
 
     ("xtask: pass a SQL surface no server can reach",
@@ -3082,8 +3082,8 @@ CATALOGUE = [
 
     ("server: build a restricted cuboid from a refresh that has no principal",
      "crates/sankhya-server/src/wiring.rs",
-     "                let key = sankhya_cube::materialise::Key::unrestricted(\n                    cube.version(),\n                    snapshot,\n                    shape.clone(),\n                );",
-     "                let key = sankhya_cube::materialise::Key::new(\n                    cube.version(),\n                    snapshot,\n                    0xdead_beef,\n                    shape.clone(),\n                );",
+     "                let key = sankhya_cube::materialise::Key::unrestricted(\n                    cube.version(),\n                    snapshot,",
+     "                let key = sankhya_cube::materialise::Key::new(\n                    cube.version(),\n                    snapshot,\n                    0xdead_beef,",
      "sankhya-server"),
 
     # --- target_lag: a staleness target, not a schedule ------------------------
@@ -3138,8 +3138,8 @@ CATALOGUE = [
 
     ("cube: store every scope's cuboid in one table, so one principal reads another's",
      "crates/sankhya-cube/src/materialise.rs",
-     "            self.snapshot,\n            self.scope\n        );",
-     "            self.snapshot,\n            0\n        );",
+     "            self.snapshot,\n            self.scope,\n            // Length-prefixed",
+     "            self.snapshot,\n            0,\n            // Length-prefixed",
      "sankhya-cube"),
 
     # --- a server reading a warehouse it is also maintaining -------------------
@@ -4748,6 +4748,45 @@ CATALOGUE = [
      "            if at + 1 < window {\n                return None;\n            }\n            values\n                .get(at + 1 - window..=at)\n                .map(|slice| deterministic_sum(slice) / divisor)",
      "            values\n                .get(at.saturating_sub(window - 1)..=at)\n                .map(|slice| deterministic_sum(slice) / divisor)",
      "sankhya-math"),
+
+    # --- Phase 3: materialisation that changed the answer --------------------------------------
+
+    # `COR-04`. Without the measure in the key the first measure materialised writes each
+    # shape and every later one sees `exists()` and skips; reads build the same measure-free
+    # key and label whatever comes back with the measure they asked for. A maintained `sales`
+    # cube returned `amount`'s numbers under the name `ratio`.
+    ("cube: key a materialised cuboid on its shape alone, not on which measure it holds",
+     "crates/sankhya-cube/src/materialise.rs",
+     "            self.measure.len(),\n            self.measure",
+     "            0,\n            \"\"",
+     "sankhya-cube"),
+
+    # And the length prefix, for the reason the cube's own name has one: `a__b` on one cube and
+    # `a` on a cube named `_b` must not render to the same table.
+    ("cube: separate a measure name without prefixing its length",
+     "crates/sankhya-cube/src/materialise.rs",
+     "    let (length, rest) = rest.split_once('_')?;\n    let length: usize = length.parse().ok()?;\n    if rest.len() < length {\n        return None;\n    }\n    let (measure, mut rest) = rest.split_at(length);",
+     "    let (measure, mut rest) = rest.split_once('_').map_or((rest, \"\"), |(a, b)| (a, b));",
+     "sankhya-cube"),
+
+    # `COR-05`. `to_batch` stored `exact_sum()` whatever the rule was, and `reduce`
+    # early-returns a stored value for every rule --- so a measure declared `MAX ALONG region`
+    # and maintained answered the sum. This is the 2026-09-01 defect `cube_rules.rs` was
+    # written to pin, one layer down.
+    ("cube: materialise every measure as a sum whatever its rule says",
+     "crates/sankhya-cube/src/store.rs",
+     "        let stored = if matches!(rule, Rule::Sum) {\n            contributions.exact_sum()\n        } else {\n            Exact::zero()\n        };",
+     "        let stored = contributions.exact_sum();",
+     "sankhya-cube"),
+
+    # A rule with no reduction from partials has no value this layer can compute. Writing a
+    # zero is materialisation turning a refusal into a number, which is the shape of the
+    # finding.
+    ("cube: materialise a measure that composes along nothing, as zero",
+     "crates/sankhya-cube/src/store.rs",
+     "        let Some(reduced) = contributions.reduce(rule) else {\n            continue;\n        };",
+     "        let reduced = contributions.reduce(rule).unwrap_or(0.0);",
+     "sankhya-cube"),
 
     # --- Phase 3: statements that were acknowledged and did nothing ----------------------------
 

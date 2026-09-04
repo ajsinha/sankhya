@@ -43,8 +43,8 @@ fn a_new_snapshot_is_a_different_key_and_therefore_a_miss() {
     // FR-QUERY-20's whole invalidation story: files are immutable and every key embeds the
     // snapshot, so a new commit misses rather than hitting something stale.
     let cuboid = Cuboid::of(&["entity"]);
-    let before = Key::unrestricted(0xabc, 100, cuboid.clone());
-    let after = Key::unrestricted(0xabc, 101, cuboid);
+    let before = Key::unrestricted(0xabc, 100, "amount", cuboid.clone());
+    let after = Key::unrestricted(0xabc, 101, "amount", cuboid);
     assert_ne!(before.table("figures"), after.table("figures"));
 }
 
@@ -53,8 +53,8 @@ fn a_new_definition_is_a_different_key_too() {
     // The half that has no log to derive it from — see `crate::version`.
     let cuboid = Cuboid::of(&["entity"]);
     assert_ne!(
-        Key::unrestricted(1, 100, cuboid.clone()).table("figures"),
-        Key::unrestricted(2, 100, cuboid).table("figures")
+        Key::unrestricted(1, 100, "amount", cuboid.clone()).table("figures"),
+        Key::unrestricted(2, 100, "amount", cuboid).table("figures")
     );
 }
 
@@ -63,20 +63,20 @@ fn two_cuboids_cannot_share_a_table_by_splitting_a_name_differently() {
     // `a_b` + `c` against `a` + `b_c`: joined on a separator alone these render
     // identically, and the two cuboids then share storage — one cube's totals served for
     // another's query. A count of dimensions does not help; both have two.
-    let one = Key::unrestricted(1, 1, Cuboid::of(&["a_b", "c"]));
-    let two = Key::unrestricted(1, 1, Cuboid::of(&["a", "b_c"]));
+    let one = Key::unrestricted(1, 1, "amount", Cuboid::of(&["a_b", "c"]));
+    let two = Key::unrestricted(1, 1, "amount", Cuboid::of(&["a", "b_c"]));
     assert_ne!(one.table("figures"), two.table("figures"));
 
     // And the same trap on the cube name, which is prefixed for the same reason.
     assert_ne!(
-        Key::unrestricted(1, 1, Cuboid::of(&["x"])).table("a_b"),
-        Key::unrestricted(1, 1, Cuboid::of(&["b", "x"])).table("a")
+        Key::unrestricted(1, 1, "amount", Cuboid::of(&["x"])).table("a_b"),
+        Key::unrestricted(1, 1, "amount", Cuboid::of(&["b", "x"])).table("a")
     );
 }
 
 #[test]
 fn the_same_key_always_renders_the_same_table() {
-    let key = Key::unrestricted(7, 9, Cuboid::of(&["entity", "period"]));
+    let key = Key::unrestricted(7, 9, "amount", Cuboid::of(&["entity", "period"]));
     assert_eq!(key.table("figures"), key.table("figures"));
     assert_ne!(key.table("figures"), key.table("totals"), "and cubes do not share");
 }
@@ -267,8 +267,8 @@ fn two_scopes_are_two_tables() {
     // cannot serve one scope's rows to another, because the rows are not in the file being
     // read.
     let cuboid = Cuboid::of(&["region"]);
-    let restricted = Key::new(1, 100, 0xdead_beef, cuboid.clone());
-    let unrestricted = Key::unrestricted(1, 100, cuboid);
+    let restricted = Key::new(1, 100, 0xdead_beef, "amount", cuboid.clone());
+    let unrestricted = Key::unrestricted(1, 100, "amount", cuboid);
 
     assert_ne!(
         restricted.table("figures"),
@@ -284,8 +284,8 @@ fn the_unrestricted_scope_is_named_rather_than_written_as_zero() {
     // row. That assertion should be legible at the call site rather than being a bare 0.
     let cuboid = Cuboid::of(&["region"]);
     assert_eq!(
-        Key::unrestricted(1, 100, cuboid.clone()),
-        Key::new(1, 100, 0, cuboid)
+        Key::unrestricted(1, 100, "amount", cuboid.clone()),
+        Key::new(1, 100, 0, "amount", cuboid)
     );
 }
 
@@ -296,8 +296,8 @@ fn a_scope_cannot_be_confused_with_a_snapshot() {
     // and the same reasoning as the length prefixes on dimensions.
     let cuboid = Cuboid::of(&["region"]);
     assert_ne!(
-        Key::new(1, 5, 9, cuboid.clone()).table("figures"),
-        Key::new(1, 9, 5, cuboid).table("figures")
+        Key::new(1, 5, 9, "amount", cuboid.clone()).table("figures"),
+        Key::new(1, 9, 5, "amount", cuboid).table("figures")
     );
 }
 
@@ -308,7 +308,7 @@ fn a_rendered_name_reads_back_as_the_key_that_wrote_it() {
     // Reversibility is what lets a sweep decide whether a cuboid on disk is still worth
     // keeping, without a side table recording what the name already says — and a side table
     // is one more thing that can disagree with the files.
-    let key = Key::new(0xdead_beef, 42, 0x0bad_f00d, Cuboid::of(&["region", "period"]));
+    let key = Key::new(0xdead_beef, 42, 0x0bad_f00d, "amount", Cuboid::of(&["region", "period"]));
     let rendered = key.table("figures");
 
     let (cube, read) = sankhya_cube::materialise::parse(&rendered).expect("ours");
@@ -327,7 +327,7 @@ fn a_name_with_awkward_parts_still_reads_back() {
         ("has_many_underscores", vec!["x_y", "z"]),
         ("", vec!["region"]),
     ] {
-        let key = Key::new(1, 2, 3, Cuboid::of(&dimensions));
+        let key = Key::new(1, 2, 3, "amount", Cuboid::of(&dimensions));
         let rendered = key.table(cube);
         let (read_cube, read_key) =
             sankhya_cube::materialise::parse(&rendered).expect("ours: {rendered}");
@@ -359,9 +359,56 @@ fn a_directory_that_is_not_ours_does_not_parse() {
 fn a_cuboid_with_no_dimensions_reads_back() {
     // The grand total: one cell, no dimensions. A parser that required at least one would
     // refuse to collect the cuboid most likely to be materialised.
-    let key = Key::new(1, 2, 3, Cuboid::of::<&str>(&[]));
+    let key = Key::new(1, 2, 3, "amount", Cuboid::of::<&str>(&[]));
     let rendered = key.table("figures");
     let (cube, read) = sankhya_cube::materialise::parse(&rendered).expect("ours");
     assert_eq!(cube, "figures");
+    assert_eq!(read, key);
+}
+
+#[test]
+fn two_measures_of_one_cube_are_two_cuboids() {
+    // `COR-04`. The key had no measure, so the first measure to be materialised wrote each
+    // shape and every later one saw `exists()` and skipped. Reads built the same measure-free
+    // key and labelled whatever came back with the measure they had asked for — so a
+    // maintained `sales` cube returned `amount`'s numbers under the name `ratio`, and answered
+    // a `Rule::None` measure out of a stored aggregate, which is the one thing the
+    // ancestor-answerability machinery exists to prevent.
+    //
+    // The in-memory catalog had this exact defect and was fixed by keying on `(cube, measure)`.
+    // The on-disk key never got the same treatment.
+    let cuboid = Cuboid::of(&["region"]);
+    let amount = Key::unrestricted(1, 100, "amount", cuboid.clone());
+    let ratio = Key::unrestricted(1, 100, "ratio", cuboid);
+
+    assert_ne!(amount, ratio, "two measures shared one key");
+    assert_ne!(
+        amount.table("sales"),
+        ratio.table("sales"),
+        "two measures of one cube would share one published table, so whichever was \
+         materialised first would answer for both"
+    );
+}
+
+#[test]
+fn a_measure_name_is_length_prefixed_like_every_other_part() {
+    // The same reasoning as the cube's own name and the dimensions'. A separator alone lets
+    // one cube's measure `a__b` render identically to another's `a` on a cube named `_b`, and
+    // the two then share storage.
+    assert_ne!(
+        Key::unrestricted(1, 1, "a_b", Cuboid::of(&["x"])).table("cube"),
+        Key::unrestricted(1, 1, "a", Cuboid::of(&["x"])).table("cube_b")
+    );
+}
+
+#[test]
+fn a_measure_survives_the_round_trip_through_a_table_name() {
+    // The name is read back by the sweep to decide whether a cuboid on disk is still worth
+    // keeping. A measure that did not survive parsing would make every cuboid of a cube look
+    // like the same one.
+    let key = Key::new(0xdead_beef, 42, 0x0bad_f00d, "gross_margin", Cuboid::of(&["region"]));
+    let (cube, read) = sankhya_cube::materialise::parse(&key.table("sales"))
+        .expect("a name this module wrote is one it can read");
+    assert_eq!(cube, "sales");
     assert_eq!(read, key);
 }

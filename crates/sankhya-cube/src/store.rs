@@ -167,20 +167,48 @@ pub fn to_batch(
         let Some(contributions) = cells.contributions(address) else {
             continue;
         };
+        // The value **under this measure's rule**, and this is `COR-05`.
+        //
+        // This stored `contributions.exact_sum()` and used `rule` only in the tainted
+        // fallback below. `from_batch` reads back with `add_reduced`, and `Contributions::
+        // reduce` early-returns the stored value for *every* rule --- so a measure declared
+        // `MAX ALONG region` and maintained answered `70.0` over facts `30.0, 40.0` where the
+        // live path answers `40.0`, and `MEAN` answered `70.0` against `35.0`.
+        //
+        // This is the 2026-09-01 defect that `cube_rules.rs` was written to pin, resurrected
+        // one layer down: every `store` test passed `Rule::Sum`, and every `cube_rules` test
+        // declared its cube without `MAINTAINED`.
+        //
+        // Refused rather than defaulted when the rule has no reduction from partials
+        // (`Rule::None`, `Rule::Supplied`): a cuboid that cannot be computed here is one this
+        // layer must not invent, and writing a zero would be materialisation turning a refusal
+        // into a number, which is the shape of the whole finding.
+        let Some(reduced) = contributions.reduce(rule) else {
+            continue;
+        };
         for (index, member) in address.iter().enumerate() {
             if let Some(builder) = members.get_mut(index) {
                 builder.append_value(member);
             }
         }
-        let sum = contributions.exact_sum();
-        for component in sum.components() {
+
+        // Only a sum composes without rounding, so only a sum is stored as an expansion. Every
+        // other rule reduces to one number here, and rolling *that* up further is governed by
+        // `answerable_from`, which already refuses the rules that do not decompose.
+        let stored = if matches!(rule, Rule::Sum) {
+            contributions.exact_sum()
+        } else {
+            Exact::zero()
+        };
+        for component in stored.components() {
             exact.values().append_value(*component);
         }
         // A tainted expansion — a non-finite value arrived — has no components, and its
         // rounded total is the honest answer. Stored as a single-element list so reading it
-        // back gives the same number rather than an empty sum of zero.
-        if sum.components().is_empty() {
-            exact.values().append_value(contributions.reduce(rule).unwrap_or(0.0));
+        // back gives the same number rather than an empty sum of zero. The same applies to
+        // every non-sum rule, whose value is a scalar by construction.
+        if stored.components().is_empty() {
+            exact.values().append_value(reduced);
         }
         exact.append(true);
     }

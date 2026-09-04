@@ -317,6 +317,38 @@ fallback is reached exactly when a fixed margin was not enough.
 > property test spans about twenty-seven bits within a vector, and random data never cancels
 > forty-eight.
 
+### Two ways the cache changed the answer anyway
+
+Both were found by audit rather than by the tests that exist for exactly this, and the reason is
+the same in each case: the test looked at the layer above the one that decided.
+
+**The stored value was the sum, whatever the rule said.** Materialisation computed the exact
+expansion — which is a *sum* — and read it back as a reduced cell, and a reduced cell answers
+with its stored value for every rule. So a measure declared `MAX ALONG region` and maintained
+answered `70.0` over facts `30.0, 40.0` where the live path answers `40.0`.
+
+That is the defect this chapter's own history records being fixed on 2026-09-01, resurrected one
+layer down. The file written to pin it could not see it, because **every test in it declared its
+cube without `MAINTAINED`** and so never took the fast path at all.
+
+Only a sum composes without rounding, so only a sum keeps an expansion. Every other rule reduces
+to one number when the cuboid is written, and rolling *that* up further is governed by
+answerability, which already refuses the rules that do not decompose. A measure whose rule has no
+reduction from partials is **not materialised**, rather than materialised as zero — writing a
+number there would be the cache turning a refusal into an answer.
+
+**The cuboid's name did not say which measure it held.** The key carried the cube, the
+definition, the snapshot and the scope. So the first measure to be materialised wrote each shape,
+every later one found the table already there and skipped, and a read built the same measure-free
+name and labelled whatever it found with the measure it had asked for. A maintained `sales` cube
+returned `amount`'s numbers under the name `ratio`.
+
+The in-memory catalogue had this exact defect and was fixed by keying on `(cube, measure)`, with
+a comment explaining why. The published-table key never got the same treatment — which is worth
+stating plainly, because it is the pattern rather than the incident: **a fix applied to one of
+two parallel structures is half a fix**, and nothing in this system was checking that the two
+agreed.
+
 > **Key idea**
 > **A cube that is faster and different is not a faster cube.** The bit-identical property is
 > load-bearing — it is what makes materialisation a cache rather than a second source of truth,

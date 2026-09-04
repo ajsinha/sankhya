@@ -626,6 +626,7 @@ async fn a_materialised_cuboid_is_not_served_as_a_user_table() {
         cube.version(),
         1,
         0,
+        "amount",
         sankhya_cube_algo::lattice::Cuboid::of(&["region", "period"]),
     );
     let mut cells = sankhya_cube::cells::Cells::over(vec!["region".to_string()]);
@@ -656,6 +657,7 @@ async fn materialising_the_same_cuboid_twice_writes_it_once() {
         cube.version(),
         1,
         0,
+        "amount",
         sankhya_cube_algo::lattice::Cuboid::of(&["region", "period"]),
     );
     let mut cells = sankhya_cube::cells::Cells::over(vec!["region".to_string()]);
@@ -687,6 +689,7 @@ async fn an_empty_cuboid_is_not_written() {
         cube.version(),
         1,
         0,
+        "amount",
         sankhya_cube_algo::lattice::Cuboid::of(&["region", "period"]),
     );
     let empty = sankhya_cube::cells::Cells::over(vec!["region".to_string()]);
@@ -878,6 +881,7 @@ async fn a_query_is_answered_from_the_narrowest_cuboid_that_can_answer_it() {
     let narrow = sankhya_cube::materialise::Key::unrestricted(
         cube_version.0,
         cube_version.1,
+        "amount",
         sankhya_cube::algo::Cuboid::of(&["region"]),
     );
     assert!(
@@ -890,6 +894,7 @@ async fn a_query_is_answered_from_the_narrowest_cuboid_that_can_answer_it() {
     let base = sankhya_cube::materialise::Key::unrestricted(
         cube_version.0,
         cube_version.1,
+        "amount",
         sankhya_cube::algo::Cuboid::of(&["region", "period"]),
     );
     std::fs::remove_dir_all(sankhya_maintenance::cuboid::root_of(dir.path(), &base, "sales"))
@@ -934,6 +939,7 @@ async fn a_query_finer_than_every_cuboid_is_not_answered_from_one() {
     let base = sankhya_cube::materialise::Key::unrestricted(
         cube_version.0,
         cube_version.1,
+        "amount",
         sankhya_cube::algo::Cuboid::of(&["region", "period"]),
     );
     std::fs::remove_dir_all(sankhya_maintenance::cuboid::root_of(dir.path(), &base, "sales"))
@@ -1075,6 +1081,7 @@ async fn a_definition_can_pin_a_shape_nobody_has_asked_for() {
     let pinned = sankhya_cube::materialise::Key::unrestricted(
         cube.version(),
         snapshot,
+        "amount",
         sankhya_cube::algo::Cuboid::of(&["region"]),
     );
     assert!(
@@ -1144,6 +1151,7 @@ async fn a_zero_budget_buys_nothing_beyond_the_base_and_the_pins() {
     let asked_for = sankhya_cube::materialise::Key::unrestricted(
         cube.version(),
         snapshot,
+        "amount",
         sankhya_cube::algo::Cuboid::of(&["region"]),
     );
     assert!(
@@ -1169,9 +1177,9 @@ async fn what_the_refresher_builds_is_the_unrestricted_scope() {
     let snapshot = server.snapshot_for_test(cube.fact_table());
     let base = sankhya_cube::algo::Cuboid::of(&["region", "period"]);
     let unrestricted =
-        sankhya_cube::materialise::Key::unrestricted(cube.version(), snapshot, base.clone());
+        sankhya_cube::materialise::Key::unrestricted(cube.version(), snapshot, "amount", base.clone());
     let restricted =
-        sankhya_cube::materialise::Key::new(cube.version(), snapshot, 0xdead_beef, base);
+        sankhya_cube::materialise::Key::new(cube.version(), snapshot, 0xdead_beef, "amount", base);
 
     assert!(
         sankhya_maintenance::cuboid::exists(dir.path(), &unrestricted, cube.name()),
@@ -1198,6 +1206,7 @@ async fn the_refresher_collects_cuboids_the_table_has_left_behind() {
     let stale = sankhya_cube::materialise::Key::unrestricted(
         cube.version(),
         1,
+        "amount",
         sankhya_cube::algo::Cuboid::of(&["region"]),
     );
     let mut cells = sankhya_cube::cells::Cells::over(vec!["region".to_string()]);
@@ -1260,6 +1269,7 @@ async fn what_was_asked_for_is_what_gets_materialised() {
     let asked = sankhya_cube::materialise::Key::unrestricted(
         cube.version(),
         snapshot,
+        "amount",
         sankhya_cube::algo::Cuboid::of(&["region"]),
     );
     assert!(
@@ -1286,11 +1296,13 @@ async fn a_cube_nobody_queried_gets_its_base_and_no_guesses() {
     let base = sankhya_cube::materialise::Key::unrestricted(
         cube.version(),
         snapshot,
+        "amount",
         sankhya_cube::algo::Cuboid::of(&["region", "period"]),
     );
     let guessed = sankhya_cube::materialise::Key::unrestricted(
         cube.version(),
         snapshot,
+        "amount",
         sankhya_cube::algo::Cuboid::of(&["region"]),
     );
     assert!(
@@ -1325,6 +1337,7 @@ async fn a_materialised_cuboid_holds_the_grain_its_key_names() {
     let key = sankhya_cube::materialise::Key::unrestricted(
         cube.version(),
         snapshot,
+        "amount",
         sankhya_cube::algo::Cuboid::of(&["region"]),
     );
     let root = sankhya_maintenance::cuboid::root_of(dir.path(), &key, cube.name());

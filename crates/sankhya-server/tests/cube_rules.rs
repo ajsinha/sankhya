@@ -112,3 +112,106 @@ fn a_measure_declared_min_returns_the_minimum() {
     );
     assert_eq!(cube, direct, "a cube declaring MIN must answer the minimum");
 }
+
+/// The same as [`under`], but the cube is **maintained** — so the answer comes from a
+/// materialised cuboid rather than from the facts.
+fn maintained(server: &Running, name: &str, rule: &str) -> Vec<(String, f64)> {
+    let statement = format!(
+        "CREATE CUBE {name} FROM sales.orders \
+         DIMENSION region FROM sales.regions ON region (LEVEL area = region) \
+         MEASURE amount ({rule} ALONG region) MAINTAINED WITHIN 5 VERSIONS"
+    );
+    let _ = text_rows(server.port, &statement);
+    keyed(
+        server.port,
+        &format!("SELECT region, amount FROM cube_rollup('{name}', 'amount', 'by=region')"),
+    )
+}
+
+#[test]
+fn a_maintained_measure_answers_its_rule_and_not_the_sum() {
+    // `COR-05`, and the reason this file did not catch it: every test above declares its cube
+    // **without** `MAINTAINED`, so all of them read the live path. One layer down,
+    // materialisation stored `exact_sum()` whatever the rule said and read it back with
+    // `add_reduced`, which answers with the stored value for every rule.
+    //
+    // So the 2026-09-01 defect this file exists to pin was alive again on the fast path, and
+    // every test here passed. The rule reached the number; the number was computed before the
+    // rule was consulted.
+    let (_dir, server) = running();
+
+    for rule in ["MAX", "MIN", "MEAN"] {
+        let name = format!("maintained_{}", rule.to_lowercase());
+        let cached = maintained(&server, &name, rule);
+        let live = under(&server, &format!("live_{}", rule.to_lowercase()), rule);
+
+        assert!(!live.is_empty(), "the fixture has regions");
+        assert_eq!(
+            cached, live,
+            "a maintained cube declaring {rule} answered differently from the same cube \
+             computed from the facts. Materialisation may change *where* an answer comes \
+             from, never *what* it is"
+        );
+    }
+}
+
+#[test]
+fn two_maintained_measures_of_one_cube_keep_their_own_numbers() {
+    // `COR-04`. The materialised cuboid's key carried the cube, the definition, the snapshot
+    // and the scope — and not the measure. So the first measure to be materialised wrote each
+    // shape, every later one found `exists()` true and skipped, and reads built the same
+    // measure-free key and labelled whatever came back with the measure they had asked for.
+    //
+    // On the shipped fixture a maintained `sales` cube returned `amount`'s numbers under the
+    // name `ratio`. The in-memory catalog had this exact defect and was fixed by keying on
+    // `(cube, measure)`; the on-disk key never got the same treatment.
+    let (_dir, server) = running();
+    let _ = text_rows(
+        server.port,
+        "CREATE CUBE twofold FROM sales.orders \
+         DIMENSION region FROM sales.regions ON region (LEVEL area = region) \
+         MEASURE amount (SUM ALONG region) \
+         MEASURE margin_pct (MAX ALONG region) \
+         MAINTAINED WITHIN 5 VERSIONS",
+    );
+
+    let summed = keyed(
+        server.port,
+        "SELECT region, amount FROM cube_rollup('twofold', 'amount', 'by=region')",
+    );
+    let other = keyed(
+        server.port,
+        "SELECT region, margin_pct FROM cube_rollup('twofold', 'margin_pct', 'by=region')",
+    );
+
+    if summed.is_empty() || other.is_empty() {
+        // The measure syntax may not permit a second measure over the same column on this
+        // build. Say so rather than passing quietly: a test that asserts nothing because its
+        // fixture did not build is the shape this repository keeps finding.
+        panic!("the two-measure fixture did not build: {summed:?} against {other:?}");
+    }
+    assert_ne!(
+        summed, other,
+        "two measures of one maintained cube returned the same numbers, so one cuboid is \
+         answering for both"
+    );
+
+    // And each agrees with the same cube computed from the facts, which is the assertion that
+    // says *which* of the two was wrong rather than only that they differ.
+    let _ = text_rows(
+        server.port,
+        "CREATE CUBE twofold_live FROM sales.orders \
+         DIMENSION region FROM sales.regions ON region (LEVEL area = region) \
+         MEASURE amount (SUM ALONG region) \
+         MEASURE margin_pct (MAX ALONG region)",
+    );
+    assert_eq!(
+        other,
+        keyed(
+            server.port,
+            "SELECT region, margin_pct FROM \
+             cube_rollup('twofold_live', 'margin_pct', 'by=region')",
+        ),
+        "the maintained cube's second measure disagrees with the same measure from the facts"
+    );
+}

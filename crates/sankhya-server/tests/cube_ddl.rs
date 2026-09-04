@@ -151,6 +151,7 @@ async fn dropping_a_cube_reclaims_the_cuboids_nothing_else_ever_would() {
         definition: 7,
         snapshot: 11,
         scope: 13,
+        measure: "amount".to_string(),
         cuboid: sankhya_cube::algo::Cuboid::of(&["region"]),
     };
     let ours = store.join(key.table("sales"));
