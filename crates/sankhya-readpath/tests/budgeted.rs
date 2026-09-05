@@ -216,26 +216,42 @@ async fn the_bound_is_per_partition_and_scales_with_parallelism() {
     const PARTITIONS: usize = 8;
     const DEADLINE: u64 = 3;
 
-    let dir = tempfile::tempdir().expect("a temp dir");
-    let total = publish(dir.path(), 40, 200);
-    let (clock, ticks) = counting_clock();
+    // Measured three times and judged on the best, for the lower bound only.
+    //
+    // The upper bound is a property of the code and must hold every time: reading the clock
+    // more than once per partition means a partition kept going past the point it should have
+    // stopped, and no amount of load makes that acceptable.
+    //
+    // The lower bound is a property of the *machine*. It asserts that the plan really did run
+    // in parallel --- without it the upper bound passes trivially on a plan that ran one
+    // partition --- and a machine busy compiling the rest of the workspace can serialise eight
+    // partitions into far fewer. That made this test fail inside `check-all` and pass on its
+    // own, which is the shape of flake that gets a gate ignored. The claim is that the plan
+    // *can* run in parallel, so the best of three attempts is the honest way to ask.
+    let mut best = 0usize;
+    for _ in 0..3 {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let total = publish(dir.path(), 40, 200);
+        let (clock, ticks) = counting_clock();
 
-    let budget = Budget::new(Deadline::at(DEADLINE), Cancel::new(), 1);
-    let error = run_with_partitions(dir.path(), total, budget, clock, PARTITIONS)
-        .await
-        .expect_err("stopped");
-    assert!(error.contains("too late"), "{error}");
+        let budget = Budget::new(Deadline::at(DEADLINE), Cancel::new(), 1);
+        let error = run_with_partitions(dir.path(), total, budget, clock, PARTITIONS)
+            .await
+            .expect_err("stopped");
+        assert!(error.contains("too late"), "{error}");
 
-    let readings = ticks.load(Ordering::SeqCst) as usize;
+        let readings = ticks.load(Ordering::SeqCst) as usize;
+        assert!(
+            readings <= DEADLINE as usize + PARTITIONS + 1,
+            "the clock was read {readings} times for a deadline of {DEADLINE} across \
+             {PARTITIONS} partitions; the bound is one batch per partition, not more"
+        );
+        best = best.max(readings);
+    }
     assert!(
-        readings <= DEADLINE as usize + PARTITIONS + 1,
-        "the clock was read {readings} times for a deadline of {DEADLINE} across \
-         {PARTITIONS} partitions; the bound is one batch per partition, not more"
-    );
-    assert!(
-        readings > DEADLINE as usize + 1,
-        "only {readings} readings across {PARTITIONS} partitions; the plan did not run \
-         in parallel, so this test is not measuring what it claims"
+        best > DEADLINE as usize + 1,
+        "only {best} readings across {PARTITIONS} partitions in three attempts; the plan did \
+         not run in parallel, so this test is not measuring what it claims"
     );
 }
 

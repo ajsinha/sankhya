@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2,739 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2,745 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -785,7 +785,50 @@ output test blocks inside `spawn` with a full pipe, burns no CPU, never trips `R
 hangs the gate rather than failing it. A mutation that hangs the build is worse than one that
 survives, because a survivor is a line on a list somebody reads.
 
-`4.6` through `4.8` are not started.
+**4.6 What a refusal and a listing say (`SEC-16`–`SEC-18`).** None of these returns a row the
+caller may not see. Each tells the caller something about rows they may not see.
+
+- **`SEC-16`.** `SELECT nosuchcol FROM orders` was answered with every column of every table in
+  the plan's scope. The half the caller typed is kept; the half they did not is gone. **The first
+  attempt fixed the wrong function**: the message that reaches a client is built from the engine's
+  string a second time in `plan_failure`, not from the detail the classifier carries, so changing
+  `classify` alone left the leak exactly where it was and the tests were what said so.
+- **`SEC-17`.** Bare-name claims were counted over every servable table with the authorization
+  running afterwards. The visible half enumerated qualified names in a refusal; the half with no
+  string in it made a hidden `payroll.orders` stop the caller's own `sales.orders` from resolving
+  under its bare name, so anybody could ask whether a table of a given name existed somewhere they
+  could not look. Authorizing first also makes the word mean what it says: a name is contested
+  when *this caller* could mean two things by it.
+- **`SEC-18`.** Five listings, each now filtered by the rule that already governed the thing being
+  listed --- the fact table for a cube, the pinned tables for a snapshot. `SHOW AGGREGATIONS`
+  keeps the names for everybody and shows the **source** only where `server.user_functions` is on,
+  which is the switch that decides who could have created one.
+
+**`SHOW FEEDS` took two attempts and the wrong one is instructive.** Filtering its rows by the
+same rule removed a feed whose target table does not exist --- and a feed that halted *because its
+table is missing* is exactly what an operator opens the statement to find. A control that hides
+the thing it is meant to report is not a control. The name and state go to everybody; the **halt
+reason** is what is withheld, because that is what carries the file and the record. Where the
+table does not exist there is nothing to withhold about, so the reason is shown.
+
+**One correction to 4.4.** It recorded that `SHOW FEEDS` had no table to check a scope against.
+That stopped being true in the same change that wrote it: recording each feed's target so `RESUME`
+could be authorized gave `SHOW` the table it was said to lack.
+
+**And one thing this cannot yet demonstrate through the front door.** The cube-listing filter
+needs a policy that grants *something* and not the fact table; a caller granted nothing is refused
+a session before any listing is reached. `SEC-15` --- 4.8 --- is what makes that expressible in a
+deployment, so the property is tested in process until then, and the test says so.
+
+**And one flake fixed on the way past.** `the_bound_is_per_partition_and_scales_with_parallelism`
+failed inside `check-all` and passed on its own: its *lower* bound asserts that the plan really
+ran in parallel, which is a property of the machine rather than of the code, and a box busy
+compiling the workspace serialises eight partitions into fewer. The upper bound --- a partition
+that kept going past the deadline --- still has to hold every time. The lower one is now the best
+of three attempts, the same treatment the contention measurement got in Phase 2 and for the same
+reason: a gate that fails for a reason nobody can act on is a gate people learn to re-run.
+
+`4.7` and `4.8` are not started.
 
 ---
 

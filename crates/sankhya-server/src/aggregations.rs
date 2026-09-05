@@ -313,11 +313,27 @@ pub(crate) fn run(
 
 /// `SHOW AGGREGATIONS` — name, whether it composes, and the source.
 ///
-/// The source is shown because `ADR-0023` Decision 4 makes creating one a grant: a grant nobody
-/// can review is a grant nobody should give.
+/// # Why the source is here at all
+///
+/// `ADR-0023` Decision 4 makes creating one a grant: a grant nobody can review is a grant nobody
+/// should give. Somebody has to be able to read the code that is running inside this server.
+///
+/// # Why it is not here for everybody
+///
+/// Because *"somebody"* was every caller. A user function's source is code its author wrote,
+/// and it carries whatever they put in it: a threshold, a formula, a customer identifier used
+/// as a special case. Publishing all of it to any connection is a disclosure with no relation
+/// to what that connection may read. `SEC-18`.
+///
+/// The switch is `server.user_functions`, which is the same switch that decides whether these
+/// can be created at all --- so the people who can review a grant are the people who could
+/// make one. The **names** stay visible either way, deliberately: the comment in `run` above
+/// says an operator who has just closed the door needs to see what came in while it was open,
+/// and a list of names is what answers that. A list of sources is not.
 fn show(server: &Server) -> Result<QueryResult, QueryFailure> {
     use sankhya_api_pg::message::{oid, FieldDescription};
 
+    let reviewable = server.settings.user_functions;
     let rows: Vec<Vec<Option<String>>> = server
         .aggregations()
         .iter()
@@ -325,7 +341,10 @@ fn show(server: &Server) -> Result<QueryResult, QueryFailure> {
             vec![
                 Some(aggregation.name.clone()),
                 Some(if aggregation.composes { "yes" } else { "no" }.to_owned()),
-                Some(aggregation.source.clone()),
+                // Null rather than an empty string, and the difference matters here: an empty
+                // source would read as a function with no body, which is a different and
+                // alarming thing to be told.
+                reviewable.then(|| aggregation.source.clone()),
             ]
         })
         .collect();

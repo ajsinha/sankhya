@@ -51,7 +51,7 @@
 
 mod common;
 
-use common::{query_outcome, start_with, text_rows, Running};
+use common::{query_outcome, start_with, text_rows, text_rows_as, Running};
 use sankhya_publish::Publication;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -637,3 +637,67 @@ fn walk(root: &std::path::Path) -> Vec<String> {
 
 
 
+
+
+// --- what a halt reason says, and to whom ----------------------------------
+
+#[test]
+fn a_halt_reason_is_shown_to_whoever_may_read_the_table_the_feed_fills() {
+    // `SEC-18`. `ADR-0018` halts a feed when a record does not fit, and saying so means saying
+    // which file and what was in it --- so the reason column carries a filesystem path and a
+    // fragment of somebody's data, to every connection that could ask.
+    //
+    // The **name and state** are shown to everybody on purpose, and the first attempt at this
+    // got it wrong by filtering the rows: a feed whose target table does not exist then vanished
+    // from the listing, and that feed is exactly what an operator opens the statement to find.
+    let it = ready();
+    // `ana` reads; `mallory` holds no role, which the named map is what makes true --- an empty
+    // `server.users` means everybody is a reader.
+    std::fs::write(
+        it.config().join("application.yaml"),
+        "server:\n  users:\n    ana: reader\n    quickstart: reader\n",
+    )
+    .expect("a configuration naming who holds what");
+    let server = it.start();
+
+    it.arrives(
+        "001.json",
+        &[
+            r#"{"id": 1, "amount": "nonsense"}"#,
+            r#"{"id": 2, "amount": "also nonsense"}"#,
+        ],
+    );
+    let halted = wait_for_state(&server, "postings", "halted");
+    let reason = halted[3].clone().expect("a halted feed says why");
+    assert!(
+        reason.contains("001.json") || reason.contains("record"),
+        "the control: a reader is told what actually happened: {reason}"
+    );
+
+    // And the same row, asked for by somebody who may not read `sales.postings`.
+    let rows = text_rows_as(server.port, "mallory", "SHOW FEEDS");
+    let row = rows
+        .iter()
+        .find(|row| row.first().and_then(Clone::clone).as_deref() == Some("postings"))
+        .expect("the feed is still listed --- hiding it is the defect, not the fix");
+    assert_eq!(
+        row.get(1).and_then(Clone::clone).as_deref(),
+        Some("halted"),
+        "and it still says that it stopped, which is what the statement is for"
+    );
+    let withheld = row.get(3).and_then(Clone::clone).expect("a reason column");
+    // Compared against the reason a reader gets, rather than searched for a substring. A
+    // substring assertion passes whenever the wording happens not to contain what it looks
+    // for, which is how a redaction test comes to assert nothing --- and it did, on the first
+    // attempt here: the reason names a record count and not always a filename, so
+    // `!contains("001.json")` was true of the unredacted text too.
+    assert_ne!(
+        withheld, reason,
+        "somebody who may not read `sales.postings` must not be told what a reader is told"
+    );
+    assert!(
+        withheld.contains("whoever may read the table"),
+        "and the withholding must be said rather than blanked --- an empty or truncated reason \
+         reads as a feed that stopped for no reason: {withheld}"
+    );
+}

@@ -1594,3 +1594,80 @@ async fn a_pinned_session_is_not_served_an_unpinned_session_cache_entry() {
          {misses_unpinned}"
     );
 }
+
+/// The fixture, with the roles each user holds spelled out.
+///
+/// Its own helper because `settings` leaves `roles` empty, and an empty map is the switch that
+/// makes **every** user a reader. A test about what somebody without a grant can see has to say
+/// who has one.
+fn server_with_roles(
+    policy: PolicySet,
+    roles: std::collections::BTreeMap<String, Vec<String>>,
+) -> (Server, tempfile::TempDir) {
+    let dir = warehouse_with_a_fact_table();
+    let (found, refused) = warehouse::discover(dir.path());
+    assert!(refused.is_empty(), "the fixture must open: {refused:?}");
+    let cache = sankhya_table_delta::LogCache::new();
+    let (servable, unreadable) = warehouse::servable(&found, Lsn::new(u64::MAX), &cache);
+    assert!(unreadable.is_empty(), "the fixture must read: {unreadable:?}");
+    let tables = warehouse::describe(&found);
+    let mut settings = settings(dir.path());
+    settings.roles = roles;
+    let (server, complaints) =
+        Server::with_tables(settings, policy, tables, servable).adopting_cubes(dir.path());
+    assert!(complaints.is_empty(), "the cube must adopt: {complaints:?}");
+    (server, dir)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cube_is_not_listed_to_somebody_who_may_not_read_its_fact_table() {
+    // `SEC-18`. `cubes()` and `derived()` listed every cube on the server to every caller, and
+    // `derived()` emits the **SQL text** of each definition and the tables it reads --- so the
+    // shape of a warehouse was readable out of a catalogue function by anybody who could open
+    // a session. `register_derived` was already gating on scope, four lines away in the same
+    // file, which is what makes this an omission rather than a decision.
+    //
+    // In process rather than over a socket, because the property needs a policy that grants
+    // *something* and not the fact table: a caller granted nothing at all is refused a session
+    // before any listing is reached, so a test through the front door would pass for the wrong
+    // reason. `SEC-15` is what would make this expressible in a deployment.
+    // Roles named explicitly, because an empty `server.users` means *everybody is a reader* ---
+    // the same switch `server.credentials` uses, and the reason the first version of this test
+    // passed for the wrong reason: `mallory` was a reader too.
+    let (server, _dir) = server_with_roles(
+        policy("reader", None),
+        [("ana".to_string(), vec!["reader".to_string()])]
+            .into_iter()
+            .collect(),
+    );
+    connect(&server, "ana");
+
+    // Named callers, not `anyone()`: that helper connects as `quickstart`, who holds no role
+    // under the map above and would fail the control for the same reason the stranger fails
+    // the assertion.
+    let reader: Vec<(String, String)> = vec![("user".to_string(), "ana".to_string())];
+    let stranger: Vec<(String, String)> = vec![("user".to_string(), "mallory".to_string())];
+
+    // The control. A reader sees the cube, so an empty answer below is filtering rather than
+    // an absent fixture.
+    let listed = server
+        .query("SELECT * FROM cubes()", &Caller::new(&reader))
+        .expect("a reader may list cubes");
+    assert_eq!(listed.rows.len(), 1, "the fixture declares one cube: {listed:?}");
+
+    // And a principal holding no role at all, so no rule grants them the fact table.
+    let hidden = server.query("SELECT * FROM cubes()", &Caller::new(&stranger));
+    match hidden {
+        // Either answer is correct and they mean the same thing. What must not happen is a row.
+        Err(refused) => assert!(
+            !refused.message.contains("sales"),
+            "a refusal must not name the fact table either: {}",
+            refused.message
+        ),
+        Ok(answer) => assert!(
+            answer.rows.is_empty(),
+            "a cube is listed to whoever may read what it is built on: {:?}",
+            answer.rows
+        ),
+    }
+}

@@ -261,11 +261,23 @@ fn target_of(server: &Server, feed: &str) -> Option<TableRef> {
 
 /// Answer a feed command.
 ///
-/// # What is authorized here and what is not
+/// # What is authorized here, and a correction
 ///
-/// `SHOW FEEDS` reports what the *server* is doing, not what is in any table: names an operator
-/// configured, counts of rows this process moved, and why something stopped. There is no table
-/// to check a scope against, and none of it is tenant data.
+/// `SHOW FEEDS` was left ungated when `RESUME FEED` was closed, on the grounds that it reports
+/// what the *server* is doing rather than what is in any table --- names an operator configured,
+/// counts of rows this process moved, and why something stopped --- and that there was no table
+/// to check a scope against.
+///
+/// The second half of that stopped being true in the same change that wrote it. Recording which
+/// table each feed writes into, so `RESUME` could be authorized, gave `SHOW` exactly the table
+/// it was said to lack. And the first half was never quite right either: a halt reason is
+/// whatever the source made of itself, and it carries filesystem paths --- `ADR-0018` halts a
+/// feed *because a record did not fit*, and saying so means saying which file. `SEC-18`.
+///
+/// So it is filtered by the same rule: a feed is listed to a caller who may read the table it
+/// fills. A feed whose declaration did not load has no target and is listed to nobody, which is
+/// the conservative direction --- an operator who cannot see a feed they expected has a
+/// configuration problem to find, and the log said so at startup.
 ///
 /// `RESUME FEED` is a different thing entirely and used to be treated the same way. It restarts
 /// an ingest that `ADR-0018` halted **because its source changed shape** --- so resuming one is
@@ -299,11 +311,54 @@ pub(crate) fn run_command(
             let rows = standing
                 .iter()
                 .map(|feed| {
+                    // Every feed is listed, and the **reason** is what is withheld.
+                    //
+                    // Filtering the rows was tried first and was wrong. A feed whose target
+                    // table does not exist is unreadable by everybody, so it disappeared from
+                    // the listing --- and a feed that halted *because its table is missing* is
+                    // precisely the case an operator opens this statement to find. A control
+                    // that hides the thing it is meant to report is not a control.
+                    //
+                    // The name and the state are what the statement is for and are not tenant
+                    // data: somebody configured that feed. The reason is what carries the
+                    // disclosure, because `ADR-0018` halts a feed when a record does not fit
+                    // and saying so means saying which file and what was in it. `SEC-18`.
+                    // Unknown target, and the answer here is the **opposite** of the one
+                    // `RESUME` gives, deliberately. A feed whose declaration did not load has
+                    // no table recorded, so `RESUME` refuses it --- do not start something you
+                    // cannot place. A report withholds nothing for the same reason: not knowing
+                    // what a feed writes into is a configuration fault, and the operator who
+                    // has to fix it is the one asking. Fail safe for an action, fail visible
+                    // for a report.
+                    let readable = target_of(server, &feed.name).is_none_or(|target| {
+                        let table = if target.schema.is_empty() {
+                            target.table.clone()
+                        } else {
+                            format!("{}.{}", target.schema, target.table)
+                        };
+                        // Or the table is not there at all, in which case there are no rows to
+                        // withhold anything about --- and this is the case the statement is
+                        // most often opened for. A feed that halted *because its table does
+                        // not exist* would otherwise report a redaction where the answer is,
+                        // which is the same defect as hiding the row, one level down.
+                        server.scope_for(principal, &table).is_some()
+                            || matches!(server.qualify(&table), crate::wiring::Qualified::Absent)
+                    });
                     let (since, why) = match &feed.health {
                         Health::Running => (None, None),
-                        Health::Halted { since, reason } => {
-                            (Some(since.to_string()), Some(reason.clone()))
-                        }
+                        Health::Halted { since, reason } => (
+                            Some(since.to_string()),
+                            Some(if readable {
+                                reason.clone()
+                            } else {
+                                // Said rather than blanked. An empty reason reads as a feed
+                                // that stopped for no reason, which is a different and more
+                                // alarming thing to be told than one you may not be told about.
+                                "halted; the reason names what was being read and is shown to \
+                                 whoever may read the table this feed writes into"
+                                    .to_owned()
+                            }),
+                        ),
                     };
                     vec![
                         Some(feed.name.clone()),

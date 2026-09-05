@@ -4897,6 +4897,67 @@ CATALOGUE = [
      "            Mask::Constant { .. } => Arc::clone(&values),",
      "sankhya-catalog"),
 
+    # --- Phase 4: what a refusal and a listing say ------------------------------------------------
+
+    # `SEC-16`. `SELECT nosuchcol FROM orders` answered with every column of every table in the
+    # plan's scope. The only mention of that phrase in the repository sniffed for it to choose a
+    # SQLSTATE and passed it on.
+    ("server: answer a misspelt column with the list of the real ones",
+     "crates/sankhya-server/src/execute.rs",
+     "            let said = without_the_column_list(&error.to_string());",
+     "            let said = error.to_string();",
+     "sankhya-server"),
+
+    # And the marker itself. A dependency that reworded its message would stop matching and the
+    # leak would return silently, which is why the test asks the planner for a real error rather
+    # than handing this function a string.
+    ("server: look for a column list nobody writes",
+     "crates/sankhya-server/src/execute.rs",
+     "    const ENUMERATION: &str = \"Valid fields are\";",
+     "    const ENUMERATION: &str = \"\\u{0}\";",
+     "sankhya-server"),
+
+    # `SEC-17`. Counting bare-name claims over every servable table and authorizing afterwards
+    # leaked twice: the refusal named schemas the caller cannot read, and --- with no string in
+    # it at all --- a hidden table of the same name made the caller's own stop resolving.
+    ("server: count a bare name's claims before deciding who may see them",
+     "crates/sankhya-server/src/execute.rs",
+     "    for (table, _) in &permitted {",
+     "    for table in tables {",
+     "sankhya-server"),
+
+    # `SEC-18`. `cubes()` and `derived()` listed every cube to every caller, and `derived()`
+    # emits the SQL text of each definition and the tables it reads.
+    ("server: declare every cube to every caller",
+     "crates/sankhya-server/src/wiring.rs",
+     "            if self.scope_across(principal, cube.reads()).is_none() {\n                continue;\n            }\n            catalog.declare(cube.name());",
+     "            catalog.declare(cube.name());",
+     "sankhya-server"),
+
+    # A snapshot row names the qualified tables it pins, so an unfiltered listing hands out the
+    # shape of a warehouse.
+    ("server: list every snapshot to every caller",
+     "crates/sankhya-server/src/snapshots.rs",
+     "                .filter(|snapshot| visible_to(server, principal, snapshot))",
+     "                .filter(|_| true)",
+     "sankhya-server"),
+
+    # And a feed's halt reason, which `ADR-0018` fills with the file and the record that did not
+    # fit. The rows are not filtered --- a feed hidden because its table is missing is the one an
+    # operator opened the statement to find --- so the reason is where the rule lands.
+    ("server: tell every caller why a feed halted",
+     "crates/sankhya-server/src/feeds.rs",
+     "                            Some(if readable {",
+     "                            Some(if true {",
+     "sankhya-server"),
+
+    # And a user function's source, which is code its author wrote and whatever they put in it.
+    ("server: publish every aggregation's source to every caller",
+     "crates/sankhya-server/src/aggregations.rs",
+     "                reviewable.then(|| aggregation.source.clone()),",
+     "                Some(aggregation.source.clone()),",
+     "sankhya-server"),
+
     # --- Phase 4: the boundary a user function runs behind ---------------------------------------
 
     # `SEC-09`. Mapping the namespace's root to the server's uid made the worker root *inside*

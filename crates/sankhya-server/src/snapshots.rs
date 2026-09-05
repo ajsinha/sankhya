@@ -361,6 +361,19 @@ pub(crate) fn drop_it(
     Ok(acknowledged("DROP SNAPSHOT"))
 }
 
+/// Whether this caller has business seeing a snapshot at all.
+///
+/// The subject who took it, or somebody who may read every table it pins --- the same rule
+/// [`drop_it`] applies, and deliberately the same: a listing that showed what a caller could
+/// not then drop, or hid what they could, would be two answers to one question.
+fn visible_to(server: &Server, principal: &Principal, snapshot: &Snapshot) -> bool {
+    if snapshot.taken_by == principal.subject() {
+        return true;
+    }
+    let pins: Vec<String> = snapshot.tables.keys().cloned().collect();
+    server.scope_across(principal, &pins).is_some()
+}
+
 /// Answer `SHOW SNAPSHOTS`.
 ///
 /// Reports what each one pins and when it expires, because a snapshot holds storage on
@@ -458,7 +471,20 @@ pub(crate) fn run_statement(
                     ),
                 ));
             }
-            Ok(show(&snapshots, server.today()))
+            // Only the ones this caller has business seeing, by the same rule that decides
+            // who may drop one: the subject who took it, or somebody who may read every table
+            // it pins. A snapshot row carries the **qualified names of the tables it pins**,
+            // so an unfiltered listing hands the shape of a warehouse to any connection.
+            // `SEC-18`.
+            //
+            // Filtered rather than refused, and the row count is not reported either way ---
+            // "you may see 2 of 7" would answer the question the filtering exists to leave
+            // unanswered.
+            let visible: Vec<Snapshot> = snapshots
+                .into_iter()
+                .filter(|snapshot| visible_to(server, principal, snapshot))
+                .collect();
+            Ok(show(&visible, server.today()))
         }
         Statement::Drop { name, if_exists } => {
             drop_it(server, principal, &name, if_exists)
