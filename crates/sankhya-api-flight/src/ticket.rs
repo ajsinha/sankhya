@@ -37,6 +37,16 @@ use std::fmt;
 pub struct Ticket {
     /// Whose data this permits reaching.
     tenant: TenantId,
+    /// Who it was issued to.
+    ///
+    /// # Why a tenant is not enough
+    ///
+    /// It was, once. Roles were a property of the tenant, so every caller of one tenant saw
+    /// the same rows and a ticket that named the tenant named everything that mattered. Roles
+    /// became per-subject and that sentence stopped being true without the code changing ---
+    /// which is how a leaked ticket came to be redeemable by any colleague of the person it
+    /// was issued to, at that person's entitlements. `SEC-03`.
+    subject: String,
     /// The statement that was planned and authorized.
     statement: String,
     /// The table snapshot the plan was made against.
@@ -54,6 +64,7 @@ impl Ticket {
     #[must_use]
     pub fn issue(
         tenant: TenantId,
+        subject: impl Into<String>,
         statement: impl Into<String>,
         snapshot: u64,
         now: i64,
@@ -61,6 +72,7 @@ impl Ticket {
     ) -> Self {
         Self {
             tenant,
+            subject: subject.into(),
             statement: statement.into(),
             snapshot,
             // Clamped rather than refused: a caller asking for longer than the maximum is
@@ -88,13 +100,27 @@ impl Ticket {
         &self.tenant
     }
 
-    /// Whether this ticket may be redeemed now, by this tenant.
+    /// Who it was issued to.
     ///
-    /// The tenant check is not a second authorization --- the decision was made when the
+    /// Read at redemption to rebuild the session as *that* caller, so the rows a ticket yields
+    /// are the rows its holder was entitled to when it was planned --- not the rows whoever
+    /// presents it happens to be entitled to now.
+    #[must_use]
+    pub fn subject(&self) -> &str {
+        &self.subject
+    }
+
+    /// Whether this ticket may be redeemed now, by this caller.
+    ///
+    /// The identity check is not a second authorization --- the decision was made when the
     /// ticket was issued. It is the one thing that can be verified without repeating that
     /// decision, and it is what stops a leaked ticket being useful to somebody else.
-    pub fn admit(&self, presented_by: &TenantId, now: i64) -> Result<(), Refused> {
-        if self.tenant != *presented_by {
+    ///
+    /// **Both halves**, and the subject is the one that was missing. Checking only the tenant
+    /// made a ticket redeemable by any colleague of the person it was issued to --- at that
+    /// person's entitlements, since the plan inside it was made under their roles. `SEC-03`.
+    pub fn admit(&self, presented_by: &Caller, now: i64) -> Result<(), Refused> {
+        if self.tenant != presented_by.tenant || self.subject != presented_by.subject {
             return Err(Refused::WrongTenant);
         }
         if now >= self.expires_at {
@@ -122,8 +148,9 @@ impl Ticket {
         // Length-prefixed, so a statement containing the separator cannot split the ticket
         // into different fields than it was written with.
         let mut out = Vec::new();
-        out.extend_from_slice(b"skhyft1");
+        out.extend_from_slice(b"skhyft2");
         push_string(&mut out, &self.tenant.to_string());
+        push_string(&mut out, &self.subject);
         push_string(&mut out, &self.statement);
         out.extend_from_slice(&self.snapshot.to_be_bytes());
         out.extend_from_slice(&self.expires_at.to_be_bytes());
@@ -137,8 +164,14 @@ impl Ticket {
     /// length wrong would have learned the format.
     #[must_use]
     pub fn decode(bytes: &[u8]) -> Option<Self> {
-        let rest = bytes.strip_prefix(b"skhyft1")?;
+        // `skhyft2`, and a `skhyft1` ticket no longer decodes. That is deliberate: a v1
+        // ticket names no subject, so honouring one would mean choosing a subject for it, and
+        // every available choice is the hole this version exists to close. A client holding
+        // one gets "not a ticket this server issued" and plans again, which costs a round trip
+        // once.
+        let rest = bytes.strip_prefix(b"skhyft2")?;
         let (tenant, rest) = take_string(rest)?;
+        let (subject, rest) = take_string(rest)?;
         let (statement, rest) = take_string(rest)?;
         if rest.len() != 16 {
             return None;
@@ -151,6 +184,7 @@ impl Ticket {
         let uuid = uuid::Uuid::parse_str(tenant.strip_prefix("tenant:")?).ok()?;
         Some(Self {
             tenant: TenantId::from_uuid(uuid),
+            subject,
             statement,
             snapshot,
             expires_at,
@@ -172,6 +206,29 @@ fn take_string(bytes: &[u8]) -> Option<(String, &[u8])> {
         .ok()?
         .to_string();
     Some((text, bytes.get(4 + length..)?))
+}
+
+/// Who is presenting a ticket, or asking for one.
+///
+/// A tenant and a subject together, because the tenant alone stopped identifying a set of rows
+/// the day roles became per-subject.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Caller {
+    /// Whose data they may reach.
+    pub tenant: TenantId,
+    /// Who they authenticated as.
+    pub subject: String,
+}
+
+impl Caller {
+    /// A caller of this tenant, named.
+    #[must_use]
+    pub fn new(tenant: TenantId, subject: impl Into<String>) -> Self {
+        Self {
+            tenant,
+            subject: subject.into(),
+        }
+    }
 }
 
 /// Why a ticket was not honoured.

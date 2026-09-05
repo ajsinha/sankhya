@@ -564,6 +564,15 @@ async fn showing_feeds_reports_every_declared_feed_and_its_state() {
 async fn resuming_a_feed_sets_it_running_and_resuming_a_typo_is_refused() {
     let (server, _dir) = server_over(|tables| permissive_policy(&tenant(), tables));
     server.feeds().declare("orders");
+    // And what it writes into, which is what `RESUME FEED` is authorized against. Declaring
+    // the feed's *state* without its target is a feed the server knows is halted and cannot
+    // say whose table it fills --- and that is refused rather than resumed. `SEC-04`.
+    feeds::declare_targets(
+        &server,
+        [("orders".to_string(), TableRef::new("public", "example"))]
+            .into_iter()
+            .collect(),
+    );
     server.feeds().halted("orders", "a reason", 1);
     assert!(!server.feeds().should_run("orders"));
 
@@ -577,6 +586,26 @@ async fn resuming_a_feed_sets_it_running_and_resuming_a_typo_is_refused() {
         .expect_err("no feed by that name");
     assert!(refused.message.contains("odrers"), "{}", refused.message);
     assert!(refused.message.contains("SHOW FEEDS"), "{}", refused.message);
+
+    // A feed the server knows is halted and whose target it cannot name is refused with the
+    // same sentence. Not knowing what a feed writes into is not permission to start it, and
+    // the refusal must not distinguish that case from an unknown name --- otherwise it says
+    // which feeds exist.
+    server.feeds().declare("sessions");
+    server.feeds().halted("sessions", "a reason", 1);
+    let untargeted = server
+        .query("RESUME FEED sessions", &Caller::new(&anyone()))
+        .expect_err("a feed whose target is unknown");
+    assert!(untargeted.message.contains("sessions"), "{}", untargeted.message);
+    assert!(
+        untargeted.message.contains("SHOW FEEDS"),
+        "the same sentence an unknown name gets: {}",
+        untargeted.message
+    );
+    assert!(
+        !server.feeds().should_run("sessions"),
+        "it must not have been resumed"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

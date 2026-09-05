@@ -14,4 +14,4 @@ pub mod service;
 pub mod ticket;
 
 pub use service::{Queries, SankhyaFlight, TICKET_LIFETIME_MICROS};
-pub use ticket::{Refused, Ticket};
+pub use ticket::{Caller, Refused, Ticket};

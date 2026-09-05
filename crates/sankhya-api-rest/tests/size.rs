@@ -7,7 +7,7 @@
     clippy::indexing_slicing
 )]
 
-use sankhya_api_flight::ticket::Ticket;
+use sankhya_api_flight::ticket::{Caller, Ticket};
 use sankhya_api_rest::size::{deliver, Budget, Delivery, Estimate, MAX_BYTES, MAX_ROWS};
 use sankhya_types::TenantId;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -17,7 +17,12 @@ fn tenant() -> TenantId {
 }
 
 fn ticket() -> Ticket {
-    Ticket::issue(tenant(), "SELECT * FROM sales.orders", 7, 0, 60_000_000)
+    Ticket::issue(tenant(), "ana", "SELECT * FROM sales.orders", 7, 0, 60_000_000)
+}
+
+/// The caller a ticket here is issued to.
+fn ana() -> Caller {
+    Caller::new(tenant(), "ana")
 }
 
 // --- the decision -------------------------------------------------------
@@ -288,12 +293,20 @@ fn the_ticket_handed_back_is_bound_to_the_tenant_that_asked() {
     ) else {
         panic!("redirected");
     };
-    assert!(ticket.admit(&tenant(), 1_000).is_ok());
+    assert!(ticket.admit(&ana(), 1_000).is_ok());
 
-    let somebody_else = TenantId::from_uuid(uuid::Uuid::from_u128(2));
+    let another_tenant = Caller::new(TenantId::from_uuid(uuid::Uuid::from_u128(2)), "ana");
     assert!(
-        ticket.admit(&somebody_else, 1_000).is_err(),
+        ticket.admit(&another_tenant, 1_000).is_err(),
         "a ticket is redeemable only by whoever it was issued to"
+    );
+    // And a colleague of the same tenant, which is the half that was missing: roles are
+    // per-subject, so a ticket redeemed by somebody else yields the rows *its holder* was
+    // entitled to. `SEC-03`.
+    let colleague = Caller::new(tenant(), "bob");
+    assert!(
+        ticket.admit(&colleague, 1_000).is_err(),
+        "a ticket is redeemable only by the subject it names, not by anybody of that tenant"
     );
 }
 
@@ -310,9 +323,9 @@ fn the_ticket_expires() {
     ) else {
         panic!("redirected");
     };
-    assert!(ticket.admit(&tenant(), 59_000_000).is_ok());
+    assert!(ticket.admit(&ana(), 59_000_000).is_ok());
     assert!(
-        ticket.admit(&tenant(), 61_000_000).is_err(),
+        ticket.admit(&ana(), 61_000_000).is_err(),
         "a redirection that never expires is a permanent credential"
     );
 }

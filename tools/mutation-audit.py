@@ -4897,6 +4897,59 @@ CATALOGUE = [
      "            Mask::Constant { .. } => Arc::clone(&values),",
      "sankhya-catalog"),
 
+    # --- Phase 4: who a statement runs as --------------------------------------------------------
+
+    # `SEC-03`. The subject was read from the metadata, checked non-empty, and discarded, so
+    # every Flight request ran as one literal identity --- and a user an operator had
+    # deliberately left out of the roles map connected there and was served.
+    ("flight: run every request as the same identity",
+     "crates/sankhya-server/src/flight.rs",
+     "        let context = self.session_for(&caller.subject)?;",
+     "        let context = self.session_for(\"flight\")?;",
+     "sankhya-server"),
+
+    # And at redemption, which is the half a leaked ticket travels through.
+    ("flight: rebuild the session as whoever presents the ticket rather than whoever it names",
+     "crates/sankhya-server/src/flight.rs",
+     "        let context = self.session_for(ticket.subject())?;",
+     "        let context = self.session_for(\"flight\")?;",
+     "sankhya-server"),
+
+    # A ticket carried a tenant and not a subject. Roles were once a property of the tenant, so
+    # that named everything that mattered; roles became per-subject and the sentence stopped
+    # being true with no code changing and no test failing.
+    ("flight: admit a ticket on its tenant alone",
+     "crates/sankhya-api-flight/src/ticket.rs",
+     "        if self.tenant != presented_by.tenant || self.subject != presented_by.subject {",
+     "        if self.tenant != presented_by.tenant {",
+     "sankhya-api-flight"),
+
+    # `SEC-04`. `DROP SNAPSHOT` took no principal at all. A snapshot holds files back from the
+    # sweeper, so dropping one releases them --- the deletion `INVARIANTS.md` says the
+    # maintenance scheduler is structurally incapable of performing.
+    ("server: let anybody drop any snapshot",
+     "crates/sankhya-server/src/snapshots.rs",
+     "    if !mine && server.scope_across(principal, &pins).is_none() {",
+     "    if false {",
+     "sankhya-server"),
+
+    # And a snapshot document nobody can read is refused rather than dropped: not being able to
+    # tell what it pins is not permission to release it.
+    ("server: drop a snapshot whose document cannot be read",
+     "crates/sankhya-server/src/snapshots.rs",
+     "    let held = read_one(&path).ok_or_else(|| {",
+     "    let held = read_one(&path).or_else(|| Some(Snapshot::new(String::new(), String::new(), 0, 0, BTreeMap::new()))).ok_or_else(|| {",
+     "sankhya-server"),
+
+    # `RESUME FEED` restarts an ingest `ADR-0018` halted because its source changed shape. It
+    # took no principal, so any caller could decide that records of an unknown shape should
+    # start landing in somebody else's table again.
+    ("server: let anybody resume any feed",
+     "crates/sankhya-server/src/feeds.rs",
+     "            if server.scope_for(principal, &table).is_none() {",
+     "            if false {",
+     "sankhya-server"),
+
     # --- Phase 4: a name in a statement is not a path -------------------------------------------
 
     # `SEC-06`. An allow-list is one line and has no tail; the deny-list it replaces has to stay

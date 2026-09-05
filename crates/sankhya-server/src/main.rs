@@ -831,9 +831,19 @@ async fn main() -> std::io::Result<()> {
         // Declared up front, so a feed that has never managed to run is still visible to
         // `SHOW FEEDS` --- which is the case an operator most needs to see.
         let standing = server.feeds();
+        let mut targets = std::collections::BTreeMap::new();
         for feed in &declared {
             standing.declare(feed.feed.name());
+            // What each one writes into, so `RESUME FEED` can be authorized against the same
+            // table a query would be. Recorded here because this is the only place that knows
+            // both the feed's name and its declaration.
+            let declaration = feed.feed.declaration();
+            targets.insert(
+                feed.feed.name().to_owned(),
+                sankhya_authz::policy::TableRef::new(&declaration.schema, &declaration.table),
+            );
         }
+        feeds::declare_targets(&server, targets);
         println!(
             "  {} feed(s) declared: {}",
             declared.len(),

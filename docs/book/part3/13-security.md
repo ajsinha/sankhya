@@ -207,6 +207,58 @@ catalogue does not scan, and the result is a table that exists and cannot be fou
 > **Pitfall** — Reasoning that a path *cannot* escape is not a control. It is a comment that
 > was true when it was written, attached to code somebody else will change.
 
+## 13.2c A statement runs as somebody, and three of them did not
+
+Three surfaces reached state without ever asking who was asking.
+
+### Flight ran every request as a literal
+
+`let _user = Self::user_of(request_metadata)?;` — the name was read, checked non-empty, and
+**discarded**. Every Flight request then executed as the subject `"flight"`, whose roles came out
+of the same default branch as any unknown name's. A user an operator had deliberately left out of
+`server.users` connected to that port and read. The port is always bound. `SEC-03`.
+
+The module's own comment explained why this was safe: *"today loses nothing… every user of a
+tenant gets the same roles"*. That was true when it was written. It stopped being true the day
+roles became per-subject, and **nothing changed and nothing failed** — which is the failure mode
+that comment shape has, and the reason this book prefers a check to an explanation.
+
+The ticket now carries the subject as well as the tenant, and redemption checks both. The
+consequence of checking only the tenant was not merely that a leaked ticket was usable: it was
+usable *at the entitlements of the person it was issued to*, because the plan inside it was made
+under their roles and Flight deliberately does not re-authorize at redemption.
+
+A `skhyft1` ticket — the version before the subject existed — no longer decodes. Honouring one
+would mean choosing a subject for it, and every available choice is the hole this closes. A
+client holding one is told it is not a ticket this server issued and plans again.
+
+### `DROP SNAPSHOT` took no principal
+
+So any caller could drop any snapshot. A snapshot's whole job is to hold files back from the
+sweeper, so dropping one releases them — and `docs/INVARIANTS.md` claims the maintenance
+scheduler is *structurally incapable* of destroying retained history. It is. A statement was
+doing it instead. `SEC-04`.
+
+The rule now is: the subject who took it, or a caller who may read every table it pins. The
+second half is what keeps an operator able to clean up after somebody who has left, and it is the
+rule `DROP CUBE` already followed — a principal who cannot read what a thing is built on has no
+business removing it. A snapshot document that cannot be *read* is refused rather than dropped:
+not being able to tell what it pins is not permission to release it.
+
+### `RESUME FEED` took no principal either
+
+`SHOW FEEDS` reports what the server is doing and stays ungated: names an operator configured,
+counts this process moved, and why something stopped. There is no table to check a scope against.
+
+`RESUME FEED` is a different thing that was treated the same way. It restarts an ingest that
+`ADR-0018` halted **because its source changed shape** — so resuming one is deciding that records
+of an unknown shape should start landing in a table again. It is now authorized against the table
+the feed writes into.
+
+> **Pitfall** — All three refusals are the same sentence as *"there is no such thing"*. Saying
+> "you may not touch that" confirms it exists, and the name of a snapshot or a feed is something
+> somebody chose.
+
 ## 13.3 A table you may not read does not exist
 
 Only the tables a principal may read are registered into the session. Naming one that is not
