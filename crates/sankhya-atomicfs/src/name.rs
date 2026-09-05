@@ -26,7 +26,7 @@
 //! deadline attached.
 //!
 //! Saying what a name **may** contain is one line and has no tail. The cost is that a name
-//! outside the set is refused rather than escaped, which is the trade this repository makes
+//! outside the set is refused rather than escaped, which is the choice this repository makes
 //! everywhere else: refuse rather than substitute. An operator who wanted `sales/2024` can
 //! write `sales_2024`; an operator who wanted `../../etc/passwd` can be refused.
 

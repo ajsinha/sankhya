@@ -176,6 +176,7 @@ async fn a_short_run_under_concurrent_load_is_judged() {
             require_password: false,
             user_functions: false,
             metrics_detail: false,
+            policy: None,
             metrics_listen: None,
             transport_security: None,
         },

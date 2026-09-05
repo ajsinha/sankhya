@@ -77,8 +77,8 @@ impl Journal {
     /// # Why this syncs every time
     ///
     /// Because the alternative is an audit that is missing precisely the records written in the
-    /// seconds before the thing that made the audit interesting. Buffering here would trade the
-    /// one property this file exists to provide for a write rate no audit needs: this is one
+    /// seconds before the thing that made the audit interesting. Buffering here would give up the
+    /// one property this file exists to provide, for a write rate no audit needs: this is one
     /// line per statement, not one per row.
     ///
     /// # Errors

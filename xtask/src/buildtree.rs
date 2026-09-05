@@ -54,15 +54,20 @@ pub fn sweep(root: &Path, dry_run: bool) -> bool {
     let (before, _) = tree_size(&target);
     let mut removed_files = 0_u64;
     let mut removed_bytes = 0_u64;
-    for profile in ["debug", "release"] {
-        for dir in ["deps", "examples"] {
-            let at = target.join(profile).join(dir);
-            if !at.exists() {
-                continue;
+    // `lints/` too: clippy builds into a directory of its own so that it and `cargo test`
+    // stop invalidating each other, and a directory nobody sweeps is a directory that grows
+    // until it takes the machine hostage --- which is what this whole file exists to stop.
+    for root in [target.clone(), target.join("lints")] {
+        for profile in ["debug", "release"] {
+            for dir in ["deps", "examples"] {
+                let at = root.join(profile).join(dir);
+                if !at.exists() {
+                    continue;
+                }
+                let (f, b) = sweep_dir(&at, dry_run);
+                removed_files += f;
+                removed_bytes += b;
             }
-            let (f, b) = sweep_dir(&at, dry_run);
-            removed_files += f;
-            removed_bytes += b;
         }
     }
     let gb = removed_bytes as f64 / 1024.0 / 1024.0 / 1024.0;

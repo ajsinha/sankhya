@@ -4941,6 +4941,39 @@ CATALOGUE = [
      "            None,",
      "sankhya-server"),
 
+    # --- Phase 4: a policy the binary can be configured with -------------------------------------
+
+    # `SEC-15`. `start()` --- the only path the shipped binary takes --- built `permissive_policy`
+    # and no configuration key loaded a policy set at all, so the row-predicate enforcement had
+    # never run outside a test.
+    ("server: ignore the policy an operator configured",
+     "crates/sankhya-server/src/wiring.rs",
+     "    let policy = settings\n        .policy\n        .clone()\n        .unwrap_or_else(|| permissive_policy(&settings.tenant, &tables));",
+     "    let policy = permissive_policy(&settings.tenant, &tables);",
+     "sankhya-server", 1, "disclosure"),
+
+    # A rule that does not parse is refused rather than skipped. A policy with a rule silently
+    # dropped permits more than it says, and whoever wrote it believes it is in force.
+    ("server: skip a policy rule that names a table without its schema",
+     "crates/sankhya-server/src/policy.rs",
+     "    let Some((schema, bare)) = table.split_once('.') else {",
+     "    let Some((schema, bare)) = table.split_once('.').or(Some((\"\", table.as_str()))) else {",
+     "sankhya-server", 1, "disclosure"),
+
+    # And the row predicate itself, which is the half that had never reached a deployment.
+    ("server: read a rule's predicate and not apply it",
+     "crates/sankhya-server/src/policy.rs",
+     "    if let Some(predicate) = fields.get(\"where\") {",
+     "    if let Some(predicate) = fields.get(\"where\").filter(|_| false) {",
+     "sankhya-server", 1, "disclosure"),
+
+    # And the masks beside it.
+    ("server: read a rule's masks and not apply them",
+     "crates/sankhya-server/src/policy.rs",
+     "        let Some(column) = field.strip_prefix(\"mask.\") else {",
+     "        let Some(column) = field.strip_prefix(\"\\u{0}\") else {",
+     "sankhya-server", 1, "disclosure"),
+
     # --- Phase 4: what an unauthenticated endpoint says ------------------------------------------
 
     # `SEC-08`. `/metrics` is unauthenticated by convention and the per-table gauge's label is a
@@ -6273,6 +6306,40 @@ def regression_files():
                                       "*.proptest-regressions")))
 
 
+def judge(crate, hint):
+    """Run the tests and say whether the mutation was caught.
+
+    `hint` is an optional test target --- the seventh field of an entry --- and it exists for
+    one reason: `cargo test -p sankhya-server` builds sixteen test binaries, and most mutations
+    are only reachable from one of them. Running the named target first turns a five-minute
+    verdict into a thirty-second one.
+
+    A hint that is **wrong** costs a re-run and never a wrong answer. `caught` from the named
+    target is caught, whatever the rest of the crate would have said. `SURVIVED` from it is not
+    trusted: the whole crate is run before that verdict is reported, because a hint that named
+    the wrong target would otherwise turn a covered mutation into a false alarm --- and a list
+    with false alarms on it is a list people stop reading, which is the failure this whole file
+    exists to prevent.
+    """
+    def once(arguments):
+        p = subprocess.run(["cargo", "test", "-p", crate, "--quiet"] + arguments,
+                           cwd=ROOT, capture_output=True, text=True, timeout=1800)
+        out = p.stdout + p.stderr
+        if "error[E" in out or "could not compile" in out:
+            return "no compile", True
+        if p.returncode == 0:
+            return "SURVIVED", False
+        return "caught", True
+
+    if hint:
+        verdict, ok = once(["--test", hint])
+        # A named target that caught it, or would not compile, is the answer. Only a survival
+        # has to be checked against everything else.
+        if verdict != "SURVIVED":
+            return verdict, ok
+    return once([])
+
+
 def check_only():
     """Verify every catalogue entry still matches its source, without running anything.
 
@@ -6288,10 +6355,18 @@ def check_only():
     # where three should be: the outer one runs `cargo test -p <tuple>`, and the two it
     # swallowed never run at all. That happened here and survived because every check in
     # this file only ever looked at the first three fields, which are strings either way.
+    #
+    # Seven fields now: the seventh is an optional test target, which lets a mutation run one
+    # test binary instead of a crate's sixteen. It is checked here too, because the whole point
+    # of this list is that a shape nobody validates is a shape that silently means something
+    # else.
     malformed = [
         entry
         for entry in CATALOGUE
-        if len(entry) not in (5, 6) or not all(isinstance(field, str) for field in entry[:5])
+        if len(entry) not in (5, 6, 7)
+        or not all(isinstance(field, str) for field in entry[:5])
+        or (len(entry) > 5 and not isinstance(entry[5], int))
+        or (len(entry) > 6 and not isinstance(entry[6], str))
     ]
     for entry in malformed:
         print(f"{'MALFORMED':10} {entry[0]}\n{'':10} an entry of {len(entry)} field(s); a "
@@ -6388,6 +6463,7 @@ def main():
         if os.path.exists(path):
             before[path] = digest(path)
 
+
     survivors, missing = [], []
     for entry in entries:
         label, relpath, find, repl, crate = entry[:5]
@@ -6404,15 +6480,7 @@ def main():
         begin(path, original)
         open(path, "w").write(original.replace(find, repl, count))
         try:
-            p = subprocess.run(["cargo", "test", "-p", crate, "--quiet"],
-                               cwd=ROOT, capture_output=True, text=True, timeout=1800)
-            out = p.stdout + p.stderr
-            if p.returncode == 0:
-                verdict, ok = "SURVIVED", False
-            elif "error[E" in out or "could not compile" in out:
-                verdict, ok = "no compile", True
-            else:
-                verdict, ok = "caught", True
+            verdict, ok = judge(crate, entry[6] if len(entry) > 6 else None)
         finally:
             finish(path, original)
 

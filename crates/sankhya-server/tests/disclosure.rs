@@ -21,7 +21,7 @@
 
 mod common;
 
-use common::{start_with, write_warehouse, Running, Session};
+use common::{start_with, text_rows_as, write_warehouse, Running, Session};
 
 /// A server on which `ana` reads and `mallory` holds no role at all.
 fn running() -> (tempfile::TempDir, Running) {
@@ -304,5 +304,146 @@ fn the_audit_survives_a_restart() {
         second.said_matching("audit chain head").next().is_some(),
         "the head is printed at every start, because a local chain cannot detect its own \
          truncation and publishing the head is what makes the true length knowable"
+    );
+}
+
+// --- a policy the binary can actually be configured with --------------------
+
+/// A server whose policy comes from a file, the way an operator writes one.
+fn under_policy(rules: &str) -> (tempfile::TempDir, Running) {
+    let dir = tempfile::tempdir().expect("a directory");
+    let warehouse = dir.path().join("warehouse");
+    write_warehouse(&warehouse);
+    let config = dir.path().join("application.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "warehouse: {}\nlisten: 127.0.0.1:0\nserver:\n  users:\n    ana: analyst\n    \
+             mallory: intern\n    quickstart: analyst\npolicy:\n  rules:\n{rules}",
+            warehouse.display()
+        ),
+    )
+    .expect("writing the configuration");
+    let server = start_with(
+        &warehouse,
+        &dir.path().join("data"),
+        &[("SANKHYA_CONFIG", config.to_str().expect("a path"))],
+    );
+    (dir, server)
+}
+
+#[test]
+fn a_policy_an_operator_wrote_is_the_policy_in_force() {
+    // `SEC-15`. `start()` --- the only path the shipped binary takes --- built
+    // `permissive_policy`, granting `reader` read on every discovered table with no filter and
+    // no mask, and **no configuration key loaded a policy set at all**. So the row-predicate
+    // enforcement, which §13.2 spends four pages on and which is the best-tested code in the
+    // repository, had never run outside a test. The binary could express "everything" or
+    // "nothing" and nothing in between.
+    let (_dir, server) = under_policy(
+        "    analysts_read_orders:\n      role: analyst\n      table: sales.orders\n      \
+         action: read\n",
+    );
+
+    // The grant is in force.
+    let seen = Session::open_as(server.port, "ana")
+        .run("SELECT region FROM orders")
+        .expect("the analyst's grant is in force");
+    assert!(seen > 0, "and it returns rows: {seen}");
+
+    // And the absence of one is too. `mallory` holds `intern`, which no rule mentions --- so
+    // there is no grant, and a table nobody granted does not exist as far as they are
+    // concerned.
+    let refused = Session::open_as(server.port, "mallory")
+        .run("SELECT region FROM orders")
+        .expect_err("no rule grants `intern` anything");
+    assert!(
+        !refused.contains("sales.orders"),
+        "and the refusal does not name what they may not read: {refused}"
+    );
+}
+
+#[test]
+fn a_row_predicate_an_operator_wrote_reaches_the_scan() {
+    // The half that had never run in a deployment. A `where` on a rule is conjoined into every
+    // scan of that table for that role, above the provider so nothing can decline it --- and
+    // until `SEC-15` there was no way to write one outside a test.
+    let (_dir, server) = under_policy(
+        "    analysts_read_north:\n      role: analyst\n      table: sales.orders\n      \
+         action: read\n      where: \"region = 'north'\"\n",
+    );
+
+    let restricted = Session::open_as(server.port, "ana")
+        .run("SELECT region FROM orders")
+        .expect("the analyst may read");
+    let everything = Session::open_as(server.port, "ana")
+        .run("SELECT region FROM orders WHERE region = 'north'")
+        .expect("and may say so themselves");
+    assert_eq!(
+        restricted, everything,
+        "a query with no predicate must return exactly the rows the policy's predicate allows: \
+         {restricted} against {everything}"
+    );
+    assert!(restricted > 0, "and the fixture must have northern rows: {restricted}");
+
+    // The tautology, which is what §13.2 promises: the policy is not part of the query, so a
+    // query cannot widen it.
+    let widened = Session::open_as(server.port, "ana")
+        .run("SELECT region FROM orders WHERE region = 'south' OR 1 = 1")
+        .expect("the statement runs");
+    assert_eq!(
+        widened, restricted,
+        "a tautology in the query must not widen the policy: {widened} against {restricted}"
+    );
+}
+
+#[test]
+fn a_column_mask_an_operator_wrote_reaches_the_answer() {
+    // And the other rewrite, closed in 4.2 and unreachable from a deployment until now.
+    let (_dir, server) = under_policy(
+        "    analysts_read_orders:\n      role: analyst\n      table: sales.orders\n      \
+         action: read\n      mask:\n        region: null\n",
+    );
+
+    let rows = text_rows_as(server.port, "ana", "SELECT region FROM orders");
+    assert!(!rows.is_empty(), "the analyst may read the rows");
+    assert!(
+        rows.iter().all(|row| row.first().is_some_and(Option::is_none)),
+        "a masked column returns no value: {rows:?}"
+    );
+}
+
+#[test]
+fn a_policy_that_does_not_parse_stops_the_server() {
+    // Refused rather than skipped. A policy with a rule silently dropped permits more than it
+    // says, and the person who wrote the rule believes it is in force --- which is the worst
+    // available outcome for a file whose whole purpose is to be reviewed.
+    let dir = tempfile::tempdir().expect("a directory");
+    let warehouse = dir.path().join("warehouse");
+    write_warehouse(&warehouse);
+    let config = dir.path().join("application.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "warehouse: {}\nlisten: 127.0.0.1:0\npolicy:\n  rules:\n    broken:\n      \
+             role: analyst\n      table: orders\n      action: read\n",
+            warehouse.display()
+        ),
+    )
+    .expect("writing the configuration");
+
+    let said = std::process::Command::new(env!("CARGO_BIN_EXE_sankhya-server"))
+        .arg("start")
+        .env("SANKHYA_CONFIG", &config)
+        .env("SANKHYA_DATA_DIR", dir.path().join("data"))
+        .env_remove("SANKHYA_WAREHOUSE")
+        .output()
+        .expect("the binary runs");
+
+    assert!(!said.status.success(), "a policy that does not parse must stop the server");
+    let text = String::from_utf8_lossy(&said.stderr);
+    assert!(
+        text.contains("schema"),
+        "and must say what it could not read --- here, a table named without its schema: {text}"
     );
 }

@@ -86,7 +86,7 @@ The rule is: widen the API, never the allowance.
 git clone https://github.com/ajsinha/sankhya.git && cd sankhya
 cargo build --workspace          # several minutes on a first build
 vendor/postgresql/build.sh       # ~2 min, idempotent, 35 MB installed
-cargo test --workspace           # 2,749 tests, none of which needs a database
+cargo test --workspace           # 2,758 tests, none of which needs a database
 ```
 
 Nothing is mocked. The Parquet is real Parquet, the Delta logs are read back by an independent
@@ -99,7 +99,7 @@ Five gates run outside or alongside the suite:
 ```bash
 cargo xtask check-all                        # every repository invariant (§27.4)
 cargo xtask check-concurrency                # ADR-0013's measurements, alone (also inside check-all)
-python3 tools/mutation-audit.py              # 870 deliberate defects, one at a time
+python3 tools/mutation-audit.py              # 874 deliberate defects, one at a time
 cargo xtask check-performance                # the NFR-PERF objectives, as a gate that can fail
 SANKHYA_RELEASE=1 cargo xtask check-package  # the release artifact's platform baseline
 crates/sankhya-cdc-apply/tests/run_e2e.sh    # capture against a live database
@@ -140,7 +140,7 @@ trace of which paragraph went missing — which happened to an owner decision in
 ## 27.5 The mutation audit
 
 ```bash
-python3 tools/mutation-audit.py            # the whole catalogue: 870 sequential cargo test runs
+python3 tools/mutation-audit.py            # the whole catalogue: 874 sequential cargo test runs
 python3 tools/mutation-audit.py splice     # only entries whose label matches
 ```
 
@@ -177,6 +177,12 @@ Four rules govern adding one.
    occurrences and refuses an entry that matches more often than its sixth element allows.
 5. **A `SURVIVOR` is a gap in the tests, not necessarily a bug in the code.** The correct response
    is usually a better test.
+6. **An entry may name the test target that covers it**, as an optional seventh element.
+   `cargo test -p sankhya-server` builds sixteen test binaries and most mutations are reachable
+   from one of them, so naming it turns a five-minute verdict into a thirty-second one. A hint
+   that is *wrong* costs a re-run and never a wrong answer: `caught` from the named target is
+   caught, and `SURVIVED` from it is re-run against the whole crate before it is reported —
+   because a false alarm on this list is how people learn to stop reading it.
 
 > **Pitfall**
 > Rule 4 was added on 2026-09-04 and immediately found **fifteen** entries that named text

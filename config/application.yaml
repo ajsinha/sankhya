@@ -158,3 +158,44 @@ maintenance:
   # it. The age policy will not let one be removed until it is a week old in any case, so
   # sweeping more often finds the same files and deletes none of them sooner.
   orphan_sweep_every: 120
+
+# The policy: who may read what, under which restriction.
+#
+# Until this section existed, no configuration key loaded a policy at all --- the shipped binary
+# built one that granted `reader` read on every discovered table, so it could express
+# "everything" or "nothing" and the row-predicate enforcement had never run outside a test
+# (`SEC-15`). Leaving this section out is still that first posture, and the startup line says so
+# in capitals rather than leaving you to find out.
+#
+# Each rule is named, and the name is yours: a refusal says which rule it could not read, and
+# "rule 3" is something you have to count to. A rule needs `role`, `table` and `action`;
+# `effect`, `where` and `mask` are optional. The table must be qualified --- a bare `orders`
+# means one table today and two the day somebody adds a schema, and the rule would then apply to
+# neither.
+#
+# A rule that does not parse stops the server. A policy with a rule silently dropped permits more
+# than it says, and you would believe the rule was in force.
+#
+# policy:
+#   rules:
+#     analysts_read_northern_orders:
+#       role: analyst
+#       table: sales.orders
+#       action: read
+#       # Conjoined into every scan, above the provider so nothing can decline it. A tautology in
+#       # a query cannot widen it, because the policy is not part of the query.
+#       where: "region = 'north'"
+#       # `null`, `constant:<text>` or `partial:<how many characters to keep>`. A mask a column
+#       # cannot carry --- text over an integer, or a column the table does not have --- is
+#       # refused when the table is opened rather than on the first query that selects it.
+#       mask:
+#         email: null
+#         phone: partial:4
+#
+#     interns_may_not_read_payroll:
+#       role: intern
+#       table: hr.payroll
+#       action: read
+#       # Spelled out rather than inferred from an absent grant, because forbidding is a decision
+#       # somebody made and should read as one. A denial beats any grant.
+#       effect: deny

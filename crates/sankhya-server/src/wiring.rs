@@ -125,6 +125,17 @@ pub struct Settings {
     /// A switch rather than silence, so an operator who wants user functions turns them on and
     /// knows they did.
     pub user_functions: bool,
+    /// The policy an operator configured, or `None` where they configured none.
+    ///
+    /// `None` is not "no policy": it is `permissive_policy`, which grants `reader` read on
+    /// every discovered table. That was the **only** thing the shipped binary could express ---
+    /// no configuration key loaded a policy set at all, so the row-predicate enforcement had
+    /// never run outside a test. `SEC-15`.
+    ///
+    /// Kept as an `Option` rather than defaulted here, so the startup line can say which of the
+    /// two postures is in force. A server that answers the same way whether or not somebody
+    /// wrote a policy is one where writing a policy is indistinguishable from not writing one.
+    pub policy: Option<PolicySet>,
     /// Whether `/metrics` may name individual tables.
     ///
     /// Off unless an operator says otherwise. The per-table gauge's label is the table's
@@ -878,10 +889,22 @@ impl Server {
         //
         // One format string rather than one per posture: the copies drift, and the one that
         // drifts is the one nobody reads.
+        // Which of the two policy postures is in force, and the one that is not a policy is
+        // capitalised. A server that answers the same way whether or not somebody wrote a
+        // policy is one where writing a policy is indistinguishable from not writing one ---
+        // and until `SEC-15` was closed there was no way to write one at all, so every
+        // deployment was in the second state and nothing said so.
+        let rules = match self.settings.policy {
+            Some(_) => format!("{} policy rule(s)", self.policy.len()),
+            None => format!(
+                "NO POLICY CONFIGURED — every authenticated user may read every one of the {} \
+                 table(s) below",
+                self.policy.len()
+            ),
+        };
         format!(
-            "tenant {}, {auth}, {} policy rule(s), {} table(s) known",
+            "tenant {}, {auth}, {rules}, {} table(s) known",
             self.settings.tenant,
-            self.policy.len(),
             self.tables.len()
         )
     }
@@ -2763,7 +2786,12 @@ pub async fn start(
         .collect();
 
     let tables = crate::warehouse::describe(&found);
-    let policy = permissive_policy(&settings.tenant, &tables);
+    // The operator's, where they wrote one. `permissive_policy` is what a warehouse somebody
+    // is trying out gets, and the startup line names which one this is.
+    let policy = settings
+        .policy
+        .clone()
+        .unwrap_or_else(|| permissive_policy(&settings.tenant, &tables));
     // Both doors' certificates, loaded once. A refusal here stops startup: an operator who
     // configured a certificate and gets a server listening in the clear has been told the
     // opposite of the truth by a process that exited zero.

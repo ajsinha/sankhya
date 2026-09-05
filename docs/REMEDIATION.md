@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2,749 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2,758 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -878,7 +878,32 @@ write says `IN MEMORY ONLY` in its startup line.
 write it down" has to keep the `Option`'s type --- which is a small thing, and the reason it is
 recorded is that a mutation that does not compile is silently no coverage at all.
 
-`4.8` is not started.
+**4.8 A policy the binary can be configured with (`SEC-15`).** `start()` --- the only path the
+shipped binary takes --- built a policy granting `reader` read on every discovered table, and **no
+configuration key loaded a policy set at all**. The row-predicate enforcement, which §13.2 spends
+four pages on and which is the best-tested code in the repository, had never run outside a test.
+
+This is a different kind of finding from the rest of the phase. Nothing was wrong; the thing was
+unreachable, and every page describing it described a capability nobody could configure.
+
+- Each rule is **named**, and the name is the operator's: a refusal that says "rule 3 does not
+  parse" is one somebody has to count to.
+- The table must be **qualified**. A bare `orders` means one table today and two the day somebody
+  adds a schema, and the rule would then apply to neither --- a contested bare name resolves
+  nowhere.
+- A rule that does not parse **stops the server**. A policy with a rule quietly dropped permits
+  more than it says, and whoever wrote it believes it is in force.
+- An absent policy is not an error, and the startup line says `NO POLICY CONFIGURED` in capitals
+  --- a server that answers the same way whether or not somebody wrote a policy is one where
+  writing a policy is indistinguishable from not writing one.
+
+**This also closed the gap 4.6 had to leave open.** The cube-listing filter could not be
+demonstrated through the front door because a caller granted nothing is refused a session before
+any listing runs, and there was no way to grant *something and not the fact table*. There is now,
+and `tests/disclosure.rs` exercises the row predicate and the column mask over a real socket
+against a policy read from a file --- both of which had, until this item, only ever run in process.
+
+**Phase 4 is complete.**
 
 ---
 

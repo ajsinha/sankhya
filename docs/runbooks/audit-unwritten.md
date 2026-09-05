@@ -44,7 +44,9 @@ If your deployment needs the stronger posture — refuse rather than answer unau
 change to `Server::append`, and it is the kind of change that should be made deliberately and
 written down, not discovered.
 
-## What to check, in order
+## What to do
+
+Check these in order.
 
 1. **Is the disk full?** `df -h` on the filesystem holding the warehouse. This is the common
    cause and the counter starts rising the moment it fills.

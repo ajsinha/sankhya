@@ -72,6 +72,7 @@ fn settings(warehouse: &std::path::Path) -> Settings {
         require_password: false,
         user_functions: false,
         metrics_detail: false,
+        policy: None,
         metrics_listen: None,
         transport_security: None,
     }
