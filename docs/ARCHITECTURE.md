@@ -905,7 +905,7 @@ The local disk cache admits on second access, so a single full scan cannot evict
 
 ### 8.2 Where security is enforced
 
-**All three engines resolve tables exclusively through the catalog, which returns a policy-rewritten provider.** Row-level security becomes a filter conjoined into the scan — not an optimizer hint, and its presence in the final physical plan is asserted. Column-level security becomes projection restriction plus a masking rewrite.
+**All three engines resolve tables exclusively through the catalog, which returns a policy-rewritten provider.** Row-level security becomes a filter conjoined into the scan — not an optimizer hint, and its presence in the final physical plan is asserted. Column-level security becomes projection restriction plus a masking projection above the scan, and any query predicate over a masked column is declared unsupported so it cannot be evaluated below the mask.
 
 **It is impossible to reach a table scan without a security context**, and this is enforced by the type system rather than by review: the catalog's resolution function takes a security context, and there is no other constructor for a provider.
 

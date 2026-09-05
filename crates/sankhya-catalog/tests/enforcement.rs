@@ -460,7 +460,7 @@ async fn the_columns_a_decision_masks_travel_with_the_table() {
     let policy = PolicySet::new().with(
         Rule::grant(tenant("acme"), Role::new("clerk"), orders(), Action::Read)
             .masking("email", Mask::Null)
-            .masking("total", Mask::Partial { keep: 2 }),
+            .masking("region", Mask::Partial { keep: 2 }),
     );
     let (_context, table) = secured(&policy, &person("ana", "acme", &["clerk"]))
         .await
@@ -468,7 +468,7 @@ async fn the_columns_a_decision_masks_travel_with_the_table() {
 
     let mut masked = table.masked_columns();
     masked.sort_unstable();
-    assert_eq!(masked, vec!["email", "total"]);
+    assert_eq!(masked, vec!["email", "region"]);
     assert_eq!(table.mask_for("email"), Some(&Mask::Null));
     assert_eq!(table.mask_for("id"), None);
 }
@@ -620,4 +620,354 @@ async fn a_denial_reason_is_the_same_whichever_way_it_was_denied() {
         sankhya_authz::policy::Decision::Allowed { .. } => String::new(),
     };
     assert_eq!(text(&by_absence), text(&by_rule));
+}
+
+// --- masks, applied -------------------------------------------------------
+//
+// `SEC-02`. Everything above this line about masks was true and inert: `masked_columns` and
+// `mask_for` reported what the policy said, `scan` never read either, and every query
+// returned the real value. A control that is declared, stored, hashed into the cache key,
+// documented in three places and never applied is worse than an absent one, because the
+// documentation is what an operator decides on.
+
+/// Every row of one column, as text, in the order the query returned them.
+async fn column(context: &SessionContext, sql: &str, name: &str) -> Vec<Option<String>> {
+    let batches = context
+        .sql(sql)
+        .await
+        .expect("the query plans")
+        .collect()
+        .await
+        .expect("the query runs");
+    let mut out = Vec::new();
+    for batch in &batches {
+        let index = batch.schema().index_of(name).expect("the column is there");
+        let array = batch.column(index);
+        for row in 0..batch.num_rows() {
+            out.push(if array.is_null(row) {
+                None
+            } else {
+                Some(
+                    datafusion::common::ScalarValue::try_from_array(array, row)
+                        .expect("a value")
+                        .to_string(),
+                )
+            });
+        }
+    }
+    out
+}
+
+/// A context with `orders` secured under `policy` for `principal`, registered by name.
+async fn registered(policy: &PolicySet, principal: &Principal) -> SessionContext {
+    let (context, table) = secured(policy, principal).await.expect("permitted");
+    context
+        .register_table("orders", table)
+        .expect("the table registers");
+    context
+}
+
+#[tokio::test]
+async fn a_null_mask_returns_no_value_at_all() {
+    let policy = PolicySet::new().with(
+        Rule::grant(tenant("acme"), Role::new("clerk"), orders(), Action::Read)
+            .masking("email", Mask::Null),
+    );
+    let context = registered(&policy, &person("ana", "acme", &["clerk"])).await;
+
+    let emails = column(&context, "SELECT email FROM orders", "email").await;
+    assert_eq!(
+        emails,
+        vec![None, None, None, None],
+        "a masked column must not return its values"
+    );
+    // The reach assertion. The fixture has four non-null addresses, so an empty result or a
+    // column that was never selected would satisfy the line above while proving nothing.
+    let ids = column(&context, "SELECT id FROM orders", "id").await;
+    assert_eq!(ids.len(), 4, "the rows are still there: {ids:?}");
+    let unmasked = column(&context, "SELECT region FROM orders", "region").await;
+    assert!(
+        unmasked.iter().all(Option::is_some),
+        "only the masked column is masked: {unmasked:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_partial_mask_keeps_the_tail_and_hides_the_rest() {
+    let policy = PolicySet::new().with(
+        Rule::grant(tenant("acme"), Role::new("clerk"), orders(), Action::Read)
+            .masking("email", Mask::Partial { keep: 4 }),
+    );
+    let context = registered(&policy, &person("ana", "acme", &["clerk"])).await;
+
+    let emails = column(&context, "SELECT email FROM orders ORDER BY id", "email").await;
+    assert_eq!(
+        emails,
+        vec![
+            Some("*********.com".to_string()),
+            Some("*********.com".to_string()),
+            Some("*********.com".to_string()),
+            Some("*********.com".to_string()),
+        ],
+        "the last four characters stay and the rest go, character by character"
+    );
+}
+
+#[tokio::test]
+async fn a_constant_mask_says_the_same_thing_about_every_row() {
+    let policy = PolicySet::new().with(
+        Rule::grant(tenant("acme"), Role::new("clerk"), orders(), Action::Read).masking(
+            "email",
+            Mask::Constant {
+                value: "redacted".to_string(),
+            },
+        ),
+    );
+    let context = registered(&policy, &person("ana", "acme", &["clerk"])).await;
+
+    let emails = column(&context, "SELECT email FROM orders", "email").await;
+    assert_eq!(emails, vec![Some("redacted".to_string()); 4]);
+}
+
+#[tokio::test]
+async fn a_mask_survives_an_expression_over_the_column() {
+    // The mask has to be part of what the scan *produces*, not something applied to the
+    // printed output. A masked column read by an expression, an aggregate or a join must be
+    // the masked value everywhere, or the mask is a display convention.
+    let policy = PolicySet::new().with(
+        Rule::grant(tenant("acme"), Role::new("clerk"), orders(), Action::Read)
+            .masking("email", Mask::Partial { keep: 4 }),
+    );
+    let context = registered(&policy, &person("ana", "acme", &["clerk"])).await;
+
+    let upper = column(&context, "SELECT upper(email) AS e FROM orders", "e").await;
+    assert!(
+        upper
+            .iter()
+            .all(|value| value.as_deref() == Some("*********.COM")),
+        "an expression reads the masked value, not the real one: {upper:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_predicate_on_a_masked_column_cannot_probe_the_real_value() {
+    // The channel a mask closes only if pushdown is refused. Nothing here ever prints an
+    // address; the row count answers the question instead. `WHERE email = 'a@example.com'`
+    // matching one row says the address is in the table just as loudly as printing it.
+    let policy = PolicySet::new().with(
+        Rule::grant(tenant("acme"), Role::new("clerk"), orders(), Action::Read)
+            .masking("email", Mask::Partial { keep: 4 }),
+    );
+    let context = registered(&policy, &person("ana", "acme", &["clerk"])).await;
+
+    let hits = column(
+        &context,
+        "SELECT id FROM orders WHERE email = 'a@example.com'",
+        "id",
+    )
+    .await;
+    assert!(
+        hits.is_empty(),
+        "the predicate must be answered against the masked value, and no masked value is \
+         'a@example.com': {hits:?}"
+    );
+    // Not vacuous: the same predicate against what the principal can actually see matches.
+    let visible = column(
+        &context,
+        "SELECT id FROM orders WHERE email = '*********.com'",
+        "id",
+    )
+    .await;
+    assert_eq!(
+        visible.len(),
+        4,
+        "a predicate over the masked value still works: {visible:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_mask_the_table_cannot_carry_is_refused_when_the_table_is_opened() {
+    // The same rule as a policy predicate that does not parse. A partial mask on an integer
+    // cannot be applied; discovering that on the first query that selects the column is a
+    // policy that is wrong for months and looks right.
+    let policy = PolicySet::new().with(
+        Rule::grant(tenant("acme"), Role::new("clerk"), orders(), Action::Read)
+            .masking("total", Mask::Partial { keep: 2 }),
+    );
+    let context = SessionContext::new();
+    let guard = Guard::authorize(
+        &policy,
+        &person("ana", "acme", &["clerk"]),
+        &orders(),
+        Action::Read,
+    )
+    .expect("the rule grants");
+    assert!(SecuredTable::new(orders_table(), guard, &context.state()).is_err());
+
+    // And a mask naming a column that does not exist, for the same reason: it obscures
+    // nothing and looks like a control.
+    let policy = PolicySet::new().with(
+        Rule::grant(tenant("acme"), Role::new("clerk"), orders(), Action::Read)
+            .masking("ssn", Mask::Null),
+    );
+    let guard = Guard::authorize(
+        &policy,
+        &person("ana", "acme", &["clerk"]),
+        &orders(),
+        Action::Read,
+    )
+    .expect("the rule grants");
+    assert!(SecuredTable::new(orders_table(), guard, &context.state()).is_err());
+
+    // Not vacuous: a null mask on that same integer column is fine, because null is
+    // meaningful at every type.
+    let policy = PolicySet::new().with(
+        Rule::grant(tenant("acme"), Role::new("clerk"), orders(), Action::Read)
+            .masking("total", Mask::Null),
+    );
+    let guard = Guard::authorize(
+        &policy,
+        &person("ana", "acme", &["clerk"]),
+        &orders(),
+        Action::Read,
+    )
+    .expect("the rule grants");
+    assert!(SecuredTable::new(orders_table(), guard, &context.state()).is_ok());
+}
+
+#[tokio::test]
+async fn a_mask_and_a_row_filter_are_both_applied_and_the_filter_sees_the_real_value() {
+    // The ordering that matters. A policy predicate is written about the data, so it must be
+    // evaluated before the mask: masking first would compare 'north' against a row of stars
+    // and match nothing, which shows no rows and looks like a working restriction.
+    let policy = PolicySet::new().with(
+        Rule::grant(tenant("acme"), Role::new("clerk"), orders(), Action::Read)
+            .where_rows("region = 'north'")
+            .masking("region", Mask::Constant {
+                value: "elsewhere".to_string(),
+            }),
+    );
+    let context = registered(&policy, &person("ana", "acme", &["clerk"])).await;
+
+    let regions = column(&context, "SELECT region FROM orders", "region").await;
+    assert_eq!(
+        regions,
+        vec![Some("elsewhere".to_string()); 2],
+        "two northern rows, and neither of them says so: {regions:?}"
+    );
+}
+
+/// A provider that takes filters and means it, the way a real one does.
+///
+/// `MemTable` declines every filter, which makes it useless for the one property that only
+/// matters against a provider that accepts them: a predicate on a masked column must not be
+/// evaluated below the mask. Against `MemTable` the predicate stays above the scan whatever
+/// `SecuredTable` declares, so the refusal is unreachable and a test using it proves nothing
+/// --- the same trap `LimitHonouringTable` above exists to avoid.
+#[derive(Debug)]
+struct FilterHonouringTable {
+    inner: Arc<dyn TableProvider>,
+}
+
+#[async_trait::async_trait]
+impl TableProvider for FilterHonouringTable {
+    fn schema(&self) -> arrow_schema::SchemaRef {
+        self.inner.schema()
+    }
+
+    fn table_type(&self) -> datafusion::logical_expr::TableType {
+        self.inner.table_type()
+    }
+
+    /// `Exact`: whatever it is handed, it applies.
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&datafusion::logical_expr::Expr],
+    ) -> datafusion::common::Result<Vec<datafusion::logical_expr::TableProviderFilterPushDown>> {
+        Ok(vec![
+            datafusion::logical_expr::TableProviderFilterPushDown::Exact;
+            filters.len()
+        ])
+    }
+
+    async fn scan(
+        &self,
+        state: &dyn datafusion::catalog::Session,
+        projection: Option<&Vec<usize>>,
+        filters: &[datafusion::logical_expr::Expr],
+        limit: Option<usize>,
+    ) -> datafusion::common::Result<Arc<dyn datafusion::physical_plan::ExecutionPlan>> {
+        let plan = self.inner.scan(state, projection, &[], limit).await?;
+        let Some((first, rest)) = filters.split_first() else {
+            return Ok(plan);
+        };
+        let combined = rest
+            .iter()
+            .fold(first.clone(), |all, one| all.and(one.clone()));
+        let df_schema =
+            datafusion::common::DFSchema::try_from(plan.schema().as_ref().clone())?;
+        let physical = state.create_physical_expr(combined, &df_schema)?;
+        Ok(Arc::new(
+            datafusion::physical_plan::filter::FilterExec::try_new(physical, plan)?,
+        ))
+    }
+}
+
+#[tokio::test]
+async fn a_provider_that_takes_filters_is_not_given_one_over_a_masked_column() {
+    // The same probe as `a_predicate_on_a_masked_column_cannot_probe_the_real_value`, against
+    // a provider that would actually act on the filter. This is the one that fails if the
+    // refusal is removed.
+    let policy = PolicySet::new().with(
+        Rule::grant(tenant("acme"), Role::new("clerk"), orders(), Action::Read)
+            .masking("email", Mask::Partial { keep: 4 }),
+    );
+    let context = SessionContext::new();
+    let guard = Guard::authorize(
+        &policy,
+        &person("ana", "acme", &["clerk"]),
+        &orders(),
+        Action::Read,
+    )
+    .expect("the rule grants");
+    let honouring: Arc<dyn TableProvider> = Arc::new(FilterHonouringTable {
+        inner: orders_table(),
+    });
+    let table = SecuredTable::new(honouring, guard, &context.state()).expect("the mask applies");
+    context
+        .register_table("orders", Arc::new(table))
+        .expect("the table registers");
+
+    let probe = column(
+        &context,
+        "SELECT email FROM orders WHERE email = 'a@example.com'",
+        "email",
+    )
+    .await;
+    assert!(
+        probe.is_empty(),
+        "the provider must never be handed a predicate over a masked column: it would answer \
+         it against the real address and report the answer as a row count, which is the fact \
+         the mask exists to withhold: {probe:?}"
+    );
+
+    // Not vacuous, twice over. The provider does act on the filters it is given ...
+    let visible = column(
+        &context,
+        "SELECT email FROM orders WHERE email = '*********.com'",
+        "email",
+    )
+    .await;
+    assert_eq!(visible.len(), 4, "the masked value still matches: {visible:?}");
+    // ... and it prunes on a column that is *not* masked, which is what makes the refusal a
+    // refusal of one filter rather than of pushdown altogether. Both columns are selected
+    // because this stand-in applies its filters after the projection rather than widening it
+    // the way a real provider does --- a shortcut in the fixture, not in what it is testing.
+    let pruned = column(
+        &context,
+        "SELECT email, region FROM orders WHERE region = 'north'",
+        "email",
+    )
+    .await;
+    assert_eq!(pruned.len(), 2, "an unmasked column still prunes: {pruned:?}");
 }

@@ -49,6 +49,7 @@ pub struct SecuredTable {
     inner: Arc<dyn TableProvider>,
     guard: Guard,
     filter: Option<Expr>,
+    masking: crate::mask::Masking,
 }
 
 impl SecuredTable {
@@ -75,10 +76,16 @@ impl SecuredTable {
                 Some(logical)
             }
         };
+        // Checked here for the same reason the predicate is parsed here: a mask naming a
+        // column the table does not have is a mistake in the policy, and one that fails on
+        // the first query to select that column is a policy that is wrong for months and
+        // looks right.
+        let masking = crate::mask::Masking::over(guard.column_masks(), &inner.schema())?;
         Ok(Self {
             inner,
             guard,
             filter,
+            masking,
         })
     }
 
@@ -236,14 +243,44 @@ impl TableProvider for SecuredTable {
         self.inner.statistics()
     }
 
+    /// What the provider will take, minus anything that would probe a masked value.
+    ///
+    /// A predicate on a masked column, evaluated below the mask, asks the real value a
+    /// question and reports the answer in the row count. `WHERE email = 'a@b.c'` returning a
+    /// row says exactly what the mask exists to withhold, and says it without ever printing
+    /// the value --- which is why no amount of care in the mask itself closes this.
+    ///
+    /// Declared `Unsupported` rather than filtered out afterwards, because that is the
+    /// declaration DataFusion acts on: it keeps the predicate above the scan, where the
+    /// column it reads is the masked one.
     fn supports_filters_pushdown(
         &self,
         filters: &[&Expr],
     ) -> Result<Vec<TableProviderFilterPushDown>> {
-        self.inner.supports_filters_pushdown(filters)
+        let mut support = self.inner.supports_filters_pushdown(filters)?;
+        for (decision, filter) in support.iter_mut().zip(filters.iter()) {
+            if self.masking.reads_a_masked_column(&columns_of(filter)) {
+                *decision = TableProviderFilterPushDown::Unsupported;
+            }
+        }
+        Ok(support)
     }
 
     async fn scan(
+        &self,
+        state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let rows = self.rows(state, projection, filters, limit).await?;
+        self.obscured(state, rows)
+    }
+}
+
+impl SecuredTable {
+    /// The scan, with the row restriction applied and the columns not yet obscured.
+    async fn rows(
         &self,
         state: &dyn Session,
         projection: Option<&Vec<usize>>,
@@ -300,6 +337,43 @@ impl TableProvider for SecuredTable {
         // policy needed but the query did not request.
         let narrowed = narrow_to_requested(filtered, projection, widened.as_ref(), &table_schema)?;
         Ok(apply_limit(narrowed, limit))
+    }
+
+    /// The same rows, with the masked columns obscured.
+    ///
+    /// # Why this is above the row restriction rather than below it
+    ///
+    /// Because a policy predicate is written about the data, not about what this principal is
+    /// shown. `WHERE region = 'north'` restricts on the real region even where a mask hides
+    /// it, and masking first would have the predicate compare `'north'` against `'*****'` and
+    /// silently match nothing --- which shows the principal no rows and looks like a working
+    /// restriction, the same failure `parse_predicate` refuses to allow.
+    ///
+    /// # Why nothing is wrapped when nothing is masked
+    ///
+    /// A projection over every column costs a copy of the batch. A table with no masks is the
+    /// ordinary case and must not pay for the existence of the feature.
+    fn obscured(
+        &self,
+        state: &dyn Session,
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let schema = plan.schema();
+        if !self.masking.touches(&schema) {
+            return Ok(plan);
+        }
+        let _ = state;
+        let mut columns: Vec<(Arc<dyn datafusion::physical_expr::PhysicalExpr>, String)> =
+            Vec::with_capacity(schema.fields().len());
+        for (index, field) in schema.fields().iter().enumerate() {
+            let read: Arc<dyn datafusion::physical_expr::PhysicalExpr> = Arc::new(
+                datafusion::physical_plan::expressions::Column::new(field.name(), index),
+            );
+            columns.push((self.masking.wrap(field.name(), read), field.name().clone()));
+        }
+        Ok(Arc::new(
+            datafusion::physical_plan::projection::ProjectionExec::try_new(columns, plan)?,
+        ))
     }
 }
 

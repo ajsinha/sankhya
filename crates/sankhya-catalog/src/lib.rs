@@ -16,8 +16,10 @@
 
 pub mod guard;
 pub mod key;
+pub mod mask;
 pub mod secured;
 
 pub use guard::Guard;
 pub use key::{Entitlements, PlanKey, ResultKey};
+pub use mask::{Masked, Masking};
 pub use secured::{assert_filter_present, SecuredTable};
