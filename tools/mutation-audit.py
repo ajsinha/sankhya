@@ -4844,6 +4844,59 @@ CATALOGUE = [
      "            let pins = false;",
      "sankhya-api-pg"),
 
+    # --- Phase 4: a mask that is applied ---------------------------------------------------------
+
+    # `SEC-02`. `mask_for` and `masked_columns` reported what the policy said and `scan` read
+    # neither, so every masked column returned its real value. Wrapping the scan is what makes
+    # the control a control; without it the whole feature is a field in a struct.
+    ("catalog: report the masks and return the values anyway",
+     "crates/sankhya-catalog/src/secured.rs",
+     "        if !self.masking.touches(&schema) {",
+     "        if true {",
+     "sankhya-catalog"),
+
+    # A mask on a column of a type it cannot be applied to has to be refused when the table is
+    # opened. Letting it through means finding out on the first query that selects the column,
+    # which is a policy that is wrong for months and looks right.
+    ("catalog: accept a text mask over a column that holds no text",
+     "crates/sankhya-catalog/src/mask.rs",
+     "            if !textual && !matches!(mask, Mask::Null) {",
+     "            if false {",
+     "sankhya-catalog"),
+
+    # And a mask naming a column the table does not have. It obscures nothing and looks like a
+    # control, which is the failure `SEC-02` was in the first place.
+    ("catalog: accept a mask over a column that does not exist",
+     "crates/sankhya-catalog/src/mask.rs",
+     "            let Ok(index) = schema.index_of(name) else {",
+     "            let Ok(index) = schema.index_of(name).or(Ok::<usize, ()>(0)) else {",
+     "sankhya-catalog"),
+
+    # The channel a mask closes only if pushdown is refused. A predicate on a masked column
+    # evaluated below the mask asks the real value a question and answers it in the row count,
+    # without ever printing the value.
+    ("catalog: let a predicate on a masked column reach the provider",
+     "crates/sankhya-catalog/src/secured.rs",
+     "            if self.masking.reads_a_masked_column(&columns_of(filter)) {",
+     "            if false {",
+     "sankhya-catalog"),
+
+    # A partial mask keeps the *last* `keep` characters. Keeping the first instead reveals the
+    # local part of an address and the start of a name, which is the half that identifies.
+    ("catalog: keep the head of a partially masked value rather than the tail",
+     "crates/sankhya-catalog/src/mask.rs",
+     "    out.extend(text.chars().skip(hidden));",
+     "    out.extend(text.chars().take(keep));",
+     "sankhya-catalog"),
+
+    # A constant mask replaces the nulls too. Leaving them null publishes which rows have no
+    # value, and \"this customer has no email address\" is a fact about that customer.
+    ("catalog: leave a null unmasked under a constant mask",
+     "crates/sankhya-catalog/src/mask.rs",
+     "            Mask::Constant { value } => constant(value, &self.kind, values.len()),",
+     "            Mask::Constant { .. } => Arc::clone(&values),",
+     "sankhya-catalog"),
+
     # --- Phase 3: what a value looks like on the wire -------------------------------------------
 
     # `CLI-01`. Microseconds are this project's canonical unit and went out as a raw integer

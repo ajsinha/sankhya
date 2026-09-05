@@ -39,7 +39,7 @@ before publishing, because a wrong critical finding costs more than a missed one
 ## The verdict, in one paragraph
 
 The system is not production-ready, and the reason is not the defect count. It is that **a green
-gate did not see any of this**: 2,706 tests, 741 mutations and twenty checks, against silent data
+gate did not see any of this**: 2,714 tests, 741 mutations and twenty checks, against silent data
 loss on three production paths, a door with no lock, and a summation kernel that returns zero for
 a real number. The engineering underneath is unusually careful — the row-filter enforcement, the
 commit protocol, the lease machinery and the metrics catalogue are all better than they need to

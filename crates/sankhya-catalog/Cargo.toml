@@ -18,6 +18,7 @@ sankhya-authz = { path = "../sankhya-authz" }
 datafusion    = { workspace = true }
 async-trait   = "0.1"
 arrow-schema  = { workspace = true }
+arrow-array   = { workspace = true }
 
 
 [dev-dependencies]

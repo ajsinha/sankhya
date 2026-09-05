@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2,706 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2,714 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -645,7 +645,39 @@ rather than a user. There is now a server test that a pinned session gains no ca
 unpinned one does --- counted in hits rather than misses, because not every measure is cached on
 every query and a rise in misses would therefore say nothing about whether an entry was shared.
 
-`4.2` through `4.8` are not started.
+**4.2 Column masks are applied (`SEC-02`).** They were declared in the policy, merged into the
+guard, hashed into the visibility scope, reported by `masked_columns()` and `mask_for()`, and
+documented in three places. Nothing read them: `scan` conjoined the row predicate and returned
+every column exactly as the provider produced it. Worse than absent, because the documentation is
+what an operator decides on.
+
+The scan now ends in a projection that replaces each masked column, and three decisions are worth
+stating.
+
+- **The mask goes above the row filter, not below it.** A policy predicate is written about the
+  data. Masking first would compare `'north'` against a row of stars and match nothing, which
+  shows the principal no rows and looks like a working restriction --- the same failure
+  `parse_predicate` already refuses to allow.
+- **A predicate over a masked column is declared unsupported**, whatever the provider would have
+  taken. Pushed down it is evaluated against the real value below the mask, and the row count
+  answers the question without ever printing it: `WHERE email = 'ana@example.com'` matching once
+  says she banks here. A control that governs only what is displayed governs nothing.
+- **The masks are built from Arrow rather than from `concat`/`repeat`/`right`**, because `concat`
+  treats a null as the empty string --- so the obvious implementation turns a customer with no
+  address into `***`, inventing a value where there is none. A constant mask replaces nulls
+  deliberately; a partial mask preserves them. They differ because leaving a null alone under a
+  constant mask publishes which rows have no value.
+
+A mask that cannot be applied --- text over an integer, or a column the table does not have --- is
+refused when the table is opened rather than on the first query that selects it.
+
+**The first pushdown mutation survived, and it was the fixture rather than the code.** `MemTable`
+declines every filter, so `Unsupported` and the provider's own answer are indistinguishable
+through it and the refusal was unreachable. It is now tested against a provider that reports
+`Exact` and means it --- the same trap `LimitHonouringTable` was written for two phases ago, and
+the second time the catalogue caught it before the commit rather than after.
+
+`4.3` through `4.8` are not started.
 
 ---
 

@@ -88,6 +88,71 @@ SELECT count(*) FROM orders WHERE region = 'south' OR 1 = 1;
 > convention with a green test suite, and it will hold until somebody swaps the component for a
 > faster one that declines the same call.
 
+## 13.2a A mask that is applied, and the question it also has to refuse
+
+Column masks were declared in the policy, merged into the guard, hashed into the visibility
+scope so that two principals seeing different values could not share a cached result, reported
+by `masked_columns()` and `mask_for()`, and documented in three places. Nothing read them.
+`SecuredTable::scan` conjoined the row predicate and returned every column exactly as the
+provider produced it, so every masked column returned its real value to every principal.
+
+That is worse than having no masking at all, because the documentation is what an operator
+decides on. Somebody reads *"column masks"* in a policy reference, writes `masking("email",
+Mask::Partial { keep: 4 })`, sees the mask reported back by the API, and concludes that the
+support desk cannot read customer addresses. `SEC-02`.
+
+The scan now ends in a projection that replaces each masked column with the masked value, and
+the three masks mean:
+
+Mask | What comes back | What happens to a null
+---|---|---
+`Null` | nothing, at the column's own type | it was already null
+`Constant { value }` | the constant, in every row | **it becomes the constant too**
+`Partial { keep }` | all but the last `keep` characters replaced by `*` | **it stays null**
+
+The two null rules differ deliberately. A constant mask that left nulls alone would publish which
+rows have no value, and *"this customer has no email address"* is a fact about that customer. A
+partial mask that turned a null into `***` would be inventing a value where there is none, and a
+reader could not tell the two apart.
+
+The masks are built from Arrow directly rather than from `concat`, `repeat` and `right`, and the
+reason is the null rule above: **`concat` treats a null as the empty string**, so the obvious
+implementation turns a missing address into `***`. A security control whose semantics are
+inherited from a function library's opinion about nulls is a control that changes when the
+library does.
+
+### The question the mask also has to refuse
+
+A mask hides a value from being *printed*. It does not, by itself, stop the value being *asked
+about*:
+
+```sql
+-- with  masking("region", Partial { keep: 2 })  on this table:
+SELECT count(*) FROM orders WHERE region = 'north';
+```
+
+Nothing here prints a region. If that predicate is pushed into the provider it is evaluated
+against the real column, below the mask, and the count answers the question as loudly as
+printing it would — a non-zero answer means yes, there are northern orders. Repeated against a
+list of candidate values, it reads the column out one value at a time; against a masked email
+address and a list of customers, it reads out who banks here.
+
+So `SecuredTable` declares any filter over a masked column **unsupported**, whatever the
+provider would have accepted, which keeps the predicate above the scan where the column it reads
+is the masked one. A filter over an unmasked column still pushes down and still prunes; this
+withholds one predicate, not pushdown.
+
+> **Pitfall** — A disclosure control that only governs what is displayed governs nothing. Every
+> aggregate, predicate and join is a way of asking about a value without showing it.
+
+### A mask that cannot be applied is refused when the table is opened
+
+`Partial` and `Constant` produce text, so a policy asking for either over an integer column, or
+over a column the table does not have, is refused when the table is opened — the same rule, and
+for the same reason, as a policy predicate that does not parse. Discovering it on the first query
+that happens to select that column is a policy that is wrong for months and looks right. `Null`
+is refused nowhere, because a null is meaningful at every type.
+
 ## 13.3 A table you may not read does not exist
 
 Only the tables a principal may read are registered into the session. Naming one that is not
