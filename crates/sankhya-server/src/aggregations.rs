@@ -40,8 +40,28 @@ use std::sync::Arc;
 pub(crate) const DIRECTORY: &str = "_aggregations";
 
 /// Where an aggregation of this name is stored.
-fn document_at(warehouse: &Path, name: &str) -> PathBuf {
-    warehouse.join(DIRECTORY).join(format!("{name}.json"))
+///
+/// Fallible, and that is the point rather than an inconvenience. This used to be
+/// `warehouse.join(DIRECTORY).join(format!("{name}.json"))` over a name the statement supplied
+/// with no constraint beyond being non-empty and whitespace-free, and `Path::join` replaces the
+/// whole path on an absolute component --- so `CREATE AGGREGATION /var/tmp/x` wrote wherever
+/// the server's user could write. `SEC-06`.
+///
+/// Returning a `Result` is what stops that coming back: there is no way to obtain the path
+/// without having asked, the same way there is no way to obtain a `Guard` without a decision.
+fn document_at(warehouse: &Path, name: &str) -> Result<PathBuf, sankhya_atomicfs::name::NotAName> {
+    let name = sankhya_atomicfs::name::checked(name)?;
+    Ok(warehouse.join(DIRECTORY).join(format!("{name}.json")))
+}
+
+/// The path, or a refusal a client can read.
+fn document_for(server: &Server, name: &str) -> Result<PathBuf, QueryFailure> {
+    document_at(&server.settings.warehouse, name).map_err(|refused| {
+        refusal(
+            sankhya_error::protocol::sqlstate::DATA_EXCEPTION.as_str(),
+            &format!("`{name}` is not a usable aggregation name: {refused}"),
+        )
+    })
 }
 
 /// A statement about aggregations.
@@ -230,7 +250,7 @@ pub(crate) fn run(
     match statement {
         Statement::Show => show(server),
         Statement::Drop { name, if_exists } => {
-            let path = document_at(&server.settings.warehouse, &name);
+            let path = document_for(server, &name)?;
             if !path.exists() {
                 if if_exists {
                     return Ok(acknowledged("DROP AGGREGATION"));
@@ -248,7 +268,8 @@ pub(crate) fn run(
             Ok(acknowledged("DROP AGGREGATION"))
         }
         Statement::Create { name, source } => {
-            if document_at(&server.settings.warehouse, &name).exists() {
+            let path = document_for(server, &name)?;
+            if path.exists() {
                 return Err(refusal(
                     sqlstate::DATA_EXCEPTION.as_str(),
                     &format!(
@@ -278,7 +299,7 @@ pub(crate) fn run(
             // written sees a truncated document --- and a truncated aggregation is one whose
             // source stops mid-function, which is a thing this server would then try to run.
             sankhya_atomicfs::publish(
-                &document_at(&server.settings.warehouse, &name),
+                &path,
                 encode(&declared).as_bytes(),
             )
             .map_err(|error| refusal(sqlstate::IO_ERROR.as_str(), &error.to_string()))?;

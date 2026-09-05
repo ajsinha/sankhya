@@ -57,6 +57,12 @@ pub enum CatalogueError {
     Unreadable { path: PathBuf, detail: String },
     /// The stored definition parsed and does not describe a usable cube.
     Invalid { name: String, detail: String },
+    /// The name may not become part of a path.
+    ///
+    /// Refused rather than sanitised. A name this rejects is a name somebody can retype; a
+    /// name this quietly rewrote would be a cube stored under a name nobody asked for, which
+    /// is the same disclosure one level down.
+    Name { name: String, detail: String },
 }
 
 impl std::fmt::Display for CatalogueError {
@@ -76,6 +82,9 @@ impl std::fmt::Display for CatalogueError {
                 f,
                 "the stored cube `{name}` does not describe a usable cube: {detail}"
             ),
+            Self::Name { name, detail } => {
+                write!(f, "`{name}` is not a usable cube name: {detail}")
+            }
         }
     }
 }
@@ -340,9 +349,26 @@ fn edges_of(hierarchy: &Hierarchy) -> Vec<(String, String)> {
 }
 
 /// Where a cube's definition lives under a warehouse.
-#[must_use]
-pub fn path_of(warehouse: &Path, name: &str) -> PathBuf {
-    warehouse.join(CUBES).join(format!("{name}.json"))
+///
+/// Fallible, and that is the point rather than an inconvenience. This used to be
+/// `warehouse.join(CUBES).join(format!("{name}.json"))` over a name a statement supplied, and
+/// `Path::join` replaces the whole path on an absolute component and honours `..` on a
+/// relative one --- so a cube name was a way of writing and deleting files anywhere the
+/// server's user could reach. `SEC-06`.
+///
+/// Returning a `Result` is what stops that coming back: there is no way to obtain the path
+/// without having asked.
+///
+/// # Errors
+///
+/// [`CatalogueError::Name`] when the name may not become part of a path.
+pub fn path_of(warehouse: &Path, name: &str) -> Result<PathBuf, CatalogueError> {
+    let checked =
+        sankhya_atomicfs::name::checked(name).map_err(|refused| CatalogueError::Name {
+            name: name.to_owned(),
+            detail: refused.to_string(),
+        })?;
+    Ok(warehouse.join(CUBES).join(format!("{checked}.json")))
 }
 
 /// Write a definition into the warehouse's cube catalogue.
@@ -351,7 +377,7 @@ pub fn path_of(warehouse: &Path, name: &str) -> PathBuf {
 ///
 /// Returns [`CatalogueError::Write`] if the directory or the file cannot be written.
 pub fn save(warehouse: &Path, definition: &Definition) -> Result<(), CatalogueError> {
-    let at = path_of(warehouse, &definition.name);
+    let at = path_of(warehouse, &definition.name)?;
     if let Some(parent) = at.parent() {
         std::fs::create_dir_all(parent).map_err(|error| CatalogueError::Write {
             name: definition.name.clone(),
@@ -380,7 +406,7 @@ pub fn save(warehouse: &Path, definition: &Definition) -> Result<(), CatalogueEr
 /// [`CatalogueError::Unreadable`] if the file is missing or not parseable,
 /// [`CatalogueError::Invalid`] if it parses and does not describe a usable cube.
 pub fn load(warehouse: &Path, name: &str) -> Result<Definition, CatalogueError> {
-    let at = path_of(warehouse, name);
+    let at = path_of(warehouse, name)?;
     let text = std::fs::read_to_string(&at).map_err(|error| CatalogueError::Unreadable {
         path: at.clone(),
         detail: error.to_string(),
