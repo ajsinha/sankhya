@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2,729 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2,739 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -745,7 +745,47 @@ writes into.
 All three refusals are the same sentence as "there is no such thing", because saying "you may not
 touch that" confirms it exists.
 
-`4.5` through `4.8` are not started.
+**4.5 The sandbox (`SEC-09`–`SEC-14`).** Six findings, and they share a shape: a mechanism named
+correctly, applied incompletely, and asserted by nothing. `ADR-0023` described a stronger boundary
+than the one that existed, and §13.7a's table repeated the description.
+
+- **`SEC-09`, the worker was root in its own namespace.** The map read `0 <server uid> 1`, and
+  `execve` of a file with no file capabilities only drops the capability set when the effective
+  uid is not zero --- so the interpreter started holding every capability the namespace had. It
+  maps to `65534` now. **Outside** the namespace it is still the server's user and no
+  unprivileged mechanism changes that: the kernel permits one map line whose parent-side id must
+  be the writer's own, and a distinct id needs `newuidmap` setuid plus a `/etc/subuid` range. That
+  is a deployment decision, and `ADR-0023` Decision 2 is amended to say so rather than closed.
+- **`SEC-10`, a user function could kill the server.** `unshare(CLONE_NEWPID)` puts a process's
+  *children* in the namespace and leaves the caller behind --- and the caller was the process that
+  then `exec`ed into the worker. It forks once more now, so the worker is PID 1 of a namespace
+  holding nothing else. Two consequences had to be handled: the process left outside must close
+  every descriptor above the standard streams, because `spawn` does not return until every copy of
+  its close-on-exec pipe closes; and the worker must be tethered with `PR_SET_PDEATHSIG`, because
+  PID 1 of a namespace is reaped by nobody.
+- **`SEC-11`, the jail held every binary on the machine.** *No subprocess* is delivered entirely by
+  the empty jail, and the jail bound `sys.base_prefix` --- `/usr` on a system interpreter. It asks
+  `sysconfig` by name now, binds the interpreter **as a file** rather than the directory it sits
+  in, and refuses any answer that is a directory of programs. The promise is stated narrower than
+  before: the linker's directories have to be there and some hold executables, so what is
+  delivered is no shell, no `/bin`, and nothing in `/usr/bin` but the interpreter.
+- **`SEC-12` and `SEC-13` are one cause.** Output was read only after the child exited, so a
+  grandchild holding the pipe blocked the caller for ever --- inside a DataFusion accumulator on a
+  Tokio worker thread --- and a child writing past a pipe's capacity blocked and was reported as
+  having run out of *time*, which made the `OutOfRoom` arm unreachable at its shipped 64 MiB. Both
+  streams are now read on threads of their own, and the bound is counted while the run is going.
+- **`SEC-14`, the probe checked one mechanism out of fifteen.** It now calls the same function a
+  spawn calls and names the step that refused.
+
+**Two mutations were removed rather than kept, and the second is the more interesting.** One --- a
+bounded wait on a stream --- survives because the PID namespace makes the case it guards against
+impossible: nothing can outlive PID 1 of that namespace to hold a pipe. The other --- keeping the
+descriptors the intermediate inherited --- *is* caught, and still had to go: with it applied the
+output test blocks inside `spawn` with a full pipe, burns no CPU, never trips `RLIMIT_CPU`, and
+hangs the gate rather than failing it. A mutation that hangs the build is worse than one that
+survives, because a survivor is a line on a list somebody reads.
+
+`4.6` through `4.8` are not started.
 
 ---
 

@@ -38,4 +38,4 @@ mod protocol;
 mod worker;
 
 pub use protocol::Refused;
-pub use worker::{Aggregation, Worker};
+pub use worker::{interpreter_needs, Aggregation, Worker};

@@ -283,39 +283,129 @@ fn same(left: f64, right: f64) -> bool {
     left.to_bits() == right.to_bits() || (left.is_nan() && right.is_nan())
 }
 
+/// Directories that hold a machine's programs, and are therefore never admitted.
+///
+/// A deny-list *beside* the allow-list below, not instead of it. The list below asks Python
+/// where it loads from and Python answers `sys.base_prefix`, which on a system interpreter is
+/// `/usr` --- so an allow-list built from an honest question admitted every binary on the box.
+/// This is the second check, and it is the one that says out loud which directories are the
+/// problem.
+const NEVER: &[&str] = &[
+    "/", "/bin", "/sbin", "/usr", "/usr/bin", "/usr/sbin", "/usr/local", "/usr/local/bin",
+    "/usr/local/sbin", "/usr/libexec", "/opt", "/etc", "/var", "/home", "/root", "/tmp",
+];
+
 /// What the interpreter needs in order to start, asked of the interpreter.
 ///
-/// Guessing `/usr` would work and would put the whole of a machine's software in the jail. This
-/// asks for the paths Python itself says it loads from, and adds the directories a dynamic
-/// linker looks in --- which Python cannot report because it is not Python that reads them.
-fn interpreter_needs(python: &Path) -> Vec<PathBuf> {
+/// # Why this is not `sys.base_prefix`
+///
+/// Because it was, and on a system interpreter `sys.base_prefix` is `/usr`. `ADR-0023` delivers
+/// the *no subprocess* prohibition entirely through "in a jail holding the interpreter and
+/// nothing else, there is nothing to exec" --- and the jail held every binary on the machine.
+/// The comment above this function claimed it avoided binding `/usr` wholesale; it named
+/// `sys.base_prefix` in the very next line. `SEC-11`.
+///
+/// It asks for the standard library and the extension modules by name, binds **the interpreter
+/// as a file** rather than the directory it sits in --- which is `/usr/bin` --- and refuses any
+/// answer that is one of the directories a machine keeps its programs in.
+///
+/// # What is still reachable
+///
+/// The shared-object directories, because the dynamic linker reads them and Python cannot
+/// report them. Some of those hold executables. What the jail promises is therefore not "there
+/// is no executable file anywhere in it" but "there is no shell, no `/bin`, no `/usr/bin`, and
+/// nothing a `subprocess` call names by habit" --- and §13.7a says that rather than the
+/// stronger sentence it used to.
+pub fn interpreter_needs(python: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
-    let said = std::process::Command::new(python)
-        .args([
-            "-c",
-            "import sys,os;print('\\n'.join([sys.executable, sys.base_prefix] + \
-             [p for p in sys.path if p and os.path.isdir(p)]))",
-        ])
-        .output();
+    // `sysconfig` rather than `sys.base_prefix`: it names the standard library and the
+    // extension modules directly, and neither of them is the prefix they live under.
+    let asked = concat!(
+        "import sys,os,sysconfig;",
+        "paths=sysconfig.get_paths();",
+        "wanted=[paths.get(k) for k in ('stdlib','platstdlib','purelib','platlib')];",
+        "wanted+= [p for p in sys.path if p];",
+        "print('\n'.join(p for p in wanted if p and os.path.isdir(p)))"
+    );
+    let said = std::process::Command::new(python).args(["-c", asked]).output();
     if let Ok(said) = said {
         for line in String::from_utf8_lossy(&said.stdout).lines() {
             let path = PathBuf::from(line);
-            if path.exists() {
+            if path.is_dir() {
                 out.push(path);
             }
         }
     }
-    for linker in ["/lib", "/lib64", "/usr/lib/x86_64-linux-gnu", "/usr/lib64"] {
+    for linker in ["/lib", "/lib64", "/usr/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/lib"] {
         let path = PathBuf::from(linker);
-        if path.exists() {
+        if path.is_dir() {
             out.push(path);
         }
     }
-    // The interpreter's own directory, which `sys.executable` names as a file.
-    if let Some(parent) = python.parent() {
-        out.push(parent.to_path_buf());
-    }
+    // The interpreter itself, **as a file**. Pushing its parent is what admitted `/usr/bin`.
+    out.push(python.to_path_buf());
+
     out.sort();
     out.dedup();
-    out
+    // Last, and deliberately last: whatever the interpreter said and whatever the linker
+    // needs, a directory holding a machine's programs does not go in.
+    without_program_directories(out)
+}
+
+/// The same list, without the directories a machine keeps its programs in.
+///
+/// Its own function so that it can be checked without an interpreter. The interpreter on the
+/// machine this runs on decides what the list *contains*, so a test that asked one would be
+/// asserting a property of that installation; this rule is the same everywhere and is the half
+/// worth pinning down.
+fn without_program_directories(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    paths
+        .into_iter()
+        .filter(|path| !NEVER.iter().any(|never| path == Path::new(never)))
+        .collect()
+}
+
+#[cfg(test)]
+mod admission {
+    use super::{without_program_directories, NEVER};
+    use std::path::PathBuf;
+
+    /// `SEC-11`. The allow-list is built from what Python says it loads from, and on a system
+    /// interpreter Python says `sys.base_prefix`, which is `/usr`. An honest question produced
+    /// a jail holding every binary on the machine, which is why there is a second rule.
+    #[test]
+    fn a_directory_of_programs_is_never_admitted() {
+        let asked: Vec<PathBuf> = NEVER.iter().map(PathBuf::from).collect();
+        assert!(
+            without_program_directories(asked).is_empty(),
+            "not one of the directories a machine keeps its programs in may be admitted"
+        );
+    }
+
+    /// And the other half, because a rule that admitted nothing would pass the test above.
+    #[test]
+    fn what_the_interpreter_actually_needs_still_is() {
+        let asked: Vec<PathBuf> = ["/usr/lib/python3.11", "/usr/bin/python3", "/usr/lib"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        assert_eq!(
+            without_program_directories(asked.clone()),
+            asked,
+            "the standard library, the interpreter and the linker's directories are the whole \
+             point of the list"
+        );
+    }
+
+    /// `/usr/bin` is refused and `/usr/bin/python3` is not, which is the distinction the fix
+    /// rests on: the interpreter is admitted as a file, and its directory is not admitted at
+    /// all.
+    #[test]
+    fn a_file_inside_a_refused_directory_is_still_admitted() {
+        let asked = vec![PathBuf::from("/usr/bin"), PathBuf::from("/usr/bin/python3")];
+        assert_eq!(
+            without_program_directories(asked),
+            vec![PathBuf::from("/usr/bin/python3")]
+        );
+    }
 }

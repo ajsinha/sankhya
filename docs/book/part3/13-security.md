@@ -543,7 +543,9 @@ because with no boundary nobody grants the capability lightly.
 |---|---|---|
 | No network | A network namespace with no interface but a disconnected loopback | Exfiltration — a socket turns *may read* into *may publish* |
 | No filesystem | A mount namespace pivoted onto a read-only tree holding the interpreter and nothing else | Reading the warehouse directly, which bypasses every policy; reading the server's keys; writing anything at all |
-| No subprocess | The same mount namespace: inside the jail there is nothing to exec | Escaping the two above by starting something that was not the worker |
+| No subprocess | The same mount namespace: no shell, no `/bin`, and nothing in `/usr/bin` but the interpreter | Escaping the two above by starting something that was not the worker |
+| No sight of this server | A PID namespace the worker is *inside*, so `getppid()` is `0` | Signalling the process that started it, whose user it shares |
+| Not root in its own namespace | An identity map to `65534`, so `exec` drops the capability set | A capability held inside the namespace being turned on the namespace |
 | Bounded time | `RLIMIT_CPU`, and a wall-clock deadline the parent enforces by killing | A function that never returns is an outage, not an error |
 | Bounded memory and output | `RLIMIT_AS`, `RLIMIT_FSIZE` of zero, and a cap on the bytes returned | One query taking the machine down |
 
@@ -564,6 +566,74 @@ wrong:
 Each prohibition is proved by trying it — a process that opens a socket, reads a file it was not
 given, writes, loops forever — because a test that asserted which flags were passed would pass for
 a mechanism this kernel does not honour, and that is precisely the case worth detecting.
+
+### Six ways the table above was ahead of the code
+
+An audit read this chapter against the crate and found that four of the five rows were describing
+something stronger than what ran, and that the startup probe was checking something other than
+what it claimed. Every one of them is the same shape: a mechanism named correctly, applied
+incompletely, and asserted by nothing.
+
+**The worker was `root` in its own namespace.** The identity map read `0 <server uid> 1`, so the
+namespace's root was the server's user. `execve` of a file with no file capabilities only drops
+the capability set when the effective user id is *not* zero — so the interpreter started holding
+every capability the namespace had. It now maps to `65534`, and the capabilities go at `exec`.
+`SEC-09`.
+
+**Outside the namespace it is still the server's user, and this chapter used to imply otherwise.**
+`ADR-0023` Decision 2 promised *"a distinct unprivileged uid and gid"*, and the table here quietly
+dropped that row rather than flagging it. An unprivileged user namespace cannot deliver it: the
+kernel permits one map line and its parent-side id must be the writer's own. A distinct id needs a
+`newuidmap` helper installed setuid and a `/etc/subuid` range allocated to the server's user,
+which is a deployment decision the server cannot make for itself. The row is now stated as what it
+is rather than omitted.
+
+**A user function could kill the server.** `unshare(CLONE_NEWPID)` places the caller's *children*
+in the new PID namespace and leaves the caller behind — and the caller was the process that then
+`exec`ed into the worker. So the worker sat in the host PID namespace, could see every process on
+the machine, and shared the server's uid: `os.kill(os.getppid(), 9)` worked. It now forks once
+more, so the worker is PID 1 of a namespace holding nothing else and `getppid()` is `0`. `SEC-10`.
+
+That fork brought two problems of its own, and both are worth naming because neither is obvious.
+The process left outside must **close every descriptor above the standard streams**: `spawn` does
+not return until every copy of its close-on-exec pipe is closed, so holding one blocks the caller
+for the whole run and starts the deadline clock after the function has already finished. And the
+worker must be **tethered** with `PR_SET_PDEATHSIG`, because PID 1 of a namespace is not reaped by
+anybody and would otherwise go on running after the query that started it was told it timed out.
+
+**The jail held every binary on the machine.** *No subprocess* is delivered entirely by the empty
+jail, and the jail bound `sys.base_prefix` — which on a system interpreter is `/usr`. The comment
+three lines above claimed it avoided binding `/usr` wholesale. It now asks `sysconfig` for the
+standard library by name, binds the interpreter **as a file** rather than the directory it sits in,
+and refuses any answer that is one of the directories a machine keeps its programs in. `SEC-11`.
+
+The honest form of the promise is narrower than *"there is nothing to exec"*: the shared-object
+directories have to be there for the dynamic linker, and some of them hold executables. What the
+jail delivers is that there is no shell, no `/bin`, no `/usr/bin` beyond the interpreter itself,
+and nothing a `subprocess` call names by habit.
+
+**A forked grandchild blocked the parent for ever.** The parent read the child's output only once
+`try_wait` said it was gone, and a pipe's write end is held by every process that inherited it —
+so a grandchild that outlived the child meant the read never saw end-of-file, with the deadline
+loop already exited. This runs inside a DataFusion accumulator on a Tokio worker thread, so a
+handful of such queries stop the server. Output is now read on threads of its own from the moment
+the process exists. `SEC-12`.
+
+**The output cap could not fire at its shipped value.** For the same reason: a child writing more
+than a pipe holds (~64 KiB) blocked on the write, was killed at the deadline, and was reported as
+having run out of *time*. With the cap at 64 MiB the `OutOfRoom` arm was unreachable, and the test
+that proved the cap used a cap of 64 bytes. Counting while the run is going is what makes the
+bound a bound. `SEC-13`.
+
+**And the probe checked one mechanism out of fifteen.** `ADR-0023` Decision 3 says the probe *runs
+the mechanism, once, against a trivial worker — it does not read a capability flag and hope*. It
+forked, called `unshare`, and stopped. A machine where `unshare` succeeds and `pivot_root` fails
+passed it and failed at the first `CREATE AGGREGATION` in production, which is the outcome the
+decision exists to prevent. It now calls the same function a real spawn calls, and names the step
+that refused. `SEC-14`.
+
+> **Pitfall** — Every one of these was a mechanism that was *present*. Reviewing a sandbox by
+> checking that the right syscalls appear in the file is reviewing the table of contents.
 
 ## 13.8 How this is tested, and why mutation testing is not optional here
 

@@ -4897,6 +4897,89 @@ CATALOGUE = [
      "            Mask::Constant { .. } => Arc::clone(&values),",
      "sankhya-catalog"),
 
+    # --- Phase 4: the boundary a user function runs behind ---------------------------------------
+
+    # `SEC-09`. Mapping the namespace's root to the server's uid made the worker root *inside*
+    # its namespace, and `execve` of a non-setuid file only drops capabilities when the
+    # effective uid is not zero --- so the interpreter started holding every one of them.
+    ("sandbox: make the worker root inside its own namespace",
+     "crates/sankhya-sandbox/src/jail.rs",
+     "const NOBODY: u32 = 65_534;",
+     "const NOBODY: u32 = 0;",
+     "sankhya-sandbox"),
+
+    # `SEC-10`. `unshare(CLONE_NEWPID)` places the caller's *children* in the new namespace and
+    # leaves the caller behind --- and the caller is the process that then execs into the
+    # worker. Without the second fork the worker is in the host PID namespace, can see the
+    # server, and shares its uid, so `os.kill(os.getppid(), 9)` succeeds.
+    ("sandbox: leave the worker in the PID namespace it was started from",
+     "crates/sankhya-sandbox/src/jail.rs",
+     "    unsafe { establish(plan) }?;\n    unsafe { enter_pid_namespace() }",
+     "    unsafe { establish(plan) }",
+     "sankhya-sandbox"),
+
+    # And the tether. Killing the intermediate is what the deadline does; without this the
+    # worker is PID 1 of its own namespace and nothing reaps it.
+    ("sandbox: let a killed worker outlive the process that started it",
+     "crates/sankhya-sandbox/src/jail.rs",
+     "    if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) } != 0 {",
+     "    if false {",
+     "sankhya-sandbox"),
+
+    # There is deliberately **no mutation for the descriptors the intermediate closes**.
+    #
+    # One was written --- keep them --- and it is caught: `Command::spawn` does not return until
+    # every copy of its close-on-exec pipe is closed, so an intermediate holding one blocks the
+    # spawn for the whole run, the deadline clock starts after the worker has finished, and
+    # `a_function_that_never_returns_is_killed` reports `Failed` where it wants `OutOfTime`.
+    #
+    # It is not kept because of what it does to a *different* test.
+    # `the_output_bound_fires_at_the_size_it_is_set_to` writes 12 MiB, and with the descriptors
+    # held the parent is still inside `spawn` and reading nothing --- so the worker blocks on a
+    # full pipe, burns no CPU, never trips `RLIMIT_CPU`, and never exits. The suite hangs rather
+    # than failing, and the hang is inside `spawn`, where no deadline in this crate can reach it.
+    #
+    # A mutation that hangs the gate is worse than one that survives it: a survivor is a line on
+    # a list somebody reads, and a hang is a build nobody can run. The behaviour is covered ---
+    # by the test named above --- and this entry would only make the catalogue unrunnable.
+
+    # `SEC-11`. The jail is what delivers *no subprocess*: there is nothing to exec because
+    # nothing else is in it. Binding the interpreter's parent directory puts `/usr/bin` inside.
+    ("udf: admit the directory the interpreter lives in rather than the interpreter",
+     "crates/sankhya-udf/src/worker.rs",
+     "    out.push(python.to_path_buf());",
+     "    out.extend(python.parent().map(std::path::Path::to_path_buf));",
+     "sankhya-udf"),
+
+    # And the deny-list beside it, because the allow-list is built from what Python says it
+    # loads from --- and Python says `/usr`.
+    ("udf: admit a directory that holds a machine's programs",
+     "crates/sankhya-udf/src/worker.rs",
+     "        .filter(|path| !NEVER.iter().any(|never| path == Path::new(never)))",
+     "        .filter(|_| true)",
+     "sankhya-udf"),
+
+    # There is deliberately **no mutation for the bounded wait on a stream** (`SEC-12`).
+    #
+    # One was written --- wait for ever instead --- and it survived, correctly, because the PID
+    # namespace two files over makes the case it guards against impossible. The worker is PID 1
+    # of a namespace holding nothing else, so when it exits the kernel kills everything else in
+    # that namespace: there is no grandchild left to hold the write end of the pipe open.
+    #
+    # That is worth saying rather than deleting silently, because it is the *argument* for the
+    # fork. The bounded wait is what the caller would need if a process could outlive the worker
+    # and it cannot; the concurrent reading beside it is what fixed `SEC-12`, and the entry
+    # below for the output bound covers that.
+
+    # `SEC-13`. The output bound can only fire if the output is counted while it is being
+    # written: a child writing past a pipe's capacity blocks, and is then killed at the
+    # deadline and reported as having run out of time.
+    ("sandbox: notice the output bound only once the run is over",
+     "crates/sankhya-sandbox/src/lib.rs",
+     "                    if overran(&answering) {",
+     "                    if false {",
+     "sankhya-sandbox"),
+
     # --- Phase 4: who a statement runs as --------------------------------------------------------
 
     # `SEC-03`. The subject was read from the metadata, checked non-empty, and discarded, so
@@ -5952,8 +6035,8 @@ CATALOGUE = [
 
     ("sandbox: accept more output than the caller allowed",
      "crates/sankhya-sandbox/src/lib.rs",
-     "                    if answered.len() > bounds.output {",
-     "                    if false {",
+     "            Ending::Ended(_) if answered.len() > bounds.output => {",
+     "            Ending::Ended(_) if false => {",
      "sankhya-sandbox"),
 
     # A cube over a declared query. Its dependency list is what authorization, the cache key

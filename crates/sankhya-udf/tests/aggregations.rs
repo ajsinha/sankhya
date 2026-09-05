@@ -311,3 +311,80 @@ def finish(state):
         "it must fail because this namespace has no route, not merely fail: {said}"
     );
 }
+
+// --- what the jail actually holds ------------------------------------------
+
+/// What a run said, whichever way it ended.
+fn said(outcome: &sankhya_sandbox::Outcome) -> String {
+    match outcome {
+        sankhya_sandbox::Outcome::Answered(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+        other => format!("{other:?}"),
+    }
+}
+
+#[test]
+fn there_is_no_shell_in_the_jail() {
+    // `SEC-11`. `ADR-0023` delivers *no subprocess* entirely through "in a jail holding the
+    // interpreter and nothing else, there is nothing to exec". The worker bound
+    // `sys.base_prefix`, which on a system interpreter is `/usr`, so every binary on the
+    // machine was inside.
+    //
+    // This asks for the set the *worker* asks for, which is the thing under test --- the
+    // fixture above deliberately binds `/bin` so it can run a shell, and using that here would
+    // assert the opposite of the property.
+    let interpreter = Path::new("/usr/bin/python3");
+    if !interpreter.exists() {
+        println!("SKIPPED: no /usr/bin/python3");
+        return;
+    }
+    let ready = sankhya_sandbox::probe().expect("this machine can host the boundary");
+    let needs = sankhya_udf::interpreter_needs(interpreter);
+    let readable: Vec<&Path> = needs.iter().map(std::path::PathBuf::as_path).collect();
+    let outcome = ready
+        .run(
+            interpreter,
+            &[
+                "-c",
+                "import os,subprocess\n\
+                 for d in ('/bin','/sbin','/usr/sbin'):\n    \
+                 print(d, 'PRESENT' if os.path.isdir(d) else 'ABSENT')\n\
+                 print('HOLDS', sorted(os.listdir('/usr/bin')) if os.path.isdir('/usr/bin') \
+                 else [])\n\
+                 try:\n    subprocess.run(['/bin/sh','-c','echo ESCAPED'],check=True)\n\
+                 except Exception as e:\n    print('REFUSED', type(e).__name__)",
+            ],
+            &readable,
+            b"",
+            &sankhya_sandbox::Bounds::modest(),
+        )
+        .expect("the process starts");
+    let text = said(&outcome);
+    // Not vacuous: the interpreter ran and answered, so an empty result cannot pass this.
+    assert!(
+        text.contains("/bin "),
+        "the interpreter must have run and reported: {text}"
+    );
+    for directory in ["/bin", "/sbin", "/usr/sbin"] {
+        assert!(
+            text.contains(&format!("{directory} ABSENT")),
+            "{directory} must not exist inside the jail: {text}"
+        );
+    }
+    // `/usr/bin` **does** exist, and this is the honest form of the property. The interpreter
+    // is at `/usr/bin/python3` on a system install, so the directory has to be there for the
+    // file to be bound into --- what matters is that it holds the interpreter and nothing
+    // else, which is what binding a file rather than its parent directory buys.
+    let interpreter_name = interpreter
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .expect("the interpreter has a name");
+    assert!(
+        text.contains(&format!("HOLDS ['{interpreter_name}']")),
+        "the interpreter's directory must hold the interpreter and nothing else: {text}"
+    );
+    assert!(
+        !text.contains("ESCAPED"),
+        "and a subprocess call must not find anything to run: {text}"
+    );
+}
+
