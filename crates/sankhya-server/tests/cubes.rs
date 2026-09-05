@@ -42,6 +42,8 @@ mod feeds;
 mod driver;
 #[path = "../src/snapshots.rs"]
 mod snapshots;
+#[path = "../src/audit.rs"]
+mod audit;
 #[path = "../src/wiring.rs"]
 mod wiring;
 
@@ -64,6 +66,7 @@ fn settings(warehouse: &std::path::Path) -> Settings {
         maintenance: None,
         require_password: false,
         user_functions: false,
+        metrics_detail: false,
         metrics_listen: None,
         transport_security: None,
     }

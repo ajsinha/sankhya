@@ -412,6 +412,59 @@ The graph epoch | A traversal is reproducible only against the adjacency it walk
 Without the last two, a record reproduces nothing, and an audit that cannot reproduce what a
 principal saw is a log file with ceremony.
 
+### None of those four was ever populated
+
+The table above described a record the code did not write. The only append site hardcoded *no row
+filter and no column masks*, never recorded the version, the statement or the rows returned, and
+passed **the first two words of the statement** where a table belongs. `SEC-07`.
+
+The restrictions field is the one worth dwelling on, because it was not merely empty: it said
+`allowed, no filter, no masks` on statements where a filter *was* applied. An empty field is a
+record that does not answer a question. A field filled with a false value is a record that answers
+it wrongly, and an audit is read as evidence.
+
+A read now writes one entry **per table the plan scanned** — taken from the plan, not from the
+session and not by looking for table names in the SQL. One per table because a restriction is a
+property of a table rather than of a statement: two tables in one query can be filtered
+differently and a single row cannot say so. From the plan because recording every table the
+session *authorized* would attribute a row count to tables nobody read, and a substring search
+over the statement — which is good enough for deciding whether to hydrate a cube, where a false
+positive costs a cache lookup — would put a table in somebody's audit trail because its name
+appeared in a string literal.
+
+The graph epoch stays `None` and is not guessed. This read path does not traverse a graph, and a
+field that is always present and never true is worse than one that is absent and says so.
+
+**The statement is recorded by shape and never by text** — `select region`, not
+`SELECT region FROM orders WHERE national_id = '123-45-6789'`. A statement carries the values a
+query filtered on, and copying those into a durable log makes the audit a second place the data
+lives, with different retention and different access control from the table it came from. The
+audit file is also the one most likely to be shipped somewhere else wholesale. That is a decision
+this repository had already made and asserted with a test; what was wrong is that the shape was
+being recorded **as the table**, which is a different field.
+
+### And a restart erased all of it
+
+`Chain` was a `Vec`. The hash-linked, tamper-evident audit — the one this section describes and
+`docs/STATUS.md` marked as a met criterion — lived in memory and was lost when the process
+stopped, which is the event most likely to accompany the incident an audit exists for.
+
+It is written to `_audit/chain.jsonl` under the warehouse, one JSON object per line, synced before
+the statement is answered. A file opened for append is the shape where *append-only* is enforced
+by the thing doing the writing rather than by the code that means to; a row store would let a
+later version issue an `UPDATE`. It is also readable by `jq` and by a person, which a chain only
+this binary can read is not.
+
+Every sync, and not a buffer: the missing records would be precisely the ones written in the
+seconds before whatever made the audit interesting. This is one line per table per statement, not
+one per row.
+
+A write that fails does not stop the statement — that is a decision, and the alternative of
+refusing to answer is defensible — but it is counted in `sankhya_audit_unwritten_total` and
+logged, because the one thing it must not do is fail silently. A server with nowhere to write says
+`IN MEMORY ONLY` in its startup line, capitalised like the authentication postures and for the
+same reason.
+
 The chain is hash-linked with SHA-256 and detects alteration, reordering and insertion. It does
 **not** detect truncation of the tail: an attacker who removes the last *n* records leaves a chain
 that verifies perfectly. Only publishing the head somewhere append-only makes the true length

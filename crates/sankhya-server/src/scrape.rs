@@ -17,9 +17,24 @@
 //!
 //! Prometheus's convention is an unauthenticated endpoint on a private interface, and adding
 //! authentication that the standard collector cannot use would produce a metrics endpoint
-//! nobody scrapes. What makes that acceptable is that no label may carry tenant data --- the
-//! metric catalogue enforces it structurally rather than by review --- so there is nothing
-//! here to disclose beyond the shape of the deployment.
+//! nobody scrapes. So what is exported has to be narrow enough to be safe unauthenticated.
+//!
+//! This module used to say that no label may carry tenant data and that *"the metric catalogue
+//! enforces it structurally rather than by review"*. It does not, and the sentence was doing the
+//! work of a control. A label is bounded by **cardinality** --- how many distinct values it may
+//! take --- and not by content, and `sankhya_table_live_files` was filled with the
+//! fully-qualified name of every servable table, with no principal anywhere in scope. Anybody
+//! who could reach the port could enumerate the warehouse. A test asserted the label was
+//! present. `SEC-08`.
+//!
+//! What is exported here now names no table by default. The figure an alert fires on ---
+//! `sankhya_table_live_files_max` --- carries no label, because what pages is that *some* table
+//! has too many files; which one is a question for the diagnostic, which answers it to somebody
+//! who has authenticated. The per-table breakdown is behind `server.metrics_detail`, off unless
+//! an operator turns it on, for a deployment whose metrics interface is genuinely private.
+//!
+//! The general rule this leaves is worth stating, because the old sentence read like one and
+//! was not: **a label's values are as public as the port**, and nothing structural checks them.
 
 use crate::wiring::Server;
 use sankhya_metrics::catalogue::{ALL, MEMORY_IN_USE_BYTES, MEMORY_PEAK_BYTES};

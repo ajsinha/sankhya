@@ -33,6 +33,8 @@ mod aggregations;
 mod driver;
 #[path = "../src/warehouse.rs"]
 mod warehouse;
+#[path = "../src/audit.rs"]
+mod audit;
 #[path = "../src/wiring.rs"]
 mod wiring;
 #[path = "../src/feeds.rs"]

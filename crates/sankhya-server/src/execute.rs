@@ -143,6 +143,27 @@ pub fn session_and_contested(
     policy: &PolicySet,
     tables: &[ServableTable],
 ) -> Result<(SessionContext, usize, BTreeMap<String, Vec<String>>), QueryFailure> {
+    session_reaching(principal, policy, tables).map(|built| (built.0, built.1, built.2))
+}
+
+/// What each table this session may read is restricted by, for the audit.
+///
+/// `schema.table`, the row predicate in force over it, and the columns it obscures. Collected
+/// where the guards are made, because that is the only place they exist --- the audit's record
+/// of *"the row filter applied"* was a hardcoded `None`, so a statement answered under a
+/// restriction was recorded as one answered under none. `SEC-07`.
+pub type Restrictions = Vec<(TableRef, Option<String>, std::collections::BTreeMap<String, String>)>;
+
+/// [`session_and_contested`], and what the session is restricted by.
+///
+/// # Errors
+///
+/// As [`session_for`].
+pub fn session_reaching(
+    principal: &Principal,
+    policy: &PolicySet,
+    tables: &[ServableTable],
+) -> Result<(SessionContext, usize, BTreeMap<String, Vec<String>>, Restrictions), QueryFailure> {
     let context = SessionContext::new();
 
     // The analytical functions the guide documents in its own sections.
@@ -242,7 +263,21 @@ pub fn session_and_contested(
         *claims.entry(table.reference.table.as_str()).or_insert(0) += 1;
     }
 
+    // What each of them is restricted by, recorded as the guards are consumed. The audit used
+    // to say "no row filter and no masks" for every statement, which was a hardcoded value
+    // rather than an observation --- so a query answered under a restriction was recorded as
+    // one answered under none, and §13.5 lists that field as not optional. `SEC-07`.
+    let mut restrictions: Restrictions = Vec::new();
     for (table, guard) in permitted {
+        restrictions.push((
+            table.reference.clone(),
+            guard.row_filter().map(str::to_owned),
+            guard
+                .column_masks()
+                .iter()
+                .map(|(column, mask)| (column.clone(), format!("{mask:?}")))
+                .collect(),
+        ));
         let secured: Arc<dyn TableProvider> = Arc::new(
             SecuredTable::new(Arc::clone(&table.provider), guard, &context.state())
                 .map_err(|error| failure(sqlstate::INTERNAL_ERROR.as_str(), &error.to_string()))?,
@@ -308,7 +343,7 @@ pub fn session_and_contested(
                 .push(format!("{}.{bare}", table.reference.schema));
         }
     }
-    Ok((context, registered, contested))
+    Ok((context, registered, contested, restrictions))
 }
 
 /// The schema of this name in the session's catalogue, created if it is not there yet.
@@ -346,7 +381,7 @@ pub async fn run(
     context: &SessionContext,
     sql: &str,
     max_rows: usize,
-) -> Result<QueryResult, QueryFailure> {
+) -> Result<(QueryResult, Vec<TableRef>), QueryFailure> {
     // Planned and executed in two steps, deliberately. `SessionContext::sql` does both: it
     // runs data-definition statements *during planning* and hands back a frame over the
     // empty result, so a check against the returned plan happens after the table has already
@@ -359,6 +394,11 @@ pub async fn run(
         .await
         .map_err(|error| plan_failure(&error))?;
     refuse_if_not_a_read(&plan)?;
+    // The tables this statement actually reads, taken from the plan rather than from the
+    // session. The audit needs them: recording one entry per table the *session* authorized
+    // attributes a row count to tables nobody touched, which is worse than recording none ---
+    // a wrong fact in an audit is read as a fact. `SEC-07`.
+    let touched = scanned(&plan);
 
     let frame = context
         .execute_logical_plan(plan)
@@ -414,11 +454,38 @@ pub async fn run(
             rows.push(render_row(batch, index));
         }
     }
-    Ok(QueryResult {
-        tag: format!("SELECT {}", rows.len()),
-        fields,
-        rows,
+    Ok((
+        QueryResult {
+            tag: format!("SELECT {}", rows.len()),
+            fields,
+            rows,
+        },
+        touched,
+    ))
+}
+
+/// Every table a plan scans, as the catalogue names them.
+///
+/// From the plan and not from the statement text. A substring search over the SQL is what the
+/// cube path does to decide whether to *hydrate* --- where a false positive costs a cache
+/// lookup --- and it is not good enough for an audit, where a false positive is a record saying
+/// somebody read a table they did not.
+fn scanned(plan: &datafusion::logical_expr::LogicalPlan) -> Vec<TableRef> {
+    use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+    let mut found: BTreeMap<String, TableRef> = BTreeMap::new();
+    plan.apply(|node| {
+        if let datafusion::logical_expr::LogicalPlan::TableScan(scan) = node {
+            let reference = &scan.table_name;
+            let table = TableRef::new(
+                reference.schema().unwrap_or_default(),
+                reference.table(),
+            );
+            found.insert(table.to_string(), table);
+        }
+        Ok(TreeNodeRecursion::Continue)
     })
+    .ok();
+    found.into_values().collect()
 }
 
 /// Refuse anything that is not a read.

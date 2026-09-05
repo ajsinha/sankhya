@@ -2,6 +2,7 @@
 
 #![doc(html_root_url = "https://docs.rs/sankhya-audit")]
 
+pub mod journal;
 pub mod chain;
 pub mod keys;
 

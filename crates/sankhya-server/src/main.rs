@@ -50,6 +50,8 @@ mod driver;
 mod feeds;
 mod snapshots;
 mod flight;
+// What a read puts in the audit, beside the read path rather than in the composition root.
+mod audit;
 mod scrape;
 mod warehouse;
 mod wiring;
@@ -167,6 +169,14 @@ fn settings() -> Result<Settings, String> {
         .boolean("server.user_functions")
         .map_err(|error| error.to_string())?
         .unwrap_or(false);
+    // Off unless an operator says otherwise, for the same reason `user_functions` is: the
+    // per-table gauge's label is a table's name and `/metrics` is unauthenticated, so the
+    // breakdown enumerates the warehouse to whoever can reach the port. The figure that pages
+    // is unlabelled and is emitted either way.
+    let metrics_detail = config
+        .boolean("server.metrics_detail")
+        .map_err(|error| error.to_string())?
+        .unwrap_or(false);
     let warehouse: std::path::PathBuf = config.get_or("warehouse.path", "./warehouse").into();
     // Absent means everything published, which is what a server running no ingest wants.
     // A position that will not convert is refused rather than defaulted: falling back to
@@ -254,6 +264,7 @@ fn settings() -> Result<Settings, String> {
         tenant,
         require_password,
         user_functions,
+        metrics_detail,
         flight_listen,
         metrics_listen,
     })
@@ -1005,10 +1016,29 @@ async fn main() -> std::io::Result<()> {
             Posture::Mutual => "TLS required, and a client certificate with it",
         }
     );
+    // The chain, read back from the warehouse. Before anything is served, so the first record
+    // of this run links to the last record of the previous one --- which is the whole of what
+    // makes it a chain rather than a log.
+    for complaint in audit::resume_audit(&server) {
+        eprintln!("  AUDIT {complaint}");
+    }
     println!(
-        "  audit chain head {} ({} record(s))",
-        server.audit_head(),
-        server.audit_len()
+        "  audit chain head {} ({} record(s)){}",
+        audit::head(&server),
+        audit::len(&server),
+        if audit::audit_is_durable(&server) {
+            String::new()
+        } else {
+            // Capitalised, like the authentication postures, and for the same reason: this is
+            // the state `SEC-07` found shipped as the only state, and it must look wrong in a
+            // log rather than be something somebody has to go and check.
+            format!(
+                ", IN MEMORY ONLY --- it will be lost at the next restart, and \
+                 `{}/{}` could not be opened",
+                sankhya_audit::journal::DIRECTORY,
+                sankhya_audit::journal::FILE
+            )
+        }
     );
     for complaint in &complaints {
         // Loud, and on stderr. A table that failed to open looks to whoever queries it like

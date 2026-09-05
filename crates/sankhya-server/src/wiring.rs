@@ -33,7 +33,7 @@ use std::sync::Arc;
 
 use sankhya_catalog::guard::Guard;
 use datafusion::prelude::SessionContext;
-use crate::execute::{run, session_and_contested, session_for, ServableTable};
+use crate::execute::{run, session_for, session_reaching, ServableTable};
 
 /// How the server was configured.
 #[derive(Clone, Debug)]
@@ -125,6 +125,14 @@ pub struct Settings {
     /// A switch rather than silence, so an operator who wants user functions turns them on and
     /// knows they did.
     pub user_functions: bool,
+    /// Whether `/metrics` may name individual tables.
+    ///
+    /// Off unless an operator says otherwise. The per-table gauge's label is the table's
+    /// fully-qualified name, and the endpoint is unauthenticated by convention --- so the
+    /// breakdown enumerates the warehouse to anybody who can reach the port. `SEC-08`. The
+    /// figure that pages is unlabelled and is always emitted; this is the detail beside it,
+    /// for a deployment whose metrics interface is genuinely private.
+    pub metrics_detail: bool,
     /// Where the metrics endpoint listens, or `None` not to serve one.
     ///
     /// Its own address rather than a path on the wire-protocol port, so it can be bound to
@@ -251,7 +259,16 @@ pub struct Server {
     pub(crate) settings: Settings,
     pub(crate) policy: PolicySet,
     quotas: Quotas,
-    audit: parking_lot::Mutex<Chain>,
+    /// The chain, and the file it is written to.
+    ///
+    /// One lock over both, deliberately: the record's `sequence` and its link to the previous
+    /// digest are decided by the chain, and a second lock would let two threads interleave an
+    /// append with a write and produce a file whose order is not the chain's.
+    ///
+    /// `None` for a server with nowhere to write, which is every in-process test. A chain with
+    /// no journal is the old behaviour and is said out loud at startup rather than assumed ---
+    /// `SEC-07`, whose worse half was that this was the *only* behaviour.
+    pub(crate) audit: parking_lot::Mutex<(Chain, Option<sankhya_audit::journal::Journal>)>,
     tables: Vec<CatalogTable>,
     /// What actually answers a scan, alongside the catalogue's description of it.
     ///
@@ -327,7 +344,7 @@ pub struct Server {
     /// the signal it reads. Bounded per cube, and it records a *shape* --- which dimensions
     /// were grouped by --- with nowhere to put a member or a principal.
     query_log: Arc<sankhya_cube::querylog::QueryLog>,
-    clock: parking_lot::Mutex<i64>,
+    pub(crate) clock: parking_lot::Mutex<i64>,
     /// How many connections are open, so the gauge can be set from either hook.
     ///
     /// A counter rather than reading the gauge back: two connections closing at once would
@@ -741,7 +758,7 @@ impl Server {
             settings,
             policy,
             quotas,
-            audit: parking_lot::Mutex::new(Chain::new()),
+            audit: parking_lot::Mutex::new((Chain::new(), None)),
             tables,
             servable: parking_lot::RwLock::new(Arc::new(servable)),
             aggregations: std::sync::RwLock::new(Arc::new(Vec::new())),
@@ -771,19 +788,39 @@ impl Server {
     /// arriving between refreshes reads a number from the previous era. The log cache makes
     /// this cheap: nothing has changed unless a commit landed.
     pub fn refresh_table_gauges(&self) {
+        let mut largest = 0usize;
         for table in self.servable.read().iter() {
             let Ok(files) = table.live_file_count() else {
                 // A table that will not replay is the diagnostic's business, not the metrics
                 // endpoint's. Recording a zero here would report an empty table.
                 continue;
             };
-            #[allow(clippy::cast_precision_loss)]
-            self.metrics.set(
-                &catalogue::TABLE_LIVE_FILES,
-                &[("table", &table.reference.to_string())],
-                files as f64,
-            );
+            largest = largest.max(files);
+            // The **breakdown**, which names every table on the server, and `/metrics` is
+            // unauthenticated by Prometheus's convention. The endpoint's own module claimed no
+            // label may carry tenant data and that the catalogue enforces it structurally: a
+            // label is bounded by cardinality, not by content, and this one held the
+            // fully-qualified name of every servable table. `SEC-08`.
+            //
+            // Off unless an operator says otherwise, the same shape as `user_functions`: the
+            // safe posture is the one you get by not thinking, and a deployment that has bound
+            // this port to an interface clients cannot reach can turn the detail on knowing
+            // what it is turning on.
+            if self.settings.metrics_detail {
+                #[allow(clippy::cast_precision_loss)]
+                self.metrics.set(
+                    &catalogue::TABLE_LIVE_FILES,
+                    &[("table", &table.reference.to_string())],
+                    files as f64,
+                );
+            }
         }
+        // And the number that pages, which needs no label. What an alert is about is that
+        // *some* table has too many files; which one is a question for the diagnostic, which
+        // answers it to somebody who has authenticated.
+        #[allow(clippy::cast_precision_loss)]
+        self.metrics
+            .set(&catalogue::TABLE_LIVE_FILES_MAX, &[], largest as f64);
         // The registry's own refusals, exported like everything else. A dashboard that
         // cannot see these cannot tell an incomplete metric from a quiet one.
         let rejections = self.metrics.rejections();
@@ -855,24 +892,6 @@ impl Server {
         self.tables.len()
     }
 
-    /// The audit chain's current head, for mirroring somewhere append-only.
-    #[must_use]
-    pub fn audit_head(&self) -> String {
-        self.audit.lock().head().to_string()
-    }
-
-    /// How many things have been audited.
-    #[must_use]
-    pub fn audit_len(&self) -> usize {
-        self.audit.lock().len()
-    }
-
-    /// Whether the audit chain still verifies.
-    #[must_use]
-    pub fn audit_intact(&self) -> bool {
-        self.audit.lock().verify().is_ok()
-    }
-
     /// The quota in force for the configured tenant.
     #[must_use]
     pub fn quota(&self) -> Option<Quota> {
@@ -922,6 +941,12 @@ impl Server {
     /// The clock advances by one per record rather than being read from the system. A
     /// component that reads a clock cannot be replayed, and the audit is the one thing that
     /// must reproduce exactly. A real deployment supplies wall-clock time here.
+    /// Record something that reached bookkeeping rather than a table.
+    ///
+    /// `CREATE CUBE`, `DROP SNAPSHOT`, `RESUME FEED` --- statements about the warehouse's own
+    /// documents. There is no row filter and no mask over a snapshot document, so recording
+    /// none is an observation here and not the hardcoded value it was on the read path.
+    /// [`crate::audit::record_read`] is what a statement over a table goes through.
     pub(crate) fn record(&self, principal: &Principal, table: TableRef, action: Action, allowed: bool) {
         let at = {
             let mut clock = self.clock.lock();
@@ -933,16 +958,9 @@ impl Server {
         } else {
             RecordedDecision::denied()
         };
-        self.audit
-            .lock()
-            .append(Entry::by(principal, table, action, decision, at));
-        // Counted here rather than derived from the chain's length on scrape, so that the
-        // number rises at the moment of the append. A gauge read from the chain would be
-        // equally true and would not distinguish "the audit stopped recording" from "the
-        // scrape stopped running", and only one of those is an emergency.
-        self.metrics
-            .increment(&catalogue::AUDIT_RECORDS_TOTAL, &[], 1.0);
+        crate::audit::append(self, Entry::by(principal, table, action, decision, at));
     }
+
 }
 
 impl Handler for Server {
@@ -2527,8 +2545,8 @@ impl Server {
             None => servable,
             Some(pinned) => pinned,
         };
-        let (context, registered, contested) =
-            session_and_contested(&principal, &self.policy, &servable)?;
+        let (context, registered, contested, restrictions) =
+            session_reaching(&principal, &self.policy, &servable)?;
         if registered == 0 && !servable.is_empty() {
             return Err(refusal(
                 statuses_for_denied().sqlstate.as_str(),
@@ -2560,16 +2578,14 @@ impl Server {
         // and useless: "table not found", about a table that is found twice. Saying which two
         // is the difference between a typo somebody hunts for and four characters they type.
         let outcome = outcome.map_err(|failure| explain_contested(failure, &contested));
+        // Split, because the tables belong to the audit and not to the client.
+        let touched = outcome.as_ref().map(|(_, touched)| touched.clone()).unwrap_or_default();
+        let outcome = outcome.map(|(answer, _)| answer);
 
         // Audited whichever way it went. A log that records only successes cannot show an
         // attempt to reach something forbidden, which is the pattern an investigation is
         // usually looking for.
-        self.record(
-            &principal,
-            TableRef::new("", statement_shape(sql)),
-            Action::Read,
-            outcome.is_ok(),
-        );
+        crate::audit::record_read(self, &principal, sql, &restrictions, &touched, outcome.as_ref().ok());
         outcome
     }
 
@@ -2621,7 +2637,7 @@ pub(crate) fn outcome_label(outcome: &Result<QueryResult, QueryFailure>) -> &'st
 /// query was filtering on, and copying those verbatim into a durable log turns the audit
 /// into a second place the data lives — one with different retention and different access
 /// control from the table it came from.
-fn statement_shape(sql: &str) -> String {
+pub(crate) fn statement_shape(sql: &str) -> String {
     sql.split_whitespace()
         .take(2)
         .collect::<Vec<_>>()

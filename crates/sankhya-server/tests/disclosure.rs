@@ -191,3 +191,118 @@ fn a_feed_is_listed_to_everybody_and_its_halt_reason_is_not() {
         .run("SHOW FEEDS")
         .expect("a reader may ask too");
 }
+
+// --- what the audit records, and whether it survives ------------------------
+
+#[test]
+fn the_audit_records_what_the_statement_was_answered_under() {
+    // `SEC-07`. The only append site hardcoded *no row filter and no masks*, never recorded the
+    // version, the statement or the rows returned, and passed the **first two words of the
+    // statement** where a table belongs. §13.5 lists four fields as not optional and none was
+    // ever populated --- and the one about restrictions did not merely omit them, it positively
+    // asserted that none applied.
+    let (dir, server) = running();
+    let warehouse = dir.path().join("warehouse");
+
+    Session::open_as(server.port, "ana")
+        .run("SELECT region FROM orders")
+        .expect("a reader may read");
+
+    let chain = std::fs::read_to_string(warehouse.join("_audit").join("chain.jsonl"))
+        .expect("the audit is written to the warehouse, not only to memory");
+    let read = chain
+        .lines()
+        .filter(|line| line.contains("\"action\":\"read\""))
+        .last()
+        .expect("a read was recorded");
+
+    assert!(
+        read.contains("\"statement\":\"select region\""),
+        "the statement's shape is recorded, so a reader can tell a select from a listing: \
+         {read}"
+    );
+    assert!(
+        read.contains("\"rows_returned\":"),
+        "and how many rows they received: {read}"
+    );
+    assert!(
+        read.contains("\"data_version\":") && !read.contains("\"data_version\":null"),
+        "and which version answered, without which the record reproduces nothing: {read}"
+    );
+    assert!(
+        read.contains("sales.orders"),
+        "and the table --- not the first two words of the statement, which is what used to be \
+         in this field: {read}"
+    );
+}
+
+#[test]
+fn the_audit_does_not_become_a_second_place_the_data_lives() {
+    // The other half of the same decision, and the reason the statement is recorded by shape
+    // rather than verbatim. A statement carries the values a query filtered on --- copying them
+    // into a durable log puts them somewhere with different retention and different access
+    // control from the table they came from, and the audit is the one file most likely to be
+    // shipped somewhere else wholesale.
+    let (dir, server) = running();
+    let warehouse = dir.path().join("warehouse");
+
+    Session::open_as(server.port, "ana")
+        .run("SELECT region FROM orders WHERE region = 'a-secret-value'")
+        .expect("a reader may read");
+
+    let chain = std::fs::read_to_string(warehouse.join("_audit").join("chain.jsonl"))
+        .expect("the audit is on disk");
+    assert!(
+        !chain.contains("a-secret-value"),
+        "a value a query filtered on must not reach the audit: {chain}"
+    );
+    // Not vacuous: the statement really did run and really was recorded.
+    assert!(
+        chain.contains("\"statement\":\"select region\""),
+        "and the shape still is: {chain}"
+    );
+}
+
+#[test]
+fn the_audit_survives_a_restart() {
+    // The other half of `SEC-07`, and the worse one: `Chain` is a `Vec`, so the hash-linked
+    // tamper-evident audit was erased by a restart --- and a restart is the event most likely
+    // to accompany the incident an audit exists for. `docs/STATUS.md` marked the criterion met.
+    let dir = tempfile::tempdir().expect("a directory");
+    let warehouse = dir.path().join("warehouse");
+    write_warehouse(&warehouse);
+    let data = dir.path().join("data");
+
+    let first = start_with(&warehouse, &data, &[]);
+    Session::open_as(first.port, "ana")
+        .run("SELECT region FROM orders")
+        .expect("a reader may read");
+    let before = std::fs::read_to_string(warehouse.join("_audit").join("chain.jsonl"))
+        .expect("the chain is on disk")
+        .lines()
+        .count();
+    assert!(before > 0, "the first run recorded something");
+    drop(first);
+
+    let second = start_with(&warehouse, &data, &[]);
+    Session::open_as(second.port, "ana")
+        .run("SELECT period FROM orders")
+        .expect("a reader may read after a restart");
+    let after = std::fs::read_to_string(warehouse.join("_audit").join("chain.jsonl"))
+        .expect("the chain is still on disk")
+        .lines()
+        .count();
+
+    assert!(
+        after > before,
+        "the second run appended to the first run's chain rather than starting a new one: \
+         {before} then {after}"
+    );
+    // And it is one chain, not two files' worth of unrelated records. The second run's first
+    // record links to the first run's last, which is the whole of what makes it a chain.
+    assert!(
+        second.said_matching("audit chain head").next().is_some(),
+        "the head is printed at every start, because a local chain cannot detect its own \
+         truncation and publishing the head is what makes the true length knowable"
+    );
+}

@@ -41,6 +41,8 @@ mod feeds;
 mod driver;
 #[path = "../src/snapshots.rs"]
 mod snapshots;
+#[path = "../src/audit.rs"]
+mod audit;
 #[path = "../src/wiring.rs"]
 mod wiring;
 #[path = "../src/warehouse.rs"]
