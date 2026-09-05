@@ -1182,6 +1182,18 @@ fn check_lints(root: &Path) -> bool {
     println!("== check-lints");
     let output = Command::new(env!("CARGO"))
         .current_dir(root)
+        // **A target directory of its own**, and it is not tidiness.
+        //
+        // `cargo clippy` substitutes its own driver for `rustc` and writes different
+        // fingerprints for the same crate. Sharing one directory with `cargo test` therefore
+        // means each invalidates everything the other built --- so a `check-all` compiled the
+        // whole workspace once for the tests and again for the lints, and whichever ran last
+        // left the tree poisoned for the next thing anybody ran. Three full builds where one
+        // would do, on a workspace whose `deps` directory is ninety-six gigabytes.
+        //
+        // Measured on 2026-09-05: this is the single largest cost in the gate, and it is
+        // entirely an artefact of the two tools sharing a directory.
+        .env("CARGO_TARGET_DIR", root.join("target").join("lints"))
         .args(["clippy", "--workspace", "--all-targets", "--keep-going"])
         .output();
 

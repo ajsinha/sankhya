@@ -52,6 +52,8 @@ mod snapshots;
 mod flight;
 // What a read puts in the audit, beside the read path rather than in the composition root.
 mod audit;
+// The policy an operator writes, read from configuration.
+mod policy;
 mod scrape;
 mod warehouse;
 mod wiring;
@@ -199,6 +201,15 @@ fn settings() -> Result<Settings, String> {
     // A fixed tenant until federated identity is wired in. Deterministic so that a restart
     // does not orphan the audit chain and the storage prefix from the previous run.
     let tenant = TenantId::from_uuid(uuid::Uuid::from_u128(1));
+    // The policy an operator wrote, or `None` where they wrote none.
+    //
+    // Refused rather than skipped when a rule does not parse: a policy with a rule silently
+    // dropped permits more than it says, and the person who wrote the rule believes it is in
+    // force. `SEC-15` --- until this existed no configuration key loaded a policy at all, so
+    // the shipped binary could express "everything" or "nothing" and the row-predicate
+    // enforcement had never run outside a test.
+    let policy = policy::read(&config.section("policy.rules"), tenant)
+        .map_err(|refused| format!("the policy could not be read: {refused}"))?;
     let maintenance = maintenance_policy(&config)?;
     // §11.6's configuration level: the storage an operator lends to automatic
     // materialisation. Read here rather than left a constant because it is the operator's
@@ -265,6 +276,7 @@ fn settings() -> Result<Settings, String> {
         require_password,
         user_functions,
         metrics_detail,
+        policy,
         flight_listen,
         metrics_listen,
     })

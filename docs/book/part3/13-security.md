@@ -335,6 +335,64 @@ exist at all the reason is shown, since there are no rows to withhold anything a
 > being true in the same change that wrote it: recording which table each feed fills, so `RESUME`
 > could be authorized, gave `SHOW` exactly the table it was said to lack.
 
+## 13.2e The policy the binary could not be configured with
+
+Everything above this section describes a policy engine: a row predicate conjoined into the scan
+where nothing can decline it, column masks applied above it, a denial that beats any grant. All of
+it is built, and §13.8 is about how carefully it is tested.
+
+**No configuration key loaded a policy set.** `start()` — the only path the shipped binary takes —
+built a policy granting `reader` read on every discovered table, with no filter and no mask. So
+the row-predicate enforcement, which is the best-tested code in this repository, had never run
+outside a test, and the binary could express *everything* or *nothing* and nothing in between.
+`SEC-15`.
+
+That is a different kind of finding from the rest of this chapter. Nothing was wrong. The thing
+was unreachable, and every page describing it described a capability nobody could configure — a
+feature that ships unreachable has been paid for and not delivered.
+
+```yaml
+policy:
+  rules:
+    analysts_read_northern_orders:
+      role: analyst
+      table: sales.orders
+      action: read
+      where: "region = 'north'"
+      mask:
+        email: null
+        phone: partial:4
+```
+
+Four decisions in that shape are worth stating.
+
+- **Each rule is named, and the name is the operator's.** A list would be shorter to write and
+  impossible to talk about: *"rule 3 does not parse"* is a refusal somebody has to count to, and a
+  policy is a file people review line by line.
+- **The table must be qualified.** A policy is the one place an ambiguous name is fatal: a bare
+  `orders` means one table today and two the day somebody adds a schema, and the rule would then
+  apply to *neither*, because a contested bare name resolves nowhere.
+- **A rule that does not parse stops the server.** A policy with a rule quietly dropped permits
+  more than it says, and the person who wrote the rule believes it is in force. That is the worst
+  available outcome for a file whose entire purpose is to be reviewed.
+- **A denial is spelled out**, not inferred from an absent grant. Forbidding is a decision
+  somebody made and should read as one.
+
+An absent policy is not an error — a warehouse somebody is trying out should still answer. What
+must not happen is that it answers *the same way* as one that has been configured and says nothing
+about it, so the startup line names which posture is in force:
+
+```
+  tenant …, password verified for 2 user(s), 3 policy rule(s), 4 table(s) known
+  tenant …, NO AUTHENTICATION, NO POLICY CONFIGURED — every authenticated user may read every
+  one of the 4 table(s) below, 4 table(s) known
+```
+
+> **Pitfall** — A control that cannot be configured is not a weaker control. It is documentation.
+> Every claim in this chapter about row filters and masks was true of the code and false of any
+> deployment, and nothing in the test suite could tell the difference, because the tests build
+> their own policy.
+
 ## 13.3 A table you may not read does not exist
 
 Only the tables a principal may read are registered into the session. Naming one that is not

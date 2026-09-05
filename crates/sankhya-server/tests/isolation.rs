@@ -229,6 +229,7 @@ async fn an_error_does_not_disclose_that_the_other_tenants_table_exists() {
         require_password: true,
         user_functions: false,
         metrics_detail: false,
+        policy: None,
         metrics_listen: None,
         transport_security: None,
     };

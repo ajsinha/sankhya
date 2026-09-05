@@ -69,9 +69,37 @@ Entries appended to the hash-chained audit. A count that stops rising while quer
 | Labels | none |
 | Pages | no |
 
+## `sankhya_audit_unwritten_total`
+
+Audit records that were made and could not be written to disk. Any value above zero means the chain on disk is shorter than the chain in memory.
+
+| | |
+|---|---|
+| Type | counter |
+| Unit | count |
+| Group | query behaviour |
+| Labels | none |
+| **Pages** | yes — [`audit-unwritten`](runbooks/audit-unwritten.md) |
+| Consequence | the audit on disk is incomplete, and a restart loses everything that could not be written |
+| Lead time | none --- the first failure is already a gap |
+
+## `sankhya_table_live_files_max`
+
+The largest number of files any one table currently consists of. Unlabelled on purpose: a per-table breakdown enumerates the warehouse to an unauthenticated endpoint, and is available under `server.metrics_detail`.
+
+| | |
+|---|---|
+| Type | gauge |
+| Unit | count |
+| Group | maintenance debt |
+| Labels | none |
+| **Pages** | yes — [`compaction-debt`](runbooks/compaction-debt.md) |
+| Consequence | query latency on the affected table roughly doubles as the file count passes a thousand, and keeps climbing |
+| Lead time | days, at ordinary write rates --- run the diagnostic, which names the table, or turn on `server.metrics_detail` where the port is private |
+
 ## `sankhya_table_live_files`
 
-Files a table currently consists of. A scan pays per file — opening it, reading its footer, deciding whether to prune it — so this is what compaction debt costs.
+Files a table currently consists of. A scan pays per file — opening it, reading its footer, deciding whether to prune it — so this is what compaction debt costs. Emitted only under `server.metrics_detail`: the label is the table's name, and `/metrics` is unauthenticated.
 
 | | |
 |---|---|
