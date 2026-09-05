@@ -37,6 +37,8 @@
 
 use std::io::Read;
 use std::path::Path;
+use std::sync::atomic::AtomicUsize;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod jail;
@@ -179,58 +181,152 @@ impl Ready {
             )
         })?;
 
-        // Written before anything is read, and the pipe is closed after, because a worker that
-        // waits for end-of-input and a parent that waits for output is a deadlock with no
-        // symptom but a hung query.
+        // Drained from the moment the child exists, on threads of their own.
+        //
+        // # Why not after it exits
+        //
+        // Because the parent used to read only once `try_wait` said the child was gone, and a
+        // pipe's write end is held by every process that inherited it. A forked grandchild
+        // still holding one meant `read_to_end` never saw end-of-file --- with the deadline
+        // loop already exited, so nothing would ever kill anything. This runs inside a
+        // DataFusion accumulator on a Tokio worker thread, and a handful of such queries stop
+        // the server. `SEC-12`.
+        //
+        // It is also what makes the output bound enforceable at all. A child writing more than
+        // the pipe holds (~64 KiB) blocked on the write, was killed at the deadline, and was
+        // reported as having run out of *time* --- so with the shipped cap at 64 MiB the
+        // `OutOfRoom` arm was unreachable and the test that "proved" it used a cap of 64 bytes.
+        // `SEC-13`.
+        let answering = child.stdout.take().map(drain);
+        let saying = child.stderr.take().map(drain);
+
+        // Written after the readers exist and closed after, because a worker that waits for
+        // end-of-input and a parent that waits for output is a deadlock with no symptom but a
+        // hung query.
         if let Some(mut stdin) = child.stdin.take() {
             use std::io::Write;
             let _ = stdin.write_all(input);
         }
 
         let started = Instant::now();
-        let mut said = Vec::new();
-        let mut answered = Vec::new();
-        let outcome = loop {
+        let overran = |held: &Option<Draining>| {
+            held.as_ref()
+                .is_some_and(|d| d.bytes.load(std::sync::atomic::Ordering::Relaxed) > bounds.output)
+        };
+        let ending = loop {
             match child.try_wait()? {
-                Some(status) => {
-                    if let Some(mut out) = child.stdout.take() {
-                        let _ = out.read_to_end(&mut answered);
-                    }
-                    if let Some(mut err) = child.stderr.take() {
-                        let _ = err.read_to_end(&mut said);
-                    }
-                    if answered.len() > bounds.output {
-                        break Outcome::OutOfRoom { bound: "the output it may write" };
-                    }
-                    break if status.success() {
-                        Outcome::Answered(answered)
-                    } else {
-                        // A signal is reported as a signal. An earlier version mapped "no exit
-                        // code" to the memory bound, which is a guess: `SIGSEGV` and `SIGXCPU`
-                        // arrive the same way and mean entirely different things, and a caller
-                        // told "out of memory" about a segmentation fault looks in the wrong
-                        // place for as long as it takes them to stop believing the message.
-                        use std::os::unix::process::ExitStatusExt;
-                        Outcome::Failed {
-                            code: status.code(),
-                            signal: status.signal(),
-                            said: String::from_utf8_lossy(&said).trim().to_owned(),
-                        }
-                    };
-                }
+                Some(status) => break Ending::Ended(status),
                 None => {
+                    // Checked while it runs rather than after, which is the point: a function
+                    // returning a gigabyte is stopped a gigabyte early.
+                    if overran(&answering) {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break Ending::Overran;
+                    }
                     if started.elapsed() >= bounds.wall {
                         // Killed, not asked. A function that never returns is an outage rather
                         // than an error, and a polite request to stop is a request something
                         // in an infinite loop never reads.
                         let _ = child.kill();
                         let _ = child.wait();
-                        break Outcome::OutOfTime { after: bounds.wall };
+                        break Ending::OutOfTime;
                     }
                     std::thread::sleep(Duration::from_millis(2));
                 }
             }
         };
+
+        // Whatever arrived. The wait is bounded because a reader that has not finished is one
+        // whose pipe something still holds, and hanging here is the defect this collects to
+        // avoid --- so an unfinished reader is reported rather than waited on.
+        let answered = answering.map_or_else(Vec::new, Draining::collect);
+        let said = saying.map_or_else(Vec::new, Draining::collect);
+
+        let outcome = match ending {
+            Ending::Overran => Outcome::OutOfRoom { bound: "the output it may write" },
+            Ending::OutOfTime => Outcome::OutOfTime { after: bounds.wall },
+            Ending::Ended(_) if answered.len() > bounds.output => {
+                // The whole of a short run can arrive between two polls, so the bound is
+                // checked here as well as above. Two places rather than one, because a run
+                // that finishes inside a single sleep never reaches the first.
+                Outcome::OutOfRoom { bound: "the output it may write" }
+            }
+            Ending::Ended(status) if status.success() => Outcome::Answered(answered),
+            Ending::Ended(status) => {
+                // A signal is reported as a signal. An earlier version mapped "no exit
+                // code" to the memory bound, which is a guess: `SIGSEGV` and `SIGXCPU`
+                // arrive the same way and mean entirely different things, and a caller
+                // told "out of memory" about a segmentation fault looks in the wrong
+                // place for as long as it takes them to stop believing the message.
+                use std::os::unix::process::ExitStatusExt;
+                Outcome::Failed {
+                    code: status.code(),
+                    signal: status.signal(),
+                    said: String::from_utf8_lossy(&said).trim().to_owned(),
+                }
+            }
+        };
         Ok(outcome)
     }
+}
+
+/// How a run stopped, before what it wrote has been looked at.
+enum Ending {
+    /// It ended by itself.
+    Ended(std::process::ExitStatus),
+    /// It was still running at the deadline.
+    OutOfTime,
+    /// It wrote past the output bound and was stopped for it.
+    Overran,
+}
+
+/// One stream, read as it arrives.
+struct Draining {
+    /// How much has arrived, readable while it is still arriving.
+    ///
+    /// The whole reason the reader is a thread: a count that only exists once the child has
+    /// exited cannot stop a child that is still writing.
+    bytes: Arc<AtomicUsize>,
+    /// The bytes, once the stream ends.
+    done: std::sync::mpsc::Receiver<Vec<u8>>,
+}
+
+impl Draining {
+    /// What arrived, or what is worth saying if the stream never ended.
+    ///
+    /// Bounded rather than blocking. A reader still waiting is a reader whose pipe something
+    /// other than the worker holds open, and waiting on it is the hang this exists to prevent
+    /// --- so it is abandoned and the thread ends when the kernel closes the pipe. The PID
+    /// namespace makes that immediate: nothing outlives the worker to hold one.
+    fn collect(self) -> Vec<u8> {
+        self.done
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap_or_default()
+    }
+}
+
+/// Read a stream on a thread of its own, counting as it goes.
+fn drain<R: Read + Send + 'static>(mut source: R) -> Draining {
+    let bytes = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&bytes);
+    let (sender, done) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        let mut chunk = [0u8; 16 * 1024];
+        loop {
+            match source.read(&mut chunk) {
+                // End of stream, or a stream that cannot be read any further. Both end the
+                // reader: a partial answer that is reported is better than a thread that waits
+                // for the rest of one nobody is going to write.
+                Ok(0) | Err(_) => break,
+                Ok(read) => {
+                    held.extend_from_slice(chunk.get(..read).unwrap_or_default());
+                    counted.store(held.len(), std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+        let _ = sender.send(held);
+    });
+    Draining { bytes, done }
 }

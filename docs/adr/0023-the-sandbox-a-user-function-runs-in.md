@@ -68,7 +68,7 @@ against a word.
 | **No network** | The worker is placed in a network namespace with no interface but a disconnected loopback | Exfiltration. The reason this matters most: the function is handed rows a policy already filtered *for a principal*, and a socket turns "may read" into "may publish" |
 | **No filesystem** | A mount namespace pivoted onto a read-only tree holding the interpreter, its standard library, and the declared modules — and nothing else | Reading the warehouse directly, which would bypass every policy; reading the server's configuration, keys and TLS material; and writing anything at all, which `ADR-0022` Decision 3 forbids because it would be a second writer |
 | **No subprocess** | The mount namespace again — inside the jail there is nothing to exec but the interpreter — plus `PR_SET_NO_NEW_PRIVS` and a bound on process count | Escaping the two above by starting something that was not the worker |
-| **Not the server's identity** | A distinct unprivileged uid and gid, with no supplementary groups | Everything the server user may do by virtue of being the server user |
+| **Not the server's identity** | *Inside* the namespace, an identity map to `65534` with no supplementary groups, so `exec` drops the capability set. **Outside it, the worker is still the server's user** --- see the amendment below | Everything the server user may do by virtue of being the server user |
 | **Bounded time** | `RLIMIT_CPU` for the compute, and a **wall-clock deadline enforced by the parent**, which kills the worker | An aggregation that never returns is an outage, not an error. CPU alone does not catch a sleep |
 | **Bounded memory** | `RLIMIT_AS`, and a cap on the size of the batch returned | One query taking the machine down. The output cap matters separately: a function returning a gigabyte per batch is a denial of service with no loop in it |
 
@@ -268,3 +268,63 @@ same side.
 ---
 
 <p align="center"><sub>SANKHYA — to count is to make completely known.</sub></p>
+
+
+---
+
+## Amendment, 2026-09-05 --- what Decision 2 promised and what an unprivileged namespace can do
+
+`SEC-09`. The row above read *"a distinct unprivileged uid and gid"*, and the implementation
+mapped the namespace's root to the server's own user. Two separate things were wrong with that,
+and only one of them was fixable in code.
+
+**The fixable half.** Mapping to `0` made the worker root *inside* its namespace, and `execve` of
+a file with no file capabilities only drops the capability set when the effective user id is not
+zero. So the interpreter began with every capability the namespace had, for no reason: all of the
+setup that needs a capability happens before `exec`. The map is now to `65534`.
+
+**The half that is not.** Outside the namespace the worker remains the server's user, and no
+unprivileged mechanism changes that. The kernel permits an unprivileged writer exactly one line in
+`uid_map`, and its parent-side id must be the writer's own effective id. A genuinely distinct id
+requires `newuidmap` installed setuid and a `/etc/subuid` range allocated to the account the server
+runs as --- a deployment decision, made by whoever installs the software, that this process cannot
+make for itself and must not pretend to have made.
+
+So Decision 2 is **amended rather than closed**: the row states what is delivered, and the
+consequence an operator has to know is that a worker shares the server's identity as far as the
+rest of the machine is concerned. What stops that mattering is Decision 2a below.
+
+## Decision 2a --- the worker is inside a PID namespace, not beside one
+
+`SEC-10`. `unshare(CLONE_NEWPID)` places the calling process's *children* in the new namespace and
+leaves the caller behind. The caller here was the process that then `exec`ed into the worker, so
+the worker was never in the namespace at all: it could see every process on the machine, and
+because of the identity above it could signal them. `os.kill(os.getppid(), 9)` stopped the server.
+
+The boundary therefore forks once more after the namespaces are entered. The worker is PID 1 of a
+namespace holding nothing else; the process left outside waits for it and exits the way it exited,
+so nothing upstream can tell there were ever two.
+
+Two consequences follow, and both are load-bearing rather than incidental:
+
+- The process left outside **closes every descriptor above the standard streams**. `Command::spawn`
+  does not return until every copy of its close-on-exec pipe is closed, so one held open blocks the
+  caller for the whole run --- which starts the wall-clock deadline after the function has already
+  finished.
+- The worker is **tethered** with `PR_SET_PDEATHSIG`. PID 1 of a namespace is reaped by nobody, so
+  killing the process the caller has a handle on would otherwise leave the function running after
+  the query that started it was told it timed out. A worker orphaned in the window between the fork
+  and that call still ends at `RLIMIT_CPU`, so the leak is bounded rather than absent.
+
+## Amendment --- Decision 3, and a probe that runs fifteen mechanisms rather than one
+
+`SEC-14`. Decision 3 says the probe *runs the mechanism, once, against a trivial worker --- it does
+not read a capability flag and hope*. It forked, called `unshare`, and stopped there. A machine
+where `unshare` succeeds and `pivot_root` fails --- one whose `/` cannot be made private, or whose
+temporary directory is on a filesystem that cannot host a mount --- passed the probe and failed at
+the first `CREATE AGGREGATION` in production, which is exactly the outcome the decision exists to
+prevent.
+
+The probe now calls the same function a spawn calls, against an empty readable set, and reports
+which of the fifteen steps refused and what the system said about it. There is no second
+implementation to drift from the first.

@@ -236,3 +236,227 @@ fn more_output_than_it_was_allowed_is_refused_rather_than_truncated() {
         said(&outcome)
     );
 }
+
+// --- what the audit found the boundary was not doing -----------------------
+
+/// Run Python behind the boundary with the shell's tree readable, or say why it was skipped.
+///
+/// A skip prints, and prints why. A test that quietly tests nothing is the failure this file
+/// exists to prevent, and a sandbox test that quietly tests nothing is the worst instance of it.
+fn python(script: &str, bounds: &Bounds) -> Option<Outcome> {
+    let interpreter = Path::new("/usr/bin/python3");
+    if !interpreter.exists() {
+        println!("SKIPPED: no /usr/bin/python3");
+        return None;
+    }
+    let ready = probe().expect("this machine can host the boundary");
+    Some(
+        ready
+            .run(interpreter, &["-c", script], &a_shell_needs(), b"", bounds)
+            .expect("the process starts"),
+    )
+}
+
+#[test]
+fn a_function_cannot_see_the_process_that_started_it() {
+    // `SEC-10`. `unshare(CLONE_NEWPID)` places the caller's *children* in the new namespace and
+    // leaves the caller behind --- and the caller was the process that then `exec`ed into the
+    // worker. So the worker was in the host PID namespace; and because its credentials map to
+    // the server's own user, `os.kill(os.getppid(), 9)` succeeded. A user function could stop
+    // the server.
+    //
+    // Asserted as "it is PID 1 and has no parent" rather than by actually killing something,
+    // because a test that proves it by killing the test runner has no way to report the result.
+    let Some(outcome) = python("import os;print('PID', os.getpid(), 'PPID', os.getppid())", &Bounds::modest()) else {
+        return;
+    };
+    let text = said(&outcome);
+    assert!(
+        text.contains("PID 1 "),
+        "the worker must be the first process in a namespace of its own: {text}"
+    );
+    assert!(
+        text.contains("PPID 0"),
+        "and must have no parent it can name, because its parent is outside that namespace: \
+         {text}"
+    );
+}
+
+#[test]
+fn a_function_is_not_root_inside_its_own_namespace() {
+    // `SEC-09`, the half of it that is deliverable. The map read `0 <server uid> 1`, so the
+    // worker was `root` in its namespace with a full capability set --- and `execve` of a
+    // non-setuid file only drops capabilities when the effective user id is not zero, so the
+    // interpreter started holding every one of them.
+    //
+    // Outside the namespace it is still the server's user, and no unprivileged mechanism
+    // changes that. What this asserts is the part that is not a documentation fix.
+    let Some(outcome) = python("import os;print('UID', os.getuid(), 'GID', os.getgid())", &Bounds::modest()) else {
+        return;
+    };
+    let text = said(&outcome);
+    assert!(
+        !text.contains("UID 0 "),
+        "the worker must not be root inside its namespace: {text}"
+    );
+    assert!(
+        !text.contains("GID 0"),
+        "nor in its group: {text}"
+    );
+}
+
+#[test]
+fn a_forked_grandchild_does_not_hold_the_answer_hostage() {
+    // `SEC-12`. The parent read the child's output only once `try_wait` said it was gone, and
+    // a pipe's write end is held by every process that inherited it. A grandchild that outlived
+    // the child meant `read_to_end` never saw end-of-file --- with the deadline loop already
+    // exited, so nothing was left to kill anything. This runs inside a DataFusion accumulator
+    // on a Tokio worker thread, and a handful of such queries stop the server.
+    //
+    // The function here answers and then leaves a child sleeping on the same pipe.
+    let started = std::time::Instant::now();
+    let Some(outcome) = python(
+        "import os,sys,time\n\
+         sys.stdout.write('ANSWERED')\n\
+         sys.stdout.flush()\n\
+         if os.fork() == 0:\n    time.sleep(30)\n    os._exit(0)\n\
+         os._exit(0)",
+        &Bounds { wall: std::time::Duration::from_secs(3), ..Bounds::modest() },
+    ) else {
+        return;
+    };
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "a grandchild holding the pipe must not hold the caller: {elapsed:?}"
+    );
+    assert!(
+        said(&outcome).contains("ANSWERED"),
+        "and what the function did write must still come back: {}",
+        said(&outcome)
+    );
+}
+
+#[test]
+fn the_output_bound_fires_at_the_size_it_is_set_to() {
+    // `SEC-13`. Output was read only after the child exited, so a child writing more than the
+    // pipe holds --- about 64 KiB --- blocked on the write and was killed at the deadline, and
+    // reported as having run out of *time*. With the shipped cap at 64 MiB the `OutOfRoom` arm
+    // was unreachable, and the test that "proved" the cap used a cap of 64 bytes.
+    //
+    // # Why the writer is slow on purpose
+    //
+    // Because the two halves of the bound have to be told apart. Counting the bytes *while the
+    // run is going* is what stops a runaway function; checking the total after it ends is what
+    // catches one that finished between two polls. A fast writer would be caught by either, so
+    // it proves neither.
+    //
+    // This one writes 64 KiB every 10ms and would go on for ten seconds. Against a 1 MiB bound
+    // the counting stops it after about a fifth of a second; without that counting it runs into
+    // the two-second deadline and comes back as `OutOfTime`, which is the wrong sentence about
+    // the wrong problem.
+    let bounds = Bounds {
+        output: 1024 * 1024,
+        wall: Duration::from_secs(2),
+        ..Bounds::modest()
+    };
+    let started = std::time::Instant::now();
+    let Some(outcome) = python(
+        "import sys,time\n\
+         block = 'x' * 65536\n\
+         for _ in range(1000):\n    sys.stdout.write(block)\n    sys.stdout.flush()\n    \
+         time.sleep(0.01)",
+        &bounds,
+    ) else {
+        return;
+    };
+    assert!(
+        matches!(outcome, Outcome::OutOfRoom { .. }),
+        "a function writing past its output bound must be reported as having passed that \
+         bound, not as having been killed at a deadline it never reached: {}",
+        said(&outcome)
+    );
+    assert!(
+        started.elapsed() < Duration::from_millis(1_800),
+        "and must be stopped when it passes the bound rather than allowed to write until the \
+         deadline: {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn a_probe_that_passed_means_a_run_can_start() {
+    // `SEC-14`. `ADR-0023` Decision 3: *"The startup probe runs the mechanism, once, against a
+    // trivial worker --- it does not read a capability flag and hope."* It forked, called
+    // `unshare`, and stopped. A machine where `unshare` succeeds and `pivot_root` fails ---
+    // which is any machine whose `/` cannot be made private, or whose temporary directory is on
+    // a filesystem that cannot host a mount --- passed the probe and failed at the first
+    // `CREATE AGGREGATION` in production. That is the outcome the decision exists to prevent.
+    //
+    // The property is a conditional, and it is stated as one: a probe that returned success is
+    // a promise that a run can be started, so this asserts exactly that promise and nothing
+    // about whether this machine can host the boundary at all.
+    let Ok(ready) = probe() else {
+        println!("SKIPPED: this machine cannot host the boundary, which is what the probe said");
+        return;
+    };
+    let dir = tempfile::tempdir().expect("a directory");
+    let outcome = ready.run(
+        Path::new("/bin/sh"),
+        &["-c", "exit 0"],
+        &a_shell_needs(),
+        b"",
+        &Bounds::modest(),
+    );
+    assert!(
+        outcome.is_ok(),
+        "the probe said the boundary can be built here, so building one must not fail: {:?}",
+        outcome.err()
+    );
+    // And the mounts really were applied, rather than the spawn merely succeeding: a run whose
+    // `pivot_root` was skipped would still start, and would see the whole machine.
+    let outcome = ready
+        .run(
+            Path::new("/bin/sh"),
+            &["-c", &format!("test -e {} && echo LEAKED || echo SEALED", dir.path().display())],
+            &a_shell_needs(),
+            b"",
+            &Bounds::modest(),
+        )
+        .expect("the process starts");
+    assert!(
+        said(&outcome).contains("SEALED"),
+        "a probe that passed must mean the boundary is applied, not merely that a process \
+         started: {}",
+        said(&outcome)
+    );
+}
+
+#[test]
+fn a_worker_killed_at_the_deadline_does_not_outlive_the_kill() {
+    // The worker is PID 1 of a namespace of its own, so nothing reaps it and its parent's death
+    // is not its own --- and the deadline upstream kills the *intermediate*, which is the only
+    // process the caller has a handle on. Without `PR_SET_PDEATHSIG` the function goes on
+    // running after the query that started it has been told it timed out.
+    //
+    // Observed through the pipe rather than through the process table, because a worker in its
+    // own PID namespace has no identity this side can name. A worker that is still alive still
+    // holds the write end of standard output, so collecting the answer waits for it; a worker
+    // that died with the kill closed it, and collecting returns at once. The gap between those
+    // two is the whole of the property.
+    let bounds = Bounds { wall: Duration::from_millis(300), ..Bounds::modest() };
+    let started = std::time::Instant::now();
+    let outcome = shell("while true; do :; done", &[], &bounds);
+    let elapsed = started.elapsed();
+
+    assert!(
+        matches!(outcome, Outcome::OutOfTime { .. }),
+        "the control: it must have been killed at the deadline: {}",
+        said(&outcome)
+    );
+    assert!(
+        elapsed < Duration::from_millis(1_500),
+        "and nothing must still be holding its output open afterwards --- a run that takes \
+         seconds past a 300ms deadline is one whose worker survived the kill: {elapsed:?}"
+    );
+}
