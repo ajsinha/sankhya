@@ -613,12 +613,25 @@ pub(crate) fn text_rows(port: u16, sql: &str) -> Vec<Vec<Option<String>>> {
 
 /// Connect, send one simple query, and return everything the server said.
 fn exchange(port: u16, sql: &str) -> Vec<u8> {
+    exchange_as(port, "quickstart", sql)
+}
+
+/// The same, as a named user.
+///
+/// A separate function rather than a parameter on [`text_rows`], for the reason
+/// `Session::open_as` gives: almost every test does not care who is asking, and the ones that do
+/// are about exactly that.
+pub(crate) fn text_rows_as(port: u16, user: &str, sql: &str) -> Vec<Vec<Option<String>>> {
+    data_rows(&exchange_as(port, user, sql))
+}
+
+fn exchange_as(port: u16, user: &str, sql: &str) -> Vec<u8> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connecting");
     stream.set_nodelay(true).ok();
 
     let mut startup = Vec::new();
     let mut body = 196_608i32.to_be_bytes().to_vec();
-    body.extend_from_slice(b"user\0quickstart\0\0");
+    body.extend_from_slice(format!("user\0{user}\0\0").as_bytes());
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     startup.extend_from_slice(&((body.len() + 4) as i32).to_be_bytes());
     startup.extend_from_slice(&body);

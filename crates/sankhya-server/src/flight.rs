@@ -134,7 +134,14 @@ impl Queries for Flying {
             .state()
             .create_logical_plan(statement)
             .await
-            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+            // Redacted here too, and this is the reason a shared function exists: the wire
+            // protocol's translation was the only place that cut the planner's column list,
+            // so the same statement leaked over Flight and not over PostgreSQL. `SEC-16`.
+            .map_err(|error| {
+                Status::invalid_argument(crate::execute::without_the_column_list(
+                    &error.to_string(),
+                ))
+            })?;
         Ok(self.server.newest_snapshot())
     }
 
@@ -146,7 +153,14 @@ impl Queries for Flying {
         let frame = context
             .sql(ticket.statement())
             .await
-            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+            // Redacted here too, and this is the reason a shared function exists: the wire
+            // protocol's translation was the only place that cut the planner's column list,
+            // so the same statement leaked over Flight and not over PostgreSQL. `SEC-16`.
+            .map_err(|error| {
+                Status::invalid_argument(crate::execute::without_the_column_list(
+                    &error.to_string(),
+                ))
+            })?;
         // A stream, never a collection. `FR-API-07` forbids materialising a result
         // server-side, and this is the line where that is either honoured or quietly broken:
         // `frame.collect()` would compile, pass every test, and turn the bulk plane into the
@@ -154,7 +168,9 @@ impl Queries for Flying {
         frame
             .execute_stream()
             .await
-            .map_err(|error| Status::internal(error.to_string()))
+            .map_err(|error| {
+                Status::internal(crate::execute::without_the_column_list(&error.to_string()))
+            })
     }
 
     fn now(&self) -> i64 {

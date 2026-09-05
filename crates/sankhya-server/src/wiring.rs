@@ -1129,6 +1129,18 @@ impl Server {
         );
         let catalog = Arc::new(sankhya_cube_sql::catalog::CubeCatalog::new());
         for cube in cubes.iter() {
+            // Declared only to a caller who may read what it is built on. `cubes()` and
+            // `derived()` used to list every cube on the server to everybody, and `derived()`
+            // emits the **SQL text** of each definition and the tables it reads --- so a
+            // caller with no grant at all could read the shape of a warehouse out of a
+            // catalogue function. `SEC-18`.
+            //
+            // The same rule the fact table itself follows, four lines down and four lines away
+            // in `register_derived`, which was already doing this. Saying "you may not read
+            // that" confirms it exists, so it is simply not there.
+            if self.scope_across(principal, cube.reads()).is_none() {
+                continue;
+            }
             catalog.declare(cube.name());
             if !navigating || !sql.contains(cube.name()) {
                 continue;

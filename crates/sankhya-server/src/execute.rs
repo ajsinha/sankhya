@@ -209,21 +209,40 @@ pub fn session_and_contested(
         .clone();
     let default_schema = default_schema.as_str();
 
+    // Authorized first, and counted afterwards. The order is the whole of `SEC-17`.
+    //
+    // No guard, no registration. A table the caller may not read is not present in the session
+    // at all, so a query naming it fails to resolve rather than planning and then returning
+    // nothing --- which would be indistinguishable from an empty table. Authorized as whatever
+    // this table's read right derives from: itself for an ordinary table, its root for a clone.
+    let permitted: Vec<(&ServableTable, Guard)> = tables
+        .iter()
+        .filter_map(|table| {
+            let authority = table.authorize_as.as_ref().unwrap_or(&table.reference);
+            Guard::authorize(policy, principal, authority, Action::Read)
+                .map(|guard| (table, guard))
+        })
+        .collect();
+
+    // What each bare name is claimed by, **among the tables this caller can see**.
+    //
+    // It used to count every servable table, and the guard ran afterwards. That leaked twice.
+    // The `contested` map returned below named tables the caller may not read, in a message
+    // telling them to qualify --- so a refusal enumerated the schemas of a warehouse. And there
+    // was a second channel with no string in it at all: a hidden `payroll.orders` made the
+    // caller's own `sales.orders` stop resolving under its bare name, so anybody could ask
+    // whether a table of a given name existed somewhere they could not look, and read the
+    // answer off whether their own query planned. `SEC-17`.
+    //
+    // Counting after authorization also makes the word mean what it says: a name is contested
+    // when *this caller* could mean two things by it. Two tables one of which they cannot read
+    // is not an ambiguity they can act on.
     let mut claims: BTreeMap<&str, usize> = BTreeMap::new();
-    for table in tables {
+    for (table, _) in &permitted {
         *claims.entry(table.reference.table.as_str()).or_insert(0) += 1;
     }
 
-    for table in tables {
-        // No guard, no registration. A table the caller may not read is not present in the
-        // session at all, so a query naming it fails to resolve rather than planning and
-        // then returning nothing — which would be indistinguishable from an empty table.
-        // Authorized as whatever this table's read right derives from --- itself for an
-        // ordinary table, its root for a clone.
-        let authority = table.authorize_as.as_ref().unwrap_or(&table.reference);
-        let Some(guard) = Guard::authorize(policy, principal, authority, Action::Read) else {
-            continue;
-        };
+    for (table, guard) in permitted {
         let secured: Arc<dyn TableProvider> = Arc::new(
             SecuredTable::new(Arc::clone(&table.provider), guard, &context.state())
                 .map_err(|error| failure(sqlstate::INTERNAL_ERROR.as_str(), &error.to_string()))?,
@@ -272,7 +291,17 @@ pub fn session_and_contested(
     let mut contested: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for table in tables {
         let bare = table.reference.table.as_str();
-        if claims.get(bare).copied().unwrap_or(0) > 1 {
+        // Only among the names this caller can see, for the same reason the count is: a
+        // qualified name offered as a way out of an ambiguity is a qualified name disclosed.
+        if claims.get(bare).copied().unwrap_or(0) > 1
+            && Guard::authorize(
+                policy,
+                principal,
+                table.authorize_as.as_ref().unwrap_or(&table.reference),
+                Action::Read,
+            )
+            .is_some()
+        {
             contested
                 .entry(bare.to_owned())
                 .or_default()
@@ -732,7 +761,13 @@ fn plan_failure(error: &datafusion::error::DataFusionError) -> QueryFailure {
         // carries its code in the text it was built with, and prefixing again produced
         // `[SNK-C0006] [SNK-C0006] ...`, which reads like a bug in the thing reporting the bug.
         message: {
-            let said = error.to_string();
+            // Redacted **here**, and this is the line that matters. `classify` above cuts the
+            // column list out of the detail it carries, and that detail is not what reaches a
+            // client: this message is built from the engine's own string a second time. The
+            // first attempt at `SEC-16` changed only `classify`, the tests still saw every
+            // column name, and the difference between the two is the whole finding --- a leak
+            // fixed on the path nobody takes is not fixed.
+            let said = without_the_column_list(&error.to_string());
             let code = classified.code().as_str();
             if said.contains(&format!("[{code}]")) {
                 said
@@ -914,6 +949,47 @@ fn specific_sqlstate(error: &datafusion::error::DataFusionError) -> Option<Strin
     Some(code.to_string())
 }
 
+/// A planner's message with its enumeration of column names removed.
+///
+/// # What was leaking
+///
+/// `SELECT nosuchcol FROM orders` produces *"Schema error: No field named nosuchcol. Valid
+/// fields are orders.id, orders.region, orders.email, …"*, and the whole of it reached the
+/// client. Every column of every table in the plan's scope, to anybody who could name one
+/// table and guess one column wrong. `SEC-16`.
+///
+/// The only mention of that phrase in the repository sniffed for it to choose a SQLSTATE and
+/// passed it on --- so the leak was not merely unnoticed, it was being read past.
+///
+/// # Why the first half is kept
+///
+/// Because *"No field named nosuchcol"* is the half the caller needs and the half they already
+/// know: they typed it. What is withheld is the list of names they did not type. A refusal that
+/// said only "invalid query" would send people to a DBA to be told they had a typo.
+///
+/// # Why this is a substring match, which the file otherwise argues against
+///
+/// [`specific_sqlstate`] says in its own comment that matching on a message is a mapping that
+/// changes silently when a dependency rewords itself, and that is right --- for choosing a
+/// code. Here the failure mode of a reword is the opposite one: the marker stops matching, the
+/// list is no longer cut, and the leak returns silently. So the marker is checked by a test that
+/// asks the planner for a real error rather than by a test that hands this function a string ---
+/// a reword breaks the build rather than the boundary.
+pub(crate) fn without_the_column_list(detail: &str) -> String {
+    const ENUMERATION: &str = "Valid fields are";
+    match detail.find(ENUMERATION) {
+        None => detail.to_owned(),
+        Some(at) => {
+            let kept = detail.get(..at).unwrap_or(detail).trim_end();
+            format!(
+                "{kept} The columns of a table you may read are in \
+                 `information_schema.columns`; they are not listed here, because a list of them \
+                 in a refusal is a list to anybody who can misspell one."
+            )
+        }
+    }
+}
+
 /// Which catalogue entry an engine failure is.
 ///
 /// Matched on the error's variant rather than on its text wherever the variant carries the
@@ -922,7 +998,7 @@ fn specific_sqlstate(error: &datafusion::error::DataFusionError) -> Option<Strin
 /// it should retry.
 fn classify(error: &datafusion::error::DataFusionError) -> sankhya_error::Error {
     use datafusion::error::DataFusionError as E;
-    let detail = error.to_string();
+    let detail = without_the_column_list(&error.to_string());
     match error {
         // Three wrappers, and unwrapping them is not optional. DataFusion 55 wraps a plan
         // error in `Diagnostic` to attach a source span, so matching on `Plan` alone never

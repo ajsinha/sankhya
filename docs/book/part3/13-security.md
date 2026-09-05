@@ -259,6 +259,82 @@ the feed writes into.
 > "you may not touch that" confirms it exists, and the name of a snapshot or a feed is something
 > somebody chose.
 
+## 13.2d What a refusal says, and what a listing says
+
+None of the three below returns a row the caller may not see. Each of them *tells* the caller
+something about rows they may not see, which is the half a row-level control does not reach.
+
+### A misspelt column was answered with the list of the real ones
+
+`SELECT nosuchcol FROM orders` produced *"Schema error: No field named nosuchcol. Valid fields are
+orders.id, orders.region, orders.email, …"*, and the whole of it reached the client. Every column
+of every table in the plan's scope, to anybody who could name one table and guess one column
+wrong. The only mention of that phrase in this repository sniffed for it to choose a SQLSTATE and
+passed it on. `SEC-16`.
+
+The half the caller typed is kept, because telling somebody they misspelt a name is the entire
+usefulness of the message. The half they did not type is gone, and they are pointed at
+`information_schema.columns`, which is subject to the same policy everything else is.
+
+> **Pitfall** — The first attempt at this fixed the wrong function. The message that reaches a
+> client is built from the engine's string a *second* time, in `plan_failure`, not from the
+> detail the classifier carries. A leak fixed on the path nobody takes is not fixed, and the
+> tests were what said so.
+
+### A name was contested by tables the caller could not see
+
+Bare-name claims were counted over **every** servable table, and the authorization ran afterwards.
+That leaked twice, and the second one is the one worth fearing.
+
+The visible half: a refusal telling a caller to qualify an ambiguous name listed the qualified
+names it could mean — enumerating the schemas of a warehouse to somebody with no grant on them.
+
+The half with no string in it at all: because the count included tables the caller cannot read, a
+hidden `payroll.orders` made the caller's own `sales.orders` stop resolving under its bare name.
+Anybody could ask whether a table of a given name existed somewhere they could not look, and read
+the answer off whether their own query planned. `SEC-17`.
+
+Authorizing first and counting afterwards closes both, and it also makes the word mean what it
+says: a name is contested when **this caller** could mean two things by it. Two tables one of
+which they may not read is not an ambiguity they can act on.
+
+### Five listings were unfiltered
+
+`cubes()`, `derived()`, `SHOW SNAPSHOTS`, `SHOW FEEDS`, `SHOW AGGREGATIONS`. `derived()` emits the
+**SQL text** of every derived definition and the tables it reads; a snapshot row names the
+qualified tables it pins; `SHOW AGGREGATIONS` publishes every user function's Python source.
+`register_derived` was already gating on scope four lines away in the same file, which is what
+makes this an omission rather than a decision. `SEC-18`.
+
+Each is filtered by the rule that already governed the thing being listed:
+
+Listing | Shown to
+---|---
+`cubes()`, `derived()` | whoever may read the fact table the cube is built on
+`SHOW SNAPSHOTS` | the subject who took it, or whoever may read every table it pins
+`SHOW FEEDS` | everybody, by name and state; the **halt reason** to whoever may read the table it fills
+`SHOW AGGREGATIONS` | everybody, by name; the **source** only where `server.user_functions` is on
+
+The aggregation rule needs its reason stated, because the source is there on purpose:
+`ADR-0023` Decision 4 makes creating one a grant, and a grant nobody can review is a grant nobody
+should give. The mistake was that *"somebody"* was every caller. The switch is the one that
+decides whether these can be created at all, so the people who can review a grant are the people
+who could make one — and the **names** stay visible to everybody, because an operator who has
+just closed that door needs to see what came in while it was open.
+
+`SHOW FEEDS` is the one that took two attempts, and the wrong attempt is instructive. Filtering
+the **rows** by the same rule as the others removed a feed whose target table does not exist — and
+a feed that halted *because its table is missing* is precisely what an operator opens the
+statement to find. A control that hides the thing it is meant to report is not a control. So the
+name and the state are shown to everybody, because somebody configured that feed and it is not
+tenant data, and the **reason** is what is withheld, because `ADR-0018` halts a feed when a record
+does not fit and saying so means saying which file and what was in it. Where the table does not
+exist at all the reason is shown, since there are no rows to withhold anything about.
+
+> **Correction** — §13.2c said `SHOW FEEDS` had no table to check a scope against. That stopped
+> being true in the same change that wrote it: recording which table each feed fills, so `RESUME`
+> could be authorized, gave `SHOW` exactly the table it was said to lack.
+
 ## 13.3 A table you may not read does not exist
 
 Only the tables a principal may read are registered into the session. Naming one that is not
