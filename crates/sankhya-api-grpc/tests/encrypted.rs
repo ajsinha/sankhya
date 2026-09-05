@@ -17,7 +17,7 @@
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::FlightDescriptor;
 use datafusion::execution::SendableRecordBatchStream;
-use sankhya_api_flight::{Queries, SankhyaFlight, Ticket};
+use sankhya_api_flight::{Caller, Queries, SankhyaFlight, Ticket};
 use sankhya_api_grpc::Transport;
 use sankhya_types::TenantId;
 use sankhya_testkit::certificates::self_signed;
@@ -35,7 +35,7 @@ struct Reachable;
 
 #[tonic::async_trait]
 impl Queries for Reachable {
-    fn tenant_of(&self, metadata: &tonic::metadata::MetadataMap) -> Result<TenantId, Status> {
+    fn caller_of(&self, metadata: &tonic::metadata::MetadataMap) -> Result<Caller, Status> {
         metadata
             .get("sankhya-tenant")
             .and_then(|value| value.to_str().ok())
@@ -44,12 +44,12 @@ impl Queries for Reachable {
                 for (slot, byte) in bytes.iter_mut().zip(name.bytes()) {
                     *slot = byte;
                 }
-                TenantId::from_uuid(uuid::Uuid::from_bytes(bytes))
+                Caller::new(TenantId::from_uuid(uuid::Uuid::from_bytes(bytes)), "ana")
             })
             .ok_or_else(|| Status::unauthenticated("no tenant was supplied"))
     }
 
-    async fn plan(&self, _tenant: &TenantId, _statement: &str) -> Result<u64, Status> {
+    async fn plan(&self, _caller: &Caller, _statement: &str) -> Result<u64, Status> {
         Ok(1)
     }
 

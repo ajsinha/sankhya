@@ -22,7 +22,7 @@ use arrow_schema::{DataType, Field, Schema};
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use sankhya_api_flight::service::{Queries, SankhyaFlight};
-use sankhya_api_flight::ticket::{Refused, Ticket};
+use sankhya_api_flight::ticket::{Caller, Refused, Ticket};
 use sankhya_authz::principal::TenantId;
 use std::sync::Arc;
 use tonic::{Request, Status};
@@ -85,15 +85,22 @@ impl Fixture {
 
 #[tonic::async_trait]
 impl Queries for Fixture {
-    fn tenant_of(&self, metadata: &tonic::metadata::MetadataMap) -> Result<TenantId, Status> {
+    fn caller_of(&self, metadata: &tonic::metadata::MetadataMap) -> Result<Caller, Status> {
         let name = metadata
             .get("sankhya-tenant")
             .and_then(|value| value.to_str().ok())
             .ok_or_else(|| Status::unauthenticated("no tenant was supplied"))?;
-        Ok(tenant(name))
+        // The subject too, and defaulted here rather than refused because this fixture is
+        // about the transport. The server's own implementation refuses an unnamed caller,
+        // and `tests/flight_identity.rs` is where that is asserted.
+        let subject = metadata
+            .get("sankhya-user")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("ana");
+        Ok(Caller::new(tenant(name), subject))
     }
 
-    async fn plan(&self, _tenant: &TenantId, statement: &str) -> Result<u64, Status> {
+    async fn plan(&self, _caller: &Caller, statement: &str) -> Result<u64, Status> {
         if statement == self.forbidden {
             // Not-found rather than permission-denied: naming the table in a refusal would
             // confirm it exists, and the difference is a working enumeration oracle.
@@ -353,10 +360,10 @@ async fn authorization_happens_at_planning_and_the_refusal_does_not_confirm_the_
 fn an_expired_ticket_says_to_plan_again() {
     // A ticket names a snapshot and a snapshot's files are eventually retired, so an
     // unbounded ticket is a lease nobody granted.
-    let ticket = Ticket::issue(tenant("acme"), "SELECT 1", 41, 0, 100);
-    assert!(ticket.admit(&tenant("acme"), 99).is_ok());
+    let ticket = Ticket::issue(tenant("acme"), "ana", "SELECT 1", 41, 0, 100);
+    assert!(ticket.admit(&Caller::new(tenant("acme"), "ana"), 99).is_ok());
 
-    let Err(refused) = ticket.admit(&tenant("acme"), 100) else {
+    let Err(refused) = ticket.admit(&Caller::new(tenant("acme"), "ana"), 100) else {
         panic!("expiry is exclusive");
     };
     assert!(matches!(refused, Refused::Expired { .. }));
@@ -379,21 +386,21 @@ fn an_expired_ticket_says_to_plan_again() {
 #[test]
 fn a_nonsensical_lifetime_cannot_outlive_the_moment_it_was_issued() {
     let issued_at = 1_000i64;
-    let ticket = Ticket::issue(tenant("acme"), "SELECT 1", 41, issued_at, -5_000);
+    let ticket = Ticket::issue(tenant("acme"), "ana", "SELECT 1", 41, issued_at, -5_000);
 
     assert!(
-        ticket.admit(&tenant("acme"), issued_at).is_err(),
+        ticket.admit(&Caller::new(tenant("acme"), "ana"), issued_at).is_err(),
         "a ticket issued with a negative lifetime was admitted at the instant it was issued"
     );
     assert!(
-        ticket.admit(&tenant("acme"), issued_at + 1).is_err(),
+        ticket.admit(&Caller::new(tenant("acme"), "ana"), issued_at + 1).is_err(),
         "it must not become valid later either"
     );
 }
 
 #[test]
 fn a_ticket_round_trips_and_a_tampered_one_does_not() {
-    let ticket = Ticket::issue(tenant("acme"), "SELECT id FROM t", 41, 0, 1_000);
+    let ticket = Ticket::issue(tenant("acme"), "ana", "SELECT id FROM t", 41, 0, 1_000);
     let encoded = ticket.encode();
     assert_eq!(Ticket::decode(&encoded), Some(ticket));
 
@@ -501,4 +508,70 @@ async fn an_error_can_arrive_after_data_has_already_been_sent() {
         outcome.is_err(),
         "the stream must end in an error, not merely end"
     );
+}
+
+// --- who a ticket is for --------------------------------------------------
+
+#[test]
+fn a_ticket_is_not_redeemable_by_a_colleague() {
+    // `SEC-03`. A ticket carried a tenant and not a subject, and `admit` checked only the
+    // tenant. Roles were once a property of the tenant, so that named everything that
+    // mattered; roles became per-subject and the sentence stopped being true without any code
+    // changing and without any test failing.
+    //
+    // The consequence is not merely that a leaked ticket is usable. It is usable **at the
+    // entitlements of the person it was issued to**, because the plan inside it was made under
+    // their roles --- so a colleague redeeming one reads rows they were never granted, through
+    // a surface that authorizes nothing at redemption by design.
+    let ticket = Ticket::issue(tenant("acme"), "ana", "SELECT * FROM payroll", 41, 0, 1_000);
+
+    assert!(
+        ticket
+            .admit(&Caller::new(tenant("acme"), "ana"), 100)
+            .is_ok(),
+        "the subject it was issued to may redeem it"
+    );
+    assert!(
+        ticket
+            .admit(&Caller::new(tenant("acme"), "bob"), 100)
+            .is_err(),
+        "a colleague of the same tenant may not: roles are per-subject, and this ticket \
+         carries ana's plan"
+    );
+    assert!(
+        ticket
+            .admit(&Caller::new(tenant("other"), "ana"), 100)
+            .is_err(),
+        "and neither may the same name in another tenant"
+    );
+}
+
+#[test]
+fn a_ticket_that_names_no_subject_is_not_a_ticket() {
+    // A `skhyft1` ticket carries no subject, so honouring one would mean choosing a subject
+    // for it --- and every available choice is the hole this version closes. It is refused as
+    // unreadable rather than upgraded, and a client that holds one plans again.
+    let ticket = Ticket::issue(tenant("acme"), "ana", "SELECT 1", 41, 0, 1_000);
+    let mut old = ticket.encode();
+    assert!(old.starts_with(b"skhyft2"), "the current version is v2");
+    old[6] = b'1';
+    assert!(
+        Ticket::decode(&old).is_none(),
+        "a ticket from before the subject existed must not decode"
+    );
+
+    // Not vacuous: the unmodified one does.
+    assert!(Ticket::decode(&ticket.encode()).is_some());
+}
+
+#[test]
+fn a_subject_survives_the_wire_form() {
+    // The subject is read back from the ticket at redemption to rebuild the session, so a
+    // round trip that lost it would authorize as an empty name --- which is a name no
+    // configuration grants and therefore looks like a working refusal until somebody grants
+    // one by accident.
+    let ticket = Ticket::issue(tenant("acme"), "ana", "SELECT 1", 41, 0, 1_000);
+    let read = Ticket::decode(&ticket.encode()).expect("a ticket this server issued");
+    assert_eq!(read.subject(), "ana");
+    assert_eq!(read, ticket);
 }

@@ -238,6 +238,16 @@ pub struct Server {
     /// "halted" a state somebody has to act on --- and a state held in a task's local set is
     /// visible in the log line printed when it began and nowhere afterwards.
     feeds: Arc<sankhya_feed::state::Feeds>,
+    /// Which table each declared feed writes into, by feed name.
+    ///
+    /// Held so that a feed command can be authorized against the same table a query would be.
+    /// `RESUME FEED` restarts an ingest that halted because its source changed shape, and it
+    /// took no principal at all --- so any caller could restart anybody's ingest. `SEC-04`.
+    ///
+    /// Written once at startup, where the declarations are read, and read by every feed
+    /// command. A feed whose declaration did not load is absent here and its command is
+    /// refused: not knowing what a feed writes into is not permission to start it.
+    pub(crate) feed_targets: std::sync::RwLock<Arc<std::collections::BTreeMap<String, TableRef>>>,
     pub(crate) settings: Settings,
     pub(crate) policy: PolicySet,
     quotas: Quotas,
@@ -561,6 +571,7 @@ impl Server {
     pub fn feeds(&self) -> Arc<sankhya_feed::state::Feeds> {
         Arc::clone(&self.feeds)
     }
+
     /// The tables this session sees when it has asked to read as of a named snapshot.
     ///
     /// # Errors
@@ -726,6 +737,7 @@ impl Server {
         Self {
             doors: None,
             feeds: Arc::new(sankhya_feed::state::Feeds::new()),
+            feed_targets: std::sync::RwLock::new(Arc::new(std::collections::BTreeMap::new())),
             settings,
             policy,
             quotas,
@@ -872,7 +884,15 @@ impl Server {
     /// One principal per connection, established here and nowhere else. Every connection
     /// currently receives the same roles; federated identity replaces this function and
     /// nothing downstream changes, which is the point of having established the type first.
-    fn principal(&self, user: &str) -> Option<Principal> {
+    /// The principal a named user acts as.
+    ///
+    /// Public because Flight needs it. It used to reach a wrapper that passed the literal
+    /// `"flight"`, under a comment saying a ticket carries a tenant and not a subject and that
+    /// every user of a tenant receives the same roles --- true when written, and untrue from
+    /// the day roles became per-subject, with no code changing and no test failing. The subject
+    /// now travels in the ticket, which is what that comment said would have to happen.
+    /// `SEC-03`.
+    pub fn principal(&self, user: &str) -> Option<Principal> {
         // The roles this user holds. See `Settings::roles` for why an empty map means one
         // thing and a populated one that does not name them means another.
         let held: Vec<Role> = if self.settings.roles.is_empty() {
@@ -1768,16 +1788,6 @@ impl Server {
         &self.log_cache
     }
 
-    /// The principal a Flight request acts as.
-    ///
-    /// Tenant-scoped, because a ticket carries a tenant and not a subject. Every user of a
-    /// tenant currently receives the same roles, so this is exactly the principal any of them
-    /// would get --- and when that stops being true the subject has to travel in the ticket.
-    #[must_use]
-    pub fn flight_principal(&self) -> Option<Principal> {
-        self.principal("flight")
-    }
-
     /// The newest version any servable table stands at.
     ///
     /// What a Flight ticket records as the snapshot it was planned against. The newest across
@@ -2460,7 +2470,7 @@ impl Server {
         }
 
         if let Some(command) = sankhya_feed::parse_command(dispatch) {
-            return crate::feeds::run_command(&self.feeds, command);
+            return crate::feeds::run_command(self, &principal, command);
         }
 
         // The two questions about a clone, for the same reason and at the same point.

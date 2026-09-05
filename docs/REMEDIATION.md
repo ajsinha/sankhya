@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2,724 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2,729 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -709,7 +709,43 @@ and would have passed against a server with no check at all. The other used `DRO
 refuses a cube absent from the served set before it builds any path --- so the dangerous-looking
 statement is the unreachable one and `CREATE` is where the write goes.
 
-`4.4` through `4.8` are not started.
+**4.4 A statement runs as somebody (`SEC-03`, `SEC-04`).** Three surfaces reached state without
+asking who was asking.
+
+**Flight ran every request as a literal.** The name was read from the metadata, checked
+non-empty, and discarded; every request then executed as the subject `"flight"`, whose roles came
+out of the same default branch as any unknown name's. A user an operator had deliberately left
+out of `server.users` connected to that always-bound port and read.
+
+The module's own comment explained why that was safe --- *"today loses nothing… every user of a
+tenant gets the same roles"* --- and it was true when it was written. It stopped being true the
+day roles became per-subject, with no code changing and no test failing. That is the failure mode
+an explanation has and a check does not.
+
+The ticket now carries the subject, and redemption checks it. Checking only the tenant did not
+merely make a leaked ticket usable: it made one usable **at the entitlements of the person it was
+issued to**, because the plan inside it was made under their roles and Flight deliberately does
+not re-authorize at redemption. A `skhyft1` ticket no longer decodes --- honouring one would mean
+choosing a subject for it, and every available choice is the hole this closes.
+
+**`DROP SNAPSHOT` took no principal**, so any caller could drop any snapshot --- and a snapshot
+holds files back from the sweeper, so dropping one releases them. `INVARIANTS.md` claims the
+maintenance scheduler is structurally incapable of destroying retained history. It is; a
+statement was doing it instead. The rule now is the subject who took it, or a caller who may read
+every table it pins, which is what keeps an operator able to clean up after somebody who has left.
+A document that cannot be read is refused rather than dropped: not knowing what it pins is not
+permission to release it.
+
+**`RESUME FEED` took no principal either.** `SHOW FEEDS` stays ungated --- it reports what the
+server is doing and there is no table to check a scope against. `RESUME FEED` restarts an ingest
+`ADR-0018` halted *because its source changed shape*, so resuming one decides that records of an
+unknown shape should start landing in a table again. It is authorized against the table the feed
+writes into.
+
+All three refusals are the same sentence as "there is no such thing", because saying "you may not
+touch that" confirms it exists.
+
+`4.5` through `4.8` are not started.
 
 ---
 

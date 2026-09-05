@@ -27,7 +27,7 @@
 //! indistinguishable from a complete one, which is the shape of wrong answer this whole
 //! system is organised against.
 
-use crate::ticket::{Refused, Ticket};
+use crate::ticket::{Caller, Refused, Ticket};
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::{
@@ -36,7 +36,6 @@ use arrow_flight::{
 };
 use datafusion::execution::SendableRecordBatchStream;
 use futures::{stream::BoxStream, StreamExt, TryStreamExt};
-use sankhya_authz::principal::TenantId;
 use std::pin::Pin;
 use std::sync::Arc;
 use tonic::{Request, Response, Status, Streaming};
@@ -54,20 +53,25 @@ pub const TICKET_LIFETIME_MICROS: i64 = 5 * 60 * 1_000_000;
 /// which is what makes the tests in this crate possible without a warehouse.
 #[tonic::async_trait]
 pub trait Queries: Send + Sync + 'static {
-    /// Which tenant a request belongs to.
+    /// Who a request is from.
     ///
     /// Established from the transport's credentials. Returning an error refuses the call,
-    /// and there is deliberately no default tenant: an unattributable request cannot be
+    /// and there is deliberately no default caller: an unattributable request cannot be
     /// audited, and a request nobody can attribute is one nobody can refuse either.
-    fn tenant_of(
+    ///
+    /// **A tenant and a subject**, and it used to be a tenant. The subject was read, checked
+    /// non-empty and discarded, so every Flight request ran as one literal identity --- and a
+    /// user an operator had deliberately left out of the roles map connected here and was
+    /// served as though they held the default role. `SEC-03`.
+    fn caller_of(
         &self,
         request_metadata: &tonic::metadata::MetadataMap,
-    ) -> Result<TenantId, Status>;
+    ) -> Result<Caller, Status>;
 
     /// Authorize and plan a statement, returning the snapshot it was planned against.
     ///
     /// Called once, at `GetFlightInfo`. The result is what the ticket carries.
-    async fn plan(&self, tenant: &TenantId, statement: &str) -> Result<u64, Status>;
+    async fn plan(&self, caller: &Caller, statement: &str) -> Result<u64, Status>;
 
     /// Execute a previously planned statement.
     ///
@@ -136,7 +140,7 @@ impl<Q: Queries> FlightService for SankhyaFlight<Q> {
         &self,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
-        let tenant = self.queries.tenant_of(request.metadata())?;
+        let caller = self.queries.caller_of(request.metadata())?;
         let descriptor = request.into_inner();
 
         let statement = std::str::from_utf8(&descriptor.cmd)
@@ -146,9 +150,10 @@ impl<Q: Queries> FlightService for SankhyaFlight<Q> {
             return Err(Status::invalid_argument("no statement was supplied"));
         }
 
-        let snapshot = self.queries.plan(&tenant, &statement).await?;
+        let snapshot = self.queries.plan(&caller, &statement).await?;
         let ticket = Ticket::issue(
-            tenant,
+            caller.tenant,
+            caller.subject,
             statement,
             snapshot,
             self.queries.now(),
@@ -174,13 +179,13 @@ impl<Q: Queries> FlightService for SankhyaFlight<Q> {
         &self,
         request: Request<FlightTicket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
-        let tenant = self.queries.tenant_of(request.metadata())?;
+        let caller = self.queries.caller_of(request.metadata())?;
         let raw = request.into_inner();
 
         let ticket = Ticket::decode(&raw.ticket)
             .ok_or_else(|| Status::invalid_argument("this is not a ticket this server issued"))?;
         ticket
-            .admit(&tenant, self.queries.now())
+            .admit(&caller, self.queries.now())
             .map_err(Self::refusal)?;
 
         let stream = self.queries.execute(&ticket).await?;

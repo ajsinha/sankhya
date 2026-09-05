@@ -29,7 +29,7 @@ use sankhya_authz::policy::{Action, TableRef};
 use sankhya_authz::principal::Principal;
 use sankhya_catalog::guard::Guard;
 
-use crate::wiring::{acknowledged, refusal};
+use crate::wiring::{acknowledged, refusal, Server};
 
 /// The bookkeeping schema snapshot documents live under.
 ///
@@ -105,6 +105,16 @@ pub(crate) fn load(warehouse: &Path) -> (Vec<Snapshot>, Vec<String>) {
         }
     }
     (found, complaints)
+}
+
+/// One snapshot document, or `None` if it cannot be read as one.
+///
+/// Separate from [`load`] because a decision about *this* snapshot must not depend on whether
+/// every other document in the directory parses. `load` reports its complaints and a caller
+/// dropping one snapshot has no business being refused by another one's corruption.
+fn read_one(path: &Path) -> Option<Snapshot> {
+    let text = std::fs::read_to_string(path).ok()?;
+    Snapshot::from_document(&text).ok()
 }
 
 /// The versions snapshots still pin, by qualified table name.
@@ -280,23 +290,68 @@ pub(crate) fn take(
 /// [`QueryFailure`] when there is no such snapshot and the statement did not say `IF EXISTS`,
 /// or when the document cannot be removed.
 pub(crate) fn drop_it(
-    warehouse: &Path,
+    server: &Server,
+    principal: &Principal,
     name: &str,
     if_exists: bool,
 ) -> Result<QueryResult, QueryFailure> {
+    let warehouse = &server.warehouse_path();
     let path = document_at(warehouse, name)?;
-    if !path.exists() {
-        if if_exists {
-            return Ok(acknowledged("DROP SNAPSHOT"));
-        }
-        return Err(refusal(
+    let absent = || {
+        refusal(
             "42704",
             &format!(
                 "there is no snapshot called `{name}`. `SHOW SNAPSHOTS` lists them, with what \
                  each pins and when it expires"
             ),
-        ));
+        )
+    };
+    if !path.exists() {
+        if if_exists {
+            return Ok(acknowledged("DROP SNAPSHOT"));
+        }
+        return Err(absent());
     }
+
+    // Who may drop it.
+    //
+    // # Why this was worth a finding
+    //
+    // `DROP SNAPSHOT` took no principal at all, so any caller could drop any snapshot. A
+    // snapshot's whole job is to hold files back from the sweeper, so dropping one releases
+    // them --- and `docs/INVARIANTS.md` claims the maintenance scheduler is *structurally
+    // incapable* of destroying retained history. It is. A statement was doing it instead.
+    // `SEC-04`.
+    //
+    // # The rule
+    //
+    // The subject who took it, or a caller who may read every table it pins. The second half
+    // is what keeps an operator able to clean up after somebody who has left, and it is the
+    // same rule `DROP CUBE` follows: a principal who cannot read what a thing is built on has
+    // no business removing it.
+    //
+    // A snapshot document that cannot be read is **refused rather than dropped**. Not being
+    // able to tell what it pins is not permission to release it.
+    let held = read_one(&path).ok_or_else(|| {
+        refusal(
+            sankhya_error::protocol::sqlstate::DATA_EXCEPTION.as_str(),
+            &format!(
+                "the snapshot document for `{name}` could not be read, so what it pins is \
+                 unknown. Refused rather than dropped: dropping it would release files whose \
+                 readers cannot be identified"
+            ),
+        )
+    })?;
+    let pins: Vec<String> = held.tables.keys().cloned().collect();
+    let mine = held.taken_by == principal.subject();
+    if !mine && server.scope_across(principal, &pins).is_none() {
+        // The same sentence as absence, deliberately. Saying "you may not drop that" confirms
+        // it exists, and a snapshot's name is a thing somebody chose.
+        server.record(principal, TableRef::new("", name), Action::Delete, false);
+        return Err(absent());
+    }
+    server.record(principal, TableRef::new("", name), Action::Delete, true);
+
     std::fs::remove_file(&path).map_err(|error| {
         refusal(
             sankhya_error::protocol::sqlstate::IO_ERROR.as_str(),
@@ -406,7 +461,7 @@ pub(crate) fn run_statement(
             Ok(show(&snapshots, server.today()))
         }
         Statement::Drop { name, if_exists } => {
-            drop_it(warehouse, &name, if_exists)
+            drop_it(server, principal, &name, if_exists)
         }
         Statement::History { table } => history_of(server, &table, principal),
         Statement::Changes { table, from, to } => {

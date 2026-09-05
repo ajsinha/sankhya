@@ -43,8 +43,7 @@
 use crate::execute::session_for;
 use crate::wiring::Server;
 use datafusion::physical_plan::SendableRecordBatchStream;
-use sankhya_api_flight::{Queries, Ticket};
-use sankhya_authz::principal::TenantId;
+use sankhya_api_flight::{Caller, Queries, Ticket};
 use std::sync::Arc;
 use tonic::{Status, metadata::MetadataMap};
 
@@ -87,17 +86,22 @@ impl Flying {
         Ok(named)
     }
 
-    /// A session carrying exactly what this tenant may read.
+    /// A session carrying exactly what **this caller** may read.
     ///
     /// Built through `session_for`, the same function the wire protocol's statement path uses,
     /// so the policy is applied by the same `SecuredTable` wrappers. A Flight client sees
-    /// precisely the rows a PostgreSQL client of the same tenant would --- because there is one
-    /// implementation of the rule rather than two that eventually disagree.
-    fn session_for_tenant(&self) -> Result<datafusion::prelude::SessionContext, Status> {
+    /// precisely the rows a PostgreSQL client connected as the same user would --- because
+    /// there is one implementation of the rule rather than two that eventually disagree.
+    ///
+    /// It used to take no user at all. The name was read from the metadata, checked non-empty,
+    /// and dropped on the floor; every request then ran as the literal subject `"flight"`,
+    /// whose roles came out of the same default branch as any unknown name's. A user an
+    /// operator had deliberately left out of `server.roles` connected here and read. `SEC-03`.
+    fn session_for(&self, user: &str) -> Result<datafusion::prelude::SessionContext, Status> {
         let principal = self
             .server
-            .flight_principal()
-            .ok_or_else(|| Status::unauthenticated("this tenant cannot be authenticated"))?;
+            .principal(user)
+            .ok_or_else(|| Status::unauthenticated("this user cannot be authenticated"))?;
         let servable = self.server.servable_now();
         let (context, registered) = session_for(&principal, self.server.policy_set(), &servable)
             .map_err(|failure| Status::permission_denied(failure.message))?;
@@ -112,19 +116,20 @@ impl Flying {
 
 #[tonic::async_trait]
 impl Queries for Flying {
-    fn tenant_of(&self, request_metadata: &MetadataMap) -> Result<TenantId, Status> {
-        // The user must be named even though the tenant is currently fixed. Federated identity
-        // replaces the mapping below and nothing else changes; accepting an unnamed caller now
-        // would be a hole to close later rather than one never opened.
-        let _user = Self::user_of(request_metadata)?;
-        Ok(self.server.tenant())
+    fn caller_of(&self, request_metadata: &MetadataMap) -> Result<Caller, Status> {
+        // The tenant is still this server's, because a deployment serves one. The *subject* is
+        // the caller's, which is the half that used to be read and thrown away.
+        Ok(Caller::new(
+            self.server.tenant(),
+            Self::user_of(request_metadata)?,
+        ))
     }
 
-    async fn plan(&self, _tenant: &TenantId, statement: &str) -> Result<u64, Status> {
+    async fn plan(&self, caller: &Caller, statement: &str) -> Result<u64, Status> {
         // Planned to prove it *can* be, and to refuse here rather than at redemption. A ticket
         // issued for a statement that cannot be planned is a promise the server will break, and
         // it breaks it in `do_get`, where a client has already committed to streaming.
-        let context = self.session_for_tenant()?;
+        let context = self.session_for(&caller.subject)?;
         context
             .state()
             .create_logical_plan(statement)
@@ -134,7 +139,10 @@ impl Queries for Flying {
     }
 
     async fn execute(&self, ticket: &Ticket) -> Result<SendableRecordBatchStream, Status> {
-        let context = self.session_for_tenant()?;
+        // The session is rebuilt as the subject **named in the ticket**, not as whoever is
+        // presenting it. `admit` has already refused a mismatch, so the two agree --- and
+        // reading it from the ticket is what keeps them agreeing if `admit` is ever relaxed.
+        let context = self.session_for(ticket.subject())?;
         let frame = context
             .sql(ticket.statement())
             .await

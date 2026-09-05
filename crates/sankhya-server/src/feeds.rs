@@ -24,7 +24,9 @@ use sankhya_feed::validate::{validate, Feed};
 use sankhya_feed::{quarantine, Declaration};
 use sankhya_publish::Publication;
 
-use crate::wiring::{acknowledged, refusal};
+use crate::wiring::{acknowledged, refusal, Server};
+use sankhya_authz::policy::{Action, TableRef};
+use sankhya_authz::principal::Principal;
 use std::path::{Path, PathBuf};
 
 /// Where feed declarations live, under the configuration directory.
@@ -230,21 +232,55 @@ fn publication(root: &Path, name: &str, feed: &Feed) -> Publication {
 }
 
 
+/// Record which table each declared feed writes into.
+///
+/// Called once, where the declarations are read, because that is the only place that knows both
+/// a feed's name and what it fills. A feed absent from this map has its commands refused rather
+/// than allowed: not knowing what a feed writes into is not permission to start it.
+///
+/// Here rather than on `Server` because this is feed handling, and `wiring.rs` sits at the line
+/// limit --- a file that has to be argued down every time it grows is a file that stops being
+/// argued with.
+pub(crate) fn declare_targets(
+    server: &Server,
+    targets: std::collections::BTreeMap<String, TableRef>,
+) {
+    if let Ok(mut held) = server.feed_targets.write() {
+        *held = std::sync::Arc::new(targets);
+    }
+}
+
+/// The table a declared feed writes into.
+fn target_of(server: &Server, feed: &str) -> Option<TableRef> {
+    server
+        .feed_targets
+        .read()
+        .ok()
+        .and_then(|held| held.get(feed).cloned())
+}
+
 /// Answer a feed command.
 ///
-/// # Why this is not authorized like a query
+/// # What is authorized here and what is not
 ///
-/// `SHOW FEEDS` reports what the *server* is doing, not what is in any table: names an
-/// operator configured, counts of rows this process moved, and why something stopped.
-/// None of it is tenant data, and there is no table to check a scope against.
+/// `SHOW FEEDS` reports what the *server* is doing, not what is in any table: names an operator
+/// configured, counts of rows this process moved, and why something stopped. There is no table
+/// to check a scope against, and none of it is tenant data.
 ///
-/// That is a decision rather than an omission, and it is the conservative one only while
-/// this server has a single tenant. When identity arrives (`FR-SEC-03`), a feed belongs to
-/// whoever declared it and this needs the same treatment as everything else.
+/// `RESUME FEED` is a different thing entirely and used to be treated the same way. It restarts
+/// an ingest that `ADR-0018` halted **because its source changed shape** --- so resuming one is
+/// deciding that records of an unknown shape should start landing in a table again. It took no
+/// principal at all, so any caller could make that decision about anybody's table. `SEC-04`.
+///
+/// It is now authorized against the table the feed writes into, which is the same rule
+/// `DROP CUBE` follows: a principal who may not read what a thing writes has no business
+/// starting it.
 pub(crate) fn run_command(
-    feeds: &sankhya_feed::state::Feeds,
+    server: &Server,
+    principal: &Principal,
     command: Result<sankhya_feed::command::Command, sankhya_feed::command::CommandError>,
 ) -> Result<QueryResult, QueryFailure> {
+    let feeds = &*server.feeds();
     use sankhya_api_pg::message::{oid, FieldDescription};
     use sankhya_error::protocol::sqlstate;
     use sankhya_feed::command::Command;
@@ -300,6 +336,34 @@ pub(crate) fn run_command(
             })
         }
         Command::Resume { feed } => {
+            // Refused with the same sentence as an unknown feed, deliberately: a caller who
+            // may not touch this feed should not learn from the refusal that it exists.
+            let unknown = || {
+                refusal(
+                    // `42704`, undefined object: this is a name that does not resolve, and
+                    // the nearest thing the catalogue has for "no such thing".
+                    "42704",
+                    &format!(
+                        "no feed called `{feed}` is declared on this server. \
+                         `SHOW FEEDS` lists them"
+                    ),
+                )
+            };
+            // A feed whose declaration did not load has no target here, and is refused rather
+            // than resumed: not knowing what it writes into is not permission to start it.
+            let Some(target) = target_of(server, &feed) else {
+                return Err(unknown());
+            };
+            let table = if target.schema.is_empty() {
+                target.table.clone()
+            } else {
+                format!("{}.{}", target.schema, target.table)
+            };
+            if server.scope_for(principal, &table).is_none() {
+                server.record(principal, target, Action::Insert, false);
+                return Err(unknown());
+            }
+            server.record(principal, target, Action::Insert, true);
             if feeds.resume(&feed) {
                 Ok(QueryResult {
                     fields: Vec::new(),
@@ -309,15 +373,7 @@ pub(crate) fn run_command(
             } else {
                 // Named rather than reported as success. An operator who mistypes a feed
                 // name and is told it resumed will go away believing it did.
-                Err(refusal(
-                    // `42704`, undefined object: this is a name that does not resolve, and
-                    // the nearest thing the catalogue has for "no such thing".
-                    "42704",
-                    &format!(
-                        "no feed called `{feed}` is declared on this server. \
-                         `SHOW FEEDS` lists them"
-                    ),
-                ))
+                Err(unknown())
             }
         }
     }
