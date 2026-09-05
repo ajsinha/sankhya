@@ -128,7 +128,7 @@ async fn a_definition_that_will_not_parse_is_complained_about_and_does_not_stop_
     // still servable, and refusing to start would turn a typo into downtime.
     let dir = tempfile::tempdir().expect("a temporary directory");
     catalogue::save(dir.path(), &sales()).expect("storing the good one");
-    std::fs::write(catalogue::path_of(dir.path(), "broken"), "{ not a cube").expect("writing");
+    std::fs::write(catalogue::path_of(dir.path(), "broken").expect("an ordinary name"), "{ not a cube").expect("writing");
 
     let (server, complaints) = server_over(dir.path());
     assert!(

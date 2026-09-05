@@ -45,6 +45,7 @@
 //! system makes about a commit is a guarantee that the commit is still there afterwards.
 
 mod exclusive;
+pub mod name;
 
 pub use exclusive::{Holder, NotLocked, WarehouseLock};
 

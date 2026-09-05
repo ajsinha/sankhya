@@ -37,9 +37,28 @@ use crate::wiring::{acknowledged, refusal};
 /// appear in a catalogue somebody browses.
 pub(crate) const DIRECTORY: &str = "_snapshots";
 
-/// Where a snapshot of this name is stored.
-fn document_at(warehouse: &Path, name: &str) -> PathBuf {
-    warehouse.join(DIRECTORY).join(format!("{name}.json"))
+/// Where a snapshot of this name is stored, or a refusal a client can read.
+///
+/// Fallible, and that is the point rather than an inconvenience. This used to be
+/// `warehouse.join(DIRECTORY).join(format!("{name}.json"))` over a name the statement supplied
+/// with no constraint beyond being non-empty and whitespace-free, and `Path::join` honours
+/// `..` --- so `DROP SNAPSHOT ../_cubes/regional` deleted a cube definition. `SEC-06`.
+///
+/// **A snapshot document is the worst target of the three**, and not because a snapshot is
+/// precious. An absent snapshot pins nothing, so deleting one releases the files the sweeper
+/// was holding back: the deletion this whole retention mechanism exists to prevent, arriving
+/// through the name of a `DROP` statement.
+///
+/// Returning a `Result` is what stops that coming back --- there is no way to obtain the path
+/// without having asked.
+fn document_at(warehouse: &Path, name: &str) -> Result<PathBuf, QueryFailure> {
+    let checked = sankhya_atomicfs::name::checked(name).map_err(|refused| {
+        refusal(
+            sankhya_error::protocol::sqlstate::DATA_EXCEPTION.as_str(),
+            &format!("`{name}` is not a usable snapshot name: {refused}"),
+        )
+    })?;
+    Ok(warehouse.join(DIRECTORY).join(format!("{checked}.json")))
 }
 
 /// Every snapshot this warehouse holds, with the ones that could not be read.
@@ -211,7 +230,7 @@ pub(crate) fn take(
     expires_on: i32,
     readable: &[(String, u64)],
 ) -> Result<QueryResult, QueryFailure> {
-    let path = document_at(warehouse, name);
+    let path = document_at(warehouse, name)?;
     if path.exists() {
         return Err(refusal(
             "42P07",
@@ -265,7 +284,7 @@ pub(crate) fn drop_it(
     name: &str,
     if_exists: bool,
 ) -> Result<QueryResult, QueryFailure> {
-    let path = document_at(warehouse, name);
+    let path = document_at(warehouse, name)?;
     if !path.exists() {
         if if_exists {
             return Ok(acknowledged("DROP SNAPSHOT"));

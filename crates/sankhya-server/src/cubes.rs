@@ -341,7 +341,8 @@ fn remove(
         *cubes = Arc::new(next);
     }
 
-    let definition = sankhya_cube::catalogue::path_of(&server.settings.warehouse, name);
+    let definition = sankhya_cube::catalogue::path_of(&server.settings.warehouse, name)
+        .map_err(|refused| refusal(sqlstate::DATA_EXCEPTION.as_str(), &refused.to_string()))?;
     if let Err(error) = std::fs::remove_file(&definition) {
         if error.kind() != std::io::ErrorKind::NotFound {
             return Err(refusal(sqlstate::IO_ERROR.as_str(), &error.to_string()));

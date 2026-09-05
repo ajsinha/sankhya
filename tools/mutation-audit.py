@@ -4897,6 +4897,56 @@ CATALOGUE = [
      "            Mask::Constant { .. } => Arc::clone(&values),",
      "sankhya-catalog"),
 
+    # --- Phase 4: a name in a statement is not a path -------------------------------------------
+
+    # `SEC-06`. An allow-list is one line and has no tail; the deny-list it replaces has to stay
+    # complete against `..`, a leading `/`, a NUL byte, a drive letter, a trailing dot Windows
+    # strips, and a Unicode character that normalises to a separator.
+    ("atomicfs: let a name hold whatever it likes",
+     "crates/sankhya-atomicfs/src/name.rs",
+     "    if let Some(character) = name.chars().find(|c| !permitted(*c)) {",
+     "    if let Some(character) = name.chars().find(|_c| false) {",
+     "sankhya-atomicfs"),
+
+    # And the two that are a whole name rather than a character in one. `.` and `..` hold only
+    # permitted characters and are the traversal.
+    ("atomicfs: treat `..` as an ordinary name",
+     "crates/sankhya-atomicfs/src/name.rs",
+     "    if name == \".\" || name == \"..\" {",
+     "    if false {",
+     "sankhya-atomicfs"),
+
+    # The check existing is not the check being reached. Each of the three statement families
+    # had its own copy of `warehouse.join(DIRECTORY).join(format!(\"{name}.json\"))`, and the
+    # crate that did restrict identifiers was the fourth one, which needed it least.
+    ("server: build a snapshot's path from whatever the statement said",
+     "crates/sankhya-server/src/snapshots.rs",
+     "    let checked = sankhya_atomicfs::name::checked(name).map_err(|refused| {",
+     "    let checked = Ok::<&str, sankhya_atomicfs::name::NotAName>(name).map_err(|refused| {",
+     "sankhya-server"),
+
+    ("server: build an aggregation's path from whatever the statement said",
+     "crates/sankhya-server/src/aggregations.rs",
+     "    let name = sankhya_atomicfs::name::checked(name)?;",
+     "    let name = name;",
+     "sankhya-server"),
+
+    # The fourth site, which the audit did not name because it does not escape upward --- and
+    # the reason is an accident. `..` holds a dot, so a name containing one is read as
+    # `schema.table` and refused for naming the wrong schema. `sub/dir` holds no dot and lands
+    # the clone in a directory the catalogue does not scan.
+    ("server: place a clone wherever its name points",
+     "crates/sankhya-server/src/warehouse.rs",
+     "        if let Err(refused) = sankhya_atomicfs::name::checked(part) {",
+     "        if let Err(refused) = Ok::<&str, sankhya_atomicfs::name::NotAName>(part) {",
+     "sankhya-server"),
+
+    ("cube: build a definition's path from whatever the statement said",
+     "crates/sankhya-cube/src/catalogue.rs",
+     "        sankhya_atomicfs::name::checked(name).map_err(|refused| CatalogueError::Name {",
+     "        Ok::<&str, sankhya_atomicfs::name::NotAName>(name).map_err(|refused| CatalogueError::Name {",
+     "sankhya-server"),
+
     # --- Phase 3: what a value looks like on the wire -------------------------------------------
 
     # `CLI-01`. Microseconds are this project's canonical unit and went out as a raw integer

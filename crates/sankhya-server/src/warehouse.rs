@@ -369,8 +369,28 @@ pub fn resolve(warehouse: &Path, name: &str) -> Resolved {
 ///
 /// A bare name therefore lands beside its origin, and a qualified one is accepted only when it
 /// names the schema its origin is already in.
+///
+/// # Why each part is checked even though a clone cannot climb out of its schema
+///
+/// It cannot, and the argument for why is longer than the check. `..` contains a dot, so a name
+/// holding one is split as a qualified name and compared against the origin's schema, which it
+/// is not --- so it is refused for being in the wrong schema rather than for traversing, and
+/// upward escape happens to be impossible. That is a proof about `split_once('.')`, and it stops
+/// holding the day somebody makes the qualified form smarter.
+///
+/// What is left *without* the check is not nothing either: a name like `sub/dir` holds no dot
+/// and lands the clone in a directory the catalogue does not scan, which is a table that exists
+/// and cannot be found. `SEC-06`.
 pub fn place_beside(warehouse: &Path, name: &str, origin_root: &Path) -> Result<PathBuf, Misplaced> {
     let origin_schema = origin_root.parent();
+    for part in name.split('.') {
+        if let Err(refused) = sankhya_atomicfs::name::checked(part) {
+            return Err(Misplaced::NotAName {
+                asked: name.to_owned(),
+                detail: refused.to_string(),
+            });
+        }
+    }
     match name.split_once('.') {
         None => origin_schema
             .map(|schema| schema.join(name))
@@ -405,6 +425,13 @@ pub enum Misplaced {
     },
     /// The origin is not in a schema at all, so there is nowhere to put a clone beside it.
     NoSchema,
+    /// The name may not become part of a path.
+    NotAName {
+        /// What the statement asked for.
+        asked: String,
+        /// Which rule it broke.
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for Misplaced {
@@ -421,6 +448,10 @@ impl std::fmt::Display for Misplaced {
                 f,
                 "the table to clone is not in a schema, so there is nowhere to put a clone \
                  beside it"
+            ),
+            Self::NotAName { asked, detail } => write!(
+                f,
+                "`{asked}` is not a usable table name: {detail}"
             ),
         }
     }

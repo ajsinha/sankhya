@@ -153,6 +153,60 @@ for the same reason, as a policy predicate that does not parse. Discovering it o
 that happens to select that column is a policy that is wrong for months and looks right. `Null`
 is refused nowhere, because a null is meaningful at every type.
 
+## 13.2b A name in a statement is not a path
+
+Three statement families built a file path as `warehouse.join(DIRECTORY).join(format!("{name}\
+.json"))` from a name a client typed, constrained only to be non-empty and free of whitespace.
+`Path::join` **replaces the entire path when the component is absolute** and honours `..` when
+it is not, so a name was a way to write and delete files anywhere the server's user could reach:
+
+```
+CREATE AGGREGATION /var/tmp/x LANGUAGE PYTHON AS $$…$$   -- writes there
+DROP SNAPSHOT ../_cubes/regional                          -- deletes that
+```
+
+The worst target is a snapshot document, and not because a snapshot is precious. **An absent
+snapshot pins nothing, so deleting one releases the files the sweeper was holding back** — the
+deletion the whole retention mechanism exists to prevent, reached through the name of a `DROP`.
+`SEC-06`.
+
+A name that may become part of a path is now checked in one place, `sankhya-atomicfs::name`, and
+the three path builders return a `Result` rather than a `PathBuf`. That is the load-bearing part:
+a check that can be forgotten is a check that will be, and there were already four copies of this
+path-building line and one copy of the restriction — in the crate that needed it least.
+
+### An allow-list, because the deny-list has no end
+
+The rule is: letters, digits, `_`, `-` and `.`, ASCII only, with `.` and `..` refused outright.
+
+The alternative is a list of dangerous shapes somebody has to keep complete, and it is longer
+than it looks: `..`, a leading `/`, a NUL byte, a Windows drive letter, a trailing dot or space
+that Windows strips, a reserved device name, a name differing from another only in case on a
+case-insensitive filesystem, a Unicode character that normalises to a separator. Saying what a
+name **may** contain is one line and has no tail. Non-ASCII is refused rather than normalised for
+the last of those: two names differing only in normalisation form are one file on macOS and two
+on Linux, which shows up as a document silently overwritten rather than as an error.
+
+### Where a quoted identifier carries it
+
+`CREATE CUBE ../x` is a syntax error, because the cube tokenizer builds a bare word out of
+alphanumerics and `_`. That makes the statement look safe and it is not: a **quoted** identifier
+is copied verbatim — which is what makes a cube called `"Level"` expressible — so
+`CREATE CUBE "../x"` reached the path builder with the separator intact. A tokenizer that
+restricts one spelling of a name and not the other has restricted nothing.
+
+### The fourth site, which the audit did not name
+
+`CREATE TABLE … CLONE` places a clone beside its origin, and it does not escape upward. The
+reason is an accident: `..` holds a dot, so a name containing one is read as `schema.table` and
+refused for naming the wrong schema rather than for traversing. That is a proof about
+`split_once('.')` and it stops holding the day the qualified form gets smarter. What is wrong
+without a check even today is `sub/dir` — no dot, so the clone lands in a directory the
+catalogue does not scan, and the result is a table that exists and cannot be found.
+
+> **Pitfall** — Reasoning that a path *cannot* escape is not a control. It is a comment that
+> was true when it was written, attached to code somebody else will change.
+
 ## 13.3 A table you may not read does not exist
 
 Only the tables a principal may read are registered into the session. Naming one that is not

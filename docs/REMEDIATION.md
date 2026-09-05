@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2,714 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2,724 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -677,7 +677,39 @@ through it and the refusal was unreachable. It is now tested against a provider 
 `Exact` and means it --- the same trap `LimitHonouringTable` was written for two phases ago, and
 the second time the catalogue caught it before the commit rather than after.
 
-`4.3` through `4.8` are not started.
+**4.3 A name in a statement is not a path (`SEC-06`).** Three statement families built
+`warehouse.join(DIRECTORY).join(format!("{name}.json"))` from a name a client typed, constrained
+only to be non-empty and whitespace-free. `Path::join` replaces the whole path on an absolute
+component and honours `..` on a relative one, so `CREATE AGGREGATION /var/tmp/x` wrote there and
+`DROP SNAPSHOT ../_cubes/regional` deleted that. The worst target is a snapshot document: an
+absent snapshot pins nothing, so deleting one releases the files the sweeper was holding back.
+
+`sankhya-atomicfs::name` holds the rule and the three builders now return a `Result` rather than
+a `PathBuf` --- which is the load-bearing part, because a check that can be forgotten will be.
+There were already four copies of the path-building line and one copy of the restriction, in the
+crate that needed it least.
+
+- **An allow-list.** Letters, digits, `_`, `-` and `.`, ASCII only, with `.` and `..` refused.
+  The deny-list it replaces has to stay complete against a NUL byte, a drive letter, a trailing
+  dot Windows strips, a reserved device name, and a Unicode character that normalises to a
+  separator. Non-ASCII is refused rather than normalised: two names differing only in
+  normalisation form are one file on macOS and two on Linux.
+- **The quoted spelling was the reachable one.** `CREATE CUBE ../x` is a syntax error, because
+  the cube tokenizer builds a bare word out of alphanumerics and `_`; `CREATE CUBE "../x"` is
+  copied verbatim, which is what makes a cube called `"Level"` expressible. The first mutation
+  survived against the bare form and was caught only once the test used the quoted one.
+- **A fourth site, which the audit did not name.** `CREATE TABLE … CLONE` does not escape
+  upward, and the reason is an accident of `split_once('.')` rather than a check. What is wrong
+  without one even today is `sub/dir`: the clone lands in a directory the catalogue does not
+  scan, which is a table that exists and cannot be found.
+
+**Two mutations survived first, and both were the test rather than the code.** One aimed a
+traversal at a bookkeeping directory that did not exist yet, so the escape failed on `ENOENT`
+and would have passed against a server with no check at all. The other used `DROP CUBE`, which
+refuses a cube absent from the served set before it builds any path --- so the dangerous-looking
+statement is the unreachable one and `CREATE` is where the write goes.
+
+`4.4` through `4.8` are not started.
 
 ---
 

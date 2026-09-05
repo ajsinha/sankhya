@@ -138,7 +138,7 @@ fn a_rule_this_version_does_not_know_is_refused_rather_than_defaulted() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     catalogue::save(dir.path(), &sales()).expect("storing");
 
-    let at = catalogue::path_of(dir.path(), "sales");
+    let at = catalogue::path_of(dir.path(), "sales").expect("an ordinary name");
     let text = std::fs::read_to_string(&at).expect("the stored file");
     std::fs::write(&at, text.replace("\"last\"", "\"median\"")).expect("rewriting");
 
@@ -158,7 +158,7 @@ fn a_file_that_is_not_a_definition_is_reported_rather_than_skipped() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     catalogue::save(dir.path(), &sales()).expect("storing");
     std::fs::write(
-        catalogue::path_of(dir.path(), "broken"),
+        catalogue::path_of(dir.path(), "broken").expect("an ordinary name"),
         "{ this is not a cube",
     )
     .expect("writing rubbish");
@@ -215,7 +215,7 @@ fn the_catalogue_is_not_mistaken_for_a_table() {
     // warehouse problem.
     let dir = tempfile::tempdir().expect("a temporary directory");
     catalogue::save(dir.path(), &sales()).expect("storing");
-    let at = catalogue::path_of(dir.path(), "sales");
+    let at = catalogue::path_of(dir.path(), "sales").expect("an ordinary name");
     let relative = at.strip_prefix(dir.path()).expect("under the warehouse");
     assert!(
         relative
