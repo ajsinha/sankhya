@@ -2483,8 +2483,8 @@ CATALOGUE = [
 
     ("server: check the statement shape after the engine has already run the DDL",
      "crates/sankhya-server/src/execute.rs",
-     "    let plan = context\n        .state()\n        .create_logical_plan(sql)\n        .await\n        .map_err(|error| plan_failure(&error))?;\n    refuse_if_not_a_read(&plan)?;\n\n    let frame = context\n        .execute_logical_plan(plan)\n        .await\n        .map_err(|error| plan_failure(&error))?;",
-     "    let frame = context.sql(sql).await.map_err(|error| plan_failure(&error))?;\n    refuse_if_not_a_read(frame.logical_plan())?;",
+     "    let plan = context\n        .state()\n        .create_logical_plan(sql)\n        .await\n        .map_err(|error| plan_failure(&error))?;\n    refuse_if_not_a_read(&plan)?;",
+     "    let frame = context.sql(sql).await.map_err(|error| plan_failure(&error))?;\n    refuse_if_not_a_read(frame.logical_plan())?;\n    let plan = frame.logical_plan().clone();",
      "sankhya-server"),
 
     ("server: stop unwrapping the engine's diagnostic wrapper",
@@ -4896,6 +4896,70 @@ CATALOGUE = [
      "            Mask::Constant { value } => constant(value, &self.kind, values.len()),",
      "            Mask::Constant { .. } => Arc::clone(&values),",
      "sankhya-catalog"),
+
+    # --- Phase 4: what the audit records, and whether it survives --------------------------------
+
+    # `SEC-07`. `Chain` is a `Vec`, so the hash-linked tamper-evident audit was erased by a
+    # restart --- and a restart is the event most likely to accompany the incident it exists for.
+    ("server: keep the audit in memory and never write it down",
+     "crates/sankhya-server/src/audit.rs",
+     "            .zip(journal.as_mut())",
+     "            .zip(journal.as_mut().filter(|_| false))",
+     "sankhya-server"),
+
+    # And reading it back, without which every restart starts a new chain that links to nothing.
+    ("server: start a new chain at every restart",
+     "crates/sankhya-server/src/audit.rs",
+     "    let (chain, mut complaints) = sankhya_audit::journal::read(&server.settings.warehouse);",
+     "    let (chain, mut complaints) = (sankhya_audit::Chain::new(), Vec::new());",
+     "sankhya-server"),
+
+    # The record's contents. The only append site hardcoded no row filter and no masks, never
+    # recorded the version, the statement or the rows returned, and passed the first two words of
+    # the statement where a table belongs.
+    ("server: record a read without saying what was asked",
+     "crates/sankhya-server/src/audit.rs",
+     "    let entry = Entry::by(principal, table, Action::Read, decision, at)\n        .running(statement_shape(sql))\n        .from_version(version);",
+     "    let entry = Entry::by(principal, table, Action::Read, decision, at);",
+     "sankhya-server"),
+
+    # And the table it was asked of, taken from the plan rather than from the session. Recording
+    # every authorized table attributes a row count to tables nobody read, and a wrong fact in an
+    # audit is read as a fact.
+    ("server: record every table the session could reach rather than the ones it did",
+     "crates/sankhya-server/src/execute.rs",
+     "    let touched = scanned(&plan);",
+     "    let touched = Vec::new();",
+     "sankhya-server"),
+
+    # The restriction a statement was answered under, which §13.5 lists as not optional and which
+    # was a hardcoded `None` --- so a query answered under a filter was recorded as one answered
+    # under none.
+    ("server: record every read as unrestricted",
+     "crates/sankhya-server/src/execute.rs",
+     "            guard.row_filter().map(str::to_owned),",
+     "            None,",
+     "sankhya-server"),
+
+    # --- Phase 4: what an unauthenticated endpoint says ------------------------------------------
+
+    # `SEC-08`. `/metrics` is unauthenticated by convention and the per-table gauge's label is a
+    # table's fully-qualified name, so the breakdown enumerated the warehouse to whoever could
+    # reach the port. The module claimed the catalogue enforced this structurally; a label is
+    # bounded by cardinality, not by content. A test asserted the label was present.
+    ("server: name every table on an unauthenticated endpoint",
+     "crates/sankhya-server/src/wiring.rs",
+     "            if self.settings.metrics_detail {",
+     "            if true {",
+     "sankhya-server"),
+
+    # And the figure that replaces it, which is what an alert fires on. A gauge that never moves
+    # is an alert that never fires.
+    ("server: report the largest table's file count as nothing",
+     "crates/sankhya-server/src/wiring.rs",
+     "            .set(&catalogue::TABLE_LIVE_FILES_MAX, &[], largest as f64);",
+     "            .set(&catalogue::TABLE_LIVE_FILES_MAX, &[], 0.0);",
+     "sankhya-server"),
 
     # --- Phase 4: what a refusal and a listing say ------------------------------------------------
 

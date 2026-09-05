@@ -52,6 +52,8 @@ mod feeds;
 mod driver;
 #[path = "../src/snapshots.rs"]
 mod snapshots;
+#[path = "../src/audit.rs"]
+mod audit;
 #[path = "../src/wiring.rs"]
 mod wiring;
 
@@ -173,6 +175,7 @@ async fn a_short_run_under_concurrent_load_is_judged() {
             maintenance: None,
             require_password: false,
             user_functions: false,
+            metrics_detail: false,
             metrics_listen: None,
             transport_security: None,
         },
@@ -240,7 +243,7 @@ async fn a_short_run_under_concurrent_load_is_judged() {
             at,
             Some(queries.load(Ordering::Relaxed) as f64),
         );
-        samples.record("audit_records", at, Some(server.audit_len() as f64));
+        samples.record("audit_records", at, Some(audit::len(&server) as f64));
         let live = sankhya_table_delta::live_files(&table_root).expect("replays");
         samples.record("live_files", at, Some(live.files.len() as f64));
         // Every watched measure, or the report is judging a run with one that was never

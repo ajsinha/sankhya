@@ -1,6 +1,13 @@
 # Runbook — compaction debt
 
-**Alert:** `sankhya_table_live_files` for one table is approaching or past 1,000.
+**Alert:** `sankhya_table_live_files_max` is approaching or past 1,000.
+
+The alerting series carries **no label**, so it says that *some* table has too many files and not
+which one. That is deliberate: `/metrics` is unauthenticated by Prometheus's convention, and a
+per-table label enumerates the warehouse to anybody who can reach the port (`SEC-08`). To find the
+table, run `sankhya doctor`, which authenticates — or set `server.metrics_detail: true` where the
+metrics interface is one clients cannot reach, which restores the per-table
+`sankhya_table_live_files` series.
 **Lead time:** days, at ordinary write rates.
 
 ## Symptom
@@ -54,7 +61,7 @@ holding, and the reader's failure will look nothing like this alert.
 
 ## What "fixed" looks like
 
-`sankhya_table_live_files` for the table falls sharply at the compaction and then rises again
+`sankhya_table_live_files_max` falls sharply at the compaction and then rises again
 at the table's ordinary rate. If it rises back to the threshold faster than the duty cycle
 brings it down, the duty cycle is still too low and this alert will return — the diagnostic
 will say so with a date before it does.

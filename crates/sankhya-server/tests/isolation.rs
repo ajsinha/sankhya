@@ -49,6 +49,8 @@ mod feeds;
 mod driver;
 #[path = "../src/snapshots.rs"]
 mod snapshots;
+#[path = "../src/audit.rs"]
+mod audit;
 #[path = "../src/wiring.rs"]
 mod wiring;
 
@@ -226,6 +228,7 @@ async fn an_error_does_not_disclose_that_the_other_tenants_table_exists() {
         maintenance: None,
         require_password: true,
         user_functions: false,
+        metrics_detail: false,
         metrics_listen: None,
         transport_security: None,
     };

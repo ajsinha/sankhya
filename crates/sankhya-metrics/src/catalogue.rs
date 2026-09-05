@@ -91,6 +91,62 @@ pub static AUDIT_RECORDS_TOTAL: Metric = Metric {
     alert: None,
 };
 
+/// Audit records that could not be written to disk.
+///
+/// # Why this is a metric rather than only a log line
+///
+/// Because the failure is silent by nature. An audit that has stopped recording looks exactly
+/// like a quiet server, and the difference is only visible if something counts the difference.
+/// `AUDIT_RECORDS_TOTAL` rising while this one rises too is a chain that exists in memory and
+/// not on disk --- which is the state `SEC-07` found shipped as the only state.
+pub static AUDIT_UNWRITTEN_TOTAL: Metric = Metric {
+    name: "sankhya_audit_unwritten_total",
+    kind: Kind::Counter,
+    unit: Unit::Count,
+    labels: &[],
+    group: Group::Query,
+    help: "Audit records that were made and could not be written to disk. Any value above \
+           zero means the chain on disk is shorter than the chain in memory.",
+    alert: Some(Alert {
+        runbook: "audit-unwritten",
+        consequence: "the audit on disk is incomplete, and a restart loses everything that \
+                      could not be written",
+        lead_time: "none --- the first failure is already a gap",
+    }),
+};
+
+/// The largest live-file count any table currently carries.
+///
+/// # Why this exists beside the per-table gauge
+///
+/// Because the per-table one names every table on the server, and `/metrics` is unauthenticated
+/// by Prometheus's convention. The endpoint's own module claimed *"no label may carry tenant
+/// data --- the metric catalogue enforces it structurally"*, and it does not: a label is bounded
+/// by **cardinality**, not by content, and this one was filled with the fully-qualified name of
+/// every servable table. `SEC-08`.
+///
+/// What pages is a table with too many files, and the number that says so is the largest one.
+/// That number needs no label, so this is what the alert is on --- and the breakdown that says
+/// *which* table is behind `server.metrics_detail`, for a deployment whose metrics port is
+/// genuinely private.
+pub static TABLE_LIVE_FILES_MAX: Metric = Metric {
+    name: "sankhya_table_live_files_max",
+    kind: Kind::Gauge,
+    unit: Unit::Count,
+    labels: &[],
+    group: Group::Maintenance,
+    help: "The largest number of files any one table currently consists of. Unlabelled on \
+           purpose: a per-table breakdown enumerates the warehouse to an unauthenticated \
+           endpoint, and is available under `server.metrics_detail`.",
+    alert: Some(Alert {
+        runbook: "compaction-debt",
+        consequence: "query latency on the affected table roughly doubles as the file count \
+                      passes a thousand, and keeps climbing",
+        lead_time: "days, at ordinary write rates --- run the diagnostic, which names the \
+                    table, or turn on `server.metrics_detail` where the port is private",
+    }),
+};
+
 /// Live files per table --- the compaction debt that pages.
 pub static TABLE_LIVE_FILES: Metric = Metric {
     name: "sankhya_table_live_files",
@@ -99,7 +155,9 @@ pub static TABLE_LIVE_FILES: Metric = Metric {
     labels: &[Label::identifier("table", TABLE_CAP)],
     group: Group::Maintenance,
     help: "Files a table currently consists of. A scan pays per file — opening it, reading \
-           its footer, deciding whether to prune it — so this is what compaction debt costs.",
+           its footer, deciding whether to prune it — so this is what compaction debt costs. \
+           Emitted only under `server.metrics_detail`: the label is the table's name, and \
+           `/metrics` is unauthenticated.",
     alert: Some(Alert {
         runbook: "compaction-debt",
         consequence: "query latency on the affected table roughly doubles as the file count \
@@ -169,6 +227,8 @@ pub static ALL: &[&Metric] = &[
     &ROWS_RETURNED_TOTAL,
     &CONNECTIONS_ACTIVE,
     &AUDIT_RECORDS_TOTAL,
+    &AUDIT_UNWRITTEN_TOTAL,
+    &TABLE_LIVE_FILES_MAX,
     &TABLE_LIVE_FILES,
     &MEMORY_IN_USE_BYTES,
     &MEMORY_PEAK_BYTES,

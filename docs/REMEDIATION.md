@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2,745 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2,749 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -828,7 +828,57 @@ that kept going past the deadline --- still has to hold every time. The lower on
 of three attempts, the same treatment the contention measurement got in Phase 2 and for the same
 reason: a gate that fails for a reason nobody can act on is a gate people learn to re-run.
 
-`4.7` and `4.8` are not started.
+**4.7 The audit, and the endpoint (`SEC-07`, `SEC-08`).**
+
+**`SEC-08` first, because it is smaller.** `/metrics` is unauthenticated by Prometheus's
+convention, and `sankhya_table_live_files` was labelled with the fully-qualified name of every
+servable table --- so anybody who could reach the port could enumerate the warehouse. The module
+justified this by saying *"no label may carry tenant data --- the metric catalogue enforces it
+structurally"*, and it does not: a label is bounded by **cardinality**, not by content. **A test
+required the label to be present**, so a server that closed the leak would have failed its own
+suite.
+
+What an alert fires on is now `sankhya_table_live_files_max`, which carries no label --- what
+pages is that *some* table has too many files, and which one is a question `sankhya doctor`
+answers to somebody who has authenticated. The breakdown is behind `server.metrics_detail`, off by
+default, the same shape as `user_functions`. The runbook says which series to alert on and how to
+get the name.
+
+**`SEC-07` had two halves and both were serious.**
+
+*What the record said.* The only append site hardcoded no row filter and no masks, recorded no
+version, no statement and no row count, and passed the first two words of the statement where a
+table belongs. §13.5 lists four fields as not optional and none was populated --- and the
+restrictions field was not merely empty: it asserted `allowed, no filter, no masks` on statements
+where a filter was applied. An empty field does not answer a question; a false one answers it
+wrongly, and an audit is read as evidence.
+
+A read now writes one entry per table **the plan scanned**. One per table because a restriction
+belongs to a table and not to a statement; from the plan because recording every *authorized*
+table attributes a row count to tables nobody read, and a substring search over the SQL would put
+a table in an audit trail because its name appeared in a string literal. The graph epoch stays
+`None` rather than being guessed.
+
+**A first attempt recorded the statement verbatim, and an existing test refused it.** A statement
+carries the values a query filtered on, and copying them into a durable log makes the audit a
+second place the data lives --- with different retention and different access control than the
+table. That test predates this work and is right: §13.5's four fields do not include the statement
+text, and what `SEC-07` complained about is that the *shape* was being recorded **as the table**.
+The shape now goes in the field for it and the table in the field for the table. The lesson is the
+one this phase keeps producing: a finding names a symptom, and reading it as a specification
+produces a second defect.
+
+*Whether it survived.* `Chain` was a `Vec`, so the tamper-evident audit was erased by a restart.
+It is written to `_audit/chain.jsonl`, one JSON object per line, synced before the statement is
+answered, and read back at startup so the first record of a run links to the last of the previous
+one. A failed write is counted and logged rather than swallowed, and a server with nowhere to
+write says `IN MEMORY ONLY` in its startup line.
+
+**One mutation had to be rewritten twice** before it compiled --- the shape that expresses "do not
+write it down" has to keep the `Option`'s type --- which is a small thing, and the reason it is
+recorded is that a mutation that does not compile is silently no coverage at all.
+
+`4.8` is not started.
 
 ---
 

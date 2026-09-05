@@ -54,6 +54,8 @@ mod feeds;
 mod driver;
 #[path = "../src/snapshots.rs"]
 mod snapshots;
+#[path = "../src/audit.rs"]
+mod audit;
 #[path = "../src/wiring.rs"]
 mod wiring;
 
@@ -224,6 +226,7 @@ async fn a_server_keeps_reading_across_its_own_maintenance() {
             maintenance: None,
             require_password: false,
             user_functions: false,
+            metrics_detail: false,
             metrics_listen: None,
             transport_security: None,
         },
@@ -291,6 +294,7 @@ async fn a_statement_pins_the_warehouse_for_as_long_as_it_runs() {
             maintenance: None,
             require_password: false,
             user_functions: false,
+            metrics_detail: false,
             metrics_listen: None,
             transport_security: None,
         },

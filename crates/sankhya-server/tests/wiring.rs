@@ -43,6 +43,8 @@ mod feeds;
 mod driver;
 #[path = "../src/snapshots.rs"]
 mod snapshots;
+#[path = "../src/audit.rs"]
+mod audit;
 #[path = "../src/wiring.rs"]
 mod wiring;
 
@@ -137,6 +139,7 @@ fn settings(require_password: bool, warehouse: &std::path::Path) -> Settings {
         maintenance: None,
         require_password,
         user_functions: false,
+        metrics_detail: false,
         metrics_listen: None,
         transport_security: None,
     }
@@ -361,17 +364,17 @@ async fn a_table_granted_to_another_tenant_is_not_listed() {
 #[tokio::test(flavor = "multi_thread")]
 async fn everything_that_happens_is_audited_and_the_chain_verifies() {
     let (server, _warehouse) = server_over(|tables| permissive_policy(&tenant(), tables));
-    assert_eq!(server.audit_len(), 0);
-    let empty_head = server.audit_head();
+    assert_eq!(audit::len(&server), 0);
+    let empty_head = audit::head(&server);
 
     server.query("SELECT id FROM example", &Caller::new(&anyone())).ok();
     server.visible_tables(&Caller::new(&anyone()));
     server.query("SELECT 1", &Caller::new(&anyone())).ok();
 
-    assert_eq!(server.audit_len(), 3, "refusals are audited too");
-    assert!(server.audit_intact(), "the chain must verify");
+    assert_eq!(audit::len(&server), 3, "refusals are audited too");
+    assert!(audit::intact(&server), "the chain must verify");
     assert_ne!(
-        server.audit_head(),
+        audit::head(&server),
         empty_head,
         "the head moves, which is what gets mirrored somewhere append-only"
     );
@@ -387,9 +390,9 @@ async fn the_audit_records_the_shape_of_a_statement_and_not_its_values() {
         .query("SELECT id FROM example WHERE national_id = '123-45-6789'", &Caller::new(&anyone()))
         .ok();
 
-    let head = server.audit_head();
+    let head = audit::head(&server);
     assert!(!head.is_empty());
-    assert!(server.audit_intact());
+    assert!(audit::intact(&server));
     // The sensitive literal must not be reachable through the audit surface at all.
     assert!(
         !format!("{server:?}").contains("123-45-6789"),
@@ -656,7 +659,7 @@ async fn the_user_a_connection_authenticated_as_reaches_authorization_and_audit(
     let bo = vec![("user".to_string(), "bo".to_string())];
 
     server.query("SELECT 1", &Caller::new(&ana)).ok();
-    let by_ana = server.audit_head();
+    let by_ana = audit::head(&server);
 
     let (second, _warehouse) = server_over(|tables| {
         permissive_policy(
@@ -665,7 +668,7 @@ async fn the_user_a_connection_authenticated_as_reaches_authorization_and_audit(
         )
     });
     second.query("SELECT 1", &Caller::new(&bo)).ok();
-    let by_bo = second.audit_head();
+    let by_bo = audit::head(&second);
 
     assert_ne!(
         by_ana, by_bo,
@@ -682,7 +685,7 @@ async fn the_user_a_connection_authenticated_as_reaches_authorization_and_audit(
     });
     third.query("SELECT 1", &Caller::new(&ana)).ok();
     assert_eq!(
-        third.audit_head(),
+        audit::head(&third),
         by_ana,
         "the audit is not reproducible, so a difference proves nothing"
     );

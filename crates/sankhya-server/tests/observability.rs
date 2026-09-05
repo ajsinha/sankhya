@@ -33,13 +33,15 @@ mod feeds;
 mod driver;
 #[path = "../src/snapshots.rs"]
 mod snapshots;
+#[path = "../src/audit.rs"]
+mod audit;
 #[path = "../src/wiring.rs"]
 mod wiring;
 
 use arrow_schema::{DataType, Field, Schema};
 use sankhya_metrics::catalogue::{
     ALL, AUDIT_RECORDS_TOTAL, CONNECTIONS_ACTIVE, QUERIES_TOTAL, QUERY_DURATION_SECONDS,
-    ROWS_RETURNED_TOTAL, TABLE_LIVE_FILES,
+    ROWS_RETURNED_TOTAL, TABLE_LIVE_FILES_MAX,
 };
 use sankhya_publish::Publication;
 use sankhya_types::Lsn;
@@ -107,6 +109,7 @@ fn server() -> (Arc<Server>, tempfile::TempDir) {
         maintenance: None,
         require_password: false,
         user_functions: false,
+        metrics_detail: false,
         metrics_listen: None,
         transport_security: None,
     };
@@ -178,6 +181,7 @@ async fn a_refusal_is_not_counted_as_an_error() {
         maintenance: None,
         require_password: false,
         user_functions: false,
+        metrics_detail: false,
         metrics_listen: None,
         transport_security: None,
     };
@@ -366,9 +370,15 @@ async fn the_table_gauge_is_refreshed_at_the_moment_of_the_scrape() {
     // Refreshed on scrape rather than on a timer, so the number is never from a previous
     // era. A gauge on a slow timer is wrong for as long as the timer is slow, and nothing
     // about the reading says so.
+    //
+    // Read through the **unlabelled** gauge. This test used to assert that
+    // `sankhya_table_live_files{table="public.example"}` appeared in the response --- so the
+    // test required the leak `SEC-08` names, and would have failed on a server that closed it.
+    // The per-table breakdown is now behind `server.metrics_detail`; what is always exported is
+    // the largest count across tables, which is the figure an alert fires on and names nothing.
     let (server, warehouse) = server();
     assert_eq!(
-        server.metrics().value(&TABLE_LIVE_FILES, &[("table", "public.example")]),
+        server.metrics().value(&TABLE_LIVE_FILES_MAX, &[]),
         None,
         "nothing has scraped yet"
     );
@@ -376,7 +386,7 @@ async fn the_table_gauge_is_refreshed_at_the_moment_of_the_scrape() {
     let (address, _stop) = endpoint(Arc::clone(&server)).await;
     let response = get(address, "/metrics").await;
     assert!(
-        response.contains("sankhya_table_live_files{table=\"public.example\"} 1"),
+        response.contains("sankhya_table_live_files_max 1"),
         "{response}"
     );
 
@@ -391,8 +401,30 @@ async fn the_table_gauge_is_refreshed_at_the_moment_of_the_scrape() {
 
     let response = get(address, "/metrics").await;
     assert!(
-        response.contains("sankhya_table_live_files{table=\"public.example\"} 2"),
+        response.contains("sankhya_table_live_files_max 2"),
         "the second scrape sees the second file: {response}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_metrics_endpoint_names_no_table_unless_an_operator_asked_it_to() {
+    // `SEC-08`. The endpoint is unauthenticated by Prometheus's convention, and the per-table
+    // gauge's label is the table's fully-qualified name --- so the breakdown enumerated the
+    // warehouse to anybody who could reach the port. The module's own comment said no label may
+    // carry tenant data and that the catalogue enforced it structurally: a label is bounded by
+    // cardinality, not by content.
+    let (server, _warehouse) = server();
+    let (address, _stop) = endpoint(Arc::clone(&server)).await;
+    let response = get(address, "/metrics").await;
+
+    assert!(
+        !response.contains("public.example"),
+        "no table may be named on an unauthenticated endpoint by default: {response}"
+    );
+    // Not vacuous: the endpoint answered, and answered with the figure that replaces it.
+    assert!(
+        response.contains("sankhya_table_live_files_max"),
+        "and the figure an alert fires on is still exported: {response}"
     );
 }
 
@@ -583,6 +615,7 @@ async fn a_query_naming_a_forbidden_table_looks_exactly_like_one_naming_a_missin
         maintenance: None,
         require_password: false,
         user_functions: false,
+        metrics_detail: false,
         metrics_listen: None,
         transport_security: None,
     };

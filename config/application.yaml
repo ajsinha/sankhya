@@ -50,6 +50,19 @@ server:
   # closed is the honest version of it until it is. `SHOW AGGREGATIONS` answers either way.
   user_functions: false
 
+  # Whether `/metrics` may name individual tables.
+  #
+  # Off unless you turn it on, and for the same reason as the switch above: the per-table
+  # gauge's label is a table's fully-qualified name, and `/metrics` is unauthenticated by
+  # Prometheus's convention --- so the breakdown enumerates the warehouse to anybody who can
+  # reach the port.
+  #
+  # What an alert fires on is `sankhya_table_live_files_max`, which carries no label and is
+  # exported either way: what pages is that *some* table has too many files, and which one is a
+  # question `sankhya doctor` answers to somebody who has authenticated. Turn this on where the
+  # metrics interface is one clients cannot reach and you want the breakdown on a dashboard.
+  metrics_detail: false
+
   # Transport security. Both doors --- the wire protocol and Arrow Flight SQL --- present the
   # certificate configured here. One certificate rather than two: two would be two expiries,
   # two renewals, and two chances for the pair to disagree about who this server is.
