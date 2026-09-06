@@ -22,9 +22,16 @@
 //! # What is here and what is not
 //!
 //! Multiplication, transpose, trace, identity; and determinant, inverse and solve via LU
-//! with partial pivoting. **Not** QR, SVD or eigendecomposition: those are a different
-//! discipline, they are where a specialist library genuinely earns its dependency, and
-//! doing them adequately in-house is worse than not doing them.
+//! with partial pivoting.
+//!
+//! QR, SVD and eigendecomposition are in [`crate::decompose`], not here --- and this comment
+//! said they did not exist at all until `FEA-05` was raised against it. They are a different
+//! discipline and they live in a different module for that reason; what was wrong was the
+//! word "not".
+//!
+//! The split matters for a second reason. Everything in *this* module that reduces goes
+//! through [`crate::deterministic_sum`]; nothing in `decompose` does. Both are reproducible
+//! run to run, and only these are compensated.
 
 use crate::vector::{dot, VectorError};
 use std::fmt;

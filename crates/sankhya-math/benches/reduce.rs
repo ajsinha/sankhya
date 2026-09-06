@@ -63,6 +63,40 @@ fn cancelling(n: usize) -> Vec<f64> {
         .collect()
 }
 
+/// What determinism costs against a sum that does not promise it.
+///
+/// # Why the absolute price and not only the ratio
+///
+/// `PERF-07`. The documentation stated that the fixed-point reduction is faster **than this
+/// project's own previous code**, and said nothing else --- so a reader came away believing
+/// the kernels had got fast. They had got *faster than they were*. Against an ordinary
+/// `iter().sum()` the guarantee is expensive, and that exchange is defensible only if the price
+/// is on the page beside it: `exact_sum` accumulates into an `i128`, which **cannot be
+/// autovectorised**, and walks the values more than once.
+///
+/// The naive arm is `iter().sum::<f64>()` --- the thing a reader would have written, and the
+/// thing every other engine does. It is not order-independent and that is exactly the point:
+/// this measures what order-independence costs, not which implementation is better.
+fn what_the_guarantee_costs(c: &mut Criterion) {
+    let mut group = c.benchmark_group("determinism-price");
+    for n in [8usize, 64, 512, 4096] {
+        let values = scaled(n);
+        // The fast route, so the comparison is against the path a well-behaved input takes
+        // rather than against the fallback.
+        assert!(
+            exact_sum(&values).is_some(),
+            "the priced arm must take the fixed-point route"
+        );
+        group.bench_with_input(BenchmarkId::new("ordinary-sum", n), &n, |b, _| {
+            b.iter(|| black_box(black_box(&values).iter().sum::<f64>()));
+        });
+        group.bench_with_input(BenchmarkId::new("deterministic", n), &n, |b, _| {
+            b.iter(|| black_box(deterministic_sum(black_box(&values))));
+        });
+    }
+    group.finish();
+}
+
 fn the_two_routes(c: &mut Criterion) {
     let mut group = c.benchmark_group("deterministic-sum");
     for n in [64usize, 512, 4096] {
@@ -88,5 +122,5 @@ fn the_two_routes(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, the_two_routes);
+criterion_group!(benches, the_two_routes, what_the_guarantee_costs);
 criterion_main!(benches);

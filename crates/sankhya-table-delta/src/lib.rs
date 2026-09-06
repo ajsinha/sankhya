@@ -52,6 +52,7 @@ pub use log::{
     partition_values_from,
     read_actions, read_actions_after,
     Action, AddFile, CommitError, Format, LiveSet, Metadata, RemoveFile, Replay, Version,
+    SUPPORTED_READER_VERSION,
 };
 pub use schema::{schema_from_string, schema_string, UnsupportedType, FIXED_LENGTH_KEY};
 pub use stats::{decode_bound, encode_bound, from_column_stats, to_column_stats, FileStatistics};

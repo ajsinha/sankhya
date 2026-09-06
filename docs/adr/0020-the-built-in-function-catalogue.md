@@ -180,6 +180,38 @@ number on it.*
 `cargo bench -p sankhya-math`, on an AMD Ryzen AI 9 HX 370 (24 threads, 62 GiB) under rustc
 1.97.1, thin LTO, one codegen unit. Criterion medians of a hundred samples.*
 
+### What the guarantee costs against a sum that does not make it
+
+`PERF-07`. Everything above is a ratio against **this project's own previous code**, and that
+is the only kind of figure this decision published — so a reader came away believing the kernels
+had become fast. They had become faster than they were. Against an ordinary `iter().sum()`, the
+thing a reader would have written and the thing every other engine does:
+
+| Values | `iter().sum()` | `deterministic_sum` | Price |
+|---|---|---|---|
+| 8 | 1.30 ns | 74.1 ns | **57×** |
+| 64 | 14.5 ns | 508 ns | **35×** |
+| 512 | 552 ns | 5.89 µs | **10.7×** |
+| 4,096 | 4.45 µs | 54.4 µs | **12.2×** |
+
+*Measured by `crates/sankhya-math/benches/reduce.rs`, `cargo bench -p sankhya-math`, on an AMD
+Ryzen AI 9 HX 370 under rustc 1.97.1, thin LTO, one codegen unit. Criterion medians of a hundred
+samples. The naive arm is not order-independent, and that is the point: this prices
+order-independence, not one implementation against another.*
+
+**The narrow case is the expensive one, and narrow is the common one here** — a window of
+readings, a term structure, a short curve. `exact_sum` accumulates into an `i128`, which cannot
+be autovectorised, and walks the values more than once; at eight values the fixed overhead is
+the whole cost.
+
+The trade is defensible: an analytical warehouse whose totals move when the machine is busier
+is not one anybody can reconcile against, and `1e16, 1, -1e16, 1` sums to 18 here and to 0 or 2
+elsewhere depending on the order the rows arrived in. But it is defensible **only with the price
+on the page beside it**, which is what this section is for. An independent audit reconstructing
+this measured 32× at width 8 and 6× at 4,096; the figures above are from a different machine and
+a different build, and are *worse* at both ends. They are published as measured rather than
+reconciled to the friendlier number.
+
 **And the ratio is a cost-of-route comparison, not a speedup on one input.** The fallback runs
 only where the fixed-point route **declines**, so timing it on data the fast route would have
 taken measures a branch nobody reaches. The two arms therefore sum different numbers by

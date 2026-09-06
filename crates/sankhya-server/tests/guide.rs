@@ -81,13 +81,7 @@ const NOT_RUN: &[(&str, &str)] = &[
 /// a stale instruction from a current one --- so an untested one rots in the worst possible
 /// place. Adding a tutorial to `docs/tutorials/` and not to this list is caught by
 /// [`every_tutorial_is_executed`], which fails on a file nothing runs.
-const DOCUMENTS: &[&str] = &[
-    "../../docs/GUIDE.md",
-    "../../docs/tutorials/01-your-first-cube.md",
-    "../../docs/tutorials/02-making-a-cube-fast.md",
-    "../../docs/tutorials/03-completeness-and-policy.md",
-    "../../docs/tutorials/04-when-a-cube-refuses.md",
-];
+const DOCUMENTS: &[&str] = &["../../docs/GUIDE.md", "../../docs/TUTORIALS.md"];
 
 /// The fenced `sql` blocks of every document in [`DOCUMENTS`], in order.
 fn sql_blocks() -> Vec<String> {
@@ -149,34 +143,25 @@ fn statements(block: &str) -> (Vec<String>, bool) {
 }
 
 #[test]
-fn every_tutorial_is_executed() {
-    // A tutorial that is written and never run is worse than one that does not exist: a
-    // reader following it step by step has no way to tell a stale instruction from a current
-    // one. This asserts the accounting the other direction --- every file present on disk is
-    // named in `DOCUMENTS`, so a new tutorial cannot be added and quietly left unverified.
-    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/tutorials")
-        .canonicalize()
-        .expect("the tutorials directory exists");
-
-    let mut on_disk: Vec<String> = std::fs::read_dir(&directory)
-        .expect("reading the tutorials")
-        .flatten()
-        .filter_map(|entry| entry.file_name().to_str().map(ToString::to_string))
-        .filter(|name| name.ends_with(".md") && name != "README.md")
-        .collect();
-    on_disk.sort();
-
-    let mut listed: Vec<String> = DOCUMENTS
-        .iter()
-        .filter(|relative| relative.contains("/tutorials/"))
-        .filter_map(|relative| relative.rsplit('/').next().map(ToString::to_string))
-        .collect();
-    listed.sort();
-
-    assert_eq!(
-        on_disk, listed,
-        "a tutorial exists that no test runs, or is listed and missing"
+fn every_document_this_test_runs_actually_exists() {
+    // The accounting, the other direction. It used to read `docs/tutorials/` and require every
+    // file in it to be named in `DOCUMENTS`, so a tutorial could not be added and quietly left
+    // unverified. The four tutorials are now one document --- `docs/TUTORIALS.md` --- and a
+    // directory-listing assertion has nothing left to list.
+    //
+    // What it was protecting is still worth protecting: a document named here that is not on
+    // disk makes `blocks_of` yield nothing, and a test that runs zero statements passes. That
+    // is the failure `CLM-16` is: a check that reports green by measuring nothing.
+    for relative in DOCUMENTS {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+        assert!(
+            path.is_file(),
+            "{relative} is named here and is not on disk, so its statements are silently not run"
+        );
+    }
+    assert!(
+        !sql_blocks().is_empty(),
+        "the documents named here contain no SQL, so this test would pass by running nothing"
     );
 }
 

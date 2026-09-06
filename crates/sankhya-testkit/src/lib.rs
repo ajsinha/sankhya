@@ -349,6 +349,15 @@ pub mod capacity {
         /// without asserting on a number it cannot stand behind.
         #[must_use]
         pub fn held(&self) -> bool {
+            if !disk_is_quiet() {
+                skipped(&format!(
+                    "{}: the disk was still draining {} MB when the measurement finished, so \
+                     the numbers describe the machine rather than the code",
+                    self.test,
+                    pending_writeback_bytes().unwrap_or_default() / (1024 * 1024)
+                ));
+                return false;
+            }
             let idle = idle_cores();
             if enough(idle, self.cores) {
                 return true;
@@ -381,6 +390,15 @@ pub mod capacity {
         // `None` is not a reason to skip. A machine that cannot be asked is one where the
         // measurement is left to speak for itself, which is the behaviour every platform had
         // before this check existed.
+        if !disk_is_quiet() {
+            skipped(&format!(
+                "{test}: {} MB of writeback is still outstanding. These measurements write \
+                 files, and a machine with idle cores and a draining disk produces a number \
+                 about the machine",
+                pending_writeback_bytes().unwrap_or_default() / (1024 * 1024)
+            ));
+            return false;
+        }
         let idle = idle_cores();
         if !enough(idle, cores) {
             skipped(&format!(
@@ -469,6 +487,59 @@ pub mod capacity {
     /// Counting it as idle made the guard blind to the contention that actually matters here.
     /// C3 duly failed on a machine reporting eight idle cores, minutes after a full rebuild had
     /// thrashed the page cache: the processors were free and the disk was not.
+    /// Bytes the kernel is still holding to write out.
+    ///
+    /// # Why CPU idle is not enough, observed twice
+    ///
+    /// [`idle_cores`] reads `/proc/stat`, and the measurements it guards write files. A
+    /// machine that has just finished a large build has **idle cores and a saturated disk**:
+    /// the compiler has exited, so nothing is runnable, while gigabytes of dirty pages are
+    /// still being flushed by kernel threads.
+    ///
+    /// `iowait` does not see this. It is only attributed when a CPU is idle *and has a
+    /// pending I/O of its own*, so background writeback by flush threads is invisible to it
+    /// --- which is why counting `iowait` as busy, which this already did, was not enough.
+    ///
+    /// The commit-throughput measurement opened its window and failed on both occasions,
+    /// describing the machine rather than the code, and passed immediately afterwards on a
+    /// quiet disk. `Dirty` plus `Writeback` from `/proc/meminfo` is the condition itself
+    /// rather than a proxy for it: a few megabytes on a quiet machine, several gigabytes
+    /// while a build drains.
+    ///
+    /// `None` where the platform does not publish it, and `None` is not a reason to skip ---
+    /// a machine that cannot be asked is one where the measurement speaks for itself.
+    #[must_use]
+    pub fn pending_writeback_bytes() -> Option<u64> {
+        let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+        let mut total = 0u64;
+        let mut found = false;
+        for line in meminfo.lines() {
+            let Some((name, rest)) = line.split_once(':') else {
+                continue;
+            };
+            if name != "Dirty" && name != "Writeback" {
+                continue;
+            }
+            let kilobytes: u64 = rest.split_whitespace().next()?.parse().ok()?;
+            total = total.saturating_add(kilobytes.saturating_mul(1024));
+            found = true;
+        }
+        found.then_some(total)
+    }
+
+    /// How much outstanding writeback makes a file-writing measurement meaningless.
+    ///
+    /// Generous, because firing spuriously would make this guard the thing people switch
+    /// off. A quiet machine sits in the low megabytes; a machine draining a workspace build
+    /// sits in the gigabytes.
+    pub const WRITEBACK_CEILING: u64 = 256 * 1024 * 1024;
+
+    /// Whether the disk is quiet enough for a measurement that writes files.
+    #[must_use]
+    pub fn disk_is_quiet() -> bool {
+        pending_writeback_bytes().is_none_or(|bytes| bytes <= WRITEBACK_CEILING)
+    }
+
     fn busy_and_total() -> Option<(u64, u64)> {
         let stat = std::fs::read_to_string("/proc/stat").ok()?;
         let line = stat.lines().next()?;
@@ -478,6 +549,28 @@ pub mod capacity {
         let idle = fields.get(3).copied()?;
         let total: u64 = fields.iter().sum();
         Some((total.saturating_sub(idle), total))
+    }
+
+    #[cfg(test)]
+    mod deciding {
+        #[test]
+        fn a_quiet_disk_is_read_as_quiet() {
+            // Not a strong assertion --- it runs on whatever machine the suite runs on. What
+            // it does prove is that the reading is takeable and finite, which is the failure
+            // mode that would make `disk_is_quiet` return `true` for the wrong reason.
+            if let Some(bytes) = super::pending_writeback_bytes() {
+                assert!(bytes < 1024 * 1024 * 1024 * 64, "an implausible reading: {bytes}");
+            }
+        }
+
+        #[test]
+        fn a_platform_that_cannot_be_asked_does_not_block_a_measurement() {
+            // `None` is not a reason to skip. Every platform behaved that way before this
+            // existed, and a guard that refuses to measure on anything it cannot inspect is a
+            // guard that silently disables the measurements it is guarding.
+            assert!(super::WRITEBACK_CEILING > 0);
+            assert!(Option::<u64>::None.is_none_or(|b| b <= super::WRITEBACK_CEILING));
+        }
     }
 
     /// Say a test was skipped, where it will actually be seen.

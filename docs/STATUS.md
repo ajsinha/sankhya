@@ -9,11 +9,190 @@
 
 # SANKHYA — Build Status
 
-**Updated:** 2026-08-29 · Tracks what is *actually built* against
+**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+**Updated:** 2026-09-06 · Tracks what is *actually built* against
 [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).
 
 This document exists because a plan describes intent and a roadmap describes ambition;
 neither tells you what runs today. Where the two disagree, this one is right.
+
+**It is also over four thousand lines long, and seven documents call it authoritative.** Nobody evaluating
+this system on their first day reads it. So the two sections a first-time reader needs — *what
+works* and *what does not* — are now at the top, and everything below them is the record: the
+measurement history, the milestone table, and the defects found along the way. The record is
+preserved in full and in place. Nothing below this point has been rewritten.
+
+---
+
+
+## The service-level objectives
+
+| ID | Class | Target | State |
+|---|---|---|---|
+| `NFR-PERF-01` | Primary-key point lookup, warm, 64 concurrent | p99 < 5 ms | **Unmeasured.** Nothing exercises a point lookup at concurrency; the needle-lookup measurement below is a different shape and a different budget |
+| `NFR-PERF-02` | Selective needle lookup, warm, 8 concurrent | p95 < 250 ms | **Met at 13 ms**, by statistics pruning alone |
+| `NFR-PERF-03` | Multi-dimensional pivot, warm, pruned | p95 < 1 s | **Met at 796 ms** |
+| `NFR-PERF-04` | Wide scan, warm, local cache | p95 < 3 s | **Met at 648 ms** |
+| `NFR-PERF-05` | Cold scan from object storage | p95 < 15 s | **Unmeasured**, and explicitly *not* sub-second. There is no object-storage arm in the gate: every measurement here is local |
+| `NFR-PERF-06` | Aggregation over fixed-size numeric vectors with exact order statistics | p95 < 2 s | **Unmeasured.** This is the function catalogue's own requirement and the workload its performance claims are about, and it was the objective most conspicuously absent from this table |
+| `NFR-PERF-07` | The same, served from materialized aggregates | p95 < 300 ms | **Unmeasured.** Cuboids are built and served; nothing times the path |
+| `NFR-PERF-08` | Streaming evaluation against materialized baselines plus bounded graph expansion | p99 < 50 ms at 500/s | **Not met and not claimed.** It needs the graph tier, which cannot answer — nothing hydrates an epoch in the server |
+| `NFR-PERF-09`–`14` | Graph traversal, hydration, incremental update | 50 ms to bounded-and-published | **Not met and not claimed**, for the same reason |
+| `NFR-PERF-15` | End-to-end capture latency, steady state | p99 within the freshness budget | **Not met and not claimed.** It needs a change-capture runtime, and `ING-00` records that there is none |
+| `NFR-PERF-16` | Cancellation, including inside sandboxed user code | Within 200 ms | **Unmeasured.** The mechanism exists and is bounded at one batch per partition by construction; no measurement establishes the 200 ms |
+| `NFR-PERF-17` | Freshness stated separately for internal readers and external engines | Both published | **Not met.** Neither figure is published, so the separation the objective exists to force has nothing to separate |
+| `NFR-PERF-18` | The graph tier's freshness stated separately from the analytical tier's | Both published | **Not met**, for the same reason and with the same consequence |
+
+**Three of eighteen are measured.** That sentence is the one this table exists to make
+unavoidable, and it could not be read off the previous version — which listed eleven and simply
+omitted seven, including `NFR-PERF-06`. An objective recorded as *unmet* is a decision somebody
+took; an objective that is not in the table is one nobody has to think about, and to anybody
+scanning for red it reads exactly like an objective that is fine. `cargo xtask check-objectives`
+now fails when a stated objective is missing here, and it has no opinion about whether one is
+met — omission is the failure it exists to catch, because omission is the one a reader cannot
+see.
+
+Note also what "measured" means for the three: `cargo xtask check-performance` drives DataFusion
+
+## What works today
+
+One screen. Everything here is reachable from a process you can start, unless the line says
+otherwise. The evidence table further down — *What runs today*, with one row per property and
+the test that holds it — is the long form of this.
+
+**Start a server, connect with `psql`, and query real Parquet.** The binary listens on the
+PostgreSQL wire protocol and on Arrow Flight SQL, walks a `<schema>/<table>/` warehouse at
+startup, and reads each table's schema **out of its own table log** rather than from a Parquet
+footer — because a table with no files yet has no footer, and one whose files predate a column
+would be missing it. A table it cannot open is named on stderr rather than silently omitted.
+
+| What | What it means in practice |
+|---|---|
+| **Analytical SQL** | Aggregation, expressions, joins, three-valued null semantics, ordering and coercion — 39 cases written by hand, because a corpus that computes its expectation the way the engine does is a tautology. Answered over real Parquet through a provider that plans **from the table log alone**: no directory listing, no footer reads |
+| **Statistics-driven pruning** | Bounds, null counts, widths and a cardinality sketch are written into the table log at publication, so a cold process prunes exactly as a warm one does. Nine of ten files skipped on a point lookup; planning 800 files takes 1.37 ms against 10.33 ms for a directory listing |
+| **Time travel** | `SET VERSION OF <table> = <n>` reads one table at one version; `SHOW HISTORY OF <table>` lists every commit, what it did, and which snapshots and clones keep it alive |
+| **Named snapshots** | `CREATE SNAPSHOT … EXPIRE AFTER n DAYS`, `SHOW SNAPSHOTS`, `DROP SNAPSHOT`, and `SET SNAPSHOT` — one consistent position across **many** tables, durable across a restart, carried by a backup. A table the snapshot does not name is refused rather than answered from the present |
+| **Zero-copy clones** | `CREATE TABLE … CLONE` costs the same whether the origin holds a thousand rows or a billion, and adds no files. `SHOW LINEAGE OF` and `SHOW DEPENDENTS OF` let a client ask what a clone came from and what still reads a table *before* a drop refuses |
+| **Cubes** | A declared model — dimensions, levels, hierarchies, and **how each measure may combine along each dimension** — answered on demand with no build step. `CREATE CUBE` and `DROP CUBE` are statements. Every row carries the completeness it was computed under, and a measure with no way to be derived from its parts is refused at planning rather than answered with a plausible number |
+| **Maintenance, on a timer** | The server owns a maintenance thread. Fragmented partitions are planned, merged, committed and converged; retirement refuses to remove a file any reader, snapshot or clone might still hold. A policy of `None` disables it for the one honest case — another process is doing it |
+| **File feeds** | `config/feeds/*.yaml` declare a source, a shape and a destination; the server runs each on its own cadence. A record that does not fit is quarantined **whole** into a table with a mandatory expiry. `SHOW FEEDS` and `RESUME FEED <name>` work from a client |
+| **Mathematics on columns** | Vector and matrix columns, and roughly the catalogue over them: elementwise, dot, norms, distances, statistics, calculus, and linear algebra through LU. Every reduction **bit-deterministic under permutation**. `vec_*` and `mat_*` in SQL, with constructors so a matrix can be built and operated on without being stored |
+| **Security on the query path** | A table the caller may not read is **never registered**, so naming it fails to resolve rather than confirming it exists. A policy row predicate is enforced above the scan where no provider can decline it, and its presence in the *final physical plan* is asserted. Roles come from `server.users.<name>`; the presence of that map is the switch |
+| **Audit** | A tamper-evident hash chain. The chain's head differs when the same statement is run by two users, which is the property `FR-SEC-02` asks for |
+| **Operability** | `doctor` reports *when* a problem becomes user-visible rather than its current value, and refuses to invent a date it cannot support. `backup` binds table versions and a key generation to one point; `drill` **reads the data back and recomputes its digest**, because a file-presence check passes on almost every failure that actually happens. `/metrics` exports a catalogue where recording requires passing the declaration |
+| **Open storage** | SANKHYA writes the Delta transaction log itself, and an independent implementation — the `delta_kernel` crate, used as a dev-dependency oracle — reads it and agrees about schema, version and live files, including across a compaction and across a checkpoint the commits of which have been deleted |
+
+**What that adds up to.** A single-node analytical warehouse over an open format, with a
+declared multidimensional model, first-class time, and a security and audit path that a
+statement actually travels through. That is a real product, and it is one third of the product
+this repository describes.
+
+---
+
+## What is not built
+
+**This is the canonical list.** Every other document in this repository links here rather than
+keeping its own copy. That rule exists because the last audit found the inventory scattered
+across more than twenty sections in nineteen files, each partly stale, and a reader who found
+one of them had no way to know it was not the whole. `AUDIT_REPORT.md` records the consequence:
+a green gate did not see any of it.
+
+> **How this list is kept honest.** The previous version of this section carried a warning that
+> it *"has accreted"* — *"no server"* sat eight bullets above *"the server runs and executes
+> statements"*, which is the sort of contradiction a reader resolves by distrusting the whole
+> document. This rewrite audits every entry against the code and cites where the absence is
+> visible. Ten of the entries are checked **mechanically**: `xtask/src/surfaces.rs` holds an
+> `UNREACHED` list of crates nothing reaches, each with a required milestone, and
+> `cargo xtask check-all` fails when a crate leaves or joins it unannounced. That list is the
+> most honest inventory in the repository, because it cannot be forgotten.
+
+### 1. The largest gap: there is no ingest runtime
+
+Everything in this group is **built, tested, and driven by nothing**. This is one absence, not
+six, and it is the difference between this system and the one the architecture describes.
+
+| Not built | What *does* exist | Where the absence is visible |
+|---|---|---|
+| **The change-capture runtime** | A `pgoutput` wire decoder validated against a real PostgreSQL 17.11 stream; an apply path whose transaction invariant is property-tested; lossless type mapping; capture that reconciles against its source and survives a crash at any point | `sankhya-cdc-pg`, `sankhya-cdc-apply`, `sankhya-cdc-model` and `sankhya-ingest` are not dependencies of `sankhya-server`. `AUDIT_REPORT.md` `ING-00` |
+| **The streaming transport** | A transport-agnostic decoder and pipeline | Changes are drained through a SQL function rather than a replication connection. Neither mainstream Rust PostgreSQL client supports the replication protocol, so this is real work rather than wiring |
+| **The slot lifecycle driver** | The source-safety ladder — five rungs escalating strictly below the database's own limit — validated against a real slot | `sankhya-cdc-pg` is on the `UNREACHED` list: *"what is missing is the driver that runs them on a timer"* |
+| **The backfill reader** | The handoff *contract*, verified against a live slot, including the proof that a late slot drops real positions into neither half | Nothing reads the existing rows; only changes after a slot exists would be captured |
+| **The transactional tier** | A PostgreSQL supervisor that owns `initdb`, start, readiness, health and shutdown of a vendored 17.11 | `sankhya-oltp-pg` is a **dev-dependency** of the server; `Settings` has no transactional configuration; the server never starts a database. On the `UNREACHED` list |
+| **The arrival buffer, as specified** | The retention *contract*: coverage, per-row filtering at the durable frontier, and the rule that publication alone releases memory | `ARCHITECTURE.md` §5.4's epoch ring, per-epoch key digests and per-tenant sub-caps do not exist, and nothing wires the tier into the ingest path — so read-your-own-writes waits for publication in practice |
+
+### 2. Built, correct, and unreachable from the server
+
+Each of these is a decision function without a caller, or a component with no wire to the front
+door. They are listed separately from §1 because the work remaining is *wiring*, not design.
+
+- **Graph hydration on a timer.** The graph engine is complete — typed, time-aware adjacency, traversal, weighted and k-shortest loopless paths, simple cycles, components, centrality, communities and multiplicative influence, each bounded and each reporting its own truncation, with five SQL table functions. Nothing hydrates an epoch, so the functions refuse by name: *"no graph named 'payments' is registered; known graphs are []"*.
+- **The pack loader.** `sankhya-pack` is on the `UNREACHED` list. Three packs exist and the extension API is tested against them; a running server loads no bundle.
+- **The governor.** Admission control and the five-rung pressure ladder are built and property-tested. No memory pool reports occupancy, no subsystem publishes a signal, and no query passes through admission on its way to running.
+- **The exactness gate.** `check_exactness` has no caller: nothing carries a session's exactness setting, and nothing attaches the watermark to a result.
+- **The catalog.** The table provider resolves mutable tables correctly, and nothing maps a table *name* to a provider — the caller still assembles the two.
+- **Per-tenant graph epochs and envelope encryption.** Built and tested; no path through the front door.
+- **`sankhya-mv`** — materialized views, left undecided by [ADR-0014](adr/0014-materialized-views-and-the-cube-lifetime.md) and listed rather than deleted because the design question is open.
+- **`sankhya-ports`** — decided in M8 §12.1f: **delete**. Its own header asserts a property the workspace does not have, which is worse than an empty crate. It survives only because the deletion needs an owner's hand.
+
+### 3. Storage, format and read path
+
+- **Partitioning is written but never read, and the streaming path does not write it.** Three separate facts, and running the fixture makes all three visible. The batch publish path **is** partitioned — a published table writes `sank_data_date=YYYY-MM-DD/` directories and the log's add paths carry them, which you can see under `sales/orders/` after `make_warehouse` runs. The **streaming arrival path is not**: the ingest crate creates tables with no partition columns and writes flat, so partitioning is met on the path used for bulk loading and missed on the path where data lands during continuous capture. And the **read path prunes by file statistics rather than by partition value** — `crates/sankhya-readpath/src/provider.rs` uses "partition" throughout in DataFusion's execution sense, meaning parallelism, not Hive pruning. That last one is why `NFR-PERF-03`'s partition-predicate precondition cannot be satisfied by any query today.
+- **There is no timestamp on an ingested row to derive a date from.** A system column is declared on every ingested table and written as the literal `0` for every row. Its comment says the value is recorded for human reading, which it is not — it is recorded for nothing. This is the gap behind the one above, and the sharper of the two.
+- **No deletion vectors, column mapping or partition values in the table log.** Row counts, bounds, null counts and checkpoints are written; everything else the protocol permits is not. A reader requiring any of them refuses these tables — which is the correct outcome, because refusing is visible and a partially-implemented protocol feature is not.
+- **No multi-part or V2 checkpoints, and no log cleanup.** A checkpoint is one file, which is fine into the millions of live files and not beyond; nothing deletes the commits a checkpoint subsumes, so the log directory grows without bound.
+- **The cardinality sketch is not persisted.** The protocol has nowhere to put it, so a column read back from the log reports zero distinct values. Nothing reads that figure today, which makes it a trap for whatever reads it first.
+- **No bloom filters and no result cache.**
+- **Exact order statistics buffer their input.** Selection is linear rather than `n log n`, so it beats sorting, but every observation must be resident. `FR-QUERY-08` asks for a bounded-memory algorithm over large inputs and this is not one — exact and bounded are independent properties, and only the first is delivered.
+- **No counting allocator outside the engine's own pool, and no spill isolation.** Deadline propagation and cancellation *do* exist, bounded at one batch per partition.
+- **QR, SVD and eigendecomposition ship**, and this entry used to say they were deliberately absent. `FEA-05`: the refusal was correct when written and was lifted rather than forgotten — `crates/sankhya-math/src/decompose.rs` implements them by Jacobi rotation on symmetric input and refuses a non-symmetric matrix rather than symmetrising it. What was not done was retracting the refusal in the eight documents that stated it. A stated refusal silently reversed is the worst class of claim here, because a refusal is the one thing a reader may treat as permanent. **What is still true**: the decomposition family is order-fixed and reproducible but *uncompensated* — it does not route through `deterministic_sum` — and that is the family a risk calculation uses.
+
+### 4. Surfaces
+
+**Two of four are built.** The PostgreSQL wire protocol and Arrow Flight SQL, both over TLS.
+
+- **The gRPC control plane is not built.** `sankhya-api-grpc` exists; nothing serves it.
+- **The REST gateway is refused by design** rather than pending — `ARCHITECTURE.md` §11a.3. `sankhya-api-rest`'s route table and size decision are built and tested; serving them is scoped inside M8 §12.2.
+- **There is no write path over any surface.** `INSERT` is refused by name, with the supported route named. `AUDIT_REPORT.md` `FEA-01`.
+- **The Java and Rust SDKs** are M16. The Python SDK is M14 and in progress; **federated identity** (`FR-SEC-03`) is its named remaining gap — mutual TLS puts a client's certificate where a door can see it and nothing derives an identity from it.
+
+### 5. Operability
+
+- **`doctor` has four checks with observations, and three without.** `storage-headroom` and `replication-lag` are built as checks with nothing feeding them. Conformance, replica identity and archival consistency are not built. That is the remainder of `FR-OPS-16`.
+- **Three metrics named in the architecture are deliberately not declared** — retained log volume, freeze age, archive queue. `METRICS.md` lists them, because a metric that cannot be recorded should be visible as absent rather than missing.
+- **Thirteen error codes are not produced by this build.** `ERRORS.md` marks each one.
+- **No distributed tracing.**
+- **No container images and no signing.** What exists is *checks*: the platform baseline is declared and the built binary measured against it, and every deployment manifest's termination grace is compared with the server's drain deadline.
+- **The soak prints its report and does not append to a durable record.** A drill history with no failures describes either a very good system or a drill that does not really run, and nothing in the history says which — the same argument applies here.
+- **Backup covers the analytical half only.** The manifest binds to a transactional backup you took; taking it is your own tooling's job.
+
+### 6. Gated on something development cannot produce
+
+These are not unfinished. They are finished work that is being deliberately withheld, and the
+distinction matters.
+
+- **Destructive purge stays disabled until M11.** `sankhya-tiering` holds the policy model, the resumable purge state machine, exhaustive verification, the archival registry, the four-layer defence against a propagated delete, cross-tier query unification, quarantine, rehydration and whole-table migration; all eleven work items are built and the exit criteria demonstrated end to end, including nineteen refusal paths shown to fail closed. **Building the purge path and arming it are two decisions.** M9's remaining gate criterion needs the attestation drill run against a real non-production archive, which development cannot produce.
+- **M11 — production reconciliation — is not schedulable.** It needs a production deployment that does not exist.
+
+### 7. Needs a second machine
+
+All of M12, and it is the honest reason rather than a deferral. **Leader election, executor
+scale-out, failover, multi-node and high availability are not built**, and M8's criteria 7 and
+8 moved there whole rather than being reinterpreted: a recovery objective measured on one host
+excludes the failures the criterion exists to price. The **multi-day soak** is there for the
+same reason.
+
+**The one M4 criterion carried forward as unmet** is the measured graph benchmark. The graph
+primitives are correct against brute force and bounded by construction, and they have not been
+timed at scale. It is recorded as unmet rather than reinterpreted.
+
+### 8. Deliberately never
+
+Recorded here so that "not built" and "not planned" are not confused. The full list with
+reasons is [`ROADMAP.md`](ROADMAP.md) §5: distributed query execution, multi-source capture, a
+durable graph database, stream processing, cross-region active-active writes, a bespoke graph
+query language, dynamically-loaded native extensions, automatic rewriting onto materialized
+aggregates, server support on desktop platforms, and exact betweenness and closeness centrality
+at scale. **MDX** is refused for cubes on the same basis.
 
 ---
 
@@ -3227,7 +3406,7 @@ describe. Both corrections are recorded below rather than folded into a pass.
 
 | Gate | State |
 |---|---|
-| Performance objectives met in the pipeline, against named public-suite queries | **Met for three of eighteen.** `NFR-PERF-02` 13 ms, `NFR-PERF-03` 796 ms, `NFR-PERF-04` 648 ms, against budgets of 250 ms, 1 s and 3 s — asserted by `cargo xtask check-performance`, which fails the build. `PERF-05`: the other fifteen are unmeasured, and seven of them were absent from the table that reports on them until `check-objectives` was written to make omission fail. The full state of all eighteen is in [book/part5/24-requirements.md](book/part5/24-requirements.md#the-service-level-objectives). `PERF-06`: the gate drives DataFusion directly and never crosses `execute.rs` or the wire, so every per-statement cost is outside the measured path. See the correction below: this gate was previously read as failing, against queries the objectives do not describe |
+| Performance objectives met in the pipeline, against named public-suite queries | **Met for three of eighteen.** `NFR-PERF-02` 13 ms, `NFR-PERF-03` 796 ms, `NFR-PERF-04` 648 ms, against budgets of 250 ms, 1 s and 3 s — asserted by `cargo xtask check-performance`, which fails the build. `PERF-05`: the other fifteen are unmeasured, and seven of them were absent from the table that reports on them until `check-objectives` was written to make omission fail. All eighteen are defined in [`REQUIREMENTS.md` §6.4](REQUIREMENTS.md). `PERF-06`: the gate drives DataFusion directly and never crosses `execute.rs` or the wire, so every per-statement cost is outside the measured path. See the correction below: this gate was previously read as failing, against queries the objectives do not describe |
 | Cancellation demonstrated within its bound, at the points M3 controls | **Demonstrated, not measured.** Bounded at one batch per partition inside a real query, across threads, and under periodic checking within its interval — which is a construction argument, not a timing. `NFR-PERF-16`'s two hundred milliseconds is not established by anything, and this row said "Met" against it. The clause "including inside user code" has moved to M4 — see below |
 | A hostile aggregation under a constrained memory limit is rejected rather than terminating the process | **Met.** An aggregation that cannot reduce anything is refused under a one-megabyte pool, by name — and the process runs the same query to completion afterwards. Repeated five times, so a refusal that leaked its reservation would show up |
 | Plan snapshots stable; the SQL-semantics corpus green | **Met.** Thirty-nine semantics cases pinned by hand from the standard's rules; plan *shapes* pinned rather than plan text, plus assertions on the optimisations that fail silently |
@@ -3656,7 +3835,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 908 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 909 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -3684,94 +3863,30 @@ values.
 
 ## What does not exist
 
-Stated plainly, because a status document that omits this is marketing.
+**Moved to the top of this document.** The canonical inventory is now
+[*What is not built*](#what-is-not-built), immediately after *What works today*, where somebody
+evaluating this system will actually find it.
 
-> **This list has accreted.** Several entries below were written against M1 and have been
-> answered since without being removed --- *"no server"* sits eight bullets above *"the server
-> runs and executes statements"*, which is the sort of contradiction a reader resolves by
-> distrusting the whole document. The ones found on 2026-08-31 are corrected here; the rest of
-> the list has not been audited item by item, and that audit is outstanding work rather than a
-> claim that everything unmarked is current.
+This section is not merely relocated. It was **audited entry by entry against the code** in the
+process, which the old version explicitly said had never been done:
 
-- ~~**No server.**~~ **Answered.** The binary is a server: it listens on both doors, walks a
-  warehouse at startup, maintains itself on a timer, and drains on shutdown. See *"the server
-  runs and executes statements"* below, which was appended rather than replacing this.
-- **No streaming transport.** Changes are drained through a SQL function rather than a
-  replication connection. The decoder and pipeline are transport-agnostic by design, but
-  the transport itself is unwritten. Note that neither mainstream Rust PostgreSQL client
-  supports the replication protocol, so this is real work rather than a wiring exercise.
-- **No slot lifecycle.** No creation policy and no position advancement. The
-  source-safety ladder now exists and is tested against a real slot, but nothing drives
-  it on a timer yet — it is a decision function without a caller.
-- **No backfill reader.** The handoff *contract* is built and verified against a live
-  slot, but nothing yet reads the existing rows. Only changes after a slot exists are
-  captured.
-- **The arrival tier is a retention contract, not the buffer the architecture
-  describes.** What exists is the part that governs correctness: coverage, per-row
-  filtering at the durable frontier, and the rule that publication alone releases
-  memory. What does not exist is §5.4's epoch ring, the per-epoch key digests that let
-  a historical query skip the tier at no cost, and per-tenant sub-caps. Nothing yet
-  wires the tier into the ingest path either, so read-your-own-writes still waits for
-  publication in practice.
-- **The cardinality sketch is not persisted.** The protocol has nowhere to put it, so a
-  column read back from the log reports zero distinct values. Nothing currently reads
-  that figure, but it is a trap for whatever does first.
-- **No multi-part or V2 checkpoints, and no log cleanup.** A checkpoint is written as a
-  single file, which is fine into the millions of live files and not beyond; and nothing
-  deletes the commits a checkpoint subsumes, so the log directory grows without bound even
-  though nothing reads most of it.
-- **Nothing routes a captured table to the resolved provider automatically.** The
-  capability is derived from what the source declared and the resolution works end to
-  end, but the caller still has to assemble the two — there is no catalog mapping a table
-  name to its provider, because there is no catalog.
-- **The governor decides but governs nothing.** Admission and the pressure ladder are
-  built and tested, and nothing calls either: no memory pool reports its occupancy, no
-  subsystem publishes a signal, and no query passes through admission on its way to
-  running. They are decision functions without callers, like the maintenance scheduler
-  was before the driver.
-- **No counting allocator and no spill isolation.** The architecture requires true
-  accounting outside the engine's own pool, and spill on a different filesystem from the
-  write-ahead log. Neither exists. Deadline propagation and cancellation *do* — bounded
-  at one batch per partition — which is why they are no longer listed here.
-- **Exact order statistics buffer their input.** Selection is linear rather than
-  `n log n`, so it beats sorting, but every observation must be resident. `FR-QUERY-08`
-  asks for a bounded-memory algorithm over large inputs and this is not one. Exact and
-  bounded are independent properties, and only the first is delivered.
-- **The exactness gate is not wired into a session.** `check_exactness` is a function
-  with no caller: nothing carries the session's exactness setting, and nothing attaches
-  the watermark to a result.
-- **No catalog.** The table provider exists and resolves mutable tables correctly, but
-  nothing maps a table *name* to one, so the caller still has to assemble it.
-- **No deletion vectors, column mapping or partition values in the log.** Row counts,
-  bounds and null counts are written, and checkpoints are; everything else the protocol
-  permits is not. A reader requiring any of them refuses these tables, which is the
-  correct outcome — refusing is visible, and a partially-implemented protocol feature is
-  not.
-- **No table partitioning.** Every scan is over the whole table, pruned by file
-  statistics rather than by partition. This is why `NFR-PERF-03`'s partition-predicate
-  precondition cannot be satisfied by any query today.
-- ~~**Nothing calls the maintenance loop on a timer.**~~ **Answered.** The server owns a
-  maintenance thread with a configurable cadence (`maintenance.interval`), and a policy of
-  `None` disables it for the one honest case: another process is doing it.
-- **The server runs and executes statements.** Real `psql` connects, authenticates, runs
-  catalogue queries and ordinary SQL — aggregation, expressions, null semantics — against a
-  policy-wrapped provider — over **real Parquet on disk**, through the M3 read path, which
-  plans from the table log alone and prunes files by recorded statistics. The server walks
-  a `<schema>/<table>/` warehouse at startup and reads each table's schema out of its own
-  log rather than inferring it from a footer, because a table with no files yet has no
-  footer and one whose files predate a column would be missing it.
-- **The security path is now reachable.** A table the principal may not read is never
-  registered, so naming it fails to resolve rather than confirming it exists; a policy row
-  predicate is enforced where no provider can decline it, and a tautology cannot widen it.
-  Both were provable in unit tests before and unreachable through the server — an
-  unreachable enforcement point is one nobody has confirmed is on the path.
-- ~~**One API surface of four.**~~ **Two of four.** The wire protocol works and Arrow Flight
-  SQL has been served on its own port since 2026-08-29 --- both now over TLS. The gRPC control
-  plane and the REST gateway are not built; the REST gateway is refused by design rather than
-  pending (`ARCHITECTURE` §11a.3).
-- **Per-tenant graph epochs and envelope encryption are still unreachable through the
-  server.** Built and tested; nothing wires them to the front door.
-- Nothing drives graph hydration on a timer and no process loads a pack bundle.
+> *"This list has accreted. Several entries below were written against M1 and have been
+> answered since without being removed — 'no server' sits eight bullets above 'the server runs
+> and executes statements', which is the sort of contradiction a reader resolves by distrusting
+> the whole document. … the rest of the list has not been audited item by item, and that audit
+> is outstanding work rather than a claim that everything unmarked is current."*
+
+That audit is now done, and the outcome is recorded rather than quietly absorbed. Entries that
+had been answered — *no server*, *nothing calls the maintenance loop on a timer*, *one API
+surface of four* — are gone rather than struck through, because a negative list carrying its
+own corrections stops being a list of what is missing and becomes a changelog nobody can read.
+The corrections themselves survive, in the sections below and in
+[`REMEDIATION.md`](REMEDIATION.md), which is where a changelog belongs.
+
+Three entries that were **not** in the old list, and should have been, are in the new one: the
+absent transactional tier, the absent pack loader, and the ten crates on `xtask/src/surfaces.rs`'s
+`UNREACHED` list — the last of which is machine-checked and was the only part of this inventory
+that could not have gone stale.
 
 ---
 
@@ -4393,9 +4508,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 2802 tests, none of which needs a database
+cargo test --workspace           # 2807 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 908 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 909 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 

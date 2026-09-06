@@ -16,6 +16,31 @@ pub type Version = u64;
 const MIN_READER_VERSION: u32 = 1;
 const MIN_WRITER_VERSION: u32 = 2;
 
+/// The highest reader version this build can honour.
+///
+/// # Why reading past it is a wrong answer rather than a missing feature
+///
+/// `FMT-02`. `Action::Protocol` was parsed and then **discarded** --- the replay's match arm
+/// was `Action::Protocol { .. } => {}` --- and no comparison against a ceiling existed
+/// anywhere in the workspace. So a table another engine had upgraded was read anyway, with
+/// this reader understanding only the parts of it that happen to look like version 1:
+///
+/// - **Reader version 2** is column mapping. Physical column names in the Parquet no longer
+///   match logical ones, and a reader that ignores the mapping reads **every column as null**.
+/// - **Reader version 3** brings deletion vectors. A deleted row is not removed from its file;
+///   it is recorded as deleted in a vector beside it. A reader that ignores the vector serves
+///   the file whole and **returns deleted rows as live**.
+///
+/// Both are silent wrong answers, which is the failure this system is arranged against. A
+/// refusal is the only correct behaviour: the protocol's whole point is that a writer declares
+/// what a reader must understand, and a reader that ignores the declaration has made the
+/// declaration pointless.
+///
+/// `FR-OPS-12` states the same rule for writes --- refuse to write a table whose protocol this
+/// build does not fully support, and report read-only degradation rather than silently
+/// misreading. This is the read half.
+pub const SUPPORTED_READER_VERSION: u32 = 1;
+
 /// A file added to the table.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct AddFile {
@@ -310,11 +335,29 @@ pub enum CommitError {
         attempted: Version,
         expected: Version,
     },
+    /// The table declares a reader version this build cannot honour.
+    ///
+    /// Refused rather than read: see [`SUPPORTED_READER_VERSION`]. Reading a version 2 table
+    /// returns every column as null and a version 3 table returns deleted rows as live, and
+    /// both are answers rather than errors.
+    Unsupported {
+        version: Version,
+        required: u32,
+        supported: u32,
+    },
 }
 
 impl fmt::Display for CommitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Unsupported { version, required, supported } => write!(
+                f,
+                "the table declares reader version {required} at version {version} and this \
+                 build supports {supported}. Refused rather than read: version 2 is column \
+                 mapping, so every column would read as null, and version 3 brings deletion \
+                 vectors, so deleted rows would be served as live. Both are wrong answers \
+                 rather than errors"
+            ),
             Self::VersionTaken(v) => write!(
                 f,
                 "version {v} is already committed; re-read the log and rebase, because \
@@ -636,6 +679,20 @@ pub fn read_actions_after(
                     version,
                     detail: e.to_string(),
                 })?;
+            // The protocol declaration, honoured rather than parsed and dropped.
+            //
+            // Checked here, in the one place every reader passes through, rather than at each
+            // call site --- a ceiling enforced in some readers and not others is a table that
+            // is refused by a query and served by a compaction.
+            if let Action::Protocol { min_reader_version, .. } = &action {
+                if *min_reader_version > SUPPORTED_READER_VERSION {
+                    return Err(CommitError::Unsupported {
+                        version,
+                        required: *min_reader_version,
+                        supported: SUPPORTED_READER_VERSION,
+                    });
+                }
+            }
             read += 1;
             out.push((version, action));
         }

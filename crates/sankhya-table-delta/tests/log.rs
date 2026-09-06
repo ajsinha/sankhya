@@ -176,6 +176,45 @@ fn a_malformed_log_is_reported_rather_than_skipped() {
 }
 
 #[test]
+fn a_malformed_line_beside_a_good_one_is_reported_rather_than_skipped() {
+    // The test above passes for the wrong reason if the parse is made to skip: the commit it
+    // writes holds *only* the bad line, so `read` stays at zero and the empty-body seal fires
+    // --- returning the same `Malformed` variant by a different route. The mutation catalogue
+    // found that, by surviving.
+    //
+    // So this one puts a good action beside the bad line. The seal is satisfied, and the only
+    // thing that can report the damage is the parse itself. Skipping here is the failure that
+    // matters: the commit replays as though it did less than it did, and the files the lost
+    // line named are dropped from the table with no error anywhere.
+    let dir = root();
+    commit(dir.path(), 0, &create(Metadata::new("t", SCHEMA, 0))).expect("commit 0");
+    let good = serde_json::to_string(&Action::Add(AddFile::with_rows("part-0.parquet", 512, 0, 1)))
+        .expect("an action this crate wrote");
+    // Valid JSON, and an `add` --- but not an `add` this crate can read. That distinction is
+    // the one the parse being tested makes, and it is not the one `{"add": not json}` makes:
+    // a line that is not JSON at all is caught by the earlier value parse, which is why the
+    // mutation survived a test using one. The line has to get as far as the action.
+    std::fs::write(
+        dir.path()
+            .join("_delta_log")
+            .join("00000000000000000001.json"),
+        format!("{good}\n{{\"add\": {{\"path\": 17, \"size\": \"large\"}}}}\n"),
+    )
+    .expect("writing a half-good commit");
+
+    match live_files(dir.path()) {
+        Err(CommitError::Malformed { version: 1, .. }) => {}
+        Err(other) => panic!("reported for the wrong reason: {other}"),
+        Ok(live) => panic!(
+            "a line this crate could not have written was skipped, and the commit replayed \
+             as {} file(s) with no error --- which is how a table silently loses what a lost \
+             line named",
+            live.files.len()
+        ),
+    }
+}
+
+#[test]
 fn the_live_set_totals_only_live_files() {
     let dir = root();
     commit(dir.path(), 0, &create(Metadata::new("t", SCHEMA, 0))).expect("commit 0");
@@ -485,4 +524,67 @@ fn a_log_nobody_can_read_is_an_error_rather_than_an_empty_table() {
             live.files.len()
         ),
     }
+}
+
+#[test]
+fn a_table_declaring_a_reader_version_we_cannot_honour_is_refused() {
+    // `FMT-02`. `Action::Protocol` was parsed and then discarded --- the replay's arm was
+    // `Action::Protocol { .. } => {}` --- and no comparison against a ceiling existed anywhere
+    // in the workspace. So a table another engine had upgraded was read anyway, with this
+    // reader understanding only the parts that happen to look like version 1.
+    //
+    // That is not a missing feature. Reader version 2 is column mapping, so physical names no
+    // longer match logical ones and **every column reads as null**. Version 3 brings deletion
+    // vectors, so a deleted row stays in its file with a vector beside it saying so, and a
+    // reader that ignores the vector **serves deleted rows as live**. Both are answers rather
+    // than errors, which is the failure this system is arranged against.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path();
+    commit(root, 0, &create(Metadata::new("t", SCHEMA.to_string(), 0))).expect("creating");
+    commit(
+        root,
+        1,
+        &[Action::Add(AddFile::with_rows("part-0.parquet", 512, 0, 1))],
+    )
+    .expect("publishing");
+
+    // It reads while the table is version 1, so the refusal below is about the declaration
+    // and not about a table that was never readable.
+    assert_eq!(live_files(root).expect("a version 1 table").files.len(), 1);
+
+    // Another engine upgrades it. Written by hand because this writer will not produce one:
+    // that is the whole point --- the log is open, and what arrives in it is not ours.
+    commit(
+        root,
+        2,
+        &[Action::Protocol {
+            min_reader_version: 3,
+            min_writer_version: 7,
+        }],
+    )
+    .expect("an upgrade another engine could write");
+
+    match live_files(root) {
+        Err(CommitError::Unsupported { required, supported, .. }) => {
+            assert_eq!(required, 3);
+            assert_eq!(supported, 1);
+        }
+        Err(other) => panic!("refused for the wrong reason: {other}"),
+        Ok(live) => panic!(
+            "a table declaring reader version 3 was served whole, with {} file(s) --- \
+             its deleted rows would be returned as live",
+            live.files.len()
+        ),
+    }
+}
+
+#[test]
+fn the_version_this_writer_emits_is_one_it_can_read() {
+    // A ceiling below what the writer declares would refuse this system's own tables, and a
+    // ceiling above what it understands is the defect above wearing a constant. They are two
+    // numbers in one file precisely so that changing one without the other fails here.
+    assert!(
+        sankhya_table_delta::SUPPORTED_READER_VERSION >= 1,
+        "this build must be able to read what it writes"
+    );
 }
