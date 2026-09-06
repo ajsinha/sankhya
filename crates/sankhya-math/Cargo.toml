@@ -16,4 +16,9 @@ workspace = true
 [dependencies]
 
 [dev-dependencies]
+criterion = { workspace = true }
 proptest = { workspace = true }
+
+[[bench]]
+name    = "reduce"
+harness = false

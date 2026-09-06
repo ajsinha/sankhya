@@ -123,6 +123,20 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 opt-level = 3
 
+# The shipping build, stated rather than inherited.
+#
+# `PERF-02`. `check-performance` runs `--release` and there was no `[profile.release]`, so it
+# measured cargo's defaults --- optimisation on, no LTO, sixteen codegen units --- which is
+# not the build anybody ships. A performance gate that measures a build nobody runs reports a
+# number nobody can act on, and the objectives it passes or fails are about the wrong binary.
+#
+# The figures here match `[profile.bench]` on purpose: a benchmark and the gate that guards it
+# must measure the same thing, or a regression shows up in one and not the other.
+[profile.release]
+debug         = "line-tables-only"
+lto           = "thin"
+codegen-units = 1
+
 [profile.bench]
 inherits      = "release"
 debug         = "line-tables-only"

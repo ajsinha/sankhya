@@ -1277,6 +1277,65 @@ counters on `/metrics`, where an operator would look before reading a log --- be
 observability work in 5.5 and is not done here: the handle now counts what needs exposing,
 and nothing reads it.
 
+### Phase 6 — what has landed so far
+
+**6.1 and 6.2 The 24.9× does not reproduce, and there were no benchmarks to reproduce it with
+(`PERF-01`, `PERF-02`).** Done together, because a false number cannot be retracted into nothing
+--- something has to replace it, and there was no way to measure anything.
+
+**`criterion` was in the pin set and used by no crate.** Zero `benches/` directories, zero
+`[[bench]]` targets. And `[profile.bench]` was configured for a profile no target used, while
+`check-performance` ran `--release` against a workspace with **no `[profile.release]`** --- so
+the performance gate measured cargo's defaults, no LTO, sixteen codegen units. A gate that
+measures a build nobody ships reports a number nobody can act on. There is a release profile
+now, matching the bench profile on purpose: a benchmark and the gate that guards it must measure
+the same build or a regression appears in one and not the other.
+
+**What the retracted numbers were.** `ADR-0020` published **24.9× / 7.2× / 2.1×** for borrowing
+a row instead of copying it, restated in `rows.rs` and again in `STATUS.md`. No code anywhere in
+this repository's history produced them --- the audit searched the working tree, every branch,
+`git log -S` on each figure, deletions and stashes. The tell was internal: against a fresh run
+the *copying* arm was 2.4× faster and the *borrowing* arm 27× faster, only the fast arm was
+anomalous, it was non-monotone in width, and 0.85 ms for a scalar reduction implied about
+39 GB/s --- above memory bandwidth. **The fast arm was almost certainly deleted by the
+optimiser**, its result being unused, while the copying arm survived because allocation has
+side effects.
+
+**Measured now, by a benchmark that is a build target and whose arms consume their results:**
+14.3× at width 8, 5.1× at 64, 1.5× at 512. Two runs agreed within 6%. That is neither the
+published 24.9× nor the audit's reconstruction of 2.2×, and the disagreement is the argument:
+a ratio is a property of a machine, a dataset and a build, so the repository ships the
+benchmark rather than the number.
+
+**Two more tables are retracted rather than replaced.** The per-kernel figures compared
+`vector::dot` and its neighbours against what the same call returned *before* --- and the
+"before" is the sorted-only implementation, which no longer exists. A before-and-after ratio
+whose "before" has been deleted cannot be re-run by anybody. *"10 to 15 times faster"* described
+a lane-parallel loop this system does not use, and the same paragraph already said the 15× was
+never available; it is marked unmeasured where it stands. The *"agreement on 200,000 randomized
+vectors"* row named a one-off experiment nobody can repeat, and is replaced by the two property
+tests that check the same properties on every build.
+
+**The reduction table is replaced with a measurement, and with what the measurement is not.**
+`3.3× / 3.0× / 3.0×` at 64 / 512 / 4096, against the published `1.5× / 2.0× / 2.7×`. The
+fallback runs only where the fixed-point route *declines*, so the two arms sum different numbers
+by construction --- the benchmark asserts each reaches the route it is named after, and the
+first version of it used a spread of exponents the fixed-point route takes without difficulty,
+which that assertion caught. The published table implied a speedup on identical input, which
+cannot have been measured either.
+
+**And the rule that let all this stand has a second half now.** *"Every claim about speed
+carries its number"* is what made a figure in prose read as measured. It now reads *"and the
+number carries the benchmark"*, and `check-benchmarks` builds every benchmark target on every
+run and fails when a crate that publishes figures has none --- because a benchmark that stops
+compiling is a figure that has quietly stopped being reproducible, which is the state these
+tables were in.
+
+**Still open in Phase 6:** 6.3 through 6.8, and `PERF-05`'s fifteen unmeasured `NFR-PERF`
+objectives, which is the next item.
+
+---
+
 ---
 
 # Phase 5 — Operability
