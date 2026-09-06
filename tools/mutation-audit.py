@@ -6443,6 +6443,31 @@ CATALOGUE = [
      "                #[allow(unreachable_code)] crate::driver::checkpoint_if_due(\n                    return Ok(report),",
      "sankhya-maintenance", 1, "adoption"),
 
+    # --- Phase 5.7: a door that can be moved, and a manifest that can be applied ------------------
+
+    # `RUN-10`. `SANKHYA_LISTEN` and `SANKHYA_METRICS_LISTEN` existed and this did not, so the
+    # columnar door could be moved only by writing a file --- and an image is configured by
+    # environment. Two instances on one host always collided on 5434.
+    ("server: leave the columnar door unconfigurable from the environment",
+     "crates/sankhya-server/src/main.rs",
+     "        (\"SANKHYA_FLIGHT_LISTEN\", \"server.flight_listen\"),",
+     "        // the columnar door has no environment override",
+     "sankhya-server", 1, "accepting"),
+
+    # `RUN-11`. The manifest named an image at a version and no Dockerfile existed anywhere,
+    # so it could not be applied by anybody --- and nothing said so.
+    ("xtask: accept a manifest naming an image nothing builds",
+     "xtask/src/package.rs",
+     "            if !dockerfile.is_file() {",
+     "            if false {",
+     "xtask", 1, "package"),
+
+    ("xtask: accept a manifest deploying a version this build is not",
+     "xtask/src/package.rs",
+     "            if tag != version {",
+     "            if false {",
+     "xtask", 1, "package"),
+
 ]
 
 

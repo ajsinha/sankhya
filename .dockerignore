@@ -1,0 +1,5 @@
+# The build stage copies the repository and compiles it. `target/` is the largest thing in
+# the tree by two orders of magnitude and is useless inside the image --- artefacts built on
+# this host for this host's toolchain, which the builder stage rebuilds anyway.
+target/
+.git/

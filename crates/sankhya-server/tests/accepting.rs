@@ -21,9 +21,9 @@
 
 mod common;
 
-use common::{start_under_descriptor_limit, write_warehouse, Session};
+use common::{start_under_descriptor_limit, start_with, write_warehouse, Session};
 use std::net::TcpStream;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Few enough that connections exhaust it, and enough that the server starts on it.
 ///
@@ -84,5 +84,62 @@ fn running_out_of_descriptors_does_not_end_the_server() {
     assert_eq!(
         after, before,
         "the server answered, but with a different result than before the shortage"
+    );
+}
+
+#[test]
+fn the_columnar_door_can_be_moved_from_the_environment() {
+    // `RUN-10`. `SANKHYA_LISTEN` and `SANKHYA_METRICS_LISTEN` existed and
+    // `SANKHYA_FLIGHT_LISTEN` did not, so the columnar door could be moved only by writing a
+    // configuration file --- and a container image is configured by environment. Two
+    // instances on one host therefore always collided on 5434, and the shipped Kubernetes
+    // manifest could neither move Flight SQL nor expose it.
+    //
+    // Flight SQL is a headline feature of this system. It was unreachable in every
+    // deployment made from the shipped manifest.
+    let dir = tempfile::tempdir().expect("a directory");
+    let warehouse = dir.path().join("warehouse");
+    write_warehouse(&warehouse);
+
+    // A port the operating system has just confirmed is free, then released. Racy in
+    // principle and not in practice, and the alternative --- a fixed port --- races with
+    // every other test on the machine rather than with a hypothetical one.
+    let port = {
+        let scout = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        scout.local_addr().expect("an address").port()
+    };
+    let address = format!("127.0.0.1:{port}");
+
+    let server = start_with(
+        &warehouse,
+        &dir.path().join("data"),
+        &[("SANKHYA_FLIGHT_LISTEN", address.as_str())],
+    );
+
+    // It says so...
+    assert!(
+        server.wait_until_said(&format!("Arrow Flight SQL on {address}"), Duration::from_secs(10)),
+        "the server did not announce the columnar door on the address it was given"
+    );
+    // ...and it is there, which is the half a banner cannot prove. The default is 5434, so a
+    // server that ignored the variable would answer on a different port and this would fail.
+    //
+    // Waited for rather than asserted at once: the line is printed *before* the transport is
+    // spawned, so the announcement genuinely precedes the bind by a moment. That ordering is
+    // worth knowing --- a health check that trusted the banner would race it --- and it is
+    // the wire door's banner, printed after its bind, that is the one to copy.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut reachable = false;
+    while Instant::now() < deadline {
+        if TcpStream::connect(&address).is_ok() {
+            reachable = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        reachable,
+        "nothing is listening on {address} ten seconds after the server announced it, so the \
+         setting was announced and not applied"
     );
 }
