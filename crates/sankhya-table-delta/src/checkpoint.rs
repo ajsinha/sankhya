@@ -386,7 +386,7 @@ pub fn latest_checkpoint(table_root: &Path) -> Option<Version> {
 /// as a failure — see [`latest_checkpoint`] on why every problem here is a fallback.
 pub fn read_checkpoint(table_root: &Path, version: Version) -> Result<Vec<AddFile>, CommitError> {
     use arrow_array::cast::AsArray;
-    use arrow_array::types::Int64Type;
+    use arrow_array::types::{Int32Type, Int64Type};
     use arrow_array::Array;
 
     let path = checkpoint_path(table_root, version);
@@ -406,6 +406,39 @@ pub fn read_checkpoint(table_root: &Path, version: Version) -> Result<Vec<AddFil
             continue;
         };
         let adds = column.as_struct();
+
+        // The protocol row, which this reader used to walk straight past.
+        //
+        // A checkpoint holds every action in one table with one non-null column per row, so
+        // the protocol lives on a row whose `add` is null --- and the loop below skips exactly
+        // those. `live_files` starts from a checkpoint and then reads only the commits *after*
+        // it, so a reader-version bump made before the checkpoint was never parsed by anything.
+        //
+        // The ceiling was enforced in `read_actions_after` and therefore only on the JSON
+        // path: a table an external engine had upgraded and then checkpointed was **refused by
+        // a query and served by a compaction**, which is the state `log.rs` warns against by
+        // name. The compaction is the damaging half --- it reads the raw Parquet, ignores the
+        // deletion vectors a version 3 table depends on, and commits the result, resurrecting
+        // logically deleted rows into a file every external reader will now believe.
+        if let Some(protocol) = batch.column_by_name("protocol") {
+            let protocol = protocol.as_struct();
+            if let Some(versions) = protocol.column_by_name("minReaderVersion") {
+                let versions = versions.as_primitive::<Int32Type>();
+                for row in 0..protocol.len() {
+                    if !protocol.is_valid(row) {
+                        continue;
+                    }
+                    let required = u32::try_from(versions.value(row)).unwrap_or(u32::MAX);
+                    if required > crate::log::SUPPORTED_READER_VERSION {
+                        return Err(CommitError::Unsupported {
+                            version,
+                            required,
+                            supported: crate::log::SUPPORTED_READER_VERSION,
+                        });
+                    }
+                }
+            }
+        }
 
         let paths = adds.column_by_name("path").ok_or_else(missing("path"))?;
         let paths = paths.as_string::<i32>();

@@ -6532,6 +6532,23 @@ CATALOGUE = [
      "        let _ = &request_metadata;",
      "sankhya-server", 1, "wiring"),
 
+    # The ceiling was enforced on the JSON path only. A table an external engine upgraded and
+    # then checkpointed was refused by a query and **served by a compaction** --- which reads
+    # the raw Parquet, ignores the deletion vectors, and commits deleted rows back as live.
+    ("delta: read a checkpoint without asking what protocol it declares",
+     "crates/sankhya-table-delta/src/checkpoint.rs",
+     "                    if required > crate::log::SUPPORTED_READER_VERSION {",
+     "                    if false && required > crate::log::SUPPORTED_READER_VERSION {",
+     "sankhya-table-delta", 1, "checkpoint"),
+
+    # And the fallback that masked the fix: every checkpoint failure fell back to a full
+    # replay, which is right for a corrupt checkpoint and wrong for an unsupported protocol.
+    ("delta: fall back to a replay when a checkpoint declares a protocol we cannot honour",
+     "crates/sankhya-table-delta/src/log.rs",
+     "            Err(refusal @ CommitError::Unsupported { .. }) => return Err(refusal),",
+     "            Err(CommitError::Unsupported { .. }) => {}",
+     "sankhya-table-delta", 1, "checkpoint"),
+
 ]
 
 
