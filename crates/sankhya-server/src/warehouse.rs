@@ -126,13 +126,35 @@ pub fn refresh(tables: &mut [ServableTable], target: Lsn, cache: &LogCache) -> u
 /// fails to open is **not** silently omitted: a server that starts with three of four
 /// tables and says nothing has produced an outage that looks like a missing table to
 /// whoever queries it.
+///
+/// # And nor is a warehouse that could not be read at all
+///
+/// `OPS-12`. This used to be `let Ok(schemas) = read_dir(warehouse) else { return empty }`,
+/// so an unmounted NFS export or a path with the wrong permissions produced **no tables and
+/// no complaints**: the server started and served an empty catalogue, and `doctor` --- the
+/// tool an operator reaches for at exactly that moment --- printed "0 table(s)", "Nothing to
+/// report" and exited `0`, which is CLEAN. The documented hourly cron stayed green straight
+/// through a dropped mount.
+///
+/// Not existing is the one case that may still be reported as "there are none". A warehouse
+/// directory is created on first use, so a fresh install has none and complaining about it
+/// would be a warning on every first start --- which is how a warning stops being read.
+/// Anything else is a directory that exists and cannot be listed, and answering "empty" for
+/// it is a lie with a clean bill of health attached.
 #[must_use]
 pub fn discover(warehouse: &Path) -> (Vec<FoundTable>, Vec<(PathBuf, String)>) {
     let mut found = Vec::new();
     let mut refused = Vec::new();
 
-    let Ok(schemas) = std::fs::read_dir(warehouse) else {
-        return (found, refused);
+    let schemas = match std::fs::read_dir(warehouse) {
+        Ok(schemas) => schemas,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (found, refused)
+        }
+        Err(error) => {
+            refused.push((warehouse.to_path_buf(), error.to_string()));
+            return (found, refused);
+        }
     };
     let mut schema_dirs: Vec<PathBuf> = schemas
         .filter_map(Result::ok)
@@ -158,8 +180,14 @@ pub fn discover(warehouse: &Path) -> (Vec<FoundTable>, Vec<(PathBuf, String)>) {
         if schema_name.starts_with('_') {
             continue;
         }
-        let Ok(tables) = std::fs::read_dir(&schema_dir) else {
-            continue;
+        // The same distinction one level down. A schema directory that cannot be listed is
+        // every table in it missing, and `continue` says the schema is empty.
+        let tables = match std::fs::read_dir(&schema_dir) {
+            Ok(tables) => tables,
+            Err(error) => {
+                refused.push((schema_dir.clone(), error.to_string()));
+                continue;
+            }
         };
         let mut table_dirs: Vec<PathBuf> = tables
             .filter_map(Result::ok)
@@ -207,7 +235,11 @@ fn inherited_by(warehouse: &Path, table_root: &Path) -> Option<sankhya_readpath:
     let lineage = lineage_at(table_root)?;
     let mut origin_root = match resolve(warehouse, &lineage.origin) {
         Resolved::One(root) => root,
-        Resolved::Absent | Resolved::Ambiguous(_) => return None,
+        // Unreadable joins these two because there is nothing useful to do with it here: a
+        // lineage that cannot be established cannot be spliced. `discover` reports the
+        // warehouse that could not be read, so the operator is told once rather than once
+        // per clone.
+        Resolved::Absent | Resolved::Ambiguous(_) | Resolved::Unreadable(_) => return None,
     };
     let mut version = lineage.version;
 
@@ -236,7 +268,7 @@ fn inherited_by(warehouse: &Path, table_root: &Path) -> Option<sankhya_readpath:
         }
         origin_root = match resolve(warehouse, &above.origin) {
             Resolved::One(root) => root,
-            Resolved::Absent | Resolved::Ambiguous(_) => return None,
+            Resolved::Absent | Resolved::Ambiguous(_) | Resolved::Unreadable(_) => return None,
         };
         version = above.version;
     }
@@ -314,8 +346,13 @@ pub fn resolve(warehouse: &Path, name: &str) -> Resolved {
     }
 
     let mut found: Vec<PathBuf> = Vec::new();
-    let Ok(entries) = std::fs::read_dir(warehouse) else {
-        return Resolved::Absent;
+    let entries = match std::fs::read_dir(warehouse) {
+        Ok(entries) => entries,
+        // Not existing is the ordinary case for a warehouse nothing has been written to yet,
+        // and it genuinely holds no table of that name. Anything else is a directory that is
+        // there and cannot be listed, where the honest answer is that nobody knows.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Resolved::Absent,
+        Err(error) => return Resolved::Unreadable(error.to_string()),
     };
     let mut schemas: Vec<PathBuf> = entries
         .filter_map(Result::ok)
@@ -479,6 +516,14 @@ pub enum Resolved {
     Absent,
     /// Several, named as `schema.table` so the caller can say which.
     Ambiguous(Vec<String>),
+    /// The warehouse could not be read, so whether the table is there is **unknown**.
+    ///
+    /// `OPS-12`. This used to be [`Resolved::Absent`], which is a different claim: one says
+    /// the table is not there and the other says nobody could look. They matter most where
+    /// the answer decides a deletion --- a snapshot pins files only if its table resolves,
+    /// so "not there" on an unmounted export is a pin quietly dropped and the files it was
+    /// protecting reclaimed under a reader.
+    Unreadable(String),
 }
 
 /// Open every discovered table for reading at `target`.

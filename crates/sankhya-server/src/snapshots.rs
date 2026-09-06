@@ -564,9 +564,19 @@ pub(crate) fn still_reading(server: &crate::wiring::Server) -> sankhya_maintenan
             // it to pin, and there are no files to protect from anybody.
             crate::warehouse::Resolved::Absent => {}
             crate::warehouse::Resolved::Ambiguous(candidates) => unreadable.push(format!(
-                "the snapshot of `{qualified}` names {} tables ({}), so which files it pins                  cannot be established",
+                "the snapshot of `{qualified}` names {} tables ({}), so which files it pins \
+                 cannot be established",
                 candidates.len(),
                 candidates.join(", ")
+            )),
+            // `OPS-12`. This arrived here as `Absent` --- "the table is gone, so there is
+            // nothing left to pin" --- when what happened was that nobody could look. The
+            // sweeper acts on this set, so the difference is between files protected and
+            // files reclaimed under a reader, which is the deletion this whole mechanism
+            // exists to prevent.
+            crate::warehouse::Resolved::Unreadable(why) => unreadable.push(format!(
+                "the warehouse could not be read ({why}), so which files the snapshot of \
+                 `{qualified}` pins cannot be established"
             )),
         }
     }

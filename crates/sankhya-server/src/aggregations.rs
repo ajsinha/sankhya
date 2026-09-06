@@ -141,11 +141,29 @@ fn strip_keywords<'a>(text: &'a str, keywords: &[&str]) -> Option<&'a str> {
     Some(rest)
 }
 
-/// Every aggregation this warehouse holds.
-pub(crate) fn stored(warehouse: &Path) -> Vec<Aggregation> {
+/// Every aggregation this warehouse holds, and what could not be read.
+///
+/// # Why the second half exists
+///
+/// `OPS-12`. An unreadable `_aggregations/` used to return an empty list, so the server came
+/// up with none declared and the symptom was a query that worked yesterday failing to plan
+/// with "unknown function" --- a message that names the caller's SQL and not the directory.
+/// Not existing is still silent: a warehouse nobody has declared an aggregation in has none.
+pub(crate) fn stored(warehouse: &Path) -> (Vec<Aggregation>, Vec<String>) {
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(warehouse.join(DIRECTORY)) else {
-        return out;
+    let directory = warehouse.join(DIRECTORY);
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return (out, Vec::new()),
+        Err(error) => {
+            return (
+                out,
+                vec![format!(
+                    "no aggregation was loaded: {} could not be read ({error})",
+                    directory.display()
+                )],
+            )
+        }
     };
     for entry in entries.flatten() {
         let Ok(text) = std::fs::read_to_string(entry.path()) else {
@@ -156,7 +174,7 @@ pub(crate) fn stored(warehouse: &Path) -> Vec<Aggregation> {
         }
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
-    out
+    (out, Vec::new())
 }
 
 /// The document form. Hand-written rather than derived, because `Aggregation` lives in a crate

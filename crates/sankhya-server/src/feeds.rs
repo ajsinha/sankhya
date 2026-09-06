@@ -52,9 +52,25 @@ pub(crate) struct Declared {
 #[must_use]
 pub(crate) fn load(configuration_dir: &Path) -> (Vec<Declared>, Vec<String>) {
     let directory = configuration_dir.join(DIRECTORY);
-    let Ok(entries) = std::fs::read_dir(&directory) else {
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
         // No feeds directory is the ordinary case, not a complaint.
-        return (Vec::new(), Vec::new());
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (Vec::new(), Vec::new())
+        }
+        // `OPS-12`. One that is there and cannot be listed is **every** feed missing, and
+        // returning it as "no feeds are declared" is a server that starts cleanly and
+        // ingests nothing --- which looks, from every table it should have been filling,
+        // exactly like a source that stopped producing.
+        Err(error) => {
+            return (
+                Vec::new(),
+                vec![format!(
+                    "no feed was loaded: {} could not be read ({error})",
+                    directory.display()
+                )],
+            )
+        }
     };
 
     let mut declared = Vec::new();

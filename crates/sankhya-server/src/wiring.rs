@@ -616,7 +616,9 @@ impl Server {
     pub(crate) fn root_of(&self, table: &str) -> Option<std::path::PathBuf> {
         match crate::warehouse::resolve(&self.settings.warehouse, table) {
             crate::warehouse::Resolved::One(root) => Some(root),
-            crate::warehouse::Resolved::Absent | crate::warehouse::Resolved::Ambiguous(_) => None,
+            crate::warehouse::Resolved::Absent
+            | crate::warehouse::Resolved::Ambiguous(_)
+            | crate::warehouse::Resolved::Unreadable(_) => None,
         }
     }
 
@@ -683,7 +685,8 @@ impl Server {
         // **Not re-exercised.** `ADR-0010`'s determinism check runs at declaration; running it
         // again at every startup would fork a worker per aggregation before the server accepts
         // its first connection, and the code has not changed since it passed.
-        let declared = crate::aggregations::stored(warehouse);
+        let (declared, unread) = crate::aggregations::stored(warehouse);
+        complaints.extend(unread);
         if let Ok(mut aggregations) = self.aggregations.write() {
             *aggregations = Arc::new(declared);
         }
@@ -1944,6 +1947,11 @@ impl Server {
             }
             crate::warehouse::Resolved::Absent => Qualified::Absent,
             crate::warehouse::Resolved::Ambiguous(candidates) => Qualified::Ambiguous(candidates),
+            // Reported as ambiguous-with-one-candidate would be a lie of a different shape.
+            // `Absent` is what this has always answered and what the caller can act on; the
+            // warehouse that could not be read is reported by `discover` at startup and by
+            // `doctor`, both of which say it once rather than per name.
+            crate::warehouse::Resolved::Unreadable(_) => Qualified::Absent,
         }
     }
 

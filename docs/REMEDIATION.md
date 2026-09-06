@@ -1008,7 +1008,38 @@ how an init system does it, and is the reason the unit file now says so too. The
 a hundred and twenty connections against that limit and then asks the server a question:
 before the fix, nothing was listening to ask.
 
-`5.3` through `5.7` are not started.
+**5.3 "I could not look" was recorded as "there is nothing" (`OPS-12`).** Fourteen places
+read a directory as `let Ok(entries) = read_dir(x) else { return empty }`. That answers *"there
+is nothing here"* to the question *"what is here?"* whenever the true answer is *"nobody could
+tell"*, and the two are different claims wherever anything acts on them.
+
+**The worst of it was the diagnostic.** An unreadable warehouse --- an unmounted NFS export, a
+path with the wrong ownership --- produced no tables and no complaints, so the server started
+and served an empty catalogue. `sankhya-server doctor`, the tool an operator reaches for at
+exactly that moment, printed "0 table(s)", "Nothing to report" and exited clean, and the
+documented hourly cron stayed green straight through a dropped mount. The machinery for saying
+otherwise was already there: `doctor` has a third exit status meaning *"a check could not
+run"*, and it is fed entirely from `discover`'s list of what it could not open. `discover`
+simply never put the warehouse itself on that list.
+
+**And the same claim where it decides a deletion.** `resolve` answered `Absent` for a
+warehouse it could not list. A snapshot pins files only if its table resolves, so on an
+unmounted export the pin was dropped and the sweeper was free to reclaim the files it was
+protecting --- under a reader. That is the deletion `sankhya-server/src/snapshots.rs` was
+already hardened against arriving through a different door, and it now has a `Resolved`
+variant of its own rather than borrowing the one that means the table is gone.
+
+**Not existing stays silent, everywhere.** A warehouse directory is created on first use, a
+deployment with no feeds has no feed directory, and most warehouses declare no cubes and no
+aggregations. Complaining about those would be a warning on every first start, which is how a
+warning stops being read. The distinction is `ErrorKind::NotFound` against everything else,
+made the same way in all five places.
+
+**One left deliberately.** `materialised_shapes` reads the cuboid store, and an unreadable one
+means the query is answered from the fact table instead --- slower, and not wrong. A cuboid is
+a cache, and its own doc comment already says there is nothing to report.
+
+`5.4` through `5.7` are not started.
 
 ---
 
