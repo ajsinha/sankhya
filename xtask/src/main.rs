@@ -18,6 +18,7 @@ mod concurrency;
 mod attribution;
 mod status;
 mod coverage;
+mod gates;
 mod objectives;
 mod durability;
 
@@ -153,45 +154,68 @@ fn main() -> ExitCode {
 
     let run_all = task.is_empty() || task == "check-all";
 
+    // The cheap checks, and every one of them, first.
+    //
+    // # Why the order is the point
+    //
+    // Twenty of these checks read files and decide in about two hundred milliseconds each ---
+    // four seconds for the lot. Six of them build something: the test suite, clippy across
+    // every target, the benchmarks, the packaging baseline, the concurrency measurement, and
+    // the figure count, which links every test binary to ask how many tests there are.
+    //
+    // `check-tests` used to be dispatched first, so a stale document number, a file fifteen
+    // lines over the ceiling, and a banned word in a comment were all reported **twenty-five
+    // minutes** after a run began --- three failures whose combined computation is under five
+    // seconds. That happened three times in one sitting.
+    //
+    // Cheapest first does not make the gate faster. It makes the *loop* faster, which is the
+    // thing that was slow: the answer arrives while the person who caused it is still looking.
+    // `check-fast` is the same set on its own, for the edit-check cycle.
+    let fast = run_all || task == "check-fast";
+
+    if fast || task == "check-invariants" {
+        failed |= !check_invariants(&root);
+    }
+    if fast || task == "check-surfaces" {
+        failed |= !surfaces::check(&root);
+    }
+    if fast || task == "check-atomic-writes" {
+        failed |= !atomicwrites::check(&root);
+    }
+    if fast || task == "check-lock-order" {
+        println!("== check-lock-order ==");
+        failed |= !lockorder::check(&root);
+    }
+    if fast || task == "check-writers" {
+        failed |= !check_writers(&root);
+    }
+    if fast || task == "check-layers" {
+        failed |= !check_layers(&root);
+    }
+    if fast || task == "check-loc" {
+        failed |= !check_loc(&root);
+    }
+    if fast || task == "check-vocabulary" {
+        failed |= !check_vocabulary(&root);
+    }
+    if fast || task == "check-dupes" {
+        failed |= !check_dupes(&root);
+    }
+    if fast || task == "check-docs" {
+        failed |= !check_docs(&root);
+    }
+    if fast || task == "check-features" {
+        failed |= !check_features(&root);
+    }
+    // From here on, everything builds something.
+    //
+    // Under `check-all` the cheap lane above has already reported, so a failure four seconds
+    // in is visible while these run rather than after them.
     if run_all || task == "check-tests" {
         failed |= !check_tests(&root);
     }
     if run_all || task == "check-concurrency" {
         failed |= !concurrency::check(&root);
-    }
-    if run_all || task == "check-invariants" {
-        failed |= !check_invariants(&root);
-    }
-    if run_all || task == "check-surfaces" {
-        failed |= !surfaces::check(&root);
-    }
-    if run_all || task == "check-atomic-writes" {
-        failed |= !atomicwrites::check(&root);
-    }
-    if run_all || task == "check-lock-order" {
-        println!("== check-lock-order ==");
-        failed |= !lockorder::check(&root);
-    }
-    if run_all || task == "check-writers" {
-        failed |= !check_writers(&root);
-    }
-    if run_all || task == "check-layers" {
-        failed |= !check_layers(&root);
-    }
-    if run_all || task == "check-loc" {
-        failed |= !check_loc(&root);
-    }
-    if run_all || task == "check-vocabulary" {
-        failed |= !check_vocabulary(&root);
-    }
-    if run_all || task == "check-dupes" {
-        failed |= !check_dupes(&root);
-    }
-    if run_all || task == "check-docs" {
-        failed |= !check_docs(&root);
-    }
-    if run_all || task == "check-features" {
-        failed |= !check_features(&root);
     }
     if run_all || task == "check-lints" {
         failed |= !check_lints(&root);
@@ -209,11 +233,11 @@ fn main() -> ExitCode {
         }
     }
 
-    if run_all || task == "check-durability" {
+    if fast || task == "check-durability" {
         failed |= !durability::check(&root);
     }
 
-    if run_all || task == "check-mutation-coverage" {
+    if fast || task == "check-mutation-coverage" {
         failed |= !coverage::check(&root);
     }
 
@@ -221,21 +245,28 @@ fn main() -> ExitCode {
         failed |= !check_benchmarks(&root);
     }
 
-    if run_all || task == "check-objectives" {
+    if fast || task == "check-objectives" {
         failed |= !objectives::check(&root);
     }
 
-    if run_all || task == "check-attribution" {
+    // Not a check: it prints the generated gate table so a document can embed it. Kept beside
+    // the checks because the table is derived from the same dispatch arms they are.
+    if task == "gate-table" {
+        print!("{}", gates::table(&known_checks()));
+        return ExitCode::SUCCESS;
+    }
+
+    if fast || task == "check-attribution" {
         failed |= !attribution::check(&root);
     }
 
-    if run_all || task == "check-unsafety" {
+    if fast || task == "check-unsafety" {
         failed |= !unsafety::check(&root);
     }
-    if run_all || task == "check-mutations" {
+    if fast || task == "check-mutations" {
         failed |= !check_mutations(&root);
     }
-    if run_all || task == "check-catalogues" {
+    if fast || task == "check-catalogues" {
         failed |= !catalogues::check(&root);
     }
     // Not a check: it writes. Kept out of `check-all` for that reason.
@@ -248,10 +279,10 @@ fn main() -> ExitCode {
             }
         }
     }
-    if run_all || task == "check-logging" {
+    if fast || task == "check-logging" {
         failed |= !logging::check(&root);
     }
-    if run_all || task == "check-build-tree" {
+    if fast || task == "check-build-tree" {
         failed |= !buildtree::check(&root);
     }
     if run_all || task == "check-package" {
@@ -317,12 +348,13 @@ fn main() -> ExitCode {
                 | "check-catalogues"
                 | "write-catalogues"
                 | "check-performance"
+                | "check-fast"
         )
     {
         eprintln!(
             "usage: cargo xtask \
              [check-all|check-tests|check-concurrency|check-invariants|check-writers|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
-             |check-features|check-lints|check-unsafety|check-attribution|check-mutation-coverage|check-benchmarks|check-objectives|check-durability|write-attribution|check-mutations|check-doc-numbers\
+             |check-features|check-lints|check-unsafety|check-attribution|check-fast|check-mutation-coverage|check-benchmarks|check-objectives|gate-table|check-durability|write-attribution|check-mutations|check-doc-numbers\
              |check-catalogues|write-catalogues|check-logging|check-package|check-build-tree|check-surfaces|check-atomic-writes|check-lock-order|sweep|sweep-dry-run|sync-doc-numbers|check-performance]"
         );
         return ExitCode::from(2);
@@ -811,6 +843,7 @@ fn check_docs(root: &Path) -> bool {
 
     ok &= check_named_sources(root, &docs);
     ok &= status::check_status_agreement(root, &docs);
+    ok &= gates::embedded_table_is_current(root);
     ok &= check_the_motto(root, &docs);
 
     ok
@@ -1481,7 +1514,7 @@ mod tests {
         for check in super::known_checks() {
             text.push_str(&format!("| r | w | `{check}` |\n"));
         }
-        std::fs::write(dir.path().join("docs/INVARIANTS.md"), text).expect("writing");
+        std::fs::write(dir.path().join("docs/TESTING.md"), text).expect("writing");
         assert!(
             !super::check_invariants(dir.path()),
             "a document naming a check that does not run was accepted"
@@ -1496,7 +1529,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary directory");
         std::fs::create_dir_all(dir.path().join("docs")).expect("creating docs");
         std::fs::write(
-            dir.path().join("docs/INVARIANTS.md"),
+            dir.path().join("docs/TESTING.md"),
             "| a rule | a reason | `check-layers` |\n",
         )
         .expect("writing");
@@ -1712,11 +1745,13 @@ fn check_writers(root: &Path) -> bool {
     ok
 }
 
-/// Every check `docs/INVARIANTS.md` names must exist.
+/// Every check `docs/TESTING.md` names must exist.
 ///
 /// # Why a document about enforcement needs enforcing
 ///
-/// `INVARIANTS.md` lists the rules this system holds and, for each, where it is enforced.
+/// `TESTING.md` lists the rules this system holds and, for each, where it is enforced. It was
+/// `INVARIANTS.md`, which said the same things in a second place; the two drifted, and the
+/// copy the gate did not read is the one that went stale.
 /// That third column is the whole value of the document: a rule with a check behind it is a
 /// guarantee, and a rule without one is a hope. If the column can name a check that has been
 /// renamed or deleted, the document quietly turns every hope into an apparent guarantee ---
@@ -1726,14 +1761,19 @@ fn check_writers(root: &Path) -> bool {
 /// alone; it is already saying it is not enforced.
 fn check_invariants(root: &Path) -> bool {
     println!("== check-invariants ==");
-    let path = root.join("docs/INVARIANTS.md");
+    let path = root.join("docs/TESTING.md");
     let Ok(text) = std::fs::read_to_string(&path) else {
-        eprintln!("  MISSING        docs/INVARIANTS.md does not exist");
+        eprintln!("  MISSING        docs/TESTING.md does not exist");
         return false;
     };
 
     let mut named: BTreeSet<String> = BTreeSet::new();
     for token in text.split(|c: char| !(c.is_alphanumeric() || c == '-')) {
+        // `check-all` is the runner, not a check. It reads as one to a scanner looking for
+        // the prefix, and a document cannot describe the gate without naming it.
+        if token == "check-all" {
+            continue;
+        }
         if token.starts_with("check-") && token.len() > 6 {
             named.insert(token.to_string());
         }
@@ -1744,7 +1784,7 @@ fn check_invariants(root: &Path) -> bool {
     for check in &named {
         if !known.contains(check.as_str()) {
             eprintln!(
-                "  UNKNOWN CHECK  docs/INVARIANTS.md names `{check}`, which xtask does not \
+                "  UNKNOWN CHECK  docs/TESTING.md names `{check}`, which xtask does not \
                  run. A document that can name a check nobody runs turns every rule in it \
                  into an apparent guarantee"
             );
@@ -1756,7 +1796,7 @@ fn check_invariants(root: &Path) -> bool {
     for check in &known {
         if !named.contains(check) {
             eprintln!(
-                "  UNDOCUMENTED   `{check}` runs on every build and docs/INVARIANTS.md does \
+                "  UNDOCUMENTED   `{check}` runs on every build and docs/TESTING.md does \
                  not say what it protects. A rule nobody can find is a rule nobody keeps"
             );
             ok = false;
@@ -1794,7 +1834,16 @@ fn known_checks() -> BTreeSet<String> {
     let text = include_str!("main.rs");
     let mut out = BTreeSet::new();
     for line in text.lines() {
-        let Some(rest) = line.trim().strip_prefix("if run_all || task == \"") else {
+        // Both dispatch forms. A check moved into the fast lane is still a check this
+        // binary runs, and a parser that saw only one form would drop twenty-one of them
+        // from the inventory the moment the gate was reordered --- turning a speed change
+        // into a documentation failure, which is precisely the coupling this set exists to
+        // make visible.
+        let trimmed = line.trim();
+        let Some(rest) = trimmed
+            .strip_prefix("if run_all || task == \"")
+            .or_else(|| trimmed.strip_prefix("if fast || task == \""))
+        else {
             continue;
         };
         if let Some(name) = rest.split('"').next() {
@@ -1809,6 +1858,13 @@ fn known_checks() -> BTreeSet<String> {
     out.insert("check-invariants".to_string());
     out.insert("check-tests".to_string());
     out.insert("check-concurrency".to_string());
+    // `check-performance` is a check this binary runs and is **not** part of `check-all`: it
+    // needs a quiet machine and minutes. It belongs here because the question this set answers
+    // is "does xtask run a check by this name", and answering no about a check that exists
+    // would make a document naming it look like an error. That it is opt-in --- and that CI
+    // therefore never runs it --- is stated in `docs/TESTING.md` rather than hidden by
+    // omission here.
+    out.insert("check-performance".to_string());
     out
 }
 

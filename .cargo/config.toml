@@ -18,3 +18,21 @@ xtask = "run --quiet --package xtask --"
 # again: `free -g` during a build is the measurement, not the core count.
 [build]
 jobs = 12
+
+# Link with the LLVM linker the toolchain already ships.
+#
+# # Why this is worth a config entry
+#
+# This workspace is sixty crates and builds well over forty test binaries, each linked
+# separately and each pulling in the whole of DataFusion and Arrow. Linking is a large part of
+# every incremental build here, and GNU `ld` does it on one thread.
+#
+# `rust-lld` is not a new dependency: it is inside the toolchain directory already, reached
+# through rustc's own `-Zgcc-ld`-style shim directory. That matters more than the speed does ---
+# a linker installed separately is a build that behaves differently on the machine that has it,
+# and `rust-toolchain.toml` pins this one along with the compiler.
+#
+# Remove this block if a link ever fails in a way GNU `ld` would not: it is an optimisation,
+# and nothing about the correctness of this workspace depends on which linker produced it.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-Clink-arg=-fuse-ld=lld"]

@@ -7,16 +7,15 @@
 
 *To count is to make completely known.*
 
-**One binary. Three engines. One reckoning.**
-
 *A general-purpose unified OLTP + OLAP + Graph data server — one binary, written entirely in Rust.*
 
-[![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-M0%2C%20M1%2C%20M3%2C%20M4%2C%20M7%2C%20M10%20complete%3B%20M2%2C%20M5%2C%20M6%2C%20M8%2C%20M13%20partial%3B%20M9%2C%20M14%2C%20M17%2C%20M18%20in%20progress-yellow.svg)](docs/STATUS.md)
-[![Rust](https://img.shields.io/badge/rust-1.97%2B-b7410e.svg)](https://www.rust-lang.org)
-[![JVM](https://img.shields.io/badge/JVM-none-success.svg)](#design-principles)
+**One binary, three engines, one reckoning — that is the design. Today, one engine runs.**
+
+[![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE) [![Status](https://img.shields.io/badge/status-M0%2C%20M1%2C%20M3%2C%20M4%2C%20M7%2C%20M10%20complete%3B%20M2%2C%20M5%2C%20M6%2C%20M8%2C%20M13%20partial%3B%20M9%2C%20M14%2C%20M17%2C%20M18%20in%20progress-yellow.svg)](docs/STATUS.md) [![Rust](https://img.shields.io/badge/rust-1.97%2B-b7410e.svg)](https://www.rust-lang.org) [![JVM](https://img.shields.io/badge/JVM-none-success.svg)](#design-principles)
 
 </div>
+
+**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
 
 ---
 
@@ -41,28 +40,53 @@ And the second meaning matters as much as the first. A number alone is not the p
 **Sankhya: to count, and to discern.**
 
 ---
-
 ## What it is
 
-SANKHYA is a single self-contained Rust binary that gives you three data models over one governed copy of your data. The engine is **domain-agnostic**: it knows about tables, rows, columns, edges, versions and tenants — and nothing else.
+SANKHYA is a single self-contained Rust binary that is *designed* to give you three data
+models over one governed copy of your data. The engine is **domain-agnostic**: it knows about
+tables, rows, columns, edges, versions and tenants — and nothing else.
 
-| | Engine | Purpose |
-|---|---|---|
-| **Transact** | PostgreSQL — embedded in-process or external | The authoritative system of record **for managed tables**. Strict ACID, foreign keys, row-level locking, full audit. A table published directly to the open format by an external writer has no transactional half, and says so rather than pretending. |
-| **Analyse** | Apache DataFusion over Arrow + an open lakehouse table format | Vectorized, SIMD-accelerated OLAP. Ad-hoc SQL, high-cardinality aggregation and multi-dimensional pivots over billions of rows. |
-| **Relate** | In-memory graph engine over Arrow-backed adjacency | Network topology, k-hop traversal, cycle detection, weighted transitive closure, centrality and community detection — with time-respecting paths as a first-class primitive. |
+The table below is the design. The **Today** column is what a process you can start actually
+does, and it is the column to read first.
 
-Between them sits a **native Rust change-data-capture bridge** that streams PostgreSQL's write-ahead log directly into versioned columnar storage — no Kafka, no Debezium, no Connect cluster, **no JVM anywhere in the stack**.
+| | Engine | Purpose | Today |
+|---|---|---|---|
+| **Transact** | PostgreSQL — supervised child process, or attached to an external cluster | The authoritative system of record **for managed tables**. Strict ACID, foreign keys, row-level locking, full audit. A table published directly to the open format by an external writer has no transactional half, and says so rather than pretending. | **Not built into the server.** See below |
+| **Analyse** | Apache DataFusion over Arrow + an open lakehouse table format | Vectorized, SIMD-accelerated OLAP. Ad-hoc SQL, high-cardinality aggregation and multi-dimensional pivots over billions of rows. | **Runs.** This is the engine you get |
+| **Relate** | In-memory graph engine over Arrow-backed adjacency | Network topology, k-hop traversal, cycle detection, weighted transitive closure, centrality and community detection — with time-respecting paths as a first-class primitive. | **A library, not a service.** Nothing hydrates a graph on a timer |
 
-Everything is one process, one config file, one binary, one security model.
+> **Not built: "embedded PostgreSQL", and the phrase itself was wrong.**
+> `crates/sankhya-oltp-pg/src/lib.rs` refutes it in its own opening words: PostgreSQL *"is not
+> linked into this binary and does not run inside this process. It is a **child process whose
+> entire lifecycle SANKHYA owns**"* — `initdb`, start, readiness, health, shutdown — so that an
+> operator sees one process tree and one artifact. That is a real and defensible claim;
+> *embedded* in the literal sense is not, and `REQUIREMENTS.md` settles it as `DEC-02`.
+>
+> Today even the supervisor is unreachable. It is a **dev-dependency** of the server —
+> `crates/sankhya-server/Cargo.toml` says so, with the comment *"nothing in the server wires it
+> yet"* — `Settings` has no transactional configuration, and **the server never starts a
+> database**. It is one of ten crates on the `UNREACHED` list in `xtask/src/surfaces.rs`, which
+> is the mechanical, build-checked statement of exactly this.
+
+Between the transactional and analytical halves sits a **native Rust change-data-capture
+bridge**, designed to stream PostgreSQL's write-ahead log directly into versioned columnar
+storage — no Kafka, no Debezium, no Connect cluster, **no JVM anywhere in the stack**.
+
+> **Not built: the bridge has no runtime.** The `pgoutput` wire decoder, the apply path,
+> reconciliation, idempotence, crash safety, schema evolution and the source-safety ladder are
+> all built and tested — several of them against a real PostgreSQL 17.11 replication stream.
+> What does not exist is the **driver that runs them on a timer**. `sankhya-cdc-pg`,
+> `sankhya-cdc-apply`, `sankhya-cdc-model` and `sankhya-ingest` are not dependencies of
+> `sankhya-server` at all; the server's only background loops are maintenance and file feeds.
+> The audit records this as `ING-00`, *"there is no change-capture runtime"*.
 
 ```
                     ┌──────────────────────────────────────────┐
-   writes ─────────▶│   PostgreSQL — system of record (ACID)   │
+   writes ╌╌╌╌╌╌╌╌╌▷│   PostgreSQL — system of record (ACID)   │
                     └───────────────────┬──────────────────────┘
-                                        │  native logical replication
-                                        │  (pgoutput, in-process — no JVM)
-                                        ▼
+                                        ╎  native logical replication
+                                        ╎  (pgoutput, in-process — no JVM)
+                                        ▽
                     ┌──────────────────────────────────────────┐
                     │  Delta Bridge  ──▶  arrival buffer (hot)  │
                     │                ──▶  lakehouse tables      │
@@ -82,7 +106,19 @@ Everything is one process, one config file, one binary, one security model.
                         ╚══════════════════════════════════╝
                             │            │             │
                        Risk desks   AML compliance   Quants / BI
+
+  ───▶  built, and reachable from a running server
+  ╌╌╌▷  designed and tested, with no runtime that drives it
 ```
+
+**Legend.** Solid edges carry data in a process you can start. **Dashed edges do not exist as
+a running path**: nothing writes to a database this server supervises, and nothing decodes its
+write-ahead log on a timer. Everything below the Delta Bridge is reached today by pointing the
+server at a warehouse that something else published. Of the four surfaces in the box, two are
+built — the PostgreSQL wire protocol and Arrow Flight SQL; the gRPC control plane is unbuilt
+and the REST gateway is refused by design.
+
+Everything is one process, one config file, one binary, one security model.
 
 ---
 
@@ -101,31 +137,59 @@ SANKHYA's bet is that the modern Rust data stack — Arrow, DataFusion, the lake
 
 ## Domain packs, not a hardcoded domain
 
-Nothing in the SANKHYA core knows what a trade, a shipment or a patient is. Domain semantics arrive as **packs** — optional, versioned bundles that contribute schemas, aggregate functions, graph algorithms, materialized views, detection rules and policy vocabulary through a stable extension API. The engine stays general; the domain stays pluggable.
+Nothing in the SANKHYA core knows what a trade, a shipment or a patient is. Domain semantics
+arrive as **packs** — optional, versioned bundles that contribute schemas, aggregate functions,
+graph algorithms, materialized views, detection rules and policy vocabulary through a stable
+extension API. The engine stays general; the domain stays pluggable.
 
-Two flagship packs ship as reference implementations, and they exist as much to *prove the extension API is real* as to serve their industries:
+**Three packs exist, and none of them is a flagship.** They exist to test the extension API
+rather than to serve an industry, and two of the three are deliberately *unlike* finance:
 
-- **Risk** — scenario vectors and sensitivities pivoted across any hierarchy, with **exact** order statistics. Quantiles aggregate the way risk actually composes: sum the vectors, *then* take the percentile — never sum the percentiles.
-- **Financial crime** — transaction networks scored against historical baselines, with time-respecting paths (a chain that runs backwards in time is not a chain), structuring detection, and beneficial-ownership tracing with materiality thresholds.
-
-The same primitives underneath serve supply-chain tier-N dependency tracing, telecom fraud, healthcare claims, IoT telemetry, logistics and retail analytics — because they were never really about finance:
-
-| Domain concept | The general capability underneath |
+| Pack | What it is |
 |---|---|
-| VaR / Expected Shortfall | Exact order statistics with a declared interpolation convention |
-| Scenario P&L vectors | Fixed-size numeric list columns with element-wise aggregation, where reduction order is semantically significant |
-| Ultimate beneficial ownership | Weighted transitive closure with multiplicative edge weights, cycle tolerance and a pruning threshold |
-| Laundering-chain detection | Time-respecting path traversal |
-| Structuring / smurfing | Windowed pattern matching over a time-ordered edge stream |
-| Risk coverage checks | Data-completeness measures attached to any aggregate |
+| `packs/pack-ref-telemetry` | Devices, readings, thresholds and windows. Scalar time-series, no graph. Its manifest says *"deliberately non-financial"* |
+| `packs/pack-ref-logistics` | Shipments, depots and routes. Graph-heavy, and also *"deliberately non-financial"* |
+| `packs/pack-adversarial` | A **hostile** pack. Every attempt it makes must be refused with a named error, so that "the boundary holds" is a test rather than an assertion |
 
-A "toy domain" pack deliberately unlike finance is built and tested in CI. If the core can serve it with no changes to the core, the general-purpose claim holds. That is the test, not the assertion.
+That is the whole of it. If the core can serve two unrelated industries with no changes to the
+core, and refuse a hostile pack by name, the general-purpose claim holds. That is the test.
+
+> **Not built: the risk and financial-crime packs.** Earlier versions of this README described
+> two "flagship packs" — a Risk pack with exact order statistics, and a Financial-crime pack
+> with time-respecting paths and beneficial-ownership tracing — as shipping reference
+> implementations. **Neither exists.** There is no `risk` pack and no AML pack anywhere in the
+> repository. They are a **1.4** commitment answering `FR-EXT-16`; see
+> [`docs/ROADMAP.md`](docs/ROADMAP.md) §1.4.
+>
+> This passage is called out rather than quietly deleted because it was the one place in this
+> repository written to impress rather than to inform, and it was also the false one. The
+> sentence that followed it — *"a toy domain pack deliberately unlike finance is built and
+> tested in CI. If the core can serve it with no changes to the core, the general-purpose claim
+> holds. That is the test, not the assertion"* — inverted reality exactly: the deliberately
+> non-financial packs are the ones that exist, and the flagships were the assertion.
+
+The **capabilities** those packs would be built from are real, and most are built and tested
+today as engine primitives — which is the honest version of the claim:
+
+| Domain concept | The general capability underneath | Built? |
+|---|---|---|
+| VaR / Expected Shortfall | Exact order statistics with a declared interpolation convention | Yes — three conventions, shown to disagree at the 99th percentile |
+| Scenario P&L vectors | Fixed-size numeric list columns with element-wise aggregation, where reduction order is semantically significant | Yes — every reduction bit-deterministic under permutation |
+| Ultimate beneficial ownership | Weighted transitive closure with multiplicative edge weights, cycle tolerance and a pruning threshold | Yes, as a graph primitive — but nothing hydrates a graph on a timer |
+| Laundering-chain detection | Time-respecting path traversal | Yes, as a graph primitive — same caveat |
+| Structuring / smurfing | Windowed pattern matching over a time-ordered edge stream | Yes, as a graph primitive — same caveat |
+| Risk coverage checks | Data-completeness measures attached to any aggregate | Yes — every cube row carries the completeness it was computed under |
+
+The same primitives serve supply-chain tier-N dependency tracing, telecom fraud, healthcare
+claims, IoT telemetry, logistics and retail analytics — because they were never really about
+finance.
 
 ---
 
 ## Open storage, readable by everyone
 
-The analytical tier is not a black box. Tables live in an open lakehouse format in a layout that mirrors your operational schema, so **OLTP and OLAP names line up**:
+The analytical tier is not a black box. Tables live in an open lakehouse format in a layout
+that mirrors your operational schema, so **OLTP and OLAP names line up**:
 
 ```
 warehouse/
@@ -136,7 +200,24 @@ warehouse/
     device_readings/
 ```
 
-Spark, Trino, DuckDB, Snowflake and Athena read these tables **directly**, with no SANKHYA process in the path. You are not buying another silo — you are buying an engine that happens to also be a good citizen of the lakehouse you already have.
+SANKHYA writes the Delta transaction log itself, so these tables are readable with no SANKHYA
+process in the path.
+
+**What is actually tested is one external reader.** The `delta_kernel` crate — a
+*dev-dependency*, used as an independent oracle rather than as a library this product ships —
+reads tables this system wrote and is required to agree about the schema, the version and the
+live file set, including across a compaction where four superseded fragments are still on disk.
+It reads a checkpoint written by hand and is proven to *use* it rather than tolerate it: the
+commits the checkpoint covers are deleted and the table still resolves. The tests are
+`crates/sankhya-table-delta/tests/oracle.rs` and
+`crates/sankhya-maintenance/tests/kernel_oracle.rs`, and one of them asserts that the kernel
+reads all 1,000 rows rather than merely listing the files.
+
+Spark, Trino, DuckDB, Snowflake and Athena read the Delta format, and nothing in this
+repository executes any of them. An earlier version of this section said those five engines
+*"read these tables **directly**"*, which stated a compatibility conclusion as a tested result.
+The honest claim is narrower and still worth something: **an independent implementation of the
+format reads what this system writes, on every build, and disagreeing with it fails the gate.**
 
 ---
 
@@ -151,134 +232,102 @@ Spark, Trino, DuckDB, Snowflake and Athena read these tables **directly**, with 
 7. **Documentation ships with the code.** Docs are updated in the same commit as the change they describe. A pull request that changes behaviour and not the docs is incomplete.
 
 ---
-
 ## Status
 
-**Implementation — M0, M1, M3, M4, M7 and M10 complete; M2, M5, M6, M8 and M13 partial; M9, M14,
-M17 and M18 in progress.** This line used to read "M0 through M8 complete", which four rows of
-`docs/STATUS.md`'s own table contradicted: **M2** is substantially complete with the streaming
-partition path not started, **M5** closed on four of five exit criteria, **M6** on six of seven,
-**M8** on six of eight, and **M13** is *substantially built*. Ten documents carried the wrong version, and the gate that requires
-them to agree could not see it, because it looked for the literal words *in progress* and those
-rows say *substantially complete*, *closed* and *complete on six of eight*. M8's two remaining
-criteria need a second machine, and the scale-out work behind
-them, moved to M12. M9's eleven work items are built and its exit criteria demonstrated, and
-**its gate is deliberately not cleared** — see below. **M10 — zero-copy cloning — is complete**:
-its design gate was cleared by [ADR-0016](docs/adr/0016-zero-copy-cloning.md) before any code was
-written, and all five exit criteria are met. **M13 — config-driven ingest from files — is
-substantially built**: a YAML declaration names the source, the shape of what arrives and where it lands; a
-record that does not fit is quarantined whole into a table with a mandatory expiry, under
-[ADR-0018](docs/adr/0018-a-record-that-does-not-fit.md); and a feed that halts is visible and
-resumable from a client rather than only from a log line. **M14 — the client contract and the
-Python SDK — is in progress**: the contract is decided in
-[ADR-0017](docs/adr/0017-the-client-contract.md), and transport security is built on both doors. The architecture and requirements were reviewed and amended by a panel covering
-systems architecture, database internals, analytical query engines and Rust engineering
-practice.
+**M0, M1, M3, M4, M7 and M10 are complete; M2 and M13 are substantially built; M5 closed on four of five exit criteria, M6 on six of seven, and M8 on six of eight with its scale-out half moved to M12 for want of a second machine; M9 is built and demonstrated with its gate deliberately held for M11; and M14, M17 and M18 are in progress.** What runs today is the analytical half — a server `psql` connects to, authenticates against and queries over real Parquet, with cubes, clones, named snapshots, maintenance on a timer, Arrow Flight SQL and a hash-chained audit. What does not run is everything upstream of it: no change-capture runtime, no transactional tier wired into the server, and no second node — so of the three engines, one runs, one is a library nothing hydrates, and one is a supervised process nothing starts.
 
-What works today, all of it exercised by tests rather than by a running process: a
-`pgoutput` wire decoder validated against a real PostgreSQL 17.11 stream, an apply path
-whose transaction invariant is property-tested, lossless type mapping, capture that
-reconciles against its source and survives a crash at any point, an **open table log**
-that the Delta kernel reads — so the open-storage claim is tested rather than asserted —
-**compaction** that plans, merges, commits and converges without changing an answer, a
-**maintenance scheduler** that arbitrates it against the machine budget, and a **table
-provider** that plans from metadata alone, prunes files by statistics, resolves updated
-and deleted rows to one current version each, and answers from memory and Parquet at once
-or refuses when the tiers do not cover the query.
+[`docs/STATUS.md`](docs/STATUS.md) leads with a one-screen *what works today* and holds the **single canonical inventory of what is not built**, with the evidence for each entry; every other document links there rather than keeping its own copy.
 
-The **graph tier** holds no durable state: an epoch is hydrated by scanning published
-tables, carries the snapshot it was built from, and is dropped on shutdown. There is no
-graph write path, so the graph cannot disagree with SQL — an edge exists because a row
-exists. Traversal is time-aware and bounded, and the algorithms are callable from SQL as
-table functions that join against ordinary tables. The **extension mechanism** defines its
-own function traits rather than re-exporting the query engine's, so a pack survives the
-engine changing underneath it; two reference packs from unrelated industries and one
-deliberately hostile pack, whose every attempt is refused with a named error, are what
-test that claim rather than assert it.
+---
 
-The analytical tier is measured against TPC-H at scale factor 1, and the three
-performance objectives are **asserted by a build gate** rather than reported: a needle
-lookup at 13 ms against a 250 ms budget, a pivot at 796 ms against 1 s, a wide scan at
-648 ms against 3 s — on twelve cores, where the requirements name a thirty-two-core
-reference node. Cancellation is bounded, a hostile aggregation is refused rather than
-taking the process down, and the places where this engine and PostgreSQL disagree are
-enumerated in a test — which found three ways the analytical tier returns a wrong number.
+## Measured, and what the measurement actually asserts
 
-**The server runs and answers queries.** Real `psql` connects, authenticates, and runs
-ordinary SQL — aggregation, expressions, null semantics — against a provider wrapped in its
-policy decision — over real Parquet on disk, through the read path that plans from the
-table log alone and prunes files by recorded statistics. A table the caller may not read is
-never registered, so naming it fails to resolve rather than confirming it exists; a policy
-row predicate is enforced where no provider can decline it. Everything it did is recorded in
-a tamper-evident hash chain.
+This repository's habit is to gate a claim rather than publish it, and where that has not
+happened the number below says so. The distinction matters: a **gated** figure fails the build
+when it regresses; a **reported** figure is a transcript of one run on one machine.
 
-**Arrow Flight SQL** streams results as Arrow batches over gRPC, so a bulk extract stays
-columnar from the Parquet page to the client's buffer — the wire protocol is a row protocol
-and converts at the last step, which is the whole cost of a large extract.
+**Analytical performance.** The three objectives are asserted by a build gate against a
+**budget**, at TPC-H scale factor 1, on twelve cores where the requirements name a
+thirty-two-core reference node:
 
-**It can be operated.** `sankhya-server doctor` reports *when* a problem becomes
-user-visible rather than its current value — and refuses to invent a date it cannot support,
-which on a first run means saying so. `backup` binds the transactional backup, the table
-versions and the key generation to one consistent point and refuses to record an
-inconsistency; `drill` proves that backup restores by reading the data back and recomputing
-its digest, because a file-presence check passes on every failure that actually happens. A
-`/metrics` endpoint exports a catalogue where recording requires passing the declaration, so
-an undeclared metric is unrepresentable and no label can carry tenant data. Every error a
-client sees carries a permanent code and the catalogue's own remediation.
+| Objective | Budget, asserted | Observed, reported |
+|---|---|---|
+| `NFR-PERF-02` needle lookup, 8 clients | 250 ms | 13 ms |
+| `NFR-PERF-03` pivot, 8 clients | 1,000 ms | 796 ms |
+| `NFR-PERF-04` wide scan, 4 clients | 3,000 ms | 648 ms |
 
-**Cubes are a declared model rather than a `GROUP BY` convention.** A cube knows which
-columns are dimensions, which are measures, and — the part that decides whether an answer is
-correct — **how each measure may be combined along each dimension**. Summing a closing balance
-across twelve months gives a number of the right magnitude, the right sign and no meaning; a
-cube refuses it. Roll-up and slice are SQL table functions with no cube-build step preceding
-the query — dice and drill-down are the two navigations still to come — every row carries the
-completeness it was computed under, and `CREATE CUBE` / `DROP CUBE` are statements a client can
-send.
+The budgets are asserted in `crates/sankhya-olap/tests/tpch.rs`, in a test named
+*the performance objectives are met*, and driven by `cargo xtask check-performance`. **The
+observed figures are not asserted by anything** — they come from a separate measurement test
+marked *"a measurement, not an assertion"*, whose only assertion is that it found any rows at
+all. And `check-performance` is deliberately **not** part of `check-all`, which is what CI
+runs — so the budget gate does not run in GitHub CI. Two further TPC-H queries are published
+without being gated at all, and [`docs/STATUS.md`](docs/STATUS.md) says which and why.
 
-**Concurrency is measured against a control rather than asserted.** Every concurrency claim is
-taken twice in the same run on the same machine — once as the code stands, once with the same
-work forced through one mutex — because a single lock over the warehouse satisfies every
-*safety* property while destroying concurrency itself. Commits to eight tables run at 4.8×
-one table's rate where the serialized control runs at 0.91×; a reader under four writers holds
-0.59–0.80 of its idle rate with a p99 of 227 µs, where the control holds 0.00–0.07 and waits
-seconds. A forty-five-minute soak at twenty gigabytes passes with resident memory flat.
+**Concurrency.** Every concurrency claim is taken twice in the same run on the same machine —
+once as the code stands, once with the same work forced through one mutex — because a single
+lock over the warehouse satisfies every *safety* property while destroying concurrency itself.
+The **floors are asserted**: commit scaling ≥ 3.0× and ≥ 2× the serialized control; the loaded
+reader holding ≥ 0.4 of its idle rate with a p99 within 4× of idle, while the lock-sharing
+control's p99 is ≥ 20× worse. The **figures usually quoted** — 4.8× against a serialized 0.91×,
+a reader holding 0.59–0.80 with a p99 of 227 µs against a control at 0.00–0.07 waiting
+seconds — are printed outputs of particular runs, transcribed. They are evidence, not gates.
 
-What does not exist: the streaming transport, the gRPC control plane and the REST gateway.
-**Tiering is M9 and still gated.** `sankhya-tiering` is no longer empty: the policy model,
-the resumable purge state machine, exhaustive verification, the archival registry, the
-four-layer defence against a propagated delete, cross-tier query unification, quarantine,
-rehydration, whole-table migration and the command and schedule surfaces are all built, and the
-exit criteria are demonstrated end to end. **Destructive purge against a system of record is
-disabled until M11 regardless** — building the purge path and arming it are two decisions, and
-the gate's remaining criterion needs an attestation drill run against a real non-production
-archive, which development cannot produce. Also unbuilt inside work
-already counted: bloom filters, table
-partitioning, the result cache, leader election, a timer that drives graph hydration, and
-a measured graph benchmark — the graph primitives are correct against brute force and
-bounded by construction, but they have not been timed at scale, and that M4 criterion is
-carried forward as unmet rather than reinterpreted. [`docs/GUIDE.md`](docs/GUIDE.md), [`docs/QUICKSTART.md`](docs/QUICKSTART.md) and [`docs/STATUS.md`](docs/STATUS.md)
-are explicit about the boundary, including the defects found along the way — and about
-the two TPC-H queries whose numbers are published without being gated, and why.
+**Soak.** A forty-five-minute run at twenty gigabytes passes, with 1.16 billion rows scanned
+and 21.5 GB reclaimed. Resident memory was **not flat**, and this README said it was: it rose
+from 1,223 MB at t+478s to 2,458 MB at t+2671s and settled at 2,271 MB, inside its bound
+throughout. The claim worth keeping is the one [`docs/SOAK.md`](docs/SOAK.md) actually makes —
+that this lands within 25 MB of the ten-gigabyte run's steady figure at **double** the data, so
+the working set is bounded by the machinery rather than by the dataset. The multi-day run is
+not done, and moved to M12.
 
-Start here:
+---
+
+## Audited
+
+Twelve independent production-readiness audits reported **129 findings** in
+[`docs/AUDIT_REPORT.md`](docs/AUDIT_REPORT.md), verdict *not production-ready*. The count is a
+**lower bound**, and the report says so.
+
+They are not all open. [`docs/REMEDIATION.md`](docs/REMEDIATION.md) sequences the repair, and
+**Phases 0, 1 and 2 are done** — the status lies, the missing CI and the silent-green gate, and
+then the whole of the data-loss tier: the kernel now reads what compaction wrote, `fsync`
+exists on both halves, four ways to answer *"nothing reads this"* when something did are
+closed, a data-file name is used once, one server per warehouse is enforced. Phases 3 through 6
+— wrong answers, security, operability, and closing the gap between what is claimed and what is
+true — have each partly landed; this rewrite is an item in Phase 6.
+
+The verdict paragraph is worth reading in full, because it is the most useful sentence in this
+repository: *the reason is not the defect count — it is that a green gate did not see any of
+this.* 2,807 tests, 741 mutations and twenty checks, against silent data loss on three
+production paths, a door with no lock, and a summation kernel that returned zero for a real
+number. The tests were not absent. They were calling the code differently from the way
+production calls it.
+
+---
+
+## Start here
+
+Thirteen documents. There is no separate book; it was deleted in September 2026 because it
+duplicated these and was the stale copy wherever the two disagreed.
 
 | Document | What it covers |
 |---|---|
-| [`docs/QUICKSTART.md`](docs/QUICKSTART.md) | Build it, load ten gigabytes, watch capture reconcile — and what does not work yet |
-| [`docs/tutorials/`](docs/tutorials/) | Hands-on, in order — start here. Every example executed by a test |
-| [`docs/book/`](docs/book/README.md) | The full book: twenty-seven chapters on how and why it works, including the only table of `SANKHYA_*` environment variables |
+| [`docs/QUICKSTART.md`](docs/QUICKSTART.md) | Build it, start it, query it — every transcript reproducible from one fixture |
+| [`docs/TUTORIALS.md`](docs/TUTORIALS.md) | Five tutorials, in order, from the first hour onwards. Every example executed by a test |
 | [`docs/GUIDE.md`](docs/GUIDE.md) | Every feature by worked example, each one executed by a test |
-| [`docs/STATUS.md`](docs/STATUS.md) | What is actually built today, what is not, and what broke along the way |
-| [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) | The amended, traceable functional and non-functional requirements |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture, crate decomposition, consistency and security models |
-| [`docs/POSTGRES.md`](docs/POSTGRES.md) | Exactly what SANKHYA changes about PostgreSQL, and what it will never do to it |
-| [`docs/FUNCTIONS.md`](docs/FUNCTIONS.md) | Every built-in function, where each is reachable from, and what is still planned |
+| [`docs/GLOSSARY.md`](docs/GLOSSARY.md) | Milestone numbers, finding codes, and the terms this repository coins |
+| [`docs/STATUS.md`](docs/STATUS.md) | What works today; the canonical list of what does not; and what broke along the way |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | What each release is *for*, gated on exit criteria rather than dates |
-| [`docs/AUDIT_REPORT.md`](docs/AUDIT_REPORT.md) | Twelve production-readiness audits, 129 findings, every one open |
-| [`docs/REMEDIATION.md`](docs/REMEDIATION.md) | The sequenced plan that closes them |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture, crate decomposition, consistency and security models |
+| [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) | The amended, traceable functional and non-functional requirements |
+| [`docs/TESTING.md`](docs/TESTING.md) | What is verified, how, and what is not verified |
+| [`docs/DEVELOPING.md`](docs/DEVELOPING.md) | Working in the repository: layout, gates, and the rules the build enforces |
+| [`docs/AUDIT_REPORT.md`](docs/AUDIT_REPORT.md) | Twelve production-readiness audits, 129 findings |
+| [`docs/REMEDIATION.md`](docs/REMEDIATION.md) | The sequenced plan that closes them, and what has landed |
 | [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) | Every third-party package, its licence, and the upstream `NOTICE` files |
 
-Generated from the code, and checked against it on every build:
+Reference material, generated from the code and checked against it on every build:
 
 | Document | What it covers |
 |---|---|
@@ -286,14 +335,16 @@ Generated from the code, and checked against it on every build:
 | [`docs/ERRORS.md`](docs/ERRORS.md) | Every error code, its class, and what to do about it |
 | [`docs/PLATFORMS.md`](docs/PLATFORMS.md) | Where the server runs, what a build must satisfy, and where only a client does |
 | [`docs/VERSIONS.md`](docs/VERSIONS.md) | The four version axes, every on-disk format, and whether an upgrade can be undone |
+| [`docs/FUNCTIONS.md`](docs/GUIDE.md) | Every built-in function, where each is reachable from, and what is still planned |
+| [`docs/POSTGRES.md`](docs/POSTGRES.md) | Exactly what SANKHYA changes about PostgreSQL, and what it will never do to it |
 | [`docs/SOAK.md`](docs/SOAK.md) | The long-run method, its results, and four attempts' worth of what it taught |
+| [`docs/INVARIANTS.md`](docs/TESTING.md) | What the build gate enforces, and §6: what it only *intends* |
 | [`docs/runbooks/`](docs/runbooks/) | One per alert that can page — enforced, not aspirational |
+| [`docs/adr/`](docs/adr/) | Architecture decision records, including what each one deliberately leaves open |
 | [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) | Milestones, work breakdown, sizing and acceptance gates |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Release themes and the capability timeline |
 | [`docs/initial_reqmt.docx`](docs/initial_reqmt.docx) | The original brief, preserved for provenance |
 
 ---
-
 ## License
 
 **Proprietary and confidential.** Copyright (c) 2026 Ashutosh Sinha

@@ -21,8 +21,9 @@ use std::path::Path;
 
 /// Where the objectives are stated.
 const STATED: &str = "docs/REQUIREMENTS.md";
-/// Where their state is reported.
-const REPORTED: &str = "docs/book/part5/24-requirements.md";
+/// Where their state is reported. `STATUS.md` is the document that answers "what is built",
+/// and an objective's state is exactly that question asked about a number.
+const REPORTED: &str = "docs/STATUS.md";
 
 /// Every `NFR-PERF-nn` identifier in `text`, including both ends of a `nn`–`mm` range.
 ///

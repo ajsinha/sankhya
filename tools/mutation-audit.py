@@ -248,8 +248,8 @@ CATALOGUE = [
 
     ("log: skip a malformed line instead of reporting it",
      "crates/sankhya-table-delta/src/log.rs",
-     "            let action: Action =\n                serde_json::from_str(line).map_err(|e| CommitError::Malformed {\n                    version,\n                    detail: e.to_string(),\n                })?;\n            read += 1;\n            out.push((version, action));",
-     "            if let Ok(action) = serde_json::from_str::<Action>(line) {\n                read += 1;\n                out.push((version, action));\n            }",
+     "            let action: Action =\n                serde_json::from_str(line).map_err(|e| CommitError::Malformed {\n                    version,\n                    detail: e.to_string(),\n                })?;",
+     "            let Ok(action) = serde_json::from_str::<Action>(line) else { continue };",
      "sankhya-table-delta"),
 
     ("log: omit the required partitionValues field from an add",
@@ -6501,6 +6501,17 @@ CATALOGUE = [
      "                                tracing::error!(\n                                    feed = %name,\n                                    detail = %reason,\n                                    \"a feed stopped and will not run again until RESUME FEED\"\n                                );",
      "                                eprintln!(\"  feed `{name}` STOPPED --- {reason}\");",
      "sankhya-server", 1, "feed_exit"),
+
+    # --- Phase 6.4 and 6.6: the price of a guarantee, and a declaration honoured ------------------
+
+    # `FMT-02`. `Action::Protocol` was parsed and discarded, and no ceiling existed anywhere.
+    # Reader version 2 is column mapping --- every column reads null; version 3 is deletion
+    # vectors --- deleted rows are served as live. Both are answers rather than errors.
+    ("delta: serve a table declaring a reader version this build cannot honour",
+     "crates/sankhya-table-delta/src/log.rs",
+     "                if *min_reader_version > SUPPORTED_READER_VERSION {",
+     "                if false && *min_reader_version > SUPPORTED_READER_VERSION {",
+     "sankhya-table-delta", 1, "log"),
 
 ]
 

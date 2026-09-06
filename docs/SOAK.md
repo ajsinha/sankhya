@@ -441,5 +441,5 @@ releases, and it is the obvious next piece.
 ## Where to go next
 
 - [`STATUS.md`](STATUS.md) — what is built, and what is not
-- [`GUIDE.md` §10](GUIDE.md#10-the-diagnostic) — the projection machinery this reuses
+- [`OPERATIONS.md` §9](OPERATIONS.md#9-the-diagnostic) — the projection machinery this reuses
 - [`runbooks/`](runbooks/) — one per alert that can page

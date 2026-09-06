@@ -216,7 +216,14 @@ runtime half is decided the same way: a sidecar that panics is a sidecar that di
 ### 1.4 — *Domain packs*
 **Theme: the mechanism, used in anger.**
 
-**Available:** risk analytics and financial-crime packs, built on the same published extension API available to third parties, using no privileged access.
+> **Not built.** Neither pack exists. `packs/` holds `pack-ref-telemetry`,
+> `pack-ref-logistics` and `pack-adversarial` — two reference packs from deliberately
+> non-financial industries, and one hostile pack whose every attempt must be refused with a
+> named error. Those three are what test the extension API today. The two named below are a
+> 1.4 commitment and nothing more, and any document describing them in the present tense is
+> wrong.
+
+**Planned:** risk analytics and financial-crime packs, built on the same published extension API available to third parties, using no privileged access. `FR-EXT-16` is the requirement they answer.
 
 **Why they come after 1.0 rather than defining the product:** they exist as much to prove the extension mechanism is real as to serve their industries. A pack that required core changes would falsify the architecture; these must not.
 
@@ -224,30 +231,75 @@ runtime half is decided the same way: a sidecar that panics is a sidecar that di
 
 ## 4. Capability timeline
 
-| Capability | 0.1 | 0.2 | 0.3 | 0.4 | 0.5 | 0.6 | 0.7 | 1.0 | 1.1 | 1.2 | 1.3 |
-|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| Transactional store, managed or attached | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● | ● |
-| Automatic capture and onboarding | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● | ● |
-| Read-your-own-writes | | ● | ● | ● | ● | ● | ● | ● | ● | ● | ● |
-| Exactly-once, reconciliation-proven | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● |
-| Schema evolution with quarantine | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● |
-| Source-safety escalation | | | ● | ● | ● | ● | ● | ● | ● | ● | ● |
-| Analytical SQL at published performance | ▪ | ▪ | ▪ | ● | ● | ● | ● | ● | ● | ● | ● |
-| Time travel and as-of queries | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● |
-| External-engine readability | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● |
-| Automatic maintenance | | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● |
-| Graph engine | | | | | ● | ● | ● | ● | ● | ● | ● |
-| Extension API and declarative packs | | | | | ● | ● | ● | ● | ● | ● | ● |
-| Multi-tenancy and row/column security | | | | | ▪ | ● | ● | ● | ● | ● | ● |
-| Columnar and wire-protocol surfaces | | ▪ | ▪ | ▪ | ▪ | ● | ● | ● | ● | ● | ● |
-| Audit and encryption | | | | | | ● | ● | ● | ● | ● | ● |
-| Operability and packaging | | | | | | ▪ | ● | ● | ● | ● | ● |
-| Multi-node and high availability | | | | | | | ▪ | ● | ● | ● | ● |
-| Zero-copy clones | | | | | | | | | | ▪ | ● |
-| Data tiering with purge | | | | | | | | | ● | ● | ● |
-| Domain packs | | | | | | | | | ▪ | ● | ● |
+This table had two symbols and no way to say **"does not exist"**. A blank cell therefore
+carried two meanings at once — *not yet in that release*, and *nothing like this is built* —
+and a reader had no way to tell which one they were looking at. Worse, several rows showed
+`●` from 0.2 or 0.5 for capabilities that have no runtime at all, so the table read as a
+delivery schedule for things nobody has started.
 
-● available · ▪ partial or in development
+There is now a third symbol, `○`, and a **Today** column that states the current position
+before the forecast begins. The forecast columns are unchanged in meaning: they are what
+each release is *for*. Only Today is a claim about what runs, and it is the column to read
+first.
+
+| Capability | **Today** | 0.1 | 0.2 | 0.3 | 0.4 | 0.5 | 0.6 | 0.7 | 1.0 | 1.1 | 1.2 | 1.3 |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| Transactional store, managed or attached | ○ | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| Automatic capture and onboarding | ○ | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| Read-your-own-writes | ○ | | ● | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| Exactly-once, reconciliation-proven | ○ | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| Schema evolution with quarantine | ○ | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| Source-safety escalation | ○ | | | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| Analytical SQL at published performance | ● | ▪ | ▪ | ▪ | ● | ● | ● | ● | ● | ● | ● | ● |
+| Time travel and as-of queries | ● | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| External-engine readability | ▪ | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| Automatic maintenance | ● | | | ▪ | ● | ● | ● | ● | ● | ● | ● | ● |
+| Graph engine | ▪ | | | | | ● | ● | ● | ● | ● | ● | ● |
+| Extension API and declarative packs | ▪ | | | | | ● | ● | ● | ● | ● | ● | ● |
+| Multi-tenancy and row/column security | ▪ | | | | | ▪ | ● | ● | ● | ● | ● | ● |
+| Columnar and wire-protocol surfaces | ▪ | | ▪ | ▪ | ▪ | ▪ | ● | ● | ● | ● | ● | ● |
+| Audit and encryption | ▪ | | | | | | ● | ● | ● | ● | ● | ● |
+| Operability and packaging | ▪ | | | | | | ▪ | ● | ● | ● | ● | ● |
+| Multi-node and high availability | ○ | | | | | | | ▪ | ● | ● | ● | ● |
+| Zero-copy clones | ● | | | | | | | | | | ▪ | ● |
+| Data tiering with purge | ▪ | | | | | | | | | ● | ● | ● |
+| Domain packs | ▪ | | | | | | | | | ▪ | ● | ● |
+
+**● available · ▪ partial or in development · ○ not built · blank, in a forecast column, means
+not yet scheduled for that release**
+
+### Why seven rows read `○` today
+
+Every one of them is a capability whose **correctness contract is built and tested and whose
+runtime is not** — which is the single most important thing to understand about this system's
+current state, and the thing two symbols could not express.
+
+- **Transactional store.** `crates/sankhya-oltp-pg/src/lib.rs` supervises a vendored
+  PostgreSQL 17.11 as a child process and is tested against it. It is a **dev-dependency** of
+  the server (`crates/sankhya-server/Cargo.toml`, whose own comment reads *"nothing in the
+  server wires it yet"*), `Settings` has no transactional configuration, and the server never
+  starts a database. It is on the `UNREACHED` list in `xtask/src/surfaces.rs`, which is the
+  mechanical statement of exactly this.
+- **Automatic capture and onboarding, read-your-own-writes, exactly-once, schema evolution,
+  source-safety escalation.** All five are properties of a change-capture pipeline, and there
+  is no change-capture runtime: `sankhya-cdc-pg`, `sankhya-cdc-apply`, `sankhya-cdc-model` and
+  `sankhya-ingest` are not dependencies of `sankhya-server` at all. The `pgoutput` decoder,
+  the apply path, reconciliation, idempotence, crash safety and the source-safety ladder are
+  built and tested — the driver that runs them on a timer is not. `AUDIT_REPORT.md` records
+  this as `ING-00`.
+- **Multi-node and high availability.** M12, and it needs a second machine. Nothing is built
+  because nothing can be honestly tested on one host.
+
+Three rows read `▪` for a reason worth naming rather than leaving to the symbol.
+**External-engine readability** is `▪` and not `●` because exactly one external reader is
+ever executed — the `delta_kernel` crate, used as an independent oracle in
+`crates/sankhya-table-delta/tests/oracle.rs` and
+`crates/sankhya-maintenance/tests/kernel_oracle.rs`. **Graph engine** and **extension API**
+are `▪` because both are built, correct and unreachable from a running server: nothing
+hydrates a graph epoch on a timer and nothing loads a pack bundle.
+
+The single canonical inventory of what is not built — with the evidence for each entry — is
+in [`STATUS.md`](STATUS.md). This table says *when*; that one says *what*.
 
 ---
 

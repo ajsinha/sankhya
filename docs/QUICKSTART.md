@@ -9,15 +9,23 @@
 
 # SANKHYA — Quickstart
 
-> **The book.** [`docs/book/`](book/README.md) is the long-form companion to this document --- twenty-seven chapters, and the only complete table of `SANKHYA_*` environment variables (Chapter 17, *Packaging and deployment*).
-
 **Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
 
-This guide reflects what works **today**, and says plainly what does not yet. Anything
-not listed here is not built.
+Forty minutes, most of it compiling. At the end you will have a server running, a client
+connected to it, a cube answering with its own completeness, a clone that costs nothing, a
+backup you have *proved* restores, and a clear idea of which third of this product exists.
 
-Everything below runs on one machine with no container runtime, no message broker, no
-object store and no cloud credentials.
+**Every transcript below was produced by running the command above it**, against a warehouse
+this document tells you how to generate, on one machine with no container runtime, no message
+broker, no object store and no cloud credentials. Where a step was not run, it says so.
+
+> **One warehouse, one recipe.** Everything here runs against the fixture at
+> `crates/sankhya-server/tests/make_warehouse.rs`, which is **the same warehouse every gate in
+> this repository runs against**. That was not true until 2026-09-03: this document used to
+> describe building one warehouse and then demonstrate against a different one, so the gates
+> were green against a warehouse no reader could produce and a reader following along got
+> `no cube named 'sales'` on the first statement. Two sources for one fact are two sources that
+> will one day disagree. There is now one.
 
 ---
 
@@ -26,10 +34,10 @@ object store and no cloud credentials.
 | | |
 |---|---|
 | Rust | 1.97.1, pinned by `rust-toolchain.toml` (`rustup` recommended) |
-| C toolchain | `gcc`, `make`, `bison`, `flex`, `perl`, `pkg-config` |
-| Libraries | `readline`, `zlib`, `openssl`, `icu` development headers |
-| Disk | ~25 GB free if you run the full acceptance dataset |
-| Memory | 8 GB is enough; the acceptance load is comfortable at 16 GB |
+| A PostgreSQL client | Any one. `psql` is used below; the server speaks the wire protocol, so anything that talks to PostgreSQL talks to it |
+| C toolchain | `gcc`, `make`, `bison`, `flex`, `perl`, `pkg-config` — only if you build the vendored database in §2 |
+| Disk | ~10 GB for the build; ~25 GB more only if you run the full acceptance dataset |
+| Memory | 8 GB is enough |
 
 On Debian or Ubuntu:
 
@@ -45,209 +53,208 @@ sudo apt install build-essential bison flex libreadline-dev zlib1g-dev \
 ```bash
 git clone https://github.com/ajsinha/sankhya.git
 cd sankhya
-cargo build --workspace
+cargo build --release -p sankhya-server -p sankhya-publish
 ```
 
-The first build compiles a large dependency graph — expect several minutes. The
-enforcement tooling builds in seconds and is worth running first:
+The first build compiles a large dependency graph — expect several minutes. The enforcement
+tooling builds in seconds and is worth running first:
 
 ```bash
 cargo xtask check-all
 ```
 
 That runs every repository invariant: the layer graph, the file-length ceiling, the
-domain-vocabulary prohibition, the duplicate-dependency gate, the documentation checks,
-the feature pins, clippy under the workspace's denied lints, the mutation catalogue's
-agreement with the source, the generated metric and error catalogues' agreement with
-their declarations, and every counted figure the documentation claims. **Each is
-proven to fail when violated**, not merely to pass.
+domain-vocabulary prohibition, the duplicate-dependency gate, the documentation checks, the
+feature pins, clippy under the workspace's denied lints, and the concurrency measurements.
+[`DEVELOPING.md`](DEVELOPING.md) explains each gate and [`TESTING.md`](TESTING.md) explains
+what is and is not verified.
 
----
-
-## 2. Build the vendored database
-
-SANKHYA carries PostgreSQL's source, verified by checksum, and builds it into a private
-prefix. Nothing is installed system-wide and no existing PostgreSQL is touched.
+Two gates are **not** in `check-all`, deliberately, and are worth knowing about:
 
 ```bash
-vendor/postgresql/build.sh
-```
-
-Roughly two minutes on a modern machine. It is idempotent — re-running it verifies the
-checksum and exits if the build is already current.
-
-```bash
-.build/pg-install/bin/postgres --version     # PostgreSQL 17.11
-```
-
-**Why 17 or later:** failover-capable logical replication slots. Without them a routine
-database failover destroys the slot and forces a full re-snapshot of every replicated
-table — a multi-hour outage of the analytical tier triggered by an ordinary
-availability event.
-
----
-
-## 3. Run the tests
-
-```bash
-cargo test --workspace          # 2802 tests, none of which needs a database
-```
-
-Everything here runs without a database, in well under a minute. Nothing is mocked: the
-Parquet is real Parquet, the Delta logs are read back by an independent kernel, and the
-TPC-H data is generated rather than fixtured.
-
-**The transactional and capture half:**
-
-| Suite | What it establishes |
-|---|---|
-| `sankhya-types` | Summation is order-independent — the property that decides fixed-point over floating point |
-| `sankhya-cdc-model` | The wire decoder never panics on arbitrary input, and decodes a stream captured from a real server |
-| `sankhya-cdc-apply` | A transaction is never split across batches, however events interleave |
-| `sankhya-cdc-pg` | A replication slot is never created or dropped in a way that could silently lose a position |
-| `sankhya-schema` | Every type round-trips exactly or is refused with a reason; naming collisions are refused rather than disambiguated; all ten tables onboard from the live stream alone |
-| `sankhya-ingest` | Several tables capture independently from one interleaved stream, with no rows lost or leaked between them; a restart recovers its position from the table log; captured data digests identically to the source |
-| `sankhya-datagen` | The generator is reproducible, which is what makes reconciliation meaningful |
-
-**The storage half:**
-
-| Suite | What it establishes |
-|---|---|
-| `sankhya-table` | Text values become typed Arrow; an unparseable value is an error, never a null; compaction merges without changing what a query returns |
-| `sankhya-table-delta` | The log survives a torn write and a gap in the version sequence. `tests/oracle.rs` reads logs **this crate assembles** back with `delta_kernel`, an independent implementation, because two of our own components agreeing proves nothing. It cannot reach the production writers --- they are above it in the dependency graph --- so **`sankhya-maintenance/tests/kernel_oracle.rs` is the one to read first**: a real partitioned table, written by `sankhya-publish`, compacted by the real driver, and read row by row by the kernel |
-| `sankhya-table-memory` | The arrival buffer never releases a segment publication has not covered — the defect that made a mid-stream table claim positions it never held |
-| `sankhya-stats` | Recorded bounds are never narrower than the truth, including under NaN and integer overflow. A bound that is too *wide* costs a wasted read; one that is too narrow is a wrong answer |
-| `sankhya-maintenance` | Compaction converges; retirement refuses to remove a file a reader might still hold; orphan sweeping refuses to remove one a retained snapshot still reaches |
-
-**The analytical half — most of what M3 added:**
-
-| Suite | What it establishes |
-|---|---|
-| `sankhya-readpath` `tests/provider.rs` | Planning reads the table log alone — no directory listing, no footer reads — and a many-file scan is genuinely parallel at the scan node |
-| `sankhya-readpath` `tests/pruning.rs` | Files the catalogue proves irrelevant are skipped, and **the same query returns the same answer with and without the catalogue**. Pruning that changes an answer is the failure mode |
-| `sankhya-readpath` `tests/spliced.rs` | One SQL statement is answered from memory and Parquet at once, with no position counted twice or missed, and refused outright when the tiers do not cover the query's span |
-| `sankhya-readpath` `tests/mutable.rs` | An updated row is returned once, at its current version, and a deleted one not at all |
-| `sankhya-readpath` `tests/hostile.rs` | A malformed predicate, an empty tier and a corrupt footer produce errors rather than panics or wrong answers |
-| `sankhya-olap` `tests/tpch.rs` | TPC-H at scale factor 1. **`tests/cross_engine.rs` is the honest one**: every query's result is compared against the engine's own listing-based plan over the same files, so a provider bug cannot hide behind a self-consistent answer |
-| `sankhya-olap` `tests/exactness.rs` | An approximate answer is labelled approximate. A sketch-derived count never presents itself as exact |
-| `sankhya-governor` | Deadlines and cancellation are bounded at one batch per partition; an aggregation too large to run is refused up front, and the refusal says whether retrying could ever help |
-| `sankhya-math` | Reductions are deterministic regardless of partition order — the analytical counterpart to the `sankhya-types` property |
-| `sankhya-server` `tests/five_minutes.rs` | **This guide, executed.** Generate a warehouse, start the real binary, connect over the real wire protocol, query, run the diagnostic, take a backup and prove it — seven documented steps, timed, on every build. It is a test so it cannot rot |
-| `sankhya-api-rest` | A result too large for JSON comes back as a **Flight ticket rather than a refusal**, decided from the plan's estimate before anything is materialised; an estimate that was low abandons the response rather than truncating it; and a route matches its path whole |
-| `sankhya-diagnostic`'s soak module | A steady baseline passes and every shape of injected leak fails: memory retained, descriptors not returned, a sawtooth whose peaks climb, and an audit drifting to two records per query **while its total looks healthy**. A run that sampled nothing does not pass |
-| `sankhya-version` | An artefact from a newer release is refused **by name** rather than failing as a parse error somewhere in the middle; an older but supported one is read and never written back |
-| `sankhya-backup` | A manifest refuses to bind an analytical tier that is ahead of its source; a drill catches altered rows that every file-presence check passes; deleting a backup does not release its files; and the evidence keeps the failures |
-| `sankhya-metrics` | An undeclared metric cannot be recorded, a closed label refuses anything outside its set, and an identifier label stops adding series at its cap rather than growing without bound — and says it has |
-| `sankhya-diagnostic` | A projection is never invented from one sample, never drawn through a sawtooth, and never extrapolated further than the observation window supports. Findings sort by *when*, not by how bad. A check that could not run is never counted as one that found nothing |
-
-### The checks that are not tests
-
-Three gates catch things a test suite structurally cannot. All three fail the build.
-
-```bash
-cargo xtask check-all            # every repository invariant — see below
-cargo xtask check-concurrency    # ADR-0013's measurements, run alone (also inside check-all)
-python3 tools/mutation-audit.py  # 908 deliberate defects, applied one at a time
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-SANKHYA_RELEASE=1 cargo xtask check-package   # the release artifact's platform baseline
+python3 tools/mutation-audit.py  # 909 deliberate defects, applied one at a time
 ```
 
-**`check-all`** runs twenty-six invariants: the layer graph is acyclic and points the right
-way, no file exceeds the length ceiling, no core crate names a domain concept, the
-dependency set has no critical duplicates, the documentation's links and version claims
-resolve and its status lines agree, test-only dependencies really are test-only, clippy
-is clean under the workspace's denied lints across every target, no mutation is left
-applied to the source, the generated metric and error catalogues still match their
-declarations and every declared metric is actually recorded somewhere, and every figure a
-document claims — test counts, catalogue sizes — still matches what the repository holds, every
-crate writing `unsafe` is on a list that names why, every service unit says where its
-configuration is, and every third-party package is attributed with its licence. Each is proven to
-fail when violated, not merely to pass.
-
-> The count above said *eleven* until 2026-09-03, when a first-run audit counted the tasks. It was
-> spelled as a word, and `check-doc-numbers` walks back over **digits** — so the one gate built to
-> catch a stale figure could not see this one. Widening it is Phase 1 of
-> [`REMEDIATION.md`](REMEDIATION.md).
-
-**The mutation audit** is the answer to "the tests pass, but do they test anything?" It
-applies 908 specific defects one at a time and requires the suite to fail on each. Thirty-one
-did not, the first time each was run — the most recent two were written for the tiering
-encoding, and both exposed tests that did not test what their names claimed: one compared two
-integer widths whose encodings already differ in length, so removing the type tag changed
-nothing, and one used a composite key that the framing bytes separate without any length
-prefix. That is precisely the silent-pass this tool exists to catch. Expect it to take a
-while — it is 908 sequential `cargo test` runs, and it edits your source files as it goes,
-restoring each one after. Run it on a clean tree.
-
-**`check-concurrency`** is inside `check-all` and runs the four concurrency measurements
-**alone**, one at a time, as the only cargo process. They are `#[ignore]`d so the parallel suite
-skips them, because `ADR-0013`'s criteria are measurements and `cargo test --workspace`
-deliberately saturates every core --- a throughput ratio taken under that describes the machine.
-Three in-process guards were tried first and each was necessary without being sufficient; this
-removes the interference rather than detecting it. They stay inside the gate, because a
-measurement moved out of it is a measurement that stops being taken.
-
-**`check-performance`** is deliberately outside `check-all`: it generates a
-scale-factor-1 dataset and needs a machine that is not otherwise busy.
-
-**`check-package`** compares two numbers that live in different files and that nothing else
-relates — the server's drain deadline and every deployment manifest's termination grace. When
-the grace is the shorter of the two, every deploy kills the server mid-drain and clients see
-resets that look like crashes. It also reads the **platform baseline** the built binary
-actually requires. On a development build that is a warning; under `SANKHYA_RELEASE=1` it
-fails, because a binary built on a current distribution silently requires symbol versions the
-customer's enterprise distribution does not have, and the build machine cannot tell you so.
-Today this build needs `GLIBC_2.34` against a declared baseline of `2.28` — see
-[`STATUS.md`](STATUS.md) §10.4. Every supported platform, its baseline and what is published
-for it are in [`PLATFORMS.md`](PLATFORMS.md).
+`check-performance` needs a TPC-H dataset and takes long enough that putting it in the default
+gate would make people stop running the default gate — which also means **the performance
+budgets do not run in CI**, since CI runs `check-all`. The mutation audit is the answer to
+*"the tests pass, but do they test anything?"*: it applies 909 specific defects one at a time
+and requires the suite to fail on each. It edits your source files as it goes, restoring each
+one after, so run it on a clean tree.
 
 ---
 
-## 4. Start the server and connect to it
+## 2. Build the vendored database — optional
+
+You need this only for a `psql` binary, and only if you do not already have one. **The server
+does not use it**: nothing in this quickstart starts a database, because nothing in this
+product currently does.
 
 ```bash
-cargo build --release -p sankhya-server
+vendor/postgresql/build.sh          # builds PostgreSQL 17.11 from checksum-verified source
+export PATH=$PWD/.build/pg-install/bin:$PATH
+```
+
+> **Not built: the transactional tier.** `crates/sankhya-oltp-pg/src/lib.rs` supervises
+> PostgreSQL as a child process whose whole lifecycle SANKHYA owns, and it is tested against
+> this vendored build. It is a **dev-dependency** of the server, `Settings` has no transactional
+> configuration, and **the server never starts a database**. If you skip this section and use
+> any `psql` you already have, nothing below changes.
+
+---
+
+## 3. Make a warehouse
+
+```bash
+SANKHYA_WAREHOUSE=./warehouse \
+  cargo test -p sankhya-server --test make_warehouse -- --ignored
+```
+
+```
+wrote the sample warehouse to ./warehouse --- sales.orders, sales.regions,
+sank.risk, the quarantine, and the `sales` cube
+```
+
+It is `--ignored` because it writes to a path you name in the environment, and a test that
+writes outside its own temporary directory is one that surprises somebody.
+
+What you now have:
+
+| Table | What it is |
+|---|---|
+| `sales.orders` | 1,000 rows across four Parquet files, so the read path has something to prune and to parallelise over. Columns `id`, `region`, `period`, `amount`, `margin_pct` |
+| `sales.regions` | The dimension table a roll-up joins to |
+| `risk.positions` | Twelve positions, each carrying a profit-and-loss **vector** of 64 outcomes and a stored 4×4 covariance **matrix** — so the function catalogue can be exercised on columns rather than on literals |
+| `sank.sank_quarantine` | The feed quarantine, empty, so the example that reads it runs |
+| the `sales` cube | Two dimensions and two measures, one of which deliberately cannot be rolled up |
+
+Look at the layout before you start the server, because it is the product:
+
+```console
+$ find warehouse/sales/orders -type f | sort
+warehouse/sales/orders/_delta_log/00000000000000000000.json
+warehouse/sales/orders/_delta_log/00000000000000000001.json
+warehouse/sales/orders/_delta_log/00000000000000000002.json
+warehouse/sales/orders/_delta_log/00000000000000000003.json
+warehouse/sales/orders/_delta_log/00000000000000000004.json
+warehouse/sales/orders/sank_data_date=2026-09-06/part-0000-v0000001-2d10910.parquet
+warehouse/sales/orders/sank_data_date=2026-09-06/part-0001-v0000002-2d10911.parquet
+warehouse/sales/orders/sank_data_date=2026-09-06/part-0002-v0000003-2d10912.parquet
+warehouse/sales/orders/sank_data_date=2026-09-06/part-0003-v0000004-2d10913.parquet
+```
+
+Open storage, in a layout that mirrors an operational schema: `<schema>/<table>/`, one
+self-contained folder per table, a Delta transaction log, and Hive-style
+`sank_data_date=YYYY-MM-DD/` directories. The date is the **business** date of a record, not
+the moment it arrived — [`GLOSSARY.md`](GLOSSARY.md) explains why conflating those two is a
+wrong answer that looks like a right one.
+
+---
+
+## 4. Start the server, and connect
+
+```bash
 SANKHYA_NO_PASSWORD=1 \
 SANKHYA_WAREHOUSE=./warehouse \
 SANKHYA_LISTEN=127.0.0.1:5433 \
   ./target/release/sankhya-server
 ```
 
-`SANKHYA_WAREHOUSE` is a directory of `<schema>/<table>/`, each table holding Parquet files
-and a `_delta_log`. The server walks it at startup, reads each table's schema **out of its
-own log** — not from a Parquet footer, which a table with no files yet does not have — and
-opens it through the read path. A table it cannot open is named on stderr rather than
-omitted: a server that starts with three tables of four and says nothing produces an outage
-that looks, to whoever queries it, like a table nobody ever created.
-
-In another shell, with any PostgreSQL client:
-
-```bash
-psql -h 127.0.0.1 -p 5433 -U you -d acme -c "SELECT version();"
-psql -h 127.0.0.1 -p 5433 -U you -d acme -c "\dt"
+```
+SANKHYA 0.1.0
+  tenant tenant:00000000-0000-0000-0000-000000000001, NO AUTHENTICATION — every connection
+  is accepted, NO POLICY CONFIGURED — every authenticated user may read every one of the
+  4 table(s) below, 4 table(s) known
+  listening on 127.0.0.1:5433
+  wire protocol unencrypted — passwords cross the network in plain text
+  Arrow Flight SQL on 127.0.0.1:5434
+  maintaining 4 table(s) every 30s, compacting every 1 tick(s), sweeping every 120
+  audit chain head 0000000000000000000000000000000000000000000000000000000000000000 (0 record(s))
+  1 cube(s): sales
+  connect with: psql -h 127.0.0.1 -p 5433 -U <user>
+  metrics on http://127.0.0.1:9464/metrics
 ```
 
-`SANKHYA_NO_PASSWORD` is spelled as an opt-*out* so the insecure choice has to be made
-deliberately, and the startup line says `NO AUTHENTICATION` in capitals when it is in force.
+**Read that banner.** It names its security posture in capitals when it has none, says the
+transport is unencrypted in words, prints the audit chain head, and names both doors and the
+metrics port. Every port above is a default you can override — `SANKHYA_LISTEN`,
+`SANKHYA_FLIGHT_LISTEN`, `SANKHYA_METRICS_LISTEN` — and none of them is derived from another
+by a rule. `sankhya-server --help` lists every `SANKHYA_*` variable; that is the complete list,
+written out rather than generated, because the first thing a stranger types when a binary
+refuses is `--help`.
+
+`SANKHYA_NO_PASSWORD` is spelled as an opt-**out** so the insecure choice has to be made
+deliberately.
 
 > **A password is verified only if you have written one down.** Leaving `SANKHYA_NO_PASSWORD`
 > unset makes this server *demand* a password; whether it *checks* one depends on
 > `server.credentials`. With that list empty there is nothing to check against, so any password
-> from any user --- including a user this server has never heard of --- connects, and the
-> startup line says `PASSWORD UNVERIFIED` in capitals for exactly that reason.
+> from any user connects, and the startup line says `PASSWORD UNVERIFIED` in capitals for
+> exactly that reason. Write one with `sankhya-server hash-password` and paste the line under
+> `server.credentials.<user>`. Naming one user makes the list the list: a user absent from it
+> is refused.
 >
-> Write one with `sankhya-server hash-password` and paste the line under
-> `server.credentials.<user>`. Naming one user makes the list the list: a user absent from it is
-> refused. The startup line then reads `password verified for N user(s)`.
->
-> Until 2026-09-04 there was no credential store at all --- that is `SEC-01`, and this paragraph
-> said so before the repair rather than after it.
+> Until 2026-09-04 there was no credential store at all. That is `SEC-01`, the first finding of
+> the security audit, and this paragraph said so before the repair rather than after it.
 
-Statements execute against the Parquet on disk:
+In another shell:
 
+```console
+$ psql -h 127.0.0.1 -p 5433 -U you -d sankhya -c "SELECT version();"
+                                  version
+----------------------------------------------------------------------------
+ PostgreSQL 17.0 (SANKHYA 0.1.0) on wire-protocol-compatible unified engine
+(1 row)
 ```
-$ psql ... -c "SELECT region, count(*) AS n, round(sum(amount)) AS total
-               FROM orders GROUP BY region ORDER BY region;"
+
+The string begins `PostgreSQL 17.0` because every client parses the major version out of it
+before it will proceed, and then says what this actually is so the prefix does not mislead
+anyone reading it.
+
+```console
+$ psql -h 127.0.0.1 -p 5433 -U you -d sankhya -c "\dt"
+              List of relations
+ table_schema |   table_name    | table_type
+--------------+-----------------+------------
+ risk         | positions       | BASE TABLE
+ sales        | orders          | BASE TABLE
+ sales        | regions         | BASE TABLE
+ sank         | sank_quarantine | BASE TABLE
+(4 rows)
+```
+
+That listing is filtered by policy **server-side**. A catalogue that returned everything and
+left the client to filter would disclose the existence of tables the caller may not read —
+which is the leak this system refuses everywhere else, arriving through a schema browser.
+
+`\dt` and `\dn` work. `\d <table>` does **not** in this build: `psql` issues a `pg_class` query
+whose answer it cannot use. Use `information_schema.columns` instead.
+
+---
+
+## 5. Query it
+
+```console
+$ psql … -c "SELECT id, region, period, amount FROM sales.orders ORDER BY id LIMIT 5;"
+ id | region | period | amount
+----+--------+--------+--------
+  0 | north  | q1     |      0
+  1 | south  | q2     |    1.5
+  2 |        | q1     |      3
+  3 | north  | q2     |    4.5
+  4 | south  | q1     |      6
+(5 rows)
+```
+
+Row 2's region is genuinely **null**, not an empty string. That distinction survives from the
+Parquet page, through the Arrow array, to the wire — where it becomes a length of −1 rather
+than a length of 0. Conflating them is a wrong answer, not a formatting choice, and it is the
+first thing to check in anything claiming to be columnar end to end.
+
+```console
+$ psql … -c "SELECT region, count(*) AS n, round(sum(amount)) AS total
+             FROM sales.orders GROUP BY region ORDER BY region;"
  region |  n  | total
 --------+-----+--------
  north  | 334 | 250250
@@ -256,50 +263,289 @@ $ psql ... -c "SELECT region, count(*) AS n, round(sum(amount)) AS total
 (3 rows)
 ```
 
-The third row's region is genuinely null, not an empty string. The distinction survives from
-the Parquet page through the Arrow array to the wire, where it becomes a length of −1.
+Hold on to that third row: a third of this table has no region, and §6 is about a system that
+tells you so without being asked.
 
-Columnar throughout: Parquet on disk, Arrow in memory, and the read path plans from the
-table log alone — no directory listing and no footer reads — pruning files by the statistics
-the log records.
+**A bare name resolves while exactly one schema holds it.**
 
-**What the query path enforces.** A table the principal may not read is never registered in
-the session, so naming it fails to resolve — indistinguishable from naming a table that does
-not exist, which is deliberate: saying "you may not read that" would confirm it exists. A
-policy row predicate is conjoined where no provider can decline it, so a tautology in the
+```console
+$ psql … -c "SELECT count(*) FROM orders;"
+ count(*)
+----------
+     1000
+(1 row)
+```
+
+That works here because only `sales` has an `orders`. The day a second schema gains one, this
+statement stops resolving — deliberately, because a name meaning two things has no right
+answer, and picking one hands back a table the caller had no way to identify. **This fixture
+cannot demonstrate the refusal**, which is a gap in the fixture rather than in the product; see
+*Two things this fixture cannot show you* at the end. Anything written down — a script, a
+dashboard, a saved query — should qualify.
+
+Columnar throughout: Parquet on disk, Arrow in memory, and the read path plans from the table
+log alone — no directory listing and no footer reads — pruning files by the statistics the log
+records. **What the query path enforces:** a table the principal may not read is never
+registered in the session, so naming it fails to resolve, indistinguishable from naming a table
+that does not exist. That is deliberate — saying *"you may not read that"* confirms it exists.
+A policy row predicate is conjoined where no provider can decline it, so a tautology in the
 query cannot widen it. Both are tested end to end.
 
-### Vector columns and their kernels
+---
 
-A column can hold a vector per row — an embedding, a factor vector, a time-series window —
-as `FixedSizeList<Float64, N>`, and the kernels are ordinary SQL functions:
+## 6. A cube, and the refusal that justifies it
 
-```sql
-SELECT title, vec_cosine_similarity(embedding, :query) AS score
-FROM documents
-ORDER BY score DESC
-LIMIT 10;
+A `GROUP BY` knows the column names you typed. A **cube** knows a model: which columns are
+dimensions, which are measures, and — the part that decides whether an answer is correct — how
+each measure may be combined along each dimension. The fixture declared one:
+
+```console
+$ psql … -c "SELECT cube, fact_table, dimensions, measures FROM cubes();"
+ cube  | fact_table | dimensions | measures
+-------+------------+------------+----------
+ sales | orders     |          2 |        2
+(1 row)
+```
+
+Roll a dimension **away**:
+
+```console
+$ psql … -c "SELECT region, amount, completeness, withheld, materialised
+             FROM cube_rollup('sales','amount','by=region');"
+ region |  amount  | completeness | withheld | materialised
+--------+----------+--------------+----------+--------------
+ north  | 250249.5 |        0.667 |      333 | f
+ south  | 249250.5 |        0.667 |      333 | f
+(2 rows)
+```
+
+**Read `completeness` and `withheld`.** They are the 333 rows from §5 whose region is null: 667
+of 1,000 rows reached the cube, and the answer says so **on every row**, rather than in
+metadata that a projection would drop. Check it against plain SQL:
+
+```console
+$ psql … -c "SELECT amount, completeness, withheld FROM cube_rollup('sales','amount');"
+ amount | completeness | withheld
+--------+--------------+----------
+ 499500 |        0.667 |      333
+(1 row)
+```
+
+`499500` is exactly `sum(amount) WHERE region IS NOT NULL`. A cube total is a total *over the
+rows it could place and the caller may read*, and the fraction is published rather than
+inferred.
+
+Now the measure that matters more:
+
+```console
+$ psql … -c "SELECT region, margin_pct FROM cube_rollup('sales','margin_pct','by=region');"
+ERROR:  [SNK-C0001] Error during planning: measure 'margin_pct' cannot be rolled up along
+        'period': its value at the coarser grain is not derivable from its values at the finer
+        one, so any figure produced here would be plausible and wrong
+DETAIL:  Correct the statement. The detail names the offending element.
+```
+
+**That refusal is the whole reason the cube model exists.** `margin_pct` is a ratio. There is
+no operation over the parts that yields the whole, so it is declared as composing along
+nothing, and a roll-up that would need it to is refused **while the query is planned** — not
+answered with a number of the right magnitude, the right sign and no meaning. Summing a closing
+balance across twelve months has the same shape and the same wrongness.
+
+---
+
+## 7. Time, versions and snapshots
+
+The server has been maintaining this warehouse since it started. After the first tick, look at
+what it did:
+
+```console
+$ psql … -c "SHOW HISTORY OF sales.orders;"
+ version |   what    |      at       | files_added | files_removed | bytes_added | changed_data |  kept_by
+---------+-----------+---------------+-------------+---------------+-------------+--------------+-----------
+       0 | created   |               |           0 |             0 |           0 | no           |
+       1 | appended  |             0 |           1 |             0 |        3526 | yes          |
+       2 | appended  |             0 |           1 |             0 |        3421 | yes          |
+       3 | appended  |             0 |           1 |             0 |        3405 | yes          |
+       4 | appended  |             0 |           1 |             0 |        3395 | yes          |
+       5 | compacted | 1788712921185 |           1 |             4 |        7593 | no           |
+(6 rows)
+```
+
+Version 5 is the maintenance thread merging the four files into one, on its own, thirty seconds
+after startup. `changed_data` is **no** for it, which is the distinction that matters to
+anything reading downstream: compaction moved bytes and changed no answer. Getting that wrong
+in one direction only — a compaction that added files declaring `dataChange: true` while
+removing them with `false` — was one of five defects found while building this view.
+
+Read one table at one version. `SET` is session state, so this needs one session rather than
+two `-c` flags:
+
+```console
+$ psql -h 127.0.0.1 -p 5433 -U you -d sankhya <<'SQL'
+SET VERSION OF sales.orders = 1;
+SELECT count(*) FROM sales.orders;
+SQL
+ count(*)
+----------
+      250
+(1 row)
+```
+
+Version 1 was the first of four appends, so 250 rows is the whole of it. A version beyond the
+log is **refused** rather than resolving to the newest — serving a version nobody has was
+another of those five defects:
+
+```console
+$ psql … -c "SET VERSION OF sales.orders = 99;"
+ERROR:  `sales.orders` has no version 99. Its newest is 5. `SHOW HISTORY OF sales.orders`
+        lists every version it has, and which are pinned
+```
+
+Note that `SET` used to be accepted as a **no-op**, so `SET VERSION OF` and `SET SNAPSHOT` both
+silently served the present to a caller who had asked for one instant. Settings that would
+change an answer are now refused by name if they are not understood.
+
+A **snapshot** is a different thing: one consistent position across *many* tables.
+
+```console
+$ psql … -c "CREATE SNAPSHOT month_end EXPIRE AFTER 7 DAYS;"
+$ psql … -c "SHOW SNAPSHOTS;"
+ snapshot  | state | taken_by |     taken_at     | expires_on | tables |                              pins
+-----------+-------+----------+------------------+------------+--------+----------------------------------------------------------------
+ month_end | live  | you      | 1788712987851540 |      20709 |      4 | risk.positions sales.orders sales.regions sank.sank_quarantine
+(1 row)
+```
+
+Re-run `SHOW HISTORY OF sales.orders` now and version 5's `kept_by` column reads `month_end` —
+the snapshot is keeping those files alive, which is the mechanism, made visible.
+
+A clone freezes a *thing*; a snapshot freezes a *moment*. A market-risk run reads trades, rates,
+curves and hierarchy and must read all of them as of one instant, or the reconciliation problem
+this system exists to remove reappears **inside a single query**. The expiry is mandatory, and
+a table created after the snapshot is refused rather than answered as empty — a table that did
+not exist is not a table that was empty. See [ADR-0019](adr/0019-named-snapshots.md).
+
+```console
+$ psql … -c "DROP SNAPSHOT month_end;"
+```
+
+---
+
+## 8. A clone, and what it costs
+
+A clone is a **reference** to its origin's files at a version, not a copy. It costs the same
+whether the origin holds two rows or a billion, and adds no files of its own.
+
+```console
+$ psql … -c "CREATE TABLE regions_frozen CLONE sales.regions;"
+$ psql … -c "SELECT (SELECT count(*) FROM sales.regions)        AS origin,
+                    (SELECT count(*) FROM sales.regions_frozen) AS clone;"
+ origin | clone
+--------+-------
+      2 |     2
+(1 row)
+```
+
+The name in the statement was unqualified and the table landed in `sales`. **A clone stays in
+its origin's schema**, and naming another one is refused:
+
+```console
+$ psql … -c "CREATE TABLE probe.copy CLONE sales.regions;"
+ERROR:  a clone stays in its origin's schema, and `sales` is not `probe`. A clone is a
+        reference to its origin's files and is authorized through them, so one placed under
+        another schema would have its name governed by one policy and its data by another
+```
+
+Ask where it came from, and ask what still reads a table **before** a drop refuses:
+
+```console
+$ psql … -c "SHOW LINEAGE OF sales.regions_frozen;"
+ step |    origin     | origin_version |    cloned_at
+------+---------------+----------------+------------------
+    1 | sales.regions |              1 | 1788712953618226
+(1 row)
+
+$ psql … -c "SHOW DEPENDENTS OF sales.regions;"
+      dependent       | relation | reads_version
+----------------------+----------+---------------
+ sales.regions_frozen | direct   |             1
+(1 row)
+```
+
+Clone the clone, then try to remove the middle of the chain:
+
+```console
+$ psql … -c "CREATE TABLE regions_audit CLONE sales.regions_frozen;"
+$ psql … -c "DROP TABLE sales.regions_frozen;"
+ERROR:  `sales.regions_frozen` is still read by sales.regions_audit. Removing it is the
+        deletion cloning is gated on, arriving through the front door --- materialise them
+        first, or drop them
+DETAIL:  Drop what still reads it first, or ask `SHOW DEPENDENTS OF` before dropping anything.
+         Every name is in the `subjects` of this refusal.
+HINT:  sales.regions_audit
+```
+
+`SHOW DEPENDENTS` exists because a refusal that names what would break is no use to somebody
+who had no way to ask first. Drop the leaf, then the origin:
+
+```console
+$ psql … -c "DROP TABLE sales.regions_audit;"
+$ psql … -c "DROP TABLE sales.regions_frozen;"
+```
+
+Note what you **cannot** drop:
+
+```console
+$ psql … -c "DROP TABLE sales.regions;"
+ERROR:  [SNK-C0006] the statement uses a feature this build does not implement: data definition
+        is not served over this connection; this server is a read path over a published warehouse
+DETAIL:  Write to the transactional store and let capture publish it, or publish an external
+         table with `sankhya-publish`. See GUIDE.md §3.
+```
+
+A clone is metadata this server owns, so it can remove one. A base table is somebody else's
+published data, so it cannot. The same refusal answers a write:
+
+```console
+$ psql … -c "INSERT INTO sales.orders (id) VALUES (1);"
+ERROR:  [SNK-C0006] the statement uses a feature this build does not implement: data
+        modification is not served over this connection; this server is a read path over a
+        published warehouse
+```
+
+The refusal names the supported route, because one that only says no sends somebody looking for
+a flag to turn it on, and there is no flag. Note also what it did *not* do: it did not accept
+the statement and discard it. That once returned a success tag and did nothing durable, which
+is worse than failing.
+
+---
+
+## 9. Vectors and matrices, on columns
+
+`risk.positions` carries a 64-outcome P&L vector and a 4×4 covariance matrix per row, because
+the point of a function catalogue is that arithmetic happens **where the data is**:
+
+```console
+$ psql … -c "SELECT position_id, book, round(vec_norm_l2(pnl)::numeric,3) AS l2
+             FROM risk.positions ORDER BY position_id LIMIT 4;"
+ position_id |  book  |   l2
+-------------+--------+--------
+           1 | rates  | 18.522
+           2 | credit | 25.931
+           3 | equity | 33.339
+           4 | rates  | 40.748
+(4 rows)
 ```
 
 `vec_dot`, `vec_euclidean`, `vec_cosine_similarity`, `vec_cosine_distance`, `vec_norm_l1`,
-`vec_norm_l2`, `vec_sum`, `vec_mean`.
+`vec_norm_l2`, `vec_sum`, `vec_mean`. Linear algebra over matrix columns: `mat_multiply`,
+`mat_transpose`, `mat_inverse`, `mat_solve`, `mat_vec`, `mat_determinant`, `mat_trace`.
 
-Linear algebra over matrix columns:
-
-```sql
-SELECT mat_determinant(covariance), mat_trace(covariance) FROM portfolios;
-SELECT mat_solve(coefficients, observations) FROM systems;
-SELECT mat_multiply(a, b) FROM pairs;
-```
-
-`mat_multiply`, `mat_transpose`, `mat_inverse`, `mat_solve`, `mat_vec`, `mat_determinant`,
-`mat_trace`. A matrix is stored flat and its shape comes from **field metadata**, using
-Arrow's canonical `arrow.fixed_shape_tensor` extension — a column with no declared shape is
-refused rather than assumed square, because that guess is wrong for every rectangular matrix
-and produces numbers from values that were never in the same row.
-
-Vectors and matrices can be built in SQL, and the constructors emit their own shape — so a
-matrix can be built and operated on without ever being stored:
+A matrix is stored flat and its shape comes from **field metadata**, using Arrow's canonical
+`arrow.fixed_shape_tensor` extension — a column with no declared shape is refused rather than
+assumed square, because that guess is wrong for every rectangular matrix and produces numbers
+from values that were never in the same row. Vectors and matrices can also be built in SQL, and
+the constructors emit their own shape:
 
 ```sql
 SELECT mat_determinant(mat_of(2, 2, 1.0, 2.0, 3.0, 4.0));   -- -2
@@ -307,110 +553,261 @@ SELECT vec_norm_l2(vec_of(3.0, 4.0));                        -- 5
 SELECT mat_trace(mat_identity(4));                           -- 4
 ```
 
-`vec_of`, `mat_of`, `mat_identity`. A matrix's shape is part of its *type*, so `mat_of`'s
-dimensions must be literals and a wrong element count is refused **when the query is
-planned** — not partway through a scan, after work has been done.
+Shape is part of a matrix's *type*, so `mat_of`'s dimensions must be literals and a wrong
+element count is refused **when the query is planned**, not partway through a scan.
 
-Matrix-returning functions carry their own shape too, so `mat_determinant(mat_multiply(a,
-b))` works: the product knows it is `rows(a) × columns(b)`.
-
-QR, SVD and eigendecomposition are **not** offered. They are where an in-house
-implementation is genuinely worse than none: a subtly wrong SVD produces plausible singular
-values.
-
-**Every reducing kernel is bit-deterministic.** A dot product is a floating-point sum, and a
-sum whose order depends on how the query was partitioned returns a different number when the
-machine is busier. These go through the same compensated, order-fixed summation the rest of
-the system uses, so two runs of the same ranking produce the same order rather than a
-similar one. See [ADR-0005](adr/0005-array-columns-and-numeric-kernels.md) for why that
-ruled out both Polars and a native BLAS.
+**Every reducing kernel is bit-deterministic.** A dot product is a floating-point sum, and a sum
+whose order depends on how the query was partitioned returns a different number when the machine
+is busier. These use fixed-point accumulation, where integer addition *is* associative, so
+order-independence holds by construction rather than by sorting — and it is 1.3× to 3.6× faster
+than the sorted sum it replaced. Lane-parallel SIMD accumulation was rejected for this: it is
+10–15× faster and computes a different, worse number. On `1e16, 1, -1e16, 1` repeated, whose
+exact total is 18, it returns 5 — and 0 when the input is reversed.
 
 Two costs worth knowing: **an array column cannot be pruned** — a minimum and maximum of a
-vector prune nothing — so a table of embeddings prunes on `sank_data_date` and its scalar
-columns only. And **an array cannot be a key column**, because array equality as row identity
-is a bad idea and is refused rather than supported badly.
+vector prune nothing — and **an array cannot be a key column**.
 
-### Publishing a table from outside
+> **Correction.** QR, SVD and eigendecomposition **ship**, and this
+sentence used to say they were deliberately absent. The refusal was real when written — an
+in-house SVD that is subtly wrong produces plausible singular values, which is worse than none
+— and it was lifted rather than forgotten: `crates/sankhya-math/src/decompose.rs` implements
+them by Jacobi rotation on symmetric input, refusing a non-symmetric matrix rather than
+symmetrising it, and they are registered as `mat_qr_q`, `mat_qr_r`, `mat_singular_values`,
+`mat_cholesky`, `mat_eigenvalues` and `mat_eigenvectors`. What was not done was retracting the
+refusal in the eight places that stated it. **A stated refusal silently reversed is the worst
+class of claim in this repository**, because a refusal is the one thing a reader is entitled to
+treat as permanent.
 
-An external system publishes through **this system's library**, not by assembling the
-format itself:
+---
 
-```bash
-cargo build --release -p sankhya-publish
-./target/release/sankhya-publish verify ./warehouse/sales/orders
+## 10. Check the health of the warehouse
+
+```console
+$ SANKHYA_WAREHOUSE=./warehouse ./target/release/sankhya-server doctor
+SANKHYA doctor 0.1.0
+  warehouse ./warehouse
+  4 table(s)
+
+  [critical] backup — no restore drill has ever passed; this threshold has already been crossed.
+         Run a restore drill: `sankhya-server drill`. If it fails, the backup is not a backup
+         and this is an incident rather than a maintenance task.
+         See docs/runbooks/restore-drill.md.
+
+5 check(s) clean, 1 finding(s) of which 1 have a date, 0 check(s) could not run
+$ echo $?
+1
 ```
 
-The format is open and documented — external engines read it directly, and the library is
-in this repository under the same licence for anyone who wants to see exactly what it does.
-What the library provides is not secrecy but **correctness by construction**: there is no
-way to call it that produces a file without statistics, a schema that does not round-trip,
-or an action missing a field the format requires.
+It reads the warehouse directly and does **not** start the server, because the day you want a
+diagnostic is often the day the server will not start. `FR-OPS-17` asks for the time until a
+problem bites rather than its current value, so findings are ordered by **when**, not by how
+bad — a warning that becomes an outage tomorrow outranks an error that has been stable for a
+month. Where it cannot compute a date it says so rather than inventing one: a time needs a
+rate, and a rate needs at least two observations.
+
+Exit status is `0` clean, `1` findings, `2` a check could not run. The third exists so a
+monitoring system cannot read *"I could not look"* as *"nothing found"*.
+
+> **Every remediation names a command that exists.** This is worth stating because it was not
+> true. The compaction-debt finding — the remediation on the only alert that can page — used to
+> say *"run `sankhya maintenance compact --table sales.orders`"*, and **there is no `sankhya`
+> binary**: the CLI is a stub that prints "not built yet" and exits 2. The code was fixed and
+> this document's sample output was not, so the false command survived here after it had been
+> removed from the product. It now reads:
+>
+> > Raise the maintenance duty cycle: lower `maintenance.compact_every` (or
+> > `maintenance.interval`) in the configuration and send the server SIGHUP, which takes effect
+> > on the next tick without a restart. **There is deliberately no command that compacts by
+> > hand**: the server is the only maintainer of a warehouse it holds the lock on, and a second
+> > writer is the failure `cargo xtask check-writers` exists to stop.
+>
+> That is `OPS-26`. A remediation naming a command that does not exist is worse than none: it
+> costs the person reading it at three in the morning the time it takes to find out, and it is
+> the moment they stop trusting the rest of the runbook.
+
+Put it in cron — hourly is enough — and the projections become real:
+
+```cron
+17 * * * * SANKHYA_WAREHOUSE=/srv/sankhya/warehouse /usr/local/bin/sankhya-server doctor
+```
+
+---
+
+## 11. Prove the backup
+
+Do what the doctor said.
+
+```console
+$ SANKHYA_WAREHOUSE=./warehouse ./target/release/sankhya-server backup
+SANKHYA backup 0.1.0
+  risk.positions at version 1, 12 row(s)
+  sales.orders at version 5, 1000 row(s)
+  sales.regions at version 1, 2 row(s)
+  sank.sank_quarantine at version 0, 0 row(s)
+
+  backup:01a0779a-0e75-7340-94c6-96728dfc456c
+  queryable at 0
+  manifest ./.sankhya/backup-manifest.json
+
+This backup is unproven until it has been drilled: `sankhya-server drill`.
+```
+
+A backup here is a **manifest**, not an archive: it binds the transactional backup you took,
+the table versions in the warehouse and the key generation to one point, and protects those
+files so they stay readable. It refuses to record an inconsistency.
+
+```console
+$ SANKHYA_WAREHOUSE=./warehouse ./target/release/sankhya-server drill
+SANKHYA restore drill 0.1.0
+  backup:01a0779a-0e75-7340-94c6-96728dfc456c
+  risk.positions: verified, 12 row(s)
+  sales.orders: verified, 1000 row(s)
+  sales.regions: verified, 2 row(s)
+  sank.sank_quarantine: verified, 0 row(s)
+
+Proven. 4 table(s) read back and digested.
+```
+
+**It read the data back and recomputed its digest.** A file-presence check would have passed on
+a truncated Parquet, on a file whose bytes were replaced with another table's, and on
+essentially every failure that actually happens — because a *missing* file is loud, and what
+goes wrong is that a file is there and wrong. Try it: corrupt a file under
+`warehouse/sales/orders/sank_data_date=*/` and drill again. It reports which table could not be
+read and exits `1`.
+
+Exit `0` proven, `1` a table did not verify, `2` could not run. **Alert on `2` as well**: a
+monitor treating "could not look" as "nothing wrong" reports a backup as proven when nothing
+examined it. Both runs are kept in `<data-dir>/restore-drills.jsonl`, append-only and including
+the failures — a drill history with no failures describes either a very good system or a drill
+that does not really run, and nothing in the history says which. `doctor` reads the last **pass**
+from it, never the last attempt.
+
+Now ask again:
+
+```console
+$ SANKHYA_WAREHOUSE=./warehouse ./target/release/sankhya-server doctor
+
+Nothing to report.
+
+6 check(s) clean, 0 finding(s) of which 0 have a date, 0 check(s) could not run
+```
+
+**Backup covers the analytical half only.** Backing up a transactional store is your own
+tooling's job; the manifest binds to it and does not take it.
+
+---
+
+## 12. Watch what it is doing
+
+```console
+$ curl -s http://127.0.0.1:9464/metrics | grep -E '^sankhya_(queries|rows|audit|connections)'
+sankhya_queries_total{outcome="error"} 6
+sankhya_queries_total{outcome="ok"} 16
+sankhya_rows_returned_total 20
+sankhya_connections_active 0
+sankhya_audit_records_total 20
+```
+
+Its own port, one route, loopback by default. The full list is [`METRICS.md`](METRICS.md),
+which is **generated from the declarations** — recording a metric requires passing its
+declaration, so an undeclared metric cannot be typed, and a declared one that nothing records
+fails the build.
+
+Two things before you build a dashboard:
+
+- **`refused` is not `error`.** A quota held is the system working. An error-rate alert that counts them together fires on correct behaviour.
+- **Watch `sankhya_metrics_rejected_total`.** Non-zero means a call site disagrees with the catalogue, or a label has outgrown its cap and that metric is now incomplete.
+
+Every error a client sees carries a permanent code, and `DETAIL` is the catalogue's own
+remediation — so the client and [`ERRORS.md`](ERRORS.md) cannot say different things. The
+codes are what a support conversation is conducted in and what a [runbook](runbooks/) is
+indexed by. Note that **thirteen codes in that catalogue are marked "not produced by this
+build"**: they exist and no path raises them.
+
+---
+
+## 13. Publishing a table from outside
+
+An external system publishes through **this system's library**, not by assembling the format
+itself:
+
+```console
+$ ./target/release/sankhya-publish verify ./warehouse/sales/orders
+```
+
+The format is open and documented, and the library is in this repository under the same licence
+for anyone who wants to see exactly what it does. What it provides is not secrecy but
+**correctness by construction**: there is no way to call it that produces a file without
+statistics, a schema that does not round-trip, or an action missing a field the format requires.
 
 The reason is asymmetry. A *reader* that misunderstands the format is wrong for itself,
-recoverably. A *writer* that misunderstands it corrupts the table for everyone,
-permanently, and undetectably — because the writer's own reader shares the
-misunderstanding. This system made exactly that mistake once, writing its own format with
-the specification open; see the defect table in [`STATUS.md`](STATUS.md).
+recoverably. A *writer* that misunderstands it corrupts the table for everyone, permanently,
+and undetectably — because the writer's own reader shares the misunderstanding. This system made
+exactly that mistake once, writing its own format with the specification open.
 
-`verify` does not assume the library was used, because a recommendation is not an
-invariant. It reports *what* is wrong rather than *whether*, and distinguishes a finding
-that makes queries **slow** from one that makes them **wrong** — exit 0 clean, 1 slow, 2
-wrong, so a build gate can fail on one and not the other.
-
-If a table is deficient — published by something that did not record statistics, say — it
-can be repaired:
+`verify` does not assume the library was used, because a recommendation is not an invariant. It
+reports *what* is wrong rather than *whether*, and distinguishes a finding that makes queries
+**slow** from one that makes them **wrong** — exit 0 clean, 1 slow, 2 wrong, so a build gate can
+fail on one and not the other. If a table is deficient it can be repaired:
 
 ```bash
 ./target/release/sankhya-publish repair ./warehouse/sales/orders          # shows a plan
 ./target/release/sankhya-publish repair ./warehouse/sales/orders --apply  # carries it out
 ```
 
-Repair **derives, never guesses**. Statistics are recomputed by reading the file, because
-the file is the truth. Anything needing a guess — a missing schema, a key column that does
-not exist — is refused with what a person has to decide, because a tool that invents a
-plausible value writes it into the table permanently, with an operator's confidence attached.
-
-It never deletes, and it appends a new version rather than rewriting a committed one: the
-broken commit stays exactly as it was, so the repair is auditable and revertible and time
-travel to before it still works.
-
-To create a warehouse to try this against:
-
-```bash
-SANKHYA_WAREHOUSE=./warehouse \
-  cargo test -p sankhya-server --test make_warehouse -- --ignored
-```
-
-That writes **the same warehouse every gate in this repository runs against** --- which is the
-point, and was not true until 2026-09-03:
-
-- `sales.orders`, 1,000 rows across four Parquet files, so the read path has something to prune
-  and to parallelise over. Columns `id`, `region`, `period`, `amount` and `margin_pct`.
-- `sales.regions`, the dimension table a roll-up joins to.
-- `risk.positions`, carrying a profit-and-loss **vector** per position and a stored covariance
-  **matrix**, so the function catalogue can be exercised on columns rather than on literals.
-- The feed quarantine, empty, so the example that reads it runs.
-- The **`sales` cube**, declared --- which is what every tutorial opens with.
-
-> **What this used to do.** This command wrote `sales.orders` with three columns and no cube,
-> while the fixture the gates ran against had five columns and a cube. So `guide.rs`,
-> `sdk_examples.rs` and `book_sql.rs` were all green against a warehouse no reader could
-> produce, and a reader following the tutorials got `no cube named 'sales'` on the first
-> statement of the first tutorial --- **three of twenty-one blocks ran**. The recipe now calls
-> the fixture's own writer, so there is one warehouse and it cannot drift again. See `RUN-03`
-> and `RUN-05` in [`AUDIT_REPORT.md`](AUDIT_REPORT.md).
->
-> The command also used to write **eleven** tables across seven schemas, three of them named
-> `orders`, because `--ignored` ran a second fixture built to *create* ambiguous names for
-> adversarial review. That one now lives in its own binary
-> (`--test make_review_warehouse`), so this command does what this paragraph says.
+Repair **derives, never guesses**. Statistics are recomputed by reading the file, because the
+file is the truth. Anything needing a guess — a missing schema, a key column that does not
+exist — is refused with what a person has to decide, because a tool that invents a plausible
+value writes it into the table permanently with an operator's confidence attached. It never
+deletes, and it appends a new version rather than rewriting a committed one, so the repair is
+auditable and revertible and time travel to before it still works.
 
 ---
 
-## 5. Start a database and load data
+## 14. Tidy up
 
 ```bash
-# Initialise a throwaway cluster configured for logical replication
+# stop the server with Ctrl-C; it drains on shutdown
+rm -rf warehouse .sankhya
+```
+
+The whole `.build/` directory is scratch and safe to delete; `vendor/postgresql/build.sh`
+recreates what it needs.
+
+---
+
+## Two things this fixture cannot show you
+
+Recorded here rather than worked around, because a walkthrough that quietly avoids what it
+cannot demonstrate is how the last version of this document came apart.
+
+1. **The ambiguous bare name.** §5 shows `SELECT count(*) FROM orders` resolving, and says it stops the day a second schema holds an `orders`. That refusal is real and well-tested, and **this fixture cannot produce it**, because only `sales` has an `orders`. Demonstrating it needs a second table of that name in another schema — a two-line addition to `crates/sankhya-server/tests/make_warehouse.rs`.
+2. **A clone target that is not load-bearing.** §8 clones `sales.regions`, which is the dimension table the `sales` cube joins to. That works, and it means the walkthrough mutates a table the rest of the document depends on — you must drop the clones afterwards, in order, or `SHOW DEPENDENTS OF sales.regions` keeps reporting one. A small throwaway table existing only to be cloned would remove the ordering constraint.
+
+Neither is a defect in the product. Both are the fixture being one table short of the document,
+which is the exact class of gap that made the previous walkthrough unfollowable, so they are
+named rather than left for the next reader to discover.
+
+---
+
+## Appendix: watching capture work
+
+> **Not built: there is no change-capture runtime.** Everything in this appendix runs in a
+> **test harness**, not in a server you started. The section it replaces was titled *"Watch
+> capture work"* and ran exactly this harness, which invited a reader to conclude that the
+> server they had just started was capturing something. It is not. `sankhya-cdc-pg`,
+> `sankhya-cdc-apply`, `sankhya-cdc-model` and `sankhya-ingest` are not dependencies of
+> `sankhya-server` at all — the audit records this as `ING-00`.
+>
+> What is real is everything *except* the driver: the `pgoutput` wire decoder validated against
+> a real PostgreSQL 17.11 stream, an apply path whose transaction invariant is property-tested,
+> lossless type mapping, reconciliation against an independent count taken from the source, and
+> a crash at any point yielding each row exactly once. Running the harness is the only way to
+> see that today, and it is worth seeing.
+
+Start a throwaway cluster configured for logical replication:
+
+```bash
 export PGBIN=$PWD/.build/pg-install/bin
 export PGSOCK=/tmp/sankhya-sock
 mkdir -p "$PGSOCK"
@@ -429,7 +826,7 @@ CONF
 $PGBIN/pg_ctl -D .build/pg -l .build/pg.log start -w
 ```
 
-Create the fixture schema and a publication:
+Create the fixture schema, a publication, and some data:
 
 ```bash
 cargo run --release -p sankhya-datagen --bin sankhya-datagen -- ddl \
@@ -437,32 +834,18 @@ cargo run --release -p sankhya-datagen --bin sankhya-datagen -- ddl \
 
 $PGBIN/psql -h $PGSOCK -U sankhya -d postgres -c \
   "CREATE PUBLICATION sankhya_all FOR ALL TABLES;"
-```
 
-See what a load would produce before running it:
-
-```bash
-cargo run --release -p sankhya-datagen --bin sankhya-datagen -- plan --gb 10
-```
-
-Then load. Start small:
-
-```bash
 cargo run --release -p sankhya-datagen --bin sankhya-datagen -- copy --gb 1 \
   | $PGBIN/psql -h $PGSOCK -U sankhya -d postgres -q -v ON_ERROR_STOP=1
 ```
 
-The full acceptance dataset is `--gb 10`: **99.2 million rows across ten tables**,
-about three minutes and 14 GB on disk.
+The full acceptance dataset is `--gb 10`: **99.2 million rows across ten tables**, about three
+minutes and 14 GB on disk. The ten schemas are deliberately drawn from logistics, telemetry,
+retail, media, energy and civic domains. None is financial — the general-purpose claim is tested
+rather than asserted, and fixtures from a single industry would let a core quietly shaped around
+that industry pass every test.
 
-The ten schemas are deliberately drawn from logistics, telemetry, retail, media,
-energy and civic domains. None is financial — the general-purpose claim is tested
-rather than asserted, and fixtures from a single industry would let a core quietly
-shaped around that industry pass every test.
-
----
-
-## 6. Watch capture work
+Then run the harness:
 
 ```bash
 export SANKHYA_PG_BIN=$PWD/.build/pg-install/bin
@@ -470,216 +853,47 @@ export SANKHYA_E2E_SOCKET=$PGSOCK
 crates/sankhya-cdc-apply/tests/run_e2e.sh
 ```
 
-This issues a workload, captures the resulting replication stream, decodes it, applies
-it, and **reconciles the result against an independent count taken from the source** —
-not against a second pass of our own decoder, which would let a shared defect cancel
-out and pass.
-
-Expect something like:
+It issues a workload, captures the resulting replication stream, decodes it, applies it, and
+**reconciles the result against an independent count taken from the source** — not against a
+second pass of our own decoder, which would let a shared defect cancel out and pass.
 
 ```
 e2e: 933 messages decoded, 922 mutations across 4 transactions, reconciled against source
 ```
 
-### One setting that will otherwise confuse you
+**One setting that will otherwise confuse you.** If capture appears to see nothing while rows
+are plainly present, check `SHOW synchronous_commit;`. Under `synchronous_commit = off` a
+transaction returns before its WAL reaches disk, and **logical decoding reads flushed WAL only**.
+The change is durable enough to query and entirely invisible to capture, and every symptom that
+normally indicates a problem looks healthy: the source is up, the slot is valid, the rows are
+there, no errors are reported. See
+[`adr/0002-async-commit-and-decoding-visibility.md`](adr/0002-async-commit-and-decoding-visibility.md).
 
-If capture appears to see nothing while rows are plainly present, check:
-
-```bash
-$PGBIN/psql -h $PGSOCK -U sankhya -d postgres -c "SHOW synchronous_commit;"
-```
-
-Under `synchronous_commit = off` a transaction returns before its WAL reaches disk, and
-**logical decoding reads flushed WAL only**. The change is durable enough to query and
-entirely invisible to capture. Every symptom that normally indicates a problem looks
-healthy — the source is up, the slot is valid, the rows are there, no errors are
-reported. See [`adr/0002-async-commit-and-decoding-visibility.md`](adr/0002-async-commit-and-decoding-visibility.md).
-
----
-
-## 7. Check the health of a warehouse
-
-```bash
-./target/release/sankhya-server doctor
-```
-
-It reads the warehouse directly and does not start the server, because the day you want a
-diagnostic is often the day the server will not start.
-
-```
-SANKHYA doctor 0.1.0
-  warehouse ./warehouse
-  1 table(s)
-
-  [note] table sales.orders — 990 live files; no projection is possible from 1
-         observation(s): a time needs a rate, and a rate needs at least 2.
-
-0 check(s) clean, 1 finding(s) of which 0 have a date, 0 check(s) could not run
-```
-
-**That is the correct output for a first run, and it is the whole point.** `FR-OPS-17` asks
-for the time until a problem bites rather than its current value — and a time cannot be
-computed from one sample. So the first run reports the value, refuses the date, and names
-what is missing. Run it again after some load and it will tell you when:
-
-```
-  [warning] table sales.orders — 900 live files; at the current rate, about 1 day.
-         Compact it: `sankhya maintenance compact --table sales.orders`. …
-```
-
-Put it in cron — hourly is enough — and the projections become real:
-
-```cron
-17 * * * * SANKHYA_WAREHOUSE=/srv/sankhya/warehouse /usr/local/bin/sankhya-server doctor
-```
-
-Exit status is `0` clean, `1` findings, `2` a check could not run. The third exists so a
-monitoring system cannot read "I could not look" as "nothing found".
-
-Full detail, including why it refuses to project through a sawtooth, is in
-[`GUIDE.md` §10](GUIDE.md#10-the-diagnostic).
-
----
-
-## 8. Watch what it is doing
-
-```bash
-curl -s http://127.0.0.1:9464/metrics
-```
-
-```
-sankhya_queries_total{outcome="ok"} 412
-sankhya_queries_total{outcome="refused"} 3
-sankhya_query_duration_seconds_bucket{outcome="ok",le="0.025"} 388
-sankhya_table_live_files{table="sales.orders"} 87
-sankhya_metrics_rejected_total{reason="over_cap"} 0
-```
-
-Its own port, one route, loopback by default. The full list is [`METRICS.md`](METRICS.md),
-which is **generated from the declarations** — recording a metric requires passing its
-declaration, so an undeclared metric cannot be typed, and a declared one that nothing records
-fails the build.
-
-Two things to know before you build a dashboard on it:
-
-- **`refused` is not `error`.** A quota held is the system working. An error-rate alert that
-  counts them together fires on correct behaviour.
-- **Watch `sankhya_metrics_rejected_total`.** Non-zero means a call site disagrees with the
-  catalogue, or a label has outgrown its cap and that metric is now incomplete.
-
-And when something fails:
-
-```
-ERROR:  [SNK-C0001] Error during planning: table 'sales.ordres' not found
-DETAIL:  Correct the statement. The detail names the offending element.
-```
-
-The code is permanent and is what [`ERRORS.md`](ERRORS.md) and the
-[runbooks](runbooks/) are indexed by. `DETAIL` is the catalogue's own remediation, so the
-client and the documentation cannot disagree.
-
----
-
-## 9. Prove the backup
-
-```bash
-./target/release/sankhya-server backup     # record a manifest
-./target/release/sankhya-server drill      # prove it restores
-```
-
-A backup here is a **manifest**, not an archive: it binds the transactional backup you took,
-the table versions in the warehouse and the key generation to one point, and protects the
-files so they stay readable.
-
-```
-SANKHYA restore drill 0.1.0
-  backup:01a04442-936a-73a1-bfd1-964c8cd66330
-  sales.orders: verified, 1000 row(s)
-
-Proven. 1 table(s) read back and digested.
-```
-
-**It reads the data back and recomputes its digest.** Try it — corrupt a file and drill again:
-
-```bash
-printf garbage > warehouse/sales/orders/part-0000.parquet
-./target/release/sankhya-server drill; echo "exit=$?"
-```
-
-```
-  sales.orders: could not be read (…part-0000.parquet: Parquet file too small)
-
-NOT PROVEN. 1 of 1 table(s) did not verify — this backup would not restore what it claims
-to hold.
-exit=1
-```
-
-A file-presence check would have passed on that. It passes on almost every failure that
-actually happens, because a *missing* file is loud — what goes wrong is that a file is there
-and wrong.
-
-Exit `0` proven, `1` a table did not verify, `2` could not run. **Alert on `2` as well**: a
-monitor treating "could not look" as "nothing wrong" reports a backup as proven when nothing
-examined it.
-
-Both runs are kept in `<data-dir>/restore-drills.jsonl`, append-only and including the
-failures — a drill history with no failures describes either a very good system or a drill
-that does not really run, and nothing in the history says which. `doctor` reads the last
-**pass** from it, never the last attempt.
-
----
-
-## 10. Tidy up
+Clean up:
 
 ```bash
 $PGBIN/pg_ctl -D .build/pg stop -m fast
 rm -rf .build/pg /tmp/sankhya-sock
 ```
 
-The whole `.build/` directory is scratch and is safe to delete; `vendor/postgresql/build.sh`
-recreates what it needs.
-
 ---
 
 ## What does not work yet
 
-Stated explicitly, because a quickstart that implies more than exists is worse than one
-that admits less.
+**The single canonical inventory is [`STATUS.md`](STATUS.md)**, which opens with *what works
+today* and then lists what is not built with the evidence for each entry. This document
+deliberately does not keep its own copy: it used to, and so did a dozen other documents, and
+each was partly stale in a different way.
 
-| | Status |
-|---|---|
-| The server binary | **It runs, `psql` connects, and statements execute against real Parquet.** It walks a `<schema>/<table>/` warehouse at startup, reads each table's schema out of its own log, and opens it through the M3 read path — which plans from the table log alone and prunes files by recorded statistics. Authentication, policy-filtered catalogue answers, a hash-chained audit, and a query path that authorises, wraps each table in its policy decision, plans, executes and renders back. Nothing drives ingest, so everything it serves is already published |
-| Streaming transport | **Not built.** Changes are drained through a SQL function rather than a replication connection. Neither mainstream Rust PostgreSQL client supports the replication protocol, so this is real work rather than wiring |
-| Automatic table onboarding | **Working across many tables.** Schema, write strategy and path are derived from the replication stream alone; several tables capture independently from one interleaved stream and each reconciles against the source. Nothing drives it on a timer |
-| Storage and the table log | **Working.** Each table gets its own Delta log; capture commits every file it publishes, and a restart recovers its position from that log rather than from memory. The Delta kernel reads these tables, which is what makes the open-storage claim testable rather than aspirational |
-| Compaction and maintenance | **Working, and running in the server.** Fragmented partitions are planned, merged, committed and converged, with retirement refusing to remove anything a reader might still hold. Since M8 the server maintains its own warehouse on its own thread when a maintenance policy is configured — so the warehouse moves whether or not anybody is writing to it, and the read path re-resolves a table whose log has advanced |
-| Analytical queries | **Working, and measured.** A table provider plans from the table log alone — no directory listing, no footer reads — prunes files by recorded statistics, feeds bounds and cardinalities to the optimizer, and resolves updated and deleted rows to one current version each. One SQL statement is answered from memory and Parquet at once, spliced so no position is counted twice or missed, and refused outright when the tiers do not cover the query's span. TPC-H at scale factor 1 meets its three performance objectives under a build gate. No result cache, no bloom filters, no partitioning |
-| Mathematics | **Working.** Vectors and matrices as columns, and the kernels over them: elementwise, dot, norms, distances, statistics, calculus, and linear algebra through LU. Every reduction is bit-deterministic. Callable from SQL as `vec_*` and `mat_*`, with constructors that let a matrix be built and operated on without being stored. No QR, SVD or eigendecomposition |
-| Publishing and repair | **Working.** A library and command-line tool for writing an external table, and a verifier that does not assume it was used. Repair fixes only what can be derived from evidence and refuses anything needing a guess |
-| Query governance | **Working.** Deadlines and cancellation bounded at one batch per partition; admission control that refuses an aggregation too large to run rather than letting it take the process down, and says whether retrying could ever help |
-| Backup and restore | **Working for the analytical half.** A manifest binds table versions and a key generation to a consistent point and refuses to record an inconsistency; a drill reads the data back and digests it; the evidence is append-only. Backing up the transactional store is your own tooling's job — the manifest binds to it and does not take it |
-| Soak testing | **The harness works, is proven to detect a leak, and a forty-five-minute run at twenty gigabytes passes** — 1.16 billion rows scanned, resident memory flat, 21.5 GB reclaimed. The multi-day run is not done and moved to M12 with the rest of the scale-out work. A short run against the real server, under concurrent writes, queries and maintenance, runs on every build. See [`SOAK.md`](SOAK.md) |
-| Cubes | **Working, and declarable from SQL.** A cube is a declared model over a published table — dimensions, levels, hierarchies, and how each measure may combine along each dimension — answered on demand with no build step. Slice, dice, roll-up and drill-down are table functions; every row carries its snapshot, its completeness and whether it came from a cuboid. `CREATE CUBE` and `DROP CUBE` are statements, and a drop reclaims what the cube materialised. No MDX, deliberately |
-| Concurrency and data safety | **Working, and measured against a control.** Commits are per-table and atomic, files are published atomically, and reclamation never removes a file a reader holds. Each concurrency claim is measured twice in the same run — once as the code stands, once forced through one mutex — because a single warehouse lock satisfies every safety property while destroying concurrency. Leader election, executor scale-out and failover are **not built**: they need a second machine and moved to M12 |
-| Lifecycle tiering | **Partly built, and gated.** `sankhya-tiering` holds 16 modules and about 5,100 lines of source (8,581 including its tests): the policy model, eligibility, canonical encoding, verification, quarantine, rehydration and the attestation drill. What is **not** built is the destructive half --- purge from the source. M9 is in progress and the attestation drill exists — an attestation drill that proves a write-once store still refuses writes by attempting to overwrite, delete and truncate it. **Destructive purge stays disabled until reconciliation has run clean in production**; building the purge path and arming it are two decisions |
-| Packaging | **Checks, not artifacts.** The platform baseline is declared and the built binary is measured against it; every deployment manifest's termination grace is compared with the server's drain deadline. Container images and signing are not built |
-| Upgrade and rollback | **Tested as far as one release allows.** Every on-disk format carries a version, an artefact from a newer release is refused by name rather than failing as a parse error, and a corpus of earlier-release artefacts is read on every build. Running the *previous binary* needs a previous binary |
-| The diagnostic | **Working for four checks.** `doctor` walks the warehouse, records what it sees, and projects a date for compaction debt once it has two runs to compare, and reports how long the backup has been unproven — and, for a deployment that archives anything, how long the write-once controls have gone unattested. Storage headroom and replication lag are built as checks with nothing feeding them observations. The rest of `FR-OPS-16` — conformance, replica identity, archival consistency — is not built |
-| Graph engine | **Working.** A typed, time-aware adjacency hydrated from published tables — no second store, no graph write path, an edge exists because a row exists. Traversal, weighted and k-shortest loopless paths, simple cycles, components, centrality, communities and multiplicative influence, each bounded and each reporting its own truncation. Five SQL table functions make them joinable against ordinary tables. Nothing drives hydration on a timer |
-| The extension mechanism | **Working.** SANKHYA's own function traits rather than the engine's, so a pack survives the engine changing underneath it. Two reference packs from unrelated industries and one deliberately hostile pack whose every attempt is refused with a named error. A declarative tier expresses a pack as a file rather than a crate. **The loader is not wired into the server**: a running process exists, and nothing in it loads a bundle |
-| API surfaces | **Two of four.** Real `psql` connects, authenticates, runs catalogue queries and recovers from errors. **Arrow Flight SQL** streams results as Arrow batches over gRPC, with authorization at planning and a ticket bound to the tenant it was issued to. The gRPC control plane and the REST gateway are not built |
-| Multi-tenancy and security | **Working, and reachable through the server.** A statement arriving over the wire is authorised before a table is registered, so one the caller may not read does not resolve at all. One principal type established at the edge; a pure policy component whose every decision is a function of its inputs; a `Guard` that cannot be constructed except from an allowed decision, so a provider cannot be built without one. Row predicates are enforced above the scan where no provider can decline them, and their presence in the *final physical plan* is asserted. Quotas with typed errors and a hash-chained audit are wired into the query path. Per-tenant graph epochs and envelope encryption are built and tested but have no path through the front door |
+The one-sentence version, so you can decide whether to read further: **the correctness
+contracts are built and tested, and for the ingest half the machinery that would run them
+continuously is not**. What you started above is a real single-node analytical warehouse over an
+open format, with cubes, clones, snapshots, maintenance, backup and an audited query path. What
+it is not yet is the three-engine system the architecture describes — there is no change-capture
+runtime, no transactional tier wired into the server, no graph hydration on a timer, and no
+second node.
 
-The honest summary is that the **correctness contracts are built and tested and the
-machinery that runs them continuously is not**. Every capability above is exercised by
-the test suite; none of it is exercised by a process you can start.
-
-[`STATUS.md`](STATUS.md) is the authoritative version of this table, including the
-defects found along the way and what they cost to find.
-
-[`GUIDE.md`](GUIDE.md) is the next thing to read: what to *do* with a running server,
-worked through with examples. Every example on that page is executed by a test, so one that
-stops working breaks the build rather than misleading a reader.
-
-Progress is tracked in [`ROADMAP.md`](ROADMAP.md) and
-[`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).
+Next: [`GUIDE.md`](GUIDE.md) is what to *do* with a running server, worked through by example,
+every example executed by a test. [`TUTORIALS`](TUTORIALS.md) are hands-on and in order.
+[`GLOSSARY.md`](GLOSSARY.md) defines the terms this document used before explaining them.
+[`ROADMAP.md`](ROADMAP.md) says what each release is for.

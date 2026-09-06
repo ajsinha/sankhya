@@ -10,947 +10,1255 @@
 # SANKHYA — System Architecture
 
 **Document ID:** SNK-AD-001
-**Version:** 0.1.0 (draft for review)
+**Version:** 0.2.0
 **Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
-**Date:** 2026-08-26
-**Companion documents:** `REQUIREMENTS.md` (SNK-RD-001), `IMPLEMENTATION_PLAN.md`, `ROADMAP.md`
+**Date:** 2026-09-06
+**Companions:** [`REQUIREMENTS.md`](REQUIREMENTS.md) — what it must do. [`INVARIANTS.md`](TESTING.md) — the rules and what enforces each. [`OPERATIONS.md`](OPERATIONS.md) — running it. [`SECURITY.md`](SECURITY.md) — the posture and the policy. [`STATUS.md`](STATUS.md) — the dated record of what is built.
 
 ---
 
-## 1. Purpose and reading order
+## 1. What this document is, and how to read it
 
-This document describes *how* SANKHYA is built. It does not restate *what* it must do — that is `REQUIREMENTS.md`, and every design element here traces to at least one requirement identifier.
+This describes how SANKHYA is built. It does not restate what it must do, which is
+[`REQUIREMENTS.md`](REQUIREMENTS.md), and it does not restate what is finished on any given day, which
+is [`STATUS.md`](STATUS.md).
 
-Read in this order:
+**Its organising rule is that a design document which cannot distinguish the designed from the built
+is a brochure.** The previous version of this file could not. It described four runtimes where one
+runs, resource governance that governs nothing, and a plan hash nothing computes — in the present
+tense, beside sections describing mechanisms that do run, with nothing to tell a reader which was
+which. That is the failure the 129-finding audit was mostly about, and this rewrite is organised
+against it.
 
-1. **§2 Principles and invariants** — the small set of rules everything else obeys.
-2. **§3 Context and topology** — what SANKHYA is deployed alongside.
-3. **§4 Component model** — the layered decomposition.
-4. **§5 The read path** — the single most distinctive part of the design.
-5. **§6 The write path** — how data arrives and becomes queryable.
-6. Everything else is elaboration of those five.
+So the document is in two parts.
 
-Where a design choice was contested during review, this document states the alternative that was rejected and why. Architecture documents that record only the chosen path are unreviewable, because the reader cannot tell which decisions were considered.
+**Part I is the system that exists.** Every section in it describes something a running process does,
+and it starts with what happens when somebody types a query, because that is the shortest path to
+understanding what this actually is.
 
----
+**Part II is designed and not running.** Every section in it is marked, and each names what has to
+exist first. None of it is written in the present tense.
 
-## 2. Principles and invariants
+Two things make the split checkable rather than a matter of my care in writing, and §2 is about
+those.
 
-### 2.1 Principles
+### Reading order
 
-| # | Principle | Consequence when applied |
-|---|---|---|
-| **P1** | **One authoritative writer.** All mutations go to the transactional store. Everything downstream is a derived, versioned, reproducible projection | There are no cross-engine transactions and none are needed. Split-brain between the ledger and its projection is impossible by construction |
-| **P2** | **Freshness is a read-path property, not a write-path property** | The commit interval is tuned for storage efficiency; freshness comes from an in-memory tier spliced at query time |
-| **P3** | **Never let a fast-moving upstream type into a slow-moving contract** | Applied twice: the storage libraries supply metadata only, and the extension API defines its own function traits |
-| **P4** | **The core knows nothing about any domain** | Domain semantics arrive through a published extension API, and the claim is tested by reference packs, not asserted |
-| **P5** | **Correct, then fast** | Exact arithmetic and deterministic reduction are defaults; approximation is opt-in and labelled |
-| **P6** | **Immutability is what makes caching free** | Data files are never rewritten in place, so a cache keyed by path needs no invalidation protocol |
-| **P7** | **Degrade predictably and observably** | Every precondition violation produces a named degradation reason, never a silent miss |
-| **P8** | **Structural prevention beats procedural care** | Where a mistake would be catastrophic, make it impossible to express rather than forbidden by convention |
-
-Principle **P8** deserves emphasis because it recurs throughout: a security context that cannot be omitted because there is no other constructor; an archival authorization whose only two constructors constitute a complete audit of how data can leave the system; a purge primitive that cannot emit a delete event because it does not delete rows.
-
-### 2.2 Invariants
-
-Two invariants sit above ordinary requirements because they protect the transactional system everything else depends on. Both are gated by chaos tests rather than by review.
-
-> **INV-1 — Query safety.** No query, at any concurrency, resource level, plan shape or tenant, can cause the transactional primary to lose availability or durability.
-
-> **INV-2 — Source safety.** SANKHYA can never bloat, wedge or exhaust the storage of the database it replicates from — through its replication slot, its own long-running queries, or its own maintenance.
-
-**Why INV-2 needs stating.** A logical replication slot retains write-ahead log from its restart position forward. If SANKHYA's consumer stalls — starved of processor time by a runaway analytical query, for instance — the database retains log indefinitely until its volume fills, at which point it shuts down. The failure mode is **an analytical query taking down the transactional system**, and it is the worst outcome this architecture can produce.
-
-Two further mechanisms compound it. A logical slot pins the catalog transaction horizon, bloating system catalogs and slowing planning for every query on the instance — the remedy for which is draining the slot, not vacuuming user tables. And SANKHYA introduces a third vector *by design*: its own strongly-consistent reads and its initial snapshot export hold open transactions that block reclamation of ordinary dead tuples.
-
-The mitigations appear in §14.
+1. **§2** — how the repository distinguishes built from designed.
+2. **§3** — what a query actually does. Read this before anything else.
+3. **§4** — what bounds a query, and the large gap in it.
+4. **§5–§14** — the rest of what runs.
+5. **Part II** — what does not.
 
 ---
 
-## 3. Context and deployment topology
+## 2. Built and designed, and how this repository tells them apart
 
-### 3.1 System context
+Three mechanisms decide it, and none of them is prose.
 
-```
-        ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
-        │ Applications │   │  BI / tools  │   │   Notebooks  │
-        └──────┬───────┘   └──────┬───────┘   └──────┬───────┘
-               │ SQL, gRPC        │ Flight SQL       │ Flight SQL
-               │                  │ Postgres wire    │ Postgres wire
-        ┌──────┴──────────────────┴──────────────────┴───────┐
-        │                    S A N K H Y A                    │
-        │  one binary · one config · one security model       │
-        └──────┬──────────────────────────────────┬──────────┘
-               │ supervised child                 │ open table format
-               │   or attached                    │
-        ┌──────┴───────┐                   ┌──────┴───────────────┐
-        │  PostgreSQL  │                   │   Object storage      │
-        │  system of   │                   │   or local filesystem │
-        │  record      │                   └──────┬────────────────┘
-        └──────────────┘                          │ direct read
-                                            ┌─────┴──────────────┐
-                                            │ Spark, Trino,      │
-                                            │ DuckDB, others     │
-                                            └────────────────────┘
-```
+### 2.1 `UNREACHED` — crates no binary reaches
 
-The dashed relationship on the right is deliberate and is a product decision, not an implementation detail: **external engines read the published tables directly**, with no SANKHYA process in the path. SANKHYA is a participant in a data estate rather than a replacement for it. §7.3 specifies what that costs and how it is made safe.
+`xtask/src/surfaces.rs` computes reachability from every root that ships — `sankhya-cli`, plus every
+pack — and requires every crate under `crates/` to be either reachable or **listed with a milestone**.
+The list is self-pruning in both directions: an unlisted unreachable crate fails the build, and a
+listed crate that has *become* reachable or been deleted fails it as a `STALE EXCUSE`, so the list
+cannot grow into a place where things go to be forgotten. A reason shorter than thirty characters is
+a panic.
 
-### 3.2 Roles
+Ten crates are on it, and they are the honest shape of what is designed rather than delivered:
 
-One binary, three roles, selected by configuration.
-
-| Role | Owns | Cardinality | Recovery |
-|---|---|---|---|
-| **Coordinator** | The transactional connection, the change applier, the maintenance scheduler, the archive engine, the catalog | Exactly one active | Leader election; database failover |
-| **Executor** | Nothing durable — caches only | Many | Trivial; any node serves any query |
-| **Graph** | Hydrated in-memory graph epochs | Partitioned by tenant | Rebuild from published tables; RTO is published |
-
-**The honest statement about the single-binary constraint.** There is no configuration in which several nodes share writable state with zero coordination. Either the object store is the coordinator, through atomic conditional writes, or the transactional database is. The constraint is satisfied in **packaging** — one artifact, one configuration file, one process per node — and cannot be satisfied in **topology**, where a multi-writer cluster has exactly one logical coordinator by definition. SANKHYA's answer is that the coordinator is a **role of the same binary**.
-
-Two independent lines of analysis arrived at this: commit serialization for the table format, and coordination of maintenance jobs. Convergence from unrelated directions is good evidence the conclusion is correct.
-
-### 3.3 Deployment shapes
-
-| Shape | Transactional tier | Nodes | Intended use |
-|---|---|---|---|
-| **Solo** | Managed child process | 1, library-embedded | Development, test, edge, single-user analysis |
-| **Node** | Managed child process | 1, with listeners | Small deployments, appliances |
-| **Cluster** | Attached, externally managed | Coordinator + N executors + graph nodes | Production at scale |
-
-All three share one codebase and one configuration schema; the shape is a configuration value, not a build variant. Solo must require no network listener at all.
-
-**Managed mode is single-node.** This is a documented product boundary rather than a defect: a highly-available multi-node deployment requires a highly-available transactional tier, which means an externally managed cluster.
-
-### 3.4 Process supervision
-
-In managed mode SANKHYA supervises its own process tree.
-
-Startup is an explicit, observable sequence: acquire an exclusive lock on the data directory; verify and extract embedded assets against their recorded checksums; initialize the database if absent, or validate its catalog version; start the database and wait for readiness with bounded backoff; run schema migrations; recover the change-capture position; open listeners; report ready.
-
-Three failure modes are handled explicitly because each is fatal if missed:
-
-- **Two processes over one data directory.** Prevented by the directory lock, which is taken before anything else.
-- **An orphaned database process.** At startup, if a process record exists: adopt the process if live and healthy, stop and restart it if live and unhealthy, clear the record if stale. Getting this wrong produces either corruption or a boot loop.
-- **A supervisor that dies leaving its child running.** Parent-death signalling on platforms that support it, plus the boot-time check above, because signalling does not survive every termination path.
-
-Shutdown drain order is a **correctness property**, not an implementation detail, and is specified in §16.3.
-
-### 3.5 Data directory layout
-
-One root; nothing is written outside it.
-
-```
-${SANKHYA_DATA}/
-  sankhya.lock          exclusive directory lock
-  version.json          binary version, schema versions, asset checksums
-  pg/                   database data directory and its socket
-  pg-bin/               extracted database binaries + checksum stamp
-  pg-bin-prev/          previous major, retained for in-place upgrade
-  wal-archive/          point-in-time recovery archive
-  cdc/                  slot state, checkpoints, dead-letter spill
-  staging/              un-merged change log (NOT the published warehouse)
-  cache/                object cache, footer cache        [regenerable]
-  spill/                query spill files                 [regenerable]
-  graph/                serialized epochs for fast rehydration [regenerable]
-  audit/                local audit spool before shipping
-  keys/                 wrapped data keys only, never raw material [secret]
-  logs/
-  tmp/
-```
-
-Each area is classified **durable**, **regenerable** or **secret**. The classification drives backup scope, disaster-recovery design and container volume layout. Regenerable areas are cleared on boot after an unclean shutdown.
-
-**The published warehouse is not under this root** when object storage is in use, and is conceptually separate even when it is local. See §7.1.
-
----
-
-## 4. Component model
-
-### 4.1 Layering
-
-Dependencies point downward only, enforced mechanically in continuous integration. Layers 0 and 1 are pure: no I/O, no async runtime, no filesystem, no network. This is what makes the hardest logic — policy evaluation, protocol decoding, graph algorithms, numeric reduction, canonical encoding — testable in milliseconds and amenable to property testing and fuzzing.
-
-```
-  PACKS   packs/*                 may depend ONLY on the extension API
-                                  and the vocabulary crates
- ─────────────────────────────────────────────────────────────────────
-  L5      composition root        the only place a pack is named
-  L4      API surfaces            Flight SQL · Postgres wire · gRPC · REST
-  L3      engines                 query · graph · ingest · views ·
-                                  maintenance · tiering
-  L2      adapters                transactional · capture · table format ·
-                                  object store · catalog · read path ·
-                                  authz · crypto · audit · telemetry ·
-                                  sandbox hosts
-  L1.5    extension API           the only crate with a stable-version
-                                  commitment
-  L1      pure logic              graph algorithms · numeric · rules ·
-                                  apply planning · read planning · config
-  L0      vocabulary              types · errors · schema · capture model ·
-                                  ports (traits only)
-```
-
-Three additional rules govern packs:
-
-1. **No core crate may depend on any pack.**
-2. **A pack may depend on a strictly limited set of core crates.** When a pack legitimately needs another, the build fails — and that failure *is* the signal that the extension API has a gap. It is treated as an API design task, never as grounds to widen the allowance.
-3. **Packs self-register.** No core crate contains a dispatch on pack identity, so rules 1 and 2 cannot be quietly circumvented by "temporarily" adding a branch.
-
-### 4.2 Component responsibilities
-
-**Layer 0 — vocabulary.** Identifier newtypes, log positions, table and snapshot references, the error taxonomy with stable codes, the logical schema model and type mapping, the capture event model with its byte decoder, and the trait definitions that form every testing seam. Nothing here performs I/O.
-
-**Layer 1 — pure logic.** Graph algorithms over an adjacency snapshot passed in. Numeric reduction, order statistics and fixed-point arithmetic. The rule and detector engine. Apply planning: decoded event stream in, table mutation plan out — **this seam is what makes the majority of synchronization logic testable without a database, and it is the highest-leverage testability decision in the design.** Read planning: the pure routing function that decides which tiers serve a query. Configuration schema and validation.
-
-**Layer 1.5 — the extension API.** SANKHYA's own function traits, the logical-type registry, the pack contribution surface. Versioned independently. The only component carrying a stable-version commitment while the rest of the system is pre-1.0.
-
-**Layer 2 — adapters.** Each owns exactly one external system and one heavy dependency, so that a breaking change upstream has a bounded blast radius. The transactional adapter owns database lifecycle and pooling. The capture adapter owns slot lifecycle and the replication transport. The table-format adapters own metadata resolution. The object-store adapter owns credentials, retries, caching and the conformance probe. The catalog is the single choke point for table resolution and policy rewriting. The read-path planner performs tier splicing.
-
-**Layer 3 — engines.** Query session construction, memory pools, admission and cancellation. Graph hydration and traversal. The ingest pipeline. Materialized views. The maintenance scheduler. The tiering engine.
-
-**Layer 4 — API surfaces.** Protocol adapters over one shared request model. They are parsers and serializers; they contain no policy and no planning.
-
-**Layer 5 — composition root.** Wiring only, deliberately small.
-
-### 4.3 The seams
-
-Every trait that forms a testing seam lives in Layer 0 and has a deterministic fake:
-
-`Clock` · `IdGen` · `ObjectStoreProvider` · `TransactionalStore` · `CaptureSource` · `TableFormat` · `Catalog` · `PolicyEngine` · `KeyProvider` · `AuditSink` · `GraphStore` · `ReadPathPlanner`
-
-`Clock` and `IdGen` are injected everywhere and enforced by lint. Without them the determinism guarantee of §17.4 is impossible, and with them it is nearly free.
-
----
-
-## 5. The read path
-
-This is the most distinctive part of the architecture and the part most likely to be misunderstood, so it is specified first.
-
-### 5.1 The problem it solves
-
-The naive way to reduce analytical lag is to commit more often. That produces small files, inflates version counts and grows metadata — and **metadata cost lands on query planning, not on scanning**. The result is the well-known failure mode in which a "real-time lakehouse" is either stale or slow, and every attempt to fix the staleness makes it slower.
-
-| Commits per table | Versions per day | Effect |
-|---|---|---|
-| 1 per minute | 1,440 | Negligible |
-| 1 per second | 86,400 | Noticeable; snapshot resolution begins to cost |
-| 10 per second | 864,000 | Metadata dominates; **planning becomes the tail latency** |
-
-### 5.2 The resolution
-
-Decouple the two. The table format commits on a slow, efficient cadence tuned for storage; freshness is served from an in-memory tier; a planner splices them.
-
-```
-        write                    ┌──────────────────────────────┐
-      ─────────────────────────▶ │  T0  Ledger (PostgreSQL)     │
-                                 │      authoritative, current   │
-                                 └──────────────┬───────────────┘
-                                                │ logical replication
-                                                ▼
-                                 ┌──────────────────────────────┐
-                                 │  T1  Arrival buffer          │
-                                 │      in-memory Arrow,        │
-                                 │      covers (committed, now] │
-                                 └──────────────┬───────────────┘
-                                                │ batched commit
-                                                ▼
-                                 ┌──────────────────────────────┐
-                                 │  T2  Published tables        │
-                                 │      covers [0, committed]   │
-                                 └──────────────┬───────────────┘
-                                                │ refresh
-                                                ▼
-                                 ┌──────────────────────────────┐
-                                 │  T3  Materialized aggregates │
-                                 └──────────────────────────────┘
-
-   query ──▶ catalog (policy rewrite) ──▶ read planner ──▶ spliced plan
-```
-
-Every tier is defined by the same abstraction: **a body of data plus the log-position interval it covers.** That uniformity is what makes the splice tractable.
-
-### 5.3 The correctness rule
-
-> The planner selects, for each table, a set of tiers whose coverage intervals are **contiguous, non-overlapping, and collectively cover `[0, target_position]`**.
-
-Because every committed snapshot records the exact log position it contains — the same metadata that provides exactly-once semantics — and every buffer epoch records its range, **the boundary is exact rather than approximate**. There is no double-counting window and no gap.
-
-Three properties follow, and the third is the one that makes this safe for a ledger:
-
-- **No double counting and no gaps**, by construction.
-- **Provenance is exact.** Every response reports which tiers served it and over which intervals.
-- **Transactional atomicity survives the splice.** A source transaction touching several tables carries one commit position. Since a single target position is applied to every tier and every table in the request, either the whole transaction is visible or none of it is. **A design splicing on wall-clock time would lose this**, and could show one leg of a transaction without the other.
-
-If a required interval cannot be covered — the buffer epoch was retired but no committed snapshot yet covers it — the planner **fails the query with a typed error**. It never returns a partial answer. A coverage gap is a correctness event and surfaces as one.
-
-### 5.4 The arrival buffer
-
-A single-writer, many-reader, epoch-based immutable ring. The applier appends into an open epoch; on seal the epoch becomes immutable and is published by an atomic pointer swap. Readers take a reference and are never blocked by, and never block, the writer — which matters because the applier is the one thing that must never stall.
-
-The buffer holds **change events, not merged state**: key, operation, position, and payload. Merging is a read-path operation. This makes the writer trivially fast — append-only, no index maintenance — and pushes cost to the reader, where it is small because the buffer is small by construction.
-
-It is hard-capped in bytes with per-tenant sub-caps. On approaching the cap the escalation is: seal and commit early, then apply backpressure to the reader, then enter degraded freshness in which maximum-freshness requests fail explicitly. **It never drops data** — it is not a cache of the truth, it is the not-yet-durable part of the truth.
-
-Each epoch maintains a compact digest of the keys it touched, so the planner can skip the splice entirely when a query's predicates provably do not intersect the buffer. **The common case — a historical query over old data — must cost exactly nothing for the buffer's existence.** Without this, the buffer taxes every query; with it, it taxes only the queries that need freshness.
-
-**A topology consequence.** The buffer lives on the node running the applier. Executors do not have it. Therefore maximum-freshness reads are routed to the coordinator, while executors serve pinned-snapshot and relaxed-freshness reads. This is a documented constraint and one of the seams identified for future scaling.
-
-#### 5.4.1 The retention rule, and why it is not an eviction policy
-
-**A segment may be released only once a durable tier covers it.** Not when it is old, not when memory is tight, not when it has been read.
-
-This inverts the usual cache relationship, and the inversion is the point. A cache evicts under pressure and takes a miss. This tier has nothing to miss *to* until publication has happened, so evicting under pressure does not degrade an answer — it destroys one. Worse, releasing a segment from the middle of the interval opens a coverage gap, and the splice is a proof of exact cover that cannot be talked into approximating one. The query would be refused.
-
-So when memory runs short and nothing is releasable, the only correct response is to push back on ingest. That is reported as a distinct condition rather than absorbed, because it is a **publication** problem wearing a memory problem's clothes: the tier is full because publication has stalled, and adding memory treats the symptom.
-
-The escalation has a deliberate gap between its soft and hard limits, so ingest gets a chance to lengthen its commit interval — the highest-leverage response, since it reduces publication *and* compaction load simultaneously — before it is stopped rather than running normally into a wall.
-
-#### 5.4.2 Coverage is trimmed; data is not
-
-The buffer physically retains segments the published tier already covers, because releasing them is governed by the rule above. But it **declares** coverage starting at the durable frontier, so the two tiers abut exactly and the splice succeeds. Declaring the physical extent instead would overlap, and the planner rejects overlapping tiers rather than guessing which to believe.
-
-The consequence is that a scan must filter **per row** — `durable_through < lsn <= target` — not per segment. A segment straddling the frontier is half durable and half not; returning it whole would double-count its durable half against the published tier. This is the same defect, one layer up, as suppressing duplicates per batch rather than per row, which is a mistake this system has already made once.
-
-A straddling segment is retained whole rather than split. Splitting costs a copy to reclaim memory the next publication frees anyway.
-
-### 5.5 Merge strategies
-
-Selected by declared table capability, never by heuristic:
-
-- **Union only**, for append-only tables. No deduplication, no sort, no key comparison. Cost is essentially zero. Most high-volume tables are append-only, so **most queries take this path**.
-- **Latest-version-per-key**, for mutable tables. Because the buffer is tiny relative to published data, the efficient shape is an anti-join: scan the published side excluding keys touched in the buffer, then union the buffer's resolved rows. This turns a full merge into a hash probe against a small build side.
-
-### 5.6 Table classes
-
-Before routing can be described, one thing has to be settled: **not every table has a
-transactional tier**, and the difference is not something to infer.
-
-#### 5.6.1 Why external tables exist
-
-The obvious design is that every mutation passes through the transactional store, which
-captures it, publishes it, and thereby owns a single authoritative history. That is right
-for operational data and it is disqualifying for bulk.
-
-Loading a terabyte through a row-oriented transactional path costs a transaction per row,
-a WAL record per row, a capture event per row and an apply batch per row — to produce
-Parquet files that the loader could have written directly in a fraction of the time. The
-tax is not a constant factor. It is the difference between a backfill that runs overnight
-and one that does not finish.
-
-Worse, it forecloses an entire class of deployment. A customer whose data already lands in
-an object store from Spark, from a vendor feed, or from another engine would have to route
-it *back* through this system's transactional store to make it queryable here. Nobody
-does that; they use something else.
-
-So a table may be **published directly** — by an external writer, into the open format this
-system already reads, discovered by walking the warehouse.
-
-#### 5.6.2 What that costs, precisely
-
-The cost is not "consistency" in the vague sense. It is four specific guarantees, each of
-which depends on there *being* a transactional tier:
-
-| Guarantee | Why it does not survive |
+| Crate | Why it is unreached |
 |---|---|
-| Read-your-own-writes | The session token carries an OLTP commit position. A table nobody wrote through OLTP has no position to wait for |
-| Strongly-consistent reads | There is no transactional tier to read from |
-| The arrival splice | The buffer declares coverage from the change stream. No stream means no log position, which means coverage is undefined — and refusing exactly that is the splice's entire purpose |
-| Write authorization and audit | A row that never passed through this system was never authorized on write and never appeared in its audit chain |
+| `sankhya-cdc-pg` | M2's carried remainder. The slot lifecycle, the lag thresholds and the source-safety ladder are built and tested; the **driver** that runs them on a timer is not |
+| `sankhya-oltp-pg` | The PostgreSQL supervisor is built and tested against the vendored 17.11; `Settings` has no transactional-store configuration. M8 §12.2, beside leader election |
+| `sankhya-tiering` | M9, explicitly gated on the drills |
+| `sankhya-objectstore` | M8 §12.1 — where the version claim lands on an object store, as a conditional put |
+| `sankhya-api-rest` | The route table and the size decision are built and tested; serving them needs an HTTP listener, HTTP authentication and a pre-materialisation row estimate |
+| `sankhya-mv` | Undecided by [ADR-0014](adr/0014-materialized-views-and-the-cube-lifetime.md); listed rather than deleted because the design question is open |
+| `sankhya-pack` | M4's remainder — the declarative pack tier is built; the loader that reads a bundle directory into a running process was never finished |
+| `sankhya-ports` | Decided: **delete.** Nothing implements a single trait in it, and its header asserts a property the workspace does not have |
+| `sankhya-datagen`, `sankhya-testkit` | Reached only from dev-dependencies, which the traversal ignores on purpose — a *surface* reachable only from a test is the defect; a generator of test data is not one |
 
-None of those degrade gracefully. A strongly-consistent read served from published data
-alone is not *slightly* stale; it is a claim about currency that is false, and nothing in
-the result says so.
+### 2.2 `UNREACHABLE` — error codes nothing can produce
 
-#### 5.6.3 Two classes, declared
+`xtask/src/catalogues.rs` reads every `.rs` file under `crates/` except `sankhya-error` itself and
+asks, of every documented code, whether anything constructs it. A code that nothing constructs must
+be **declared unreachable with a reason**, and the reason is printed into [`ERRORS.md`](ERRORS.md) as
+*"Not produced by this build."*
 
-| Class | System of record | Written by | Read modes available |
+Thirteen codes are on it. Nine wait on a subsystem that does not exist. **Four are worse**: the
+condition happens today and is reported through a crate-local type nothing maps onto the code, so an
+alert rule written from the catalogue is permanently silent while the failure it names occurs. Commit
+conflicts (`sankhya-publish` reports its own `CommitError`), cancellation, backup verification, and —
+found by a reviewer reading the gate rather than trusting it — `SNK-S0001`, the coverage gap, which
+had read as *produced* only because `SpliceError::CoverageGap` contains the substring
+`Error::CoverageGap`. The check requires a word boundary now.
+
+That last entry is worth reading twice, because it states a fact about the read path more precisely
+than any paragraph in this document does: *"the tier splice that would raise it is **not in the
+server's read path**, which synthesises a coverage range rather than composing one."* §3.8.
+
+### 2.3 The enforced-by column
+
+[`INVARIANTS.md`](TESTING.md) states every structural rule with a third column naming what enforces
+it — a build check, a test, or *nothing yet*, marked as such. `cargo xtask check-invariants` verifies
+that every check named there exists. This document does not restate those rules; where one is
+load-bearing here, it is named and the reader is sent there.
+
+### 2.4 What this document does with all that
+
+Every section below carries a marker: **[Built]**, **[Built, with a named gap]**, or, in Part II,
+**[Designed]**. Where a section says something is built, a file is named where a reader can go and
+look. `cargo run -p xtask -- check-docs` verifies that every such path exists; it cannot verify that
+the prose still describes what the code does, and saying so is the point rather than an apology.
+
+---
+
+# Part I — The system that exists
+
+## 3. What a query actually does — **[Built]**
+
+A single process. One tenant, fixed at startup. Three listeners on one Tokio runtime.
+
+```
+  psql / JDBC ─┐                                  ┌─▶ audit chain (durable, hash-linked)
+               ├─▶ door ─▶ authenticate ─▶ Caller ┤
+  Flight SQL ──┘                │                 └─▶ query log (one line, stderr)
+                                ▼
+                     policy decision ──▶ Guard ──▶ SecuredTable
+                                                      │
+                     session registered with ONLY the tables this caller may read
+                                                      │
+                                                      ▼
+                     plan ──▶ table provider ──▶ live set from the log ──▶ prune by statistics
+                                                      │
+                                                      ▼
+                     execute on the shared pool ──▶ stream ──▶ row cap ──▶ rows
+```
+
+### 3.1 What the server knows before anybody connects
+
+At boot it walks the warehouse — `<schema>/<table>/` directories, each with its own `_delta_log` —
+and reads each table's schema **out of its own log** rather than inferring it from a Parquet footer.
+Two reasons, and both are ordinary rather than exotic: a table with no files yet has no footer, and a
+table whose files predate a column would be missing it.
+
+Underscore-prefixed directories are SANKHYA's own — `_snapshots`, `_cubes`, `_audit` — and are
+skipped. A foreign object under the warehouse root is refused rather than ignored.
+
+**A table the server cannot open is named on stderr rather than omitted.** A server that starts with
+three tables of four and says nothing produces an outage that looks, to whoever queries it, like a
+table nobody ever created. The same instinct fixed fourteen places that read a directory as
+`let Ok(entries) = read_dir(x) else { return empty }` — which answers *"there is nothing here"* to the
+question *"what is here?"* whenever the true answer is *"nobody could tell"*. The worst of them was
+the diagnostic: an unreadable warehouse produced no tables and no complaints, and `doctor` printed
+`Nothing to report` and exited clean.
+
+The table set is **re-read every maintenance cycle**, not frozen at boot. A configured list goes stale
+the first time somebody creates a table; so does a discovered list that is only discovered once, and
+a table created after the server came up was maintained by nobody for the life of the process.
+
+### 3.2 The door, and who the caller is
+
+Both doors converge on the same `Caller`: a fixed tenant plus a subject. `authenticate` refuses an
+empty subject, because an unattributable connection cannot be audited and an audit chain that cannot
+say who is a log with extra steps.
+
+How each door establishes that subject, and what it verifies, is materially different, and it is
+[`SECURITY.md`](SECURITY.md) §3 rather than a footnote here. In one line: the wire door demands a
+password and verifies it against `server.credentials`; the columnar door reads an unverified header.
+
+### 3.3 Where security happens, and why there is exactly one place
+
+Three engines answer questions in this system — SQL, graph, and, when it runs, tiering. Each resolves
+a table through the same catalogue, and the catalogue's resolution takes a `Guard`
+(`crates/sankhya-catalog/src/guard.rs`), which has no public constructor, no public fields and no
+`Default`. Anything taking a `Guard` in its signature cannot be called until a decision has been made.
+
+> **The defect a security architecture must prevent is not *the wrong policy*. It is *no policy*, on
+> one path, on one day.** A wrong policy is visible in a test; a path that never asked is visible in
+> nothing at all — no error, no log line, no wrong-looking number.
+
+`execute::session_reaching` in `crates/sankhya-server/src/execute.rs` is where both doors register
+tables, and it registers nothing it did not obtain a guard for. Two consequences follow that are
+easier to state than to build:
+
+- **A table you may not read does not exist.** It is never registered, so naming it fails to resolve
+  with the same code, SQLSTATE and words as naming a table that was never created. The difference
+  between those two messages is a working enumeration oracle, and there is no configuration that
+  turns it on.
+- **The policy predicate is conjoined above the scan**, where nothing can decline it. The first
+  implementation handed it to the provider as a pushdown filter — the obvious design, and the one
+  that reads best. A provider may *decline* a filter; `MemTable` does; and when it declined, every
+  row came back with no error raised anywhere. The table was secured in name only, and the only
+  evidence was the row count.
+
+> **Correction to an earlier version of this document.** It said the tenant predicate is *"injected by
+> an analyzer rule **and** independently asserted by the provider"*. **There is no analyzer rule.**
+> `AnalyzerRule` appears nowhere in this repository, and enforcement is entirely the provider wrapper.
+> `assert_filter_present` — the "independently asserted" half — is a `#[must_use] -> bool` helper in
+> `crates/sankhya-catalog/src/secured.rs` whose only call site is
+> `crates/sankhya-catalog/tests/enforcement.rs`. It is a test's assertion, not a second runtime
+> control, and describing it as one described a defence in depth that has one layer.
+
+### 3.4 Planning does no file I/O
+
+The table provider is SANKHYA's own. The table-format library says **which files exist and what is in
+them**; it does not read them, does not decode them, and does not appear in the execution plan. Scan
+execution is the query engine's Parquet source, unmodified. §6.7 gives the version-skew argument that
+forces this and the five capabilities that make it better than a workaround.
+
+The measurable consequence is that planning does no file I/O: row counts come from the log, which
+already records them. The alternative is one footer read per file before a single row is read — the
+small-file penalty, moved somewhere compaction cannot help.
+
+| Files | Provider | Directory listing | |
 |---|---|---|---|
-| **Managed** | The transactional store | This system's change applier and maintenance jobs | Strong, bounded-freshness, pinned |
-| **External** | The published tier itself | Anyone, via the open format | Bounded-freshness, pinned |
+| 50 | 0.54 ms | 1.15 ms | 2.2× |
+| 200 | 0.63 ms | 3.02 ms | 4.8× |
+| 800 | 1.37 ms | 10.33 ms | **7.5×** |
 
-Three properties make this a design rather than a caveat.
+*Measured; the run and its conditions are recorded in [`STATUS.md`](STATUS.md), §Measurements.*
 
-**The class is declared in the table's own log**, in the metadata action's configuration
-map, and not in this system's configuration. Two nodes reading one warehouse cannot then
-disagree about what a table is, a restart cannot forget, and an external publisher can
-declare itself without asking anybody. A fact about a table belongs with the table.
+The honest caveat is that the provider is **not flat**: sixteen times the files costs about 2.5× more
+planning, because replaying the log grows with commit count. The cost has been moved from one seek per
+file to one sequential read of a log, not abolished — which was the argument for checkpoints (§6.3).
 
-**Absence means external.** A directory somebody dropped Parquet into is, by construction,
-not managed by this system. Defaulting the other way would have a table claim a
-transactional tier it does not have, and the first strongly-consistent read against it
-would return published-only data while asserting currency — the precise failure this whole
-section exists to prevent. The conservative default is the one that under-claims.
+Four details the provider gets right, and a naive one would not:
 
-**The refusals are the feature.** An external table asked for a strongly-consistent read is
-refused by name, with a message saying that this table has no transactional tier and which
-modes it does support. A user is oblivious to *which tier* answered — that is the point of
-the splice. They cannot be oblivious to whether a transactional tier exists at all,
-because that changes which guarantees are on offer, and pretending otherwise means lying
-to them at exactly the moment they were relying on it.
+**Statistics are marked exact only when nothing can be filtered out.** A query pinned below what the
+tiers hold has an *upper bound*, not a count. Reporting it as exact lets the optimiser order joins on a
+number that is simply wrong — a slow plan chosen confidently, which is harder to notice than a slow
+plan chosen for want of information.
 
-#### 5.6.4 What an external table still gets
+**The commit-position column is read only when the query pins a position.** Time travel genuinely
+costs a column the caller did not ask for, and hiding that would be dishonest about its price. When no
+tier holds anything past the target the filter provably removes nothing, and **neither the filter nor
+the column read is planned at all** — which matters because the cost is per table and compounds with
+join arity.
 
-Everything on the read path, because the read path does not care where files came from:
+**The scan reports its own statistics, not the table's.** These are different numbers arriving at
+different times: the table's during logical planning, the scan's during physical planning, and join
+selection reads the second. A provider supplying only the first leaves every table looking
+unmeasurable at the moment the engine decides how to join it — so it repartitions tables it could
+broadcast, and because tables reporting no size are ordered against tables that do, **one absent
+figure moves every join in the query.** The scan's figures are also counted over the files that
+survived pruning, so a selective predicate is reflected in the number the decision actually uses.
 
-- Snapshot-consistent and pinned reads, replayable by version.
-- Bounded-freshness reads, measured against the table log's own commit time rather than a
-  change-stream position.
-- Policy enforcement, column masking and audit **on read** — these live in the catalog and
-  the provider, not in the write path.
-- Statistics pruning, clustering, graph hydration and materialized views.
-- Mutability, if the publisher declares a key. `latest-version-per-key` is a property of
-  the merge, not of the writer.
+**File grouping is left to the engine above its own threshold.** The engine splits file groups by byte
+range, which balances on size and beats anything a provider can do by counting files — but only for
+scans large enough to be worth splitting, below which it leaves a single group alone, and a single
+group is a single partition. So the provider deals files out only *below* that threshold. Doing both
+is worse than either.
 
-An external table is therefore a first-class analytical table that happens to have no
-operational half. That is a coherent thing to be, and describing it as a degraded managed
-table would be the wrong mental model.
+### 3.5 Pruning, and the measurement that overturned two of this project's assumptions
 
-#### 5.6.5 Bulk loading a managed table
+Pruning pays in proportion to what it eliminates and costs nothing when it eliminates nothing: over
+200 files, a predicate selecting one file ran 7.3× faster with statistics than without, a predicate
+selecting a tenth of the table 2.8× faster, and a predicate selecting everything at parity. Recorded
+in [`STATUS.md`](STATUS.md), §Measurements.
 
-The third case, and the one that keeps the boundary from being a wall: a **managed** table
-can be bulk-loaded by writing Parquet directly and registering it with the coordinator,
-rather than by inserting rows.
+Filter pushdown and late materialisation are a different story and the most instructive measurement in
+this repository. Both ship **disabled by default** in the query engine, so SANKHYA asserts its required
+configuration at startup and fails loudly on unexpected values rather than setting it once and
+trusting it — an upstream default that changes between versions would otherwise be an invisible
+regression.
 
-This is not the same as an external table. The publisher must supply the log positions the
-files cover, the coordinator must advance the arrival tier's frontier past them, and the
-transactional store must agree that those positions are accounted for. In exchange the
-table keeps every managed guarantee.
+Late materialisation is widely described as the single largest scan optimisation available. An earlier
+version of this document said it was worth roughly an order of magnitude. Measured on a synthetic scan
+it was 1.02× — neutral — and it was pinned on anyway, on the reasoning that neutral is not harmful.
+Measured on TPC-H at scale factor 1 it is a **cost** at every selectivity tried, and with filter
+reordering compounding it, TPC-H Q6 went from 357 ms to 917 ms at eight clients: **2.6× slower**.
+(Recorded in [`STATUS.md`](STATUS.md), §A required setting that was costing 2.6×.)
 
-It is more work for the publisher and it is the right shape: the cost of the guarantee is
-paid by whoever wants the guarantee, rather than by every loader whether they need it or
-not.
+> Late materialisation saves the decode of payload columns for rows a predicate eliminates. On this
+> data those rows have already been eliminated, by row-group and page statistics, before any decoding
+> begins. **Pushdown cannot save work that is not being done; what it adds is per-row bookkeeping on
+> the scan that remains.** The two mechanisms are not complementary here — the cheaper one has already
+> won.
 
-#### 5.6.6 Open to read, tooled to write
+It is left at the engine's default rather than pinned off, because pinning a setting off is still
+pinning it and the evidence supports *not always* rather than *never*. **What this says about the
+practice matters more than the setting.** Both errors came from a mechanism with a good reputation,
+asserted on reasoning rather than on a measurement of this system's own data. A setting worth asserting
+at startup is worth measuring on something somebody else designed.
 
-`CON-08` requires that analytical storage be directly readable by external engines with no
-process of this system involved. That constraint is about **reading**, and the asymmetry is
-deliberate.
+One more default in the same family, and it is **not** measured: the Parquet writer's page row-count
+limit is effectively unlimited, and with no row cap a narrow column packs enormous row counts into one
+page — a boolean can fit tens of millions — so the page index degenerates to a single entry covering
+everything and page pruning silently does nothing. That reasoning is sound and the claim is
+**unverified**; read it as a hypothesis this project has not yet measured, which is the correction the
+paragraph above earns.
 
-A reader that misunderstands the format produces wrong answers *for itself*, immediately and
-recoverably. A writer that misunderstands the format corrupts the table *for everyone*,
-permanently, and usually undetectably — because the writer's own reader shares its
-misunderstanding and is perfectly happy.
+### 3.6 Executing, and the shape of the answer
 
-This is not a hypothetical. It happened here, to this system, writing its own format with
-the specification open:
+Execution runs on the process's single shared memory pool (§4). Results are **streamed** and stopped
+at the row cap rather than materialised and then checked — the check used to run after
+`frame.collect()`, so a statement returning ten million rows against a limit of ten thousand allocated
+all ten million first and the refusal arrived after the damage. **A bound enforced by a check that runs
+afterwards is not a bound.**
 
-> The `add` action's `partitionValues` field is non-nullable and was omitted entirely. The
-> log looked reasonable and round-tripped through this crate perfectly, because a reader
-> ignores a field it never writes. An independent implementation rejected it on the very
-> first read.
+Refusing rather than truncating is the older decision and stands. A truncated answer that looks
+complete is the failure this whole system is arranged against.
 
-If a team writing the format on purpose, with the spec in front of them and a test suite
-around them, produced an invalid log — then an external team writing it under deadline, as
-a means to an end, will too. And their tables will be read by this system, which will not
-notice, exactly as this system did not notice its own.
+### 3.7 What is written down
 
-So external publication is **supported through this system's own publishing library**, not
-through whatever the publisher assembles. The library is the path that:
+Two records, deliberately different, because they answer different questions and merging them would
+serve neither.
 
-- writes every required field of every action, including the ones a reader that never
-  writes them will silently tolerate;
-- records column statistics, without which file pruning degrades to a full scan that is
-  correct and slow, and nothing says why;
-- refuses a schema this system cannot round-trip exactly, rather than publishing something
-  merely similar;
-- declares the table's class, so it is a fact in the log rather than an assumption;
-- commits atomically, so a concurrent publisher cannot interleave two versions.
+**The audit chain** is the evidence: durable, hash-linked, `sync_data`'d on every append, one entry per
+table the *plan* scanned, with the principal, the decision, the row filter and column masks that
+applied, and the statement's **shape** — never its text. [`SECURITY.md`](SECURITY.md) §7.
 
-**The format stays open and documented.** Nobody is prevented from writing it, and the
-library exists in the same repository under the same licence for anyone who wants to see
-exactly what it does. What changes is which path is *supported*, and therefore which path
-carries the guarantees.
+**The query log** is one `tracing` line per statement carrying who ran it, its shape, how many tables
+it scanned, rows returned, milliseconds and whether it was refused
+(`crates/sankhya-server/src/audit.rs`). It exists because *"which statements are slow?"* had no answer
+anywhere: reading the audit means reading a chain rather than grepping a log, and the chain carries no
+duration. [`OPERATIONS.md`](OPERATIONS.md) §7 has the fields and how to configure it.
 
-#### 5.6.7 Trust, but verify anyway
+> **There is no plan hash.** An earlier version of this document said *"a normalized plan hash is
+> logged by default"*. Nothing in this build computes one. What is logged is `statement_shape`, and
+> the two are not substitutes: a shape groups `select` with every other `select`, where a plan hash
+> would group a query with its own repetitions. If plan-level grouping is wanted it is work, not
+> configuration.
 
-A table can still arrive written by something else — by an older version of the library, by
-a script somebody wrote before the library existed, by a vendor who did not ask. Making the
-library the supported path is a recommendation, and a recommendation is not an invariant.
+### 3.8 What the read path does *not* do
 
-So the reader does not assume the library was used. A table's log is **verifiable** against
-the invariants the library maintains, and the verification reports what is wrong rather than
-whether it is wrong: which action is missing which field, which files have no statistics,
-whether the declared schema round-trips.
+The tier splice — the mechanism §17 describes, which composes an in-memory arrival tier with published
+Parquet under a proof of exact coverage — **is not in the server's read path.** The planner
+synthesises a coverage range rather than composing one, and `SNK-S0001`, the coverage-gap refusal that
+splice exists to raise, cannot be raised by this build. That is not an inference; it is the reason
+recorded against `SNK-S0001` in `xtask/src/catalogues.rs`.
 
-That distinction matters operationally. "This table is invalid" sends someone to open a
-support ticket. "Fourteen files in this table have no column statistics, so every query
-against it scans all of them" sends them to fix it.
+The splice itself is built and property-tested in `sankhya-plan` and `sankhya-readpath`, and is
+exercised end to end in tests. What is missing is that no capture runs, so there is no second tier to
+splice, so the server resolves one.
 
-The verification is separate from reading, and reading does not require it — a table that
-fails verification may still be perfectly readable, just slower or less safe than it should
-be. Coupling them would mean a table that is 99% fine could not be read at all, which
-serves nobody.
-
-#### 5.6.8 Repair, and the far larger set of things it refuses to do
-
-Verification finds what is wrong. Repair is the obvious next question and the dangerous one:
-a tool that *guesses* is worse than no tool at all.
-
-The failure mode this system is most concerned with is an answer that is wrong and looks
-right. A repair tool that invents a plausible value writes exactly that into the table
-permanently — and worse than permanently, with an operator's confidence attached, because a
-tool said it was fixed. Nobody re-checks a table a tool reported as repaired.
-
-So the rule is: **derive, never guess.** Every repair takes its value from evidence that
-already exists.
-
-| Finding | Repairable | From what |
-|---|---|---|
-| No column statistics | **Yes** | Reading the file. The file *is* the truth; nothing is invented |
-| No row count | **Yes** | The Parquet footer records it |
-| No schema | **No** | A table with a column added after its files were written would infer a schema missing it, and an empty table has nothing to infer from |
-| A key column that does not exist | **No** | Only a person knows whether it was renamed, was a typo, or the table should not be keyed. Guessing wrong silently resolves distinct rows into one |
-| A type that does not round-trip | **No** | Changing it means rewriting every file, which is a migration; and choosing the replacement is a decision about what the data means |
-| A missing required field in a committed action | **No** | Fixing it means rewriting a committed version, and this tool only appends |
-
-A refusal is not a shrug. Each one says *why* it cannot be derived and *what a person has to
-decide*, because "cannot repair" sends someone to open a ticket while "decide whether the
-column was renamed or the declaration was a typo" sends them to fix it.
-
-Three properties make the tool safe to point at a production warehouse.
-
-**It never deletes.** A repair that removes data is not a repair. Nothing removes a file, an
-action, or a version.
-
-**It repairs by appending.** The log is append-only, so a repair writes a *new version*
-superseding the broken one. The broken commit stays exactly as it was — readable for
-forensics, revertible, and time travel to before the repair still works. A tool that
-rewrote history would destroy the evidence of what it was fixing.
-
-**It plans before it acts, and does nothing by default.** The plan is printable and
-reviewable, and the commonest way to run a repair tool is by accident, on the wrong
-directory, at three in the morning. Acting because it was invoked is a liability.
-
-Finally, the outcome is **re-verified rather than assumed**. A repair tool that reports
-success without looking is one nobody should trust, including the people who wrote it.
-
-### 5.7 Routing
-
-The routing decision is a pure function of query shape, read mode, session pin, **table
-class**, table capabilities and freshness state — deterministic and unit-testable with no
-I/O, even though the planner that applies it performs I/O.
-
-Making it pure is not an aesthetic preference. Routing is where a query silently acquires
-the wrong answer: read the wrong tiers and the result is well-formed, plausible, and
-missing rows. A pure function can be exhaustively tested against a table of cases; a
-decision scattered through a planner that also does I/O cannot.
-
-#### 5.7.1 Managed tables
-
-| Query shape | Read mode | Tiers |
-|---|---|---|
-| Point lookup, small range | Strong | Ledger |
-| Point lookup | Fresh | Buffer, falling through to a pruned published scan |
-| Analytical scan or aggregate | Fresh | Published + buffer |
-| Analytical scan or aggregate | Pinned snapshot | **Published only** — the buffer is excluded by definition, which is exactly why pinned reads are deterministic and replayable |
-| Aggregate matching a materialized view | Fresh | Derived + buffer, if the view is splice-able; otherwise fall back |
-| Aggregate matching a materialized view | Pinned snapshot | Derived only — and the only mode where result caching pays |
-| Graph traversal | any | Published-derived epoch; the buffer is **not** spliced |
-| Write | — | Ledger, always |
-
-The first row is worth dwelling on, because it is the one that looks like a fallback and is
-not. A point lookup by key goes to the transactional store because that is where it is
-**simultaneously fastest and freshest**: a b-tree probe against the authoritative copy
-beats pruning a thousand Parquet files, and it cannot be stale. The two considerations
-point the same way, which is unusual and is why the rule is simple.
-
-#### 5.7.2 External tables
-
-| Query shape | Read mode | Tiers |
-|---|---|---|
-| Any read | Fresh or bounded-freshness | Published only |
-| Any read | Pinned snapshot | Published only, at that version |
-| Any read | **Strong** | **Refused** — there is no transactional tier, and answering from published data would assert a currency this table cannot offer |
-| Graph traversal | any | Published-derived epoch |
-| Write | — | **Refused** — this system is not the writer of record for this table |
-
-The table is shorter because an external table has one tier, so coverage is trivially
-complete and the splice is a no-op. That is not a special case bolted on; it is what the
-splice reduces to when there is nothing to splice.
-
-#### 5.7.3 What the user sees
-
-A user writes `sales.orders` and never writes anything else. There is no
-`warehouse.sales.orders`, and there deliberately never will be.
-
-Putting the tier into the name would encode a *physical* fact in a *logical* identifier,
-and the physical fact moves: a row written this morning is in the transactional store, and
-by this afternoon it is in Parquet. A name that encodes where a row lives is a name whose
-meaning changes underneath the query — a statement written last week silently returns
-different rows this week, and nothing indicates it.
-
-It would also hand the routing to the user. To choose a name they would have to know the
-publication lag, and to span the boundary they would have to write the union themselves —
-across a boundary that moves while they are writing it. Hand-written unions across a moving
-frontier either double-count the overlap or miss the gap, which is the exact defect
-`plan_splice` exists to make impossible.
-
-What varies per request is the **mode**, not the name:
-
-```sql
-SET sankhya.read_mode = 'pinned';
-SET sankhya.snapshot  = 41;
-SELECT ... FROM sales.orders;     -- the same name, always
-```
-
-That is the escape hatch a name-based scheme was reaching for, and it expresses the thing
-actually being asked for — a freshness requirement — rather than a guess about where the
-data currently sits.
-
-### 5.8 The archival dimension
-
-Data tiering (§13) adds a second, orthogonal axis to the same planner:
-
-| Axis | Coverage rule | Authority |
-|---|---|---|
-| **Log position** (freshness) | Contiguous, non-overlapping, covering `[0, target]` | Commit metadata and buffer epochs |
-| **Key range** (archival) | Hot and cold extents disjoint, together covering the declared domain | Transactional catalog (hot), archival registry (cold) |
-
-The symmetry is exact, and presenting it that way is what keeps the planner comprehensible as it grows.
+Also not in the read path: a catalogue proper. The provider resolves mutable tables correctly and
+nothing maps a table *name* to one automatically, so the caller assembles the two. The result cache
+does not exist — **its key does**, because key correctness is a security property and the right time
+to fix it is before anything caches (§6.6).
 
 ---
 
-## 6. The write path
+## 4. What bounds a query — **[Built, with a named gap]**
 
-### 6.1 Capture
+Six bounds exist. One is shared, one is a process-wide constant, and four apply to only one of the two
+doors. [`OPERATIONS.md`](OPERATIONS.md) §6 is the table with the knobs; this section is why they are
+shaped that way and what is missing.
 
-SANKHYA speaks the database's streaming replication protocol directly, in-process, using the built-in logical decoding plugin. There is no message broker, no connector framework and no external process.
+### 4.1 One pool, shared, and fair
 
-```
-  PostgreSQL WAL
-        │  START_REPLICATION ... LOGICAL   (CopyBoth)
-        ▼
-  ┌─────────────────┐   bytes    ┌──────────────────┐   events   ┌──────────────┐
-  │ transport       │ ─────────▶ │ decoder          │ ─────────▶ │ apply planner │
-  │ (vendored,      │            │ (ours, pure,     │            │ (ours, pure) │
-  │  behind a trait)│            │  fuzzed)         │            └──────┬───────┘
-  └─────────────────┘            └──────────────────┘                   │
-                                                                        ▼
-                                                    ┌───────────────────────────┐
-                                                    │ arrival buffer + landing  │
-                                                    │ writer (append-only)      │
-                                                    └───────────────────────────┘
-```
+`shared_runtime()` in `crates/sankhya-server/src/execute.rs` builds one `FairSpillPool`, sized from
+`SANKHYA_QUERY_MEMORY_BYTES` at one gibibyte by default, and holds it in a `OnceLock`. Every statement
+in the process, on both doors, allocates from it.
 
-**The decoder is ours.** The transport may be vendored — the available crates are young, pre-1.0 and thinly maintained — but the decoder parses untrusted bytes from a network socket and is therefore both the largest attack surface and the most correctness-critical component in the ingest path. It lives in a pure crate, is property-tested for round-trip fidelity, and is continuously fuzzed. Neither of the mainstream database client crates offers replication support, so this was never optional.
+That it is **one** pool is the correction that made it a bound at all. `bounded_session` used to build
+a fresh runtime, and therefore a fresh pool, on every call — so each statement got its own gibibyte and
+ten concurrent statements got ten, while the setting, its help text and the remediation plan all said
+the bound was what a server's queries may use *between* them. **A pool that is not shared is not a
+bound; it is a per-statement allowance wearing a bound's name, which is worse than none because it
+reads as solved.** Fairness was the whole argument for a fair pool, and with a pool each there is
+nothing to be fair about.
 
-**The apply planner is pure.** Decoded event stream in, table mutation plan out. This seam allows thousands of randomized crash and interleaving scenarios to run in milliseconds against an in-memory table implementation, which is the only practical way to gain confidence in exactly-once behaviour.
+The test written to prove it did not: two sessions and two hash joins against a megabyte pass either
+way, because a per-statement pool refuses each against a megabyte of its own. It asks directly now —
+the two runtimes, and the pools inside them, must be the same object.
 
-### 6.2 Exactly-once, concretely
+**A sort or a grouping past the bound spills; a hash join past it is refused**, because the engine's
+hash join does not spill. That asymmetry is the difference between a slow query and a failed one and
+is stated wherever the setting is.
 
-Delivery is at-least-once; application is idempotent; the composition is effectively exactly-once. Two rules carry the guarantee:
+**Spill goes to the operating system's temporary directory.** `DiskManagerBuilder::default()` is what
+the runtime is given, and its default is the OS temp directory with a 100 GB ceiling. The architecture
+requires I/O isolation to be **physical first, quota second** — the write-ahead log, query spill and
+cache on separate filesystems, so a query that fills the spill volume is structurally incapable of
+filling the log volume. **That separation is not built**, and until it is, `TMPDIR` is the only lever.
 
-1. **Every commit records its log position in the table's own commit metadata.** On restart the applier reads the last committed position from the table's history. No external state is consulted, so there is nothing to fall out of sync.
-2. **The slot position is advanced only after the corresponding commit is durable.** Reversing this ordering is silent data loss, and it is the most common defect in hand-built capture pipelines.
+### 4.2 The other five
 
-### 6.3 Why the landing zone is append-only
+The streamed row cap (10,000), the statement deadline (thirty minutes, read once into a `OnceLock`, so
+changing it needs a restart), the connection cap (1,024), and the wire message cap (16 MiB) all live on
+the **PostgreSQL door**. The metrics door caps a request line at 8 KiB.
 
-Both mainstream table libraries handle row-level mutation badly today:
+**Arrow Flight has none of them.** It streams by design, and its only bound is the shared pool.
 
-- The Delta library **reads and preserves deletion vectors but cannot emit them**; update and delete are copy-on-write, rewriting whole files. Updating a thousand rows scattered across a thousand large files rewrites a billion rows to change a thousand.
-- Iceberg equality deletes are anti-joined against every earlier data file, costing substantial time before any query work begins, and the format is itself moving away from them.
-- The Iceberg Rust library is append-only and **cannot compact at all**.
+The connection cap is not a refusal: past it the accept branch is **disabled**, so callers wait in the
+kernel backlog rather than costing a descriptor. That is what makes descriptor exhaustion unreachable
+rather than merely survivable, and the shipped unit's `LimitNOFILE=65535` is the other half of the
+number and says so.
 
-So the applier writes an **append-only change log**: key, position, operation, payload. No deletion vectors, no delete files. Current state is produced by SANKHYA's own merge-on-read, and a background job compacts the log into a clean published table by bulk partition rewrite — efficient precisely because it is bulk rather than scattered.
+A deadline and a cancellation are told apart, with a `retryable` flag: a deadline may succeed with
+longer to run; a cancellation is a decision somebody made. A client that cannot tell them apart cannot
+decide whether to retry.
 
-This has a strategic effect beyond avoiding two library limitations: it reduces both formats to versioned file containers with metadata, which is what makes the format choice reversible and the arrival buffer format-independent.
+### 4.3 What does *not* bound a query, and the sentence that was false
 
-### 6.4 Two published surfaces
+`sankhya-governor` contains admission control that estimates from plan cardinality and queues or
+refuses, a bounded queue so a refusal arrives immediately rather than after a timeout, tenant floors
+and caps, a memory brake, and a five-rung pressure ladder evaluated centrally from a typed signal bus.
+All of it is built and property-tested.
 
-The append-only landing zone creates a conflict with external readability: an external engine reading un-merged change rows would compute wrong answers — duplicated rows for every update, resurrected rows for every delete. Silent wrong answers for every external consumer, which is a correctness problem rather than a performance one.
+**None of it is called.** `admission::admit`, `assess` and `assess_memory` have no callers outside
+their own crate's tests. The one governor call on the query path passes a zeroed `Request::default()`
+against `Quota::generous()`, whose scan, row and storage ceilings are `u64::MAX`; `Quotas::observe` is
+never called, so the concurrency ceiling can never bind either; and there is one tenant, fixed at
+startup, so the tenancy dimension exists in the type system and nowhere in a deployment.
 
-**The resolution is to publish the change log rather than hide it**, as a sibling table with a distinct name:
+> **The whole of §8.5 of the previous version of this document was false**, and it was false in the
+> most expensive direction: it described admission control, per-tenant floors and caps, a brake and a
+> ladder in the present tense. An operator reading it would have believed a runaway query was bounded
+> by something other than a one-gibibyte pool. The repository already said otherwise —
+> `SNK-R0002`'s entry in `UNREACHABLE` reads *"tenant quotas are `sankhya-governor`, which is called
+> with a zeroed request against `u64::MAX` ceilings and decides nothing"* — and the document did not.
 
-```
-  <warehouse_root>/<schema>/<table>/            merged current state   — correct standalone
-  <warehouse_root>/<schema>/<table>__changes/   append-only change log — correct standalone
-
-  ${SANKHYA_DATA}/hotwal/, spill/               in-flight, node-local, never on shared storage
-```
-
-Publishing beats hiding on three counts. Each byte reaches shared storage **once** rather than twice, because the apply path writes the change log and compaction reads it to build the base. **No external reader can obtain a wrong answer from either path**, because each is exactly what its name declares — whereas a hidden staging area relies on external readers not finding it, which is a convention rather than a guarantee. And the change log gives external consumers a **genuinely fresh path**, since appending requires no merge.
-
-The change log is independently valuable: it *is* the change-data feed and the immutable audit record.
-
-| Stage | Written by | Write pattern | Freshness | Partitioned by |
-|---|---|---|---|---|
-| `<table>__changes/` | Apply loop, every batch | Append only | **Batch interval — seconds** | Commit time, always available without schema knowledge |
-| `<table>/` | Publish and compaction | Partition-scoped rewrite | Publish cadence | The table's own specification |
-
-The two coverage ranges are **disjoint by construction** — the base covers up to its high-water mark, the delta covers strictly beyond it — so double-counting is impossible rather than unlikely.
-
-**Append-only and keyless tables have no second stage.** With no primary key there is no "current row", so the base *is* the append target and its freshness equals the batch interval at zero merge cost. This is the correct model for event and telemetry data.
-
-SANKHYA publishes the merge definition in its catalog and in each table's identity sidecar, so an external engine can register it and obtain seconds-fresh data with no SANKHYA process involved.
-
-| Contract | Read | Freshness |
-|---|---|---|
-| **Simple** | The base alone | Publish cadence — always correct, zero knowledge required |
-| **Fresh** | Base ∪ change log via the published merge | Batch interval — seconds |
-| **SANKHYA's own readers** | Base ∪ change log ∪ arrival buffer | Sub-second |
-
-**The disclosure that must not be discovered during an integration:** external readers taking the simple path see *mutable* tables at publish cadence — minutes, not seconds. This is not configurable away; it is copy-on-write mutation meeting the correct-standalone requirement. Three escapes exist and all are supported: read the Fresh contract, shorten the publish interval and pay measured write amplification, or declare the table append-only where semantics permit.
-
-### 6.4.1 Adaptive batching, and the ratio gate
-
-Two control mechanisms govern how much damage ingest does to the analytical tier. Both are load-bearing.
-
-**Adaptive batching.** The apply loop flushes on first-to-fire across a size trigger, a **size-gated** time trigger, a hard freshness backstop, a row bound and a transaction-count bound. The size gate on the time trigger is the part that is easy to omit and expensive to omit: without it, a table receiving a trickle emits hundreds of tiny commits per day, spending more on metadata than on data.
-
-The interval adapts to the observed ingest rate so that each commit targets a sensible file size. Overrides apply in strict precedence, and two of them move in *opposite* directions for good reason:
-
-| Condition | Action | Why |
-|---|---|---|
-| Source log pressure rising | **Shorten** the interval | Shorter batches drain faster, advancing the replication position sooner. Deliberately accepts analytical damage to protect the source |
-| Shared storage is the bottleneck | **Lengthen** the interval | Fewer, larger writes are more efficient when the *store* is slow |
-| **Query planning latency measurably regressing** | **Lengthen** the interval, and raise a named signal | This is "do not overload the analytical tier" expressed as a control law rather than an aspiration |
-| Partition fan-out excessive | Do not shorten; engage fan-out guards | §6.4.2 |
-
-Hysteresis is required — a minimum dwell and a two-window persistence rule — or the loop oscillates against its own effect on the signal it is reading.
-
-**Why planning latency is the right signal.** File count, version count and metadata size all land on *planning*, which is a fixed cost paid before any data is read. Its impact is inversely proportional to query size: negligible on a multi-second aggregation, and dominant on a short interactive query. **A high commit rate is a tax that is invisible on the queries nobody watches and severe on the queries everybody watches.**
-
-**The ratio gate.** Partition scoping alone does not solve write amplification. If updates are uniformly distributed across a large base, every partition is touched anyway and scoping saves nothing. The gate is standard log-structured-merge economics: publish a partition when its accumulated change is large **relative to that partition**, not on a fixed clock.
-
-```
-publish partition P when
-     accumulated_change_bytes(P) >= ratio × base_bytes(P)     ← bounds cost
-  OR age_of_oldest_unpublished_change(P) >= publish_interval  ← bounds staleness
-  OR P has been sealed and not yet finalized
-```
-
-**Both conditions are required**: the ratio bounds cost, the interval bounds lag, and neither alone is sufficient. The ratio is a single dial trading write amplification against read-side merge overhead, and a moderate default reduces amplification by roughly two orders of magnitude relative to a fixed-cadence merge.
-
-**Write amplification is measured and exported per table, with an alarm and an actionable message.** And one case must be stated honestly rather than papered over: **a workload with uniformly-distributed updates across a very large base and a tight external-freshness requirement is fundamentally unsuited to copy-on-write storage.** Such a table should accept a longer publish interval, be served from the transactional tier directly, or wait for delete-vector write support. Saying so is more useful than implying a configuration exists that fixes it.
-
-### 6.4.2 Partition fan-out
-
-A batch touching very many partitions writes very many tiny files. Four guards apply: a cap on partitions written per batch with the remainder deferred and accumulated per partition; a minimum file size below which a partition is not written unless its deferral age is exceeded; an alarm on sustained excessive fan-out; and a bypass routing bulk operations through a path that sorts by partition first, so each partition is written once in full.
-
-The first two convert fan-out into per-partition batching. **The alarm is the important one**: sustained high fan-out is a *symptom* that the partition scheme violates the minimum-partition-size guardrail. The guards buy time; the alarm gets the design fixed. Silently absorbing it would be the failure.
-
-### 6.5 Automatic onboarding
-
-A table created in the source becomes analytically queryable with no configuration step. The mechanism has three parts:
-
-- **A publication covering all tables**, so tables created later are captured automatically.
-- **Onboarding triggered by the first relation-metadata message for an unknown relation**: map the column list to a logical schema, create the target table, register it in the catalog. This fires exactly when the user first writes to the table.
-- **A schema-change log written by a database event trigger**, which is itself replicated and therefore arrives in-band through the same stream. This catches changes that produce no row events — a table created but not yet written to, or an alteration.
-
-Replica identity is a hazard here and is handled explicitly: a table with no primary key and default replica identity causes the *database* to reject updates and deletes. Onboarding detects this and either remediates with a documented write-amplification cost or onboards the table append-only with a clear diagnostic.
-
-### 6.6 Schema evolution
-
-Additive and compatible changes apply automatically. Incompatible changes **quarantine the affected table**: the applier stops applying to it, the last consistent version remains queryable, a named error and remediation are surfaced, and an explicit operator action resolves it.
-
-This is not timidity. Intent is genuinely unknowable from the change alone — a dropped column may mean "stop capturing this" or "erase it from history", and guessing wrong is either a data-loss incident or a compliance breach. A renamed column is indistinguishable from a drop-and-add without tracking attribute numbers. A narrowing type change silently loses data. Quarantine converts an unbounded problem into a bounded one and is *safer* than the alternative, because a destructive change receives a human decision.
-
-**The coupled requirement that is easy to miss:** with a single replication slot there is one cursor. If a quarantined table stalls it, retained log grows without bound and fills the source database's volume. Quarantined events are therefore routed to a **durable dead-letter store** and the cursor is advanced, with replay on resolution.
+The design is not discarded. It is §18, in Part II, where it belongs.
 
 ---
 
-## 7. Storage architecture
+## 5. The doors — **[Built]**
 
-### 7.1 Warehouse layout
+Two client planes and one scrape endpoint. That is a decision, not a stage: §5.4 is why there is no
+third.
+
+### 5.1 `sankhya-api-pg` — the PostgreSQL wire protocol
+
+The door for tools nobody wrote for this system: `psql`, a notebook's existing driver, a BI product.
+No shim, no driver, no adapter. It is five modules and about three thousand lines, and no document
+before this one described it.
+
+| Module | What it holds |
+|---|---|
+| `crates/sankhya-api-pg/src/message.rs` | The codec. Frontend and backend messages, and PostgreSQL's real type OIDs |
+| `crates/sankhya-api-pg/src/session.rs` | The protocol state machine — pure, no I/O, no engine |
+| `crates/sankhya-api-pg/src/listener.rs` | The socket: accept loop, TLS handshake, backpressure, drain |
+| `crates/sankhya-api-pg/src/catalog.rs` | `pg_catalog` and `information_schema` emulation |
+| `crates/sankhya-api-pg/src/setting.rs` | One parser for `SET` and `RESET`, shared by the wire layer and the server |
+
+**The framing is hand-written on purpose.** The message length is an `i32` that includes itself and
+not the type byte, which is the classic trap; and the declared length is attacker-controlled, so a
+client exceeding `MAX_MESSAGE_BYTES` is disconnected rather than accommodated.
+
+**The state machine is pure, and that is the load-bearing decision.** `Startup → Handshaking →
+Authenticating → Ready → Closed`, with one mutator, and a `Handler` trait as the entire seam to the
+engine. The protocol layer has no session, no catalogue and no planner in it, which is what makes it
+testable byte-in, byte-out — and what let three separate protocol defects be found by tests that
+never started a server.
+
+Four behaviours are worth stating because a reader would otherwise assume the opposite:
+
+**TLS negotiation is *inside* the state machine.** A client asks in eight bytes whether encryption is
+available and reads a single byte back before any handshake exists, so the decision belongs to the
+same state machine that decodes everything else; only the handshake happens outside it. A GSSAPI
+request is **declined out loud** for the same reason — `psql` with `gssencmode=prefer` is a default on
+several Linux distributions, and a server that says nothing leaves the most ordinary client waiting.
+
+**The extended query protocol is fully implemented** — `Parse`, `Bind`, `Describe`, `Execute`,
+`Close`, `Sync` — and `Bind` parameters are *decoded*, not skipped. A missing prepared statement
+answers SQLSTATE `26000`, which drivers use to re-prepare rather than to reconnect. A portal
+**caches its answer**, because `Describe` and `Execute` both need a result and re-running would read
+two different warehouse snapshots. The consequence is honest and unusual: **a statement executes at
+`Describe` time**, earlier than real PostgreSQL. Planning without executing would need a second
+planner that could disagree with the first.
+
+**Catalogue queries are recognised by *shape*, not by exact text.** That is the difference between
+*"a command-line client connects"* and *"a BI tool works"*: both spellings of the same question are
+matched — `information_schema`, which JDBC uses, and `pg_catalog`, which `psql`'s `\d` uses — because
+matching only one works for the client it was written against and fails for the next. Projections
+preserve the order of columns the tool asked for. **An unrecognised catalogue query produces a named
+error, never an empty result**, because an empty result is indistinguishable from *"you have no
+tables"*.
+
+**A refusal carries the names it cites.** `QueryFailure` has a `subjects` field
+([ADR-0017](adr/0017-the-client-contract.md)), sent in the protocol's hint field, because PostgreSQL
+has no list field and an unknown field type may not survive a driver. §5.5.
+
+Not implemented, and it is a design position rather than a gap: **`COPY`**. There are no COPY messages
+at all. Bulk transfer is Arrow Flight.
+
+The version string begins `PostgreSQL 17.0` because every client parses the major version out of it
+before it will proceed, and then says what this actually is so the prefix does not mislead anybody
+reading it.
+
+### 5.2 Arrow Flight SQL — the bulk plane
+
+Arrow-native end to end, streaming by construction, carrying a result's schema without a second
+description of it ([ADR-0006](adr/0006-flight-sql.md)). `sankhya-api-grpc` is the transport and
+deliberately nothing else — a Flight service *is* a gRPC service, so the crate is a socket, a TLS
+option and a shutdown, with no protocol in it.
+
+It was complete and tested for a milestone with **nothing serving it**, found by widening
+`check-surfaces` from *"crates that register SQL functions"* to plain reachability. That is the
+clearest single argument for §2.1 existing at all.
+
+Three asymmetries with the wire door are real and are not oversights of this document:
+
+- It has **no authentication**, and its identity is an unverified header. [`SECURITY.md`](SECURITY.md)
+  §3.4.
+- It does **not** call the write refusal the wire door calls. [`SECURITY.md`](SECURITY.md) §3.5.
+- It has no row cap, no deadline and no connection cap. §4.2.
+
+Both doors present **one certificate**, loaded once by `sankhya-tls`, each naming only its own ALPN.
+Two loaders would mean two sets of refusals and two answers to *"is this key the one for this
+certificate?"*, and the divergence would surface on whichever door is used less.
+
+### 5.3 One answer to a failed `accept()`
+
+`sankhya-accept` classifies an accept error: a routine per-connection failure continues, a descriptor
+shortage pauses before retrying, and anything unrecognised **stops** — the default is stop, so an
+unclassified error becomes a crash with the error in it rather than a silent spin.
+
+It is a crate rather than three `match` arms because it *was* three `match` arms, and they disagreed.
+The wire door propagated the error out of `main`, so `ECONNABORTED` — which is what a load balancer
+produces every time a health check opens a connection and closes it before the handshake — exited the
+process. The metrics and columnar doors did the opposite: `let Ok(..) = accepted else { continue }`,
+which looks safe and is a hot loop, so a descriptor shortage never cleared and a genuinely broken
+listener failed the same way for ever — a process that is up, answering nothing, and reporting nothing.
+**The disagreement was visible only to somebody reading all three at once.**
+
+### 5.4 Why there is no third door
+
+A REST/JSON API is deliberately not a third door. The engine is columnar and typed; a row-oriented
+JSON surface converts twice, loses the type distinctions the type mapping spent effort preserving — a
+`Decimal(38,9)` becomes a double or a string, and both are wrong in different ways — and would need its
+own pagination, its own error shape and its own authorization path. That is a second product surface
+maintained for ever to avoid a dependency the client already has.
+
+What `sankhya-api-rest` actually contains is a **route table and a size decision**: which shapes exist,
+and the rule that anything past a byte or row cap returns a Flight ticket rather than a body
+(`crates/sankhya-api-rest/src/size.rs`). `deliver` refuses to be given a row count taken *after* the
+rows exist, which is the whole point of it. Serving it needs an HTTP listener, HTTP authentication and
+a pre-materialisation estimate — a feature, not hygiene, which is why it is sized rather than pending.
+Its `/health` and `/ready` routes are declared there and **served by nothing**; do not point a probe at
+them.
+
+### 5.5 A refusal has to survive the wire
+
+This system's dominant verb is refusal, and a refusal that says *"drop it first"*, *"materialise them
+first"*, *"the archive is the copy"* is only useful if the words and the names reach the client. So a
+refusal carries a code, a SQLSTATE, a remediation and the **subjects** it names, and the subjects
+travel in a field every driver already surfaces rather than one an unknown driver may drop.
+
+---
+
+## 6. Storage — **[Built]**
+
+### 6.1 The layout, and why the name is the interface
 
 ```
 <warehouse_root>/
   <schema>/                    mirrors the source schema name
     <table>/                   self-contained; the unit of external readability
-      _<format metadata>/
-      <partition dirs>/
+      _delta_log/
+      sank_data_date=YYYY-MM-DD/
         <data files>
 ```
 
-One name spans four naming domains — source identifier, object path, catalog namespace, and the name a user types — so a table's origin is identifiable without a lookup table.
+One name spans four naming domains — source identifier, object path, catalogue namespace, and the name
+a user types — so a table's origin is identifiable without a lookup table. Because PostgreSQL folds
+unquoted identifiers to lower case, for the large majority of tables all four are the **same string
+with no transformation at all**.
 
-Consequences that must be engineered rather than assumed:
+Three properties are engineered rather than assumed. Escaping is human-legible rather than hashed, and
+the separator chosen is not legal in an unquoted source identifier — **so its presence is itself a
+signal that a transformation occurred.** Collisions are refused loudly at onboarding, never silently
+merged; an earlier proposal to disambiguate by hash suffix was withdrawn, because it guaranteed
+uniqueness by destroying the readability that was the entire point. And identity is recoverable from
+the table directory alone, with no catalogue and no SANKHYA process running, because relatability must
+survive the system being switched off.
 
-- **Escaping is human-legible, not hashed.** The point is relatability.
-- **Collisions are refused loudly at onboarding**, never silently merged. Two distinct source identifiers mapping to one path is an error.
-- **Case folding is defined** and safe on case-insensitive filesystems.
-- **Rename is classified with incompatible schema changes** and requires explicit operator action. With name-based paths, silently moving data is expensive and breaks external readers' saved paths, while silently leaving it destroys the naming guarantee. Neither is acceptable as a default.
+The warehouse path is a **published interface**. Additive schema changes are backward-compatible and
+applied automatically; a table rename is a breaking change to consumers SANKHYA cannot see and requires
+a human. A column rename and a table rename therefore have opposite policies — same word, different
+contracts.
 
-**The warehouse root contains only externally-meaningful published tables.** Internal state lives elsewhere, and a foreign object appearing under the warehouse root is detected at startup and refused rather than ignored.
+A user writes `sales.orders` and never writes anything else. There is no `warehouse.sales.orders` and
+deliberately never will be: putting the tier into the name would encode a *physical* fact in a
+*logical* identifier, and the physical fact moves.
 
-### 7.2 File geometry
+### 6.2 Why there is a log at all
 
-Physical layout decisions are made at write time and are expensive to undo, so they are architecture rather than tuning.
+This is the argument that decides the chapter, and it is concrete rather than philosophical.
 
-| Decision | Direction | Rationale |
-|---|---|---|
-| Target file size | Large enough that per-request latency amortizes; small enough to preserve scan parallelism and pruning granularity | Object storage charges per request and has tens of milliseconds of first-byte latency |
-| Row-group size | Larger for scan-heavy tables; smaller for point-lookup tables | Trades footer count against pruning granularity |
-| Page index | Enabled | It is what makes intra-row-group pruning possible |
-| Compression | Heavier for cold and remote data; lighter for hot and cached data | Below the decode/IO crossover, smaller wins; above it, faster wins |
-| Encoding | Dictionary for low-cardinality dimensions; delta for sorted keys and timestamps; byte-stream-split for floats | Byte-stream-split materially improves float compression at negligible decode cost |
-| Bloom filters | Column-specific, never table-wide | They pay only at high selectivity on non-sort-key columns; elsewhere they are pure overhead |
-| Sort and clustering | Multi-dimensional clustering keys, applied by the compactor, not by the ingest path | Clustering requires a sort; ingest appends unsorted and compaction sorts |
+Between a merge and the retirement of its inputs, the directory holds **both** — the file that was
+written and the files it replaced, *the same rows twice*. That window lasts at least a full grace
+period and exists by design (§8). So anything answering *"which files belong to this table"* by listing
+the directory is wrong for the whole of it: a planner given a listing plans a merge whose inputs include
+files an earlier merge already superseded, and the result contains those rows twice — **permanently**,
+this time; and a reader given a listing double-counts every merged row for the duration of the window.
 
-**Two verified constraints shape this.** Multi-dimensional clustering in the Delta library has an open row-duplication defect and **must not be used until resolved**. And enabling deletion vectors **silently disables predicate pushdown** — a second, independent reason to keep them off, and the finding most likely to be lost if it is not written down.
+> **"Which files are live" is not answerable from the filesystem once compaction has run.** A directory
+> of Parquet files is a storage layout; it is not a table.
 
-### 7.3 External readability, and what it costs
+The live set is therefore a first-class value carried across maintenance ticks, not derived from
+storage, and the published tier names its files individually rather than pointing at a directory. Both
+behaviours are tested, **including the negative one**: a query registered against the *directory*
+returns the merged rows twice, while the same query against the *live set* returns them once.
 
-External engines reading the warehouse **bypass row- and column-level enforcement entirely**. This is stated plainly rather than obscured, because a security model that has an unmentioned hole is worse than one with a documented boundary.
+### 6.3 The log, written by hand, and validated by somebody else's reader
 
-The compensating controls:
+SANKHYA emits the table log directly — a few hundred lines covering `protocol`, `metaData`, `add` and
+`remove`, one JSON object per line, staged and renamed so a reader never observes a partial commit
+(`crates/sankhya-table-delta/src/lib.rs`).
 
-- Storage-level access control is the real enforcement boundary for external readers.
-- Per-tenant prefixes with per-tenant scoped credentials, so a path-construction defect cannot cross-read.
-- Column-level encryption, so an unauthorized reader obtains ciphertext rather than data.
-- A published-versus-private classification determining what is externally readable at all.
+**A commit says how long it is.** The first line of every commit is a seal carrying the number of
+actions that follow; the reader counts what it reads and refuses the commit when the two disagree. The
+reason is that the alternative is indistinguishable from success: a commit body truncated by a crash
+replays as a *shorter commit*, and one whose lines are all missing replays as a commit that did
+nothing. Neither is an error to a reader that parses the lines it finds — and the state is cemented,
+because a retry at the same version is refused as `VersionTaken`, so the next commit lands on top of
+the truncated one and every `add` the crash swallowed is gone from the live set for good.
 
-An automated test writes with SANKHYA, reads with an independent engine and asserts identical results. Interoperability is a claim; this makes it a test.
+Two properties come along with the seal. Lines are parsed as generic JSON before their kind is read, so
+an action from another engine is *counted and passed over* rather than turned into a parse failure that
+renders the table permanently unreadable — which is the protocol's own forward-compatibility rule. And
+the seal is itself an action for counting purposes, so a reader cannot satisfy the count by mistaking
+the header for data.
 
-Archived data additionally uses a **conservative format profile** — no exotic encodings, no proprietary extensions — with the exact format version recorded. A seven-year retention obligation means the files must be readable in seven years by something other than SANKHYA, and the answer to "what if this project is abandoned" should be "any compliant reader opens these files."
+**The kernel is a dev-dependency, used as an oracle.** It reads the log SANKHYA wrote and must agree
+about the schema, the version and the live set. Keeping it test-only keeps eighty-four packages and a
+duplicated HTTP client out of the shipped binary, and that it stays test-only is checked mechanically
+by `cargo xtask check-features` rather than left to review.
 
-### 7.4 The table-format abstraction
+The oracle earned its place on its first run. The log this system wrote was **invalid**: the `add`
+action's `partitionValues` field is non-nullable and had been omitted. It round-tripped through
+SANKHYA's own reader perfectly, because a reader ignores a field it never writes.
 
-```
-  resolve_snapshot(table, as_of)            -> SnapshotHandle
-  scan(snapshot, projection, filters, ...)  -> file list + statistics + selections
-  append(table, batches, idempotency_key)   -> Version
-  commit(expected, changes, metadata)       -> Result<Version, TypedConflict>
-  evolve_schema(table, change)              -> Result<(), Unsupported>
-  compact(table, options)                   -> Report
-  expire(table, retain, honoring: LeaseSet) -> Report
-  create_ref / drop_ref                     -> Result<(), Unsupported>
-  capabilities()                            -> Capabilities
-```
+> **Two implementations agreeing is worth nothing when the same author wrote both sides.**
 
-Two design constraints keep the abstraction from becoming a lie:
+**Checkpoints.** Every ten versions the reconciled state is written as a single Parquet file with a
+pointer, and readers start from it — worth roughly 10× at fifty thousand commits, and the beneficiary
+is mostly *other engines*, which have no cache and start cold on every query. A checkpoint holds
+exactly what replay produces, which makes it safe in a specific way: **it can always be discarded.** A
+missing file, a corrupt pointer, or one left behind by a table dropped and recreated at the same path
+all fall back to the log and cost a replay rather than an answer. Nothing is permitted to depend on a
+checkpoint being present or even parseable, which is what makes writing the format by hand defensible
+rather than reckless. Writing one is a *maintenance* job, not part of committing: a commit that had to
+checkpoint could fail for a reason that does not matter.
 
-- **`Capabilities` is the load-bearing type.** Consumers branch on declared capability, never on format identity.
-- **`Unsupported` is a first-class error, not a panic**, and callers have a correct generic fallback.
+> **Correction, and it is recent.** Checkpoints were written only by tests, so every replay in this
+> system ran from version zero for the life of a warehouse. The mechanism was built; nothing called it.
 
-**Conflicts are typed.** Compaction that loses a commit race to the applier is a logical no-op over disjoint files and should rebase and retry; a conflict where the inputs themselves were modified is fatal and must reschedule. Distinguishing them in the type is what makes aggressive compaction safe.
+### 6.4 Atomic publication, and the claim that used to be a comment
 
-**In any conflict between maintenance and the applier, maintenance backs off; the applier never does.** An applier starved by maintenance retries is an applier falling behind, which is INV-2 territory. This is a safety rule, not a fairness rule.
+Concurrency control is the protocol's own: a writer picks the next version and **fails if somebody took
+it**, and the loser rebases, because its decisions were made against a state that no longer exists.
 
-### 7.5 Why the storage library is metadata-only
+> **Correction.** *"Fails if somebody took it"* is the property the design requires and, until M8, not
+> the one the code delivered. `commit` claimed a version by checking the file was absent and then
+> renaming a staging file over it — and `rename(2)` **replaces its destination silently**. Two
+> committers could both see the version free, and the second would overwrite the first with no error to
+> either. The rebase loop never ran, because the conflict it waits for was never returned. It went
+> unseen because **every test had a single writer per version**.
+> [ADR-0013](adr/0013-concurrency-and-data-safety.md) is the record.
 
-The released Delta and Iceberg libraries pin an Arrow generation two majors behind the query engine's. Two Arrow majors cannot coexist in one process — identically-named types become incompatible, and the trait-identity problem is worse than the type problem, since a table provider implementing one generation's trait cannot be registered with the other generation's session at all.
+The claim is now a link, which fails when the name is taken, and **that refusal is the whole of the
+protocol's concurrency control.** It eliminates deployment targets rather than merely preferring some:
+ext4, xfs, btrfs, zfs, APFS and NTFS support hard links; **FAT and exFAT do not and are not
+supported.** On an object store the equivalent primitive is a conditional put, and a store that does
+not offer one cannot host a warehouse safely — which is checked at startup, with multi-writer mode
+**refused** rather than degraded.
 
-The resolution is to use the storage library **only for metadata** — snapshot resolution, file lists, per-file statistics, delete-vector payloads, schema and partition specification — and run scan execution on the query engine's own Parquet machinery at the current Arrow version. **No bulk data crosses a version boundary; only small metadata structures, which convert trivially.**
+**A data file name is used once.** A second write to a live name truncates rows some log still refers
+to. The publisher names a file from the version it is attempting *and a per-write token* — the version
+alone is shared by two writers racing for it — and the writer refuses a name that exists rather than
+truncating it.
 
-The kernel-level Delta library has no query-engine dependency at all and supports the current Arrow generation behind a feature flag, so the following graph is internally consistent with **zero duplicate versions**:
+**One server per warehouse.** The version claim serialises committers at a version and nothing else.
+Two servers would each retire files against a lease registry that cannot see the other's readers.
 
-```
-datafusion 55 + arrow 59 + parquet 59 + object_store 0.13 + delta_kernel 0.27 (arrow-59)
-```
+### 6.5 Statistics in the log — a recorded reversal
 
-This is better than a workaround, and that is worth being explicit about. Owning the provider is the only way to inject our own distinct-value statistics into the optimizer — neither vendor provider supplies them, which is the root cause of poor join ordering; to perform partition-transform inversion and derived-column correlation; to wire the Parquet reader to our own cache; to order files by statistics so top-N queries can stop early; and to turn delete vectors into a plan-time row selection rather than a post-filter.
+Bounds and null counts are written into the log alongside the row count. **This reverses an earlier
+decision in this document, and the reversal is recorded rather than quietly made.**
 
-**The skew is chronic rather than transient.** The upstream fix exists on the Delta library's main branch but has not been released for months, and the Iceberg equivalent trails further. The architecture accommodates a permanently-lagging storage library rather than waiting for a release.
+They were withheld on the grounds that a wrong bound silently drops rows and that bounds go wrong
+quietly under type coercion. That is true, and it is why every bound written comes from code that
+refuses to produce one it cannot justify: an unrecognised type gets no bound, an unorderable value gets
+no bound, a merge that would narrow a bound drops it instead, and a value the protocol cannot represent
+exactly — a non-finite float, bytes that are not text — is omitted rather than approximated.
 
-### 7.6 Caching
+What the original reasoning did not weigh is the cost of withholding them. **An external engine can
+prune only on what the log tells it.** Keeping bounds private to SANKHYA means every other reader scans
+everything, which undercuts the reason for choosing an open format at all. The bar is higher now rather
+than lower: a malformed statistic costs *other people* answers, in engines that cannot be fixed from
+here.
+
+The distinct-value estimate is a HyperLogLog sketch — 4,096 registers per column, merging by
+register-wise maximum so a merged file's sketch equals the sketch of its inputs' union exactly, which
+is what makes statistics maintainable at compaction with no value re-read. Accuracy was measured within
+5% from 10 to 100,000 distinct values, and the sketch is reproducible across processes, because a
+per-process hash seed would make two nodes disagree about a plan and the disagreement would look like
+an optimiser bug. (Recorded in [`STATUS.md`](STATUS.md), §Measurements.)
+
+**The sketch is computed at write and then discarded**, because the protocol has nowhere to put it. A
+column read back from the log therefore reports **zero distinct values**. Nothing reads that figure
+today; it is a trap for whatever reads it first, and it is listed rather than left to be discovered.
+
+> **There is no quantile sketch.** An earlier version of this document described one. Exact order
+> statistics exist, with three conventions named and shown to disagree at the 99th percentile — which
+> is the only place anybody asks for one — but they **buffer their input**, so every observation must
+> be resident. `FR-QUERY-08` asks for a bounded-memory algorithm over large inputs and this is not one.
+> Exact and bounded are independent properties, and only the first is delivered.
+
+One detail that is silent if wrong: a compaction's `remove` actions declare `dataChange: false`.
+Compaction rewrites files without changing rows, and a reader streaming changes would otherwise see
+every compacted row as a deletion followed by a re-insertion — a flood of spurious changes proportional
+to how well maintenance is working.
+
+### 6.6 Caching is free, and one key is not
 
 Data files are immutable and never rewritten in place. Therefore:
 
-> **A cache keyed by object path requires no invalidation protocol. Entries never go stale; they only become unreferenced.**
+> **A cache keyed by object path requires no invalidation protocol.** Entries never go stale; they only
+> become unreferenced.
 
-Correctness is free; only eviction policy remains, and eviction policy is a performance question. This is a large simplification and is stated explicitly because engineers who have built caches over mutable stores will otherwise design an invalidation protocol this system does not need.
+Correctness is free; only eviction policy remains, and eviction policy is a performance question. This
+is stated explicitly because engineers who have built caches over mutable stores will otherwise design
+an invalidation protocol this system does not need.
 
-| Layer | Contents | Invalidation |
-|---|---|---|
-| Table metadata | Log entries, manifests, checkpoints | Immutable per version |
-| Footer and page index | Parquet metadata | Immutable per file |
-| Byte range | Compressed column chunks, memory + local disk | Immutable per file |
-| Decoded batches | Hot dimensions, materialized views, working sets | Keyed by snapshot |
-| Result | Final batches | Keyed by snapshot, tenant, entitlements |
+**One mutable key exists in the entire design**: the mapping from a table to its latest version. It is
+named because it is the single place a stale cache produces a stale answer.
 
-**One mutable key exists in the entire design**: the mapping from a table to its latest version. Its time-to-live is bounded by the freshness objective. It is named explicitly because it is the single place a stale cache produces a stale answer.
+Two security requirements on cache keys, both breach mechanisms if omitted: the **policy version** must
+be in the plan-cache key, or a revocation does not take effect for any query whose plan is already
+cached — data served after it was forbidden, with a passing test suite; and the **evaluated entitlement
+set** must be in the result-cache key. Both are constructor *arguments* rather than fields, because a
+field can be left at its default and an argument has to be passed, and the keys are byte-identical
+across processes and pinned so a change to the hash is deliberate.
 
-Two security requirements on cache keys, both of which are breach mechanisms if omitted:
+**The result cache does not exist. Its key does**, and that ordering is the point: key correctness is a
+security property, and the right time to fix it is before anything caches.
 
-- The **policy bundle version** must be in the plan-cache key. Without it, a revocation does not take effect for any query whose plan is already cached — data served after it was forbidden, with a passing test suite.
-- The **evaluated entitlement set** must be in the result-cache key.
+The file-set cache that *does* exist resumes rather than replays, and it **cannot go stale because it
+never trusts its own version** — asking costs one filesystem probe rather than a directory listing.
 
-Content for encrypted columns is cached as ciphertext, so on-disk cache retains the protection level of the object store.
+### 6.7 Why the storage library is metadata-only
 
-The local disk cache admits on second access, so a single full scan cannot evict the working set, plus unconditional admission for freshly compacted files, which are hot by definition. Eviction resists the scan-once pattern that plain least-recently-used handles badly.
+The released Delta and Iceberg libraries pin an Arrow generation two majors behind the query engine's.
+Two Arrow majors cannot coexist in one process — identically-named types become incompatible, and the
+**trait-identity problem is worse than the type problem**, since a table provider implementing one
+generation's trait cannot be registered with the other generation's session at all.
+
+Using the storage library **only for metadata** — snapshot resolution, file lists, per-file statistics,
+schema and partition specification — and running scan execution on the query engine's own Parquet
+machinery means **no bulk data crosses a version boundary; only small metadata structures, which
+convert trivially.** The kernel-level library has no query-engine dependency and supports the current
+Arrow generation behind a feature flag, so the dependency graph is internally consistent with zero
+duplicate versions. `cargo xtask check-dupes` is the gate;
+[ADR-0001](adr/0001-dependency-pin-set.md) is the record.
+
+**The skew is chronic rather than transient**, so the architecture accommodates a permanently-lagging
+storage library rather than waiting for a release.
+
+Owning the provider is better than a workaround, and five things depend on it: injecting our own
+distinct-value statistics into the optimiser — neither vendor provider supplies them, which is the root
+cause of poor join ordering; partition-transform inversion and derived-column correlation; wiring the
+Parquet reader to our own cache; ordering files by statistics so top-N queries stop early; and turning
+delete vectors into a plan-time row selection rather than a post-filter. The last two are not built.
+
+### 6.8 What is not built here
+
+| Not built | Note |
+|---|---|
+| Object-store backend | Everything published goes to a local filesystem. M12. The conditional-put property it must have is written down |
+| Bloom filters | Off by design where they do not pay; not built where they would. Measured neutral on TPC-H, which has no query of that shape — untested here rather than shown worthless |
+| Deletion vectors, column mapping, partition values in the log | Deliberately absent. A reader requiring any of them refuses these tables, which is the correct outcome — refusing is visible, and a partially-implemented protocol feature is not |
+| Multi-part and V2 checkpoints, and log cleanup | Nothing deletes the commits a checkpoint subsumes, so the log directory grows without bound |
+| The result cache | §6.6 |
+| The persisted cardinality sketch | §6.5 |
+| File ordering by statistics for early termination | Inside the M3 work breakdown, deliberately unbuilt |
+| Delete resolution into plan-time row selections | Same |
 
 ---
 
-## 8. Query engine
+## 7. The date axis — **[Built on the publish path; not on the ingest path]**
 
-### 8.1 Structure
+**Every table carries `sank_data_date`, of type `DATE`, and is partitioned on it.** No exemption for
+size or purpose. `sank_` is a reserved column-name prefix, and a source column already so named is a
+collision refused at onboarding rather than silently shadowed.
+[ADR-0004](adr/0004-the-date-axis.md).
+
+Three requirements were blocked on the same absence — partitioning, time-based retention, and hot/cold
+tiering — and each was individually solvable in a way that would have been wrong. Writing each per
+table means writing it many times, differently, and being wrong somewhere.
+
+**Why `DATE` and not an encoded integer**, since the integer form is the common choice: the row that
+decides it is arithmetic. `20240301 - 7 = 20240294` is a plausible-looking expression that produces a
+value which is not a date, raises no error anywhere in the stack, and will be written by somebody. That
+is exactly the class of defect this system is organised against. The Hive-convention partition path
+`sank_data_date=2024-03-01` is also what Spark and Trino parse as a date; the integer form is a string
+to them, so every pruning query must know the encoding.
+
+**A partition key with a fixed granularity is a small-file generator**, and the arithmetic is
+unforgiving: the fan-out is per *batch*, not per day, so a 5,000-row append spread over ninety days
+becomes ninety files of fifty-five rows. That is not hypothetical — a measured run produced 32,279 live
+files across ten tables in four minutes, averaging 37 KB each, against a compaction policy targeting
+256 MB. Four orders of magnitude below target, and the ordinary consequence of correct partitioning
+meeting a wide batch. Two mechanisms answer it: declarable granularity (`day`, `month`, `year`; an
+unrecognised value is refused rather than defaulted, because a monthly table silently becoming daily is
+repartitioned on its next write — a full rewrite for a typo), and a fan-out guard on the writer.
+
+**A partition column must be in three places** — the schema, the path, and the add action. A column
+present in only one of them reads as null for every row in Spark and Trino.
+
+**Managed tables get the column; attached tables are not altered.** `ALTER TABLE` on somebody's schema
+breaks `INSERT` without column lists, changes `SELECT *`, touches ORM mappings, and may exceed the
+privileges granted. The column is derived during ingest and exists on the analytical side, which is
+where partitioning happens anyway.
+
+> **The gap, stated where the capability is described rather than in a footnote.** The batch publish
+> path is partitioned; **the streaming arrival path is not.** `sankhya-ingest` creates tables with no
+> partition columns and writes flat. There is a sharper gap behind it: there is no timestamp on an
+> ingested row to derive a date from. A commit-timestamp system column is declared on every ingested
+> table and written as the literal `0` for every row — its comment says the value is recorded for human
+> reading only, which it is not; it is recorded for nothing. Since no ingest runs in a server today
+> (§16), this affects the path that will matter most when it does.
+
+---
+
+## 8. Maintenance — **[Built]**
+
+### 8.1 Tiered compaction
+
+Lakehouse compaction has the write-amplification shape of a log-structured merge tree, and the naive
+approach is catastrophic: recompacting a whole large partition every hour while it receives a small
+increment rewrites the entire partition per hour.
 
 ```
-  SQL / Flight SQL / Postgres wire / gRPC
+  L0   micro-batch files, arrival order, small
+        │  merge many
+  L1   sorted within file, medium
+        │  merge several
+  L2   sorted across the partition, full statistics
         │
-        ▼
-  parse and bind
-        │
-        ▼
-  catalog resolution  ──▶  policy rewrite (row filter + column masking)
-        │                   ▲
-        │                   └── the ONLY path to a table provider
-        ▼
-  read-path planner   ──▶  tier splice + archival extent resolution
-        │
-        ▼
-  logical optimization ──▶ SANKHYA analyzer rules
-        │
-        ▼
-  physical planning    ──▶ SANKHYA operators (as-of join, graph functions,
-        │                   vector aggregates, bounded exact quantile)
-        ▼
-  admission control    ──▶ estimate, queue or reject
-        │
-        ▼
-  execution            ──▶ vectorized, morsel-parallel, spilling
+  SEALED — never rewritten again
 ```
 
-### 8.2 Where security is enforced
+Each byte is written once at each level, giving roughly **3× total write amplification instead of two
+orders of magnitude**. When a partition's newest data falls behind a watermark it is compacted once to
+the top level and sealed. This bounds total compaction work to a function of data volume rather than of
+volume multiplied by elapsed time.
 
-**All three engines resolve tables exclusively through the catalog, which returns a policy-rewritten provider.** Row-level security becomes a filter conjoined into the scan — not an optimizer hint, and its presence in the final physical plan is asserted. Column-level security becomes projection restriction plus a masking projection above the scan, and any query predicate over a masked column is declared unsupported so it cannot be evaluated below the mask.
+**What it is worth was measured, and the measurement is the interesting part.** The claim is specific:
+small files cost query *planning* rather than scanning, which predicts a roughly fixed penalty per
+query — dominating short queries and amortising away on long ones. Over 20,000,000 rows, 400 fragments
+against the single file they merge into: a short query 4.42× slower with an absolute overhead of
+13.1 ms, a long full aggregation 1.24× slower with an overhead of 23.7 ms. The overhead stays within
+the same order across a query doing thirty times more work while the *ratio* collapses. **Fragmentation
+is an interactive-latency problem, not a throughput one.** Merging also reduced the data 2.23×, largely
+through better compression across a larger block. (Recorded in [`STATUS.md`](STATUS.md),
+§Measurements.)
 
-**It is impossible to reach a table scan without a security context**, and this is enforced by the type system rather than by review: the catalog's resolution function takes a security context, and there is no other constructor for a provider.
+That required scaling the fixture before it was a real test: an earlier run over 1,000,000 rows showed
+4.43× and 3.77× — apparently uniform, and it would have been read as *"more files are slower"*. The
+long query simply was not long enough for planning to amortise against. **A measurement that cannot
+distinguish the hypothesis from its negation is not evidence.**
 
-The graph tier resolves through the same catalog, so an unauthorized edge is never materialized in memory for that tenant.
+### 8.2 Compaction adds; a separate operation removes
 
-**Defence in depth is mandatory on this path.** The tenant predicate is injected by an analyzer rule *and* independently asserted by the provider, which fails if it is absent.
+The rule that makes frequent compaction safe is that **a merge never deletes anything.** It writes a
+new file and leaves its inputs in place, so a reader holding a snapshot continues reading files that
+are still there. There is no window in which a file under a reader disappears.
 
-### 8.3 Correctness rules the engine enforces
+Deleting the inputs is a distinct operation with three preconditions, all of which must hold for a
+given file:
 
-Four rules are enforced by the planner rather than left to the query author, because each is easy to violate and expensive to discover:
+1. **The replacement verifies.** Its row count is re-read from its footer *at retirement time*, not
+   trusted from the merge, which may have completed hours earlier.
+2. **No retained snapshot, lease or clone can resolve to the input.** A file a pinned reader may reach
+   is kept however old it is.
+3. **The grace period has elapsed.** A reader that listed files a moment before the merge is entitled
+   to open them and has no way to announce that it is doing so, so the grace must exceed the longest
+   query the deployment permits.
 
-1. **A linear aggregate may not be applied to a precomputed non-linear measure across a grouping key.** The function of a sum is not the sum of the functions. The general mechanism is a fixed-size numeric list column whose element-wise sum *is* additive, so a rollup computes every hierarchy level in one pass and the non-linear function is applied independently at each.
-2. **Sketch-based aggregates are rejected at planning time when the session requires exactness**, with an error naming the exact replacement. They are approximate *and* merge-order dependent, so the same query returns different values on different runs — both properties are disqualifying where results must be reproducible.
-3. **Floating-point reduction is deterministic**: fixed partition count recorded with the result, partials merged in ascending partition index rather than completion order, compensated summation.
-4. **A completeness measure is attachable to any aggregate**, with a threshold below which the query fails. Missing data that silently improves a result is among the most dangerous defect classes in analytics.
+An input failing any precondition is **retained with a reason**, which is a correct outcome rather than
+a failure — retirement is an optimisation and declining it costs only disk. The one case that is an
+error is a missing or short replacement: that means the compaction did not happen, and nothing may be
+removed at all.
 
-### 8.4 Configuration that must be asserted, not documented
+Separating the two means the frequent, cheap operation carries essentially no risk and the dangerous
+one runs rarely and under stricter conditions.
 
-The query engine ships with **filter pushdown and filter reordering disabled by default**. Late materialization — evaluating predicates on filter columns and fetching payload columns only for surviving rows — is the single largest scan optimization available, and shipping without it silently forfeits that win.
+**Reclamation waits for readers, not for a proxy.** Readers announce themselves through an epoch-based
+lease registry (`crates/sankhya-leases/src/lib.rs`), and every imprecision in it is arranged to
+**delay** reclamation and never to permit it early: a reader that could not announce makes the registry
+report that something is active, and a slot collision reports the older announcement. Two rules from
+[`INVARIANTS.md`](TESTING.md) follow — a pin that cannot be read stops reclamation, because
+contributing nothing is indistinguishable from protecting nothing; and a leaked lease does not stop
+reclamation for ever, because a registry with a leak and no backstop reclaims nothing, for ever, and
+says nothing about why. The backstop overrides the *lease* check only.
 
-Therefore SANKHYA **asserts its required engine configuration at startup and fails loudly on unexpected values**, rather than setting it once and trusting it. A configuration default that changes upstream between versions would otherwise be an invisible performance regression.
+**Orphan collection** removes files the log has never named, and age is the only thing separating an
+orphan from a file mid-commit — which is why the threshold is a week.
 
-### 8.5 Resource governance
+### 8.3 One scheduler, one budget, and a class that does not exist
 
-**Admission control is mandatory rather than advisory**, because hash joins in the underlying engine do not spill. An unbounded build side terminates the process, taking every other tenant's work — and, in managed mode, the database — with it.
+Maintenance work is arbitrated against one budget across both sides of the system, by a strict class
+ladder (`crates/sankhya-maintenance/src/schedule.rs`): safety, availability, performance, housekeeping,
+optional. Safety and availability may **preempt a query** and ignore the duty cycle; nothing below them
+does. A job that cannot checkpoint is refused rather than started. **Waiting never promotes a job out
+of its class** — starvation is counted and reported, never fixed by ageing, because ageing is how a
+housekeeping job comes to preempt a query.
 
-The controller estimates peak memory from plan cardinality and **queues or rejects**; it never admits a query it cannot afford. Rejection is a typed error with a retry hint. Unbounded queueing is not an alternative: it converts a throughput problem into a timeout storm.
+> **The maintenance scheduler is structurally incapable of destroying retained history.** There is no
+> erasure class to configure: the guard is on the type, and an exhaustive match makes adding a variant
+> a compile error. Erasure is not a priority level of expiry; it is a different job class with a
+> different authorization path. Anything less and a misconfigured retention default eventually deletes
+> records that were legally required to persist.
 
-Memory is governed by a global pool subdivided into per-tenant sub-pools with floors and caps. Because the pool does not observe every allocation — decode paths, network buffers, graph arenas and third-party allocations sit outside it — a **counting allocator provides true accounting, with a load-shedding brake that sheds work before the operating system intervenes.** An out-of-memory termination in managed mode takes the database down too; that is an outage, not a degradation.
+Clustering is **declared, never inferred**: the engine cannot tell a meaningful query boundary from a
+merely low-cardinality column, and guessing sorts a table for queries nobody runs, at every compaction,
+for ever. A partition still receiving writes is merged **without** sorting, because ordering it produces
+a layout correct until the next append at the cost of a full sort every pass.
 
-Spill files live on a **separate filesystem from the database's write-ahead log**, so that a runaway query filling the spill volume cannot stop the transactional system.
+Sorting is what turns row-group bounds into an index. Measured on a range query at eight clients, the
+same data sorted by the filtered column answered in 31 ms against 234 ms unsorted — **7.8×**, entirely
+from row groups skipped on their statistics before any decoding, and the difference between missing an
+objective and meeting it. It was also the **only one of that objective's three named preconditions
+that turned out to matter**, which is why it is recorded rather than folded into a list.
+(Recorded in [`STATUS.md`](STATUS.md), §Clustering, worth 7.8× on a range scan.)
 
-Every query carries an end-to-end deadline propagated into execution and into sandboxed user code, and cancellation takes effect within a bounded time — tested, including for queries inside graph traversal and inside user functions.
+Operationally, all of this is three settings and a `SIGHUP`: [`OPERATIONS.md`](OPERATIONS.md) §10.
 
-### 8.5.1 Where the two engines disagree, and the one that is dangerous
+---
 
-The system presents one copy of the data through two engines, so the same question asked
-of the transactional tier and of the analytical tier is expected to get the same answer.
-It usually does. That is what makes the exceptions dangerous: nobody re-checks a figure
-that has agreed a thousand times.
+## 9. Multidimensional analysis — **[Built]**
 
-The differences are enumerated in a test that runs both engines and pins the agreements
-as well as the divergences — a list of differences is only trustworthy if somebody
-checked the rest, and without the agreements pinned a *new* divergence is a discovery
-later rather than a failure now.
+SQL's `GROUP BY CUBE` and `ROLLUP` are *grouping constructs*: they enumerate combinations of the columns
+you name. There is no dimension, no hierarchy, no declared measure, no consolidation rule and no notion
+of a member. The operations people actually perform — take this slice, dice it by those two dimensions,
+roll it up that hierarchy, drill into the outlier — are **navigation of one structure**, and a system
+that cannot represent the structure makes the user reconstruct it in a client, which is how the work
+ends up in a spreadsheet nobody can reconcile. [ADR-0007](adr/0007-the-cube-model.md).
+
+Three properties SANKHYA already had are the three a cube engine most needs: parent-child hierarchies
+are graphs and **a consolidation path *is* a traversal**, so hierarchy walking is the general case that
+already exists rather than a special case reimplemented; consolidation is a large floating-point
+reduction, which is the reduction at its worst and the first thing a finance function asks about; and
+every table already carries a date axis, so a time dimension exists before anybody declares one.
+
+### 9.1 The rule that decides whether an answer is correct
+
+> **A measure with no declared aggregation rule is refused at definition time. Not defaulted to `SUM`.**
+
+The default is wrong for an entire class of measures and wrong *invisibly*. Twelve monthly closing
+balances summed across time give a figure with the right magnitude for a balance-sheet line, the right
+sign, four significant figures, and no meaning whatsoever — it reconciles against nothing, because
+nobody reconciles a subtotal.
+
+The precise statement separates two things a loose one runs together. **Additive** is about the
+*operator*: may this measure be summed along this axis? **Composable** is about *permission*: can the
+whole be built from partial aggregates along this axis at all? A closing balance is not additive over
+time and it **is** composable over time, because `last(last(a, b), c) == last(a, b, c)` given an order.
+An earlier version of this design said a semi-additive measure was *worse* than a non-additive one, and
+taking that literally cost a set of tests that refused *valid* roll-ups.
+
+> The danger of a semi-additive measure is **the operator, not the axis**, and it lives in the executor.
+> So the operator is the *measure's*, never the caller's: a roll-up reduces eagerly, under the rule the
+> measure declares for the dimension being rolled away, and each cell of the result holds one value.
+> There is nothing left for a later call to reduce differently. The exit criterion asks that summing a
+> semi-additive measure across time be *rejected at planning time*. **It is not rejected — it is not
+> expressible.**
+
+Underneath that is a trap that survives testing. `FIRST` and `LAST` name a *position*, which is
+meaningless over an unordered bag; the obvious implementation takes contributions in visit order, which
+for a sorted address map is lexicographic by member name. `"feb" < "jan"`, so the closing balance of
+the first quarter is January's. ISO-8601 dates sort correctly, so a system tested with `2026-01` never
+exhibits it and the first wrong number appears against member names somebody chose for a report. The
+order is a **parameter**, and a `FIRST` or `LAST` roll-up without one is refused.
+
+### 9.2 Completeness is a column, not metadata
+
+Row filtering closes the direct disclosure channel. It does not close the arithmetic one, and the
+arithmetic one is invisible: an aggregate computed over rows a caller may not read is a real number,
+correctly calculated, disclosing information about rows that were withheld — with no refusal to notice
+and nothing in an audit log to find.
+
+So every cube answer states how much of its input it saw. `completeness` and `withheld` are **columns
+on the result row**, not metadata beside it, because metadata beside a result is dropped by the first
+projection that does not mention it, and a filtered total then looks exactly like a complete one. Two
+callers with different permissions ask the same question, correctly get different totals, and each can
+*see* that they did. ([ADR-0008](adr/0008-serving-cubes-under-policy.md).)
+
+The second half: **a stored cuboid may only serve a caller it was computed for.** The cache key for a
+materialised aggregate includes the caller's visible scope, and two scopes are two *tables* — so a bug
+in the lookup cannot serve one principal's rows to another, because the rows are not in the file being
+read.
+
+The operational consequence is worth knowing rather than discovering. A background refresh has no
+principal, so it builds the **unrestricted** cuboid, which may serve only a caller whose own policy
+withholds nothing. **Background materialisation helps dashboards and service accounts and does nothing
+for a restricted analyst**, whose cuboids can only be built by their own queries. Pre-building named
+scopes is a decision nobody has made and is not taken by implication.
+
+### 9.3 Three crates, three lifetimes, and a cache that is not a copy
+
+The engine has the same shape as the graph engine and for the same reason: `sankhya-cube-algo` at layer
+1 holds the algebra and depends on **nothing**, which is what makes its property tests fast enough to
+run thousands of cases on every build; `sankhya-cube` holds construction, hydration and the
+specification; `sankhya-cube-sql` holds the table functions.
+
+**Materialisation is a cache, not a second copy of the truth**, and it cannot be stale: a cuboid's key
+includes the data version and the definition, so a definition edited under a cached cuboid produces a
+miss rather than an answer from the old shape. Three lifetimes — ephemeral, session, maintained — with
+the collection each one needs ([ADR-0009](adr/0009-the-cube-lifecycle.md)).
+
+### 9.4 What is not there
+
+Cuboids are pre-built only for the unrestricted scope (§9.2). The ephemeral lifetime is M14. A cube
+definition is a JSON file under `_cubes/` rather than a row in a system table, because the
+catalogue-backed form waits on the catalogue proper. The hydration trigger scans statement text for cube
+function names — deliberately crude, because a false positive costs a cache lookup and a false negative
+costs a query that fails to resolve a cube it named. Pivot and hierarchy drill exist in the library layer
+and are not registered as table functions. **MDX is deliberately not planned.** Automatic rewriting of
+arbitrary queries onto cuboids is not built: explicit addressing only, revisited after 1.0.
+
+---
+
+## 10. The graph engine — **[Built; one exit criterion carried unmet]**
+
+**There is no graph write path.** An epoch is hydrated by scanning published tables and records the
+snapshot it was built from. Four consequences follow, and each answers a question a graph database has
+to keep answering: the graph cannot be behind the tables in a way the snapshot does not record; the
+graph and SQL cannot disagree about an entity, because an edge exists because a row exists; its
+durability contract is that it has none and needs none; and on restart it is rebuilt, because derived
+state never blocks shutdown.
+
+The cost is real — no graph writes, no persistent graph-native indexes, and a rebuild after restart —
+and the trade is that the class of defect a graph store most often produces, the relational half seeing
+an entity the graph half does not, is **unrepresentable** rather than defended against.
+
+`sankhya-graph-algo` has **zero dependencies at all**. Nothing in it allocates a graph: every algorithm
+takes an adjacency by reference. The adjacency is typed vertices and typed edges with per-edge-type
+adjacency in **both** directions and half-open validity intervals stored sorted by source and by time,
+so *"the edges of this vertex as of time t"* is a binary search plus a contiguous slice rather than a
+filter over everything.
+
+**The graph carries one number per edge**, and that is a limit rather than an omission: an ownership
+percentage or a haircut, not both. Amounts belong in the tables and are joined to the traversal result,
+which keeps the traversal a traversal and the arithmetic in the engine that has completeness and
+additivity rules.
+
+**Time-respecting traversal is a separate function, not a flag**, and the argument is asymmetric rather
+than aesthetic:
+
+> Static reachability over a temporal graph **over-reports** — it finds routes that time forbids — and
+> *always in that direction*. A flag defaulting to off would hand the optimistic answer to everyone who
+> forgot it, and **the optimistic answer looks exactly like the correct one.**
+
+Two further bounds a naive temporal traversal omits travel with it. A conservation bound requires each
+onward edge to carry at least some fraction of the one before, without which a large transfer chaining
+onto a negligible one is reported as a route. A dwell bound caps how long a path may pause at a vertex,
+without which two unrelated events years apart join into one path and the resulting chain is an artefact
+of the data set's length rather than of anything that happened.
+
+**Every bound travels on the row.** `epoch`, `snapshot`, `truncated` and `truncation_reason` are
+columns, because a flag beside the result gets dropped by the first projection that does not mention it
+— **and a short list looks exactly like a short answer.** Every algorithm is bounded by construction and
+reports its own truncation through a common wrapper, which is why *bounded* is a property of the crate
+rather than a convention each function observes. The cube's completeness columns were built on this
+precedent, with the argument strengthened, because a partial *total* is worse than a partial *list*.
+
+### What is not built
+
+**A measured benchmark against a public suite** is the one exit criterion carried forward as **unmet**
+rather than reinterpreted. The primitives are correct against brute force and bounded by construction;
+memory per vertex and per edge is published and measured from a real epoch rather than estimated from
+type sizes — but throughput is not timed at scale. It would have been easy to reinterpret the criterion,
+and the milestone would have closed clean. It is carried as unmet instead, which is what an exit
+criterion is for.
+
+Also unbuilt: a timer driving hydration; per-tenant epochs *through the front door*, which are built and
+tested and reach no door; the pack bundle loader in a running server; and the structured graph API on the
+control plane. A durable graph database is not a gap but a non-goal, and a bespoke query language is not
+planned — a structured API and SQL functions now, the ISO standard later as a rewrite onto those
+functions rather than a second engine.
+
+---
+
+## 11. Cloning, lineage and dependents — **[Built]**
+
+```sql
+CREATE TABLE q3_frozen CLONE sales.orders;
+SHOW LINEAGE OF q3_frozen;
+SHOW DEPENDENTS OF sales.orders;
+```
+
+A clone reads exactly what its origin read at a version, in constant time and constant space, by
+referencing the same files rather than copying them. It lands beside its origin; naming another schema
+is refused, because the right to read a clone derives from the right to read what it references — a
+clone under another schema would have its *name* governed by one policy and its *data* by another.
+
+### The premise it breaks
+
+Three mechanisms decide that a file may be removed — retirement, orphan collection, purge — and **each
+consults one table's log**, correct today for the same reason.
+
+> **A file belongs to exactly one table.** Under cloning that premise is false, and each of the three
+> becomes a way to delete data a clone is the only remaining reader of.
+
+Orphan collection is the most dangerous, and it is worth walking. The sweeper lists files under one
+table's root, builds `named` from that table's live set, and passes `reachable` as an empty set. Clone
+a table; the clone's log names the origin's files; the files stay under the origin's root. A week later
+the origin's sweeper runs: the file is listed, it is not `named` because the origin has compacted past
+it, it is not `reachable`, and it is older than the threshold. **Removed.** Nothing failed. No query
+errored. The clone is missing rows, and the first evidence arrives whenever somebody next reads that
+range of it.
+
+> **From the origin's point of view, a file only the clone still names is indistinguishable from
+> debris.** That is the whole hazard in one sentence, and it is why this feature was design-gated: no
+> code was written before [ADR-0016](adr/0016-zero-copy-cloning.md) was accepted.
+
+### The mechanism, and the two refused
+
+`reachable` becomes the union of the live sets of every table in the **clone family** — the transitive
+closure of the origin and everything cloned from it, walked through a lineage record each clone writes
+at creation.
+
+**Not reference counting.** It is exact, and exact in the way that matters least: a count is derived
+state maintained across clone, drop, compaction, retirement and crash, and derived state that disagrees
+with reality is the failure this project keeps finding elsewhere. The asymmetry settles it — a count
+that drifts high loses disk; a count that drifts low deletes a file a clone still reads, **silently, in
+a table nobody was touching.** The second is the exact sentence the design gate exists to prevent.
+
+**Not copy-on-maintenance.** It is simple, it is safe, and it *quietly* gives up the constant-space
+property that motivated the feature. The word doing the work is *quietly*: a clone's cost would depend
+on maintenance activity its owner cannot see — clone a quiet table and pay nothing, clone one that
+compacts tonight and pay for the whole table by morning. Refusing the feature outright would be more
+honest.
+
+The cost of reachability is bounded three ways: the scan is over the clone family, so it is a **no-op
+for every table that has never been cloned**; reading *n* logs is what the sweep already does, *n*
+times; and execution is on one node. And it fails in the safe direction — a stale or unreadable lineage
+record makes the reachable set *larger*, so a file is kept that could have been reclaimed.
+
+### A clone's log names none of the origin's files
+
+The two obvious ways to name a foreign file are both worse than they look. An absolute URI embeds a
+filesystem path, so **restore into a different directory silently produces a table whose files are all
+missing** — and restore-to-a-different-path is an operation this system has. A `../`-relative path bets
+on every reader resolving `..` the same way, which the specification leaves undefined.
+
+So the clone's log names **none** of them. It records its origin and version as properties and contains
+only the files it writes afterwards; a read splices the origin's live set at that version with the
+clone's own log. This makes the lifetime question *simpler*: the origin's sweeper asks *"which versions
+of me does a clone still read?"*, which is a question about its own log.
+
+**What it costs, stated plainly: a foreign reader pointed at a clone's directory sees only the files the
+clone wrote, not the rows it inherited.** The open-storage claim holds for ordinary tables and **not for
+clones**. A clone that must travel is *materialised*, which produces an ordinary self-contained table.
+
+> **The decision also cost a read path, and the document that made it failed to say so.** If a clone's
+> log named the origin's files, the existing read path would have served a clone with no changes at all.
+> Deciding that it names none of them means *this* engine must splice too — and until that existed, **a
+> clone was a table that read as empty.** The omission is recorded rather than quietly fixed: the
+> decision was argued on portability and on the lifetime question, both of which it wins; the cost it
+> did not name was a piece of work. *A decision whose costs are listed incompletely is one somebody
+> re-reads and mis-weighs.*
+
+Purge **refuses** on a clone-referenced table rather than adapting, and the refusal names the clones. A
+backup is taken at warehouse scope and records lineage, and **restoring a clone without its origin is
+refused** rather than restored into a table with missing files (§11 of [`OPERATIONS.md`](OPERATIONS.md)).
+
+---
+
+## 12. Security architecture — **[Built; posture in `SECURITY.md`]**
+
+The mechanism is §3.3 and the argument for its shape is there. What belongs in an architecture document
+beyond that is four structural facts and a pointer.
+
+**Enforcement happens once, at plan construction**, not three times in three engines. The graph tier
+resolves through the same catalogue, so an edge a tenant may not see is never materialised into that
+tenant's epoch — it is not filtered out of the traversal, it is absent from the adjacency the traversal
+walks.
+
+**A name in a statement is not a path.** Three statement families built a file path from a name a client
+typed, constrained only to be non-empty and free of whitespace — and `Path::join` replaces the entire
+path when the component is absolute. The worst target is a snapshot document, and not because a snapshot
+is precious: **an absent snapshot pins nothing, so deleting one releases the files the sweeper was
+holding back** — the deletion the whole retention mechanism exists to prevent, reached through the name
+of a `DROP`. A name that may become part of a path is checked in one place now
+(`crates/sankhya-atomicfs/src/lib.rs`) and the path builders return a `Result` rather than a `PathBuf`.
+The rule is an **allow-list** — letters, digits, `_`, `-`, `.`, ASCII only — because a deny-list has no
+end and saying what a name *may* contain is one line and has no tail.
+
+> **Reasoning that a path *cannot* escape is not a control.** It is a comment that was true when it was
+> written, attached to code somebody else will change.
+
+**The external-reader boundary is a hole, and it is documented rather than obscured.** External engines
+reading the published warehouse directly bypass row- and column-level enforcement entirely, because they
+are reading Parquet with no SANKHYA process in the path. This is a product decision — open storage is
+what makes SANKHYA a participant in a data estate rather than a replacement for one — and the
+compensating controls are storage-level. **A security model with an unmentioned hole is worse than one
+with a documented boundary.**
+
+**Personal data is handled by design rather than by deletion.** Direct identifiers live only in the
+transactional store with surrogate keys downstream, so an erasure request becomes a transactional delete
+plus a vault purge and leaves analytical history, time travel and retention untouched. Where an
+identifier must exist downstream, per-subject encryption keys permit cryptographic erasure. The envelope
+encryption that would carry that is built and tested and **has no path through the front door**.
+
+Everything else — what ships on by default, what a policy file may say, what needs a restart, and the
+five findings a reviewer needs together — is [`SECURITY.md`](SECURITY.md).
+
+---
+
+## 13. Consistency, determinism and failure — **[Mixed; marked per row]**
+
+### 13.1 Read modes
+
+| Mode | Sees | State |
+|---|---|---|
+| Pinned snapshot | Published tables only, at a stated version | Built |
+| Fresh | Published, plus the arrival tier where one exists | The splice is built; **no arrival tier runs** (§3.8) |
+| Strong | The transactional tier | **Not built** — no transactional tier is wired in |
+
+**Pinned reads exclude the arrival tier by definition, which is exactly why they are deterministic and
+replayable.** Reproducible outputs must use pinned mode, and they are reproducible *because* of the
+exclusion. That is a definition rather than an optimisation.
+
+Read-your-own-writes is a property of the arrival tier and therefore does not hold today: a write is
+visible analytically once it is published.
+
+### 13.2 Determinism
+
+A deterministic mode fixes the clock, seeds identifier generation, sorts listings and pins reduction
+order, such that:
+
+> The same scenario run twice produces byte-identical committed metadata and byte-identical query
+> output.
+
+One test, enormous coverage: it detects hash iteration order leaking into results, wall-clock creeping
+into metadata, unsorted directory listings, and non-deterministic parallel reduction. It is only
+possible because clock and identifier generation are injected seams, which is why that decision is
+mandatory rather than stylistic.
+
+Determinism also constrains arithmetic. Every vector reduction is bit-deterministic under permutation,
+asserted by a test whose fixture is itself proven adversarial — a naive sum fails on it. LU
+factorisation breaks pivot ties on the lowest row index, without which two builds could factor
+differently. 
+
+> **Correction.** QR, SVD and eigendecomposition **ship**, and this
+sentence used to say they were deliberately absent. The refusal was real when written — an
+in-house SVD that is subtly wrong produces plausible singular values, which is worse than none
+— and it was lifted rather than forgotten: `crates/sankhya-math/src/decompose.rs` implements
+them by Jacobi rotation on symmetric input, refusing a non-symmetric matrix rather than
+symmetrising it, and they are registered as `mat_qr_q`, `mat_qr_r`, `mat_singular_values`,
+`mat_cholesky`, `mat_eigenvalues` and `mat_eigenvectors`. What was not done was retracting the
+refusal in the eight places that stated it. **A stated refusal silently reversed is the worst
+class of claim in this repository**, because a refusal is the one thing a reader is entitled to
+treat as permanent.
+
+### 13.3 Where the two engines disagree, and the one that is dangerous
+
+The system presents one copy of the data through two engines, so the same question asked of the
+transactional tier and of the analytical tier is expected to get the same answer. It usually does. **That
+is what makes the exceptions dangerous: nobody re-checks a figure that has agreed a thousand times.**
+
+The differences are enumerated in a test that runs both engines and pins the agreements as well as the
+divergences — a list of differences is only trustworthy if somebody checked the rest, and without the
+agreements pinned a *new* divergence is a discovery later rather than a failure now.
 
 **Three of them return a wrong number rather than an error.**
 
@@ -960,1521 +1268,590 @@ later rather than a failure now.
 | Multiplying past a 64-bit integer | refuses | **returns zero** |
 | Summing decimals past 38 digits | exact | **loses exactness** |
 
-The third contradicts a stated principle. Fixed-point decimal is used *because* money must
-be exact, and on overflow the analytical tier returns a number close to the right one
-instead of refusing. An error is recoverable; a plausible wrong number in a report is not.
+The third contradicts a stated principle. Fixed-point decimal is used *because* money must be exact, and
+on overflow the analytical tier returns a number close to the right one instead of refusing. An error is
+recoverable; a plausible wrong number in a report is not.
 
-> **This is a real limitation of the current design, not a note about an edge case.** The
-> tier that exists to answer questions about money can answer one wrongly, silently, and
-> the tier of record would have refused the same question.
+> **This is a real limitation of the current design, not a note about an edge case.** The tier that
+> exists to answer questions about money can answer one wrongly, silently, and the tier of record would
+> have refused the same question.
 
-**The mitigation is predictive rather than detective**, because detection is not on offer:
-by the time the wrong number exists it is already in a result set. The statistics
-catalogue bounds the total from the column's range and row count, and reports whether an
-overflow is *possible*. It deliberately errs toward "possible" — a false alarm costs a
-refused query, a missed one costs a wrong figure nobody notices.
+**The mitigation is predictive rather than detective**, because detection is not on offer: by the time
+the wrong number exists it is already in a result set. The statistics catalogue bounds the total from
+the column's range and row count and reports whether an overflow is *possible*, erring toward
+"possible" — a false alarm costs a refused query, a missed one costs a wrong figure nobody notices. Its
+limit is that bounds are held as 64-bit integers, so a decimal column beyond about nineteen digits has
+no representable bound and the check answers *"unknown"*. **The columns most able to overflow a 38-digit
+decimal are exactly the ones it cannot reason about.** Widening the bound type closes it.
 
-Its limit is that bounds are held as 64-bit integers, so a decimal column beyond about
-nineteen digits has no representable bound and the check answers "unknown". The columns
-most able to overflow a 38-digit decimal are exactly the ones it cannot reason about.
-Widening the bound type closes it.
+Three further differences change precision or ordering without making a figure wrong: `avg` over integers
+is arbitrary-precision against a 64-bit float; division to a repeating fraction gives twenty significant
+digits against sixteen; and text orders by the database's collation against byte order, so a paged or
+ranked result over text appears in a different order in the two tiers.
 
-Three further differences change precision or ordering without making a figure wrong:
-`avg` over integers is arbitrary-precision against a 64-bit float; division to a repeating
-fraction gives twenty significant digits against sixteen; and text orders by the
-database's collation against byte order, so a paged or ranked result over text appears in
-a different order in the two tiers.
+### 13.4 Shutdown ordering
 
-### 8.6 Defaults that switch off the mechanism they belong to — and one that should stay off
+The drain order is a correctness property and is specified normatively: report not-ready while liveness
+stays healthy; stop accepting new queries and let in-flight ones run to their deadline; stop the capture
+source but **finish applying the in-flight batch**, rolling a partial batch back entirely rather than
+half-committing it; **persist the applied position strictly after the commit is durable**, which
+ordering *is* the exactly-once guarantee; flush and close writers and release leases; drop graph epochs,
+because derived state never blocks shutdown; stop the database gracefully; flush telemetry, because an
+unflushed exporter loses the traces of the incident being debugged.
 
-Some settings in the stack default to off and, when off, silently disable a mechanism. They produce no symptom but slowness, so they are asserted at startup rather than configured and trusted: an upstream default can change between versions and the resulting regression would be invisible.
+Steps three, four, seven and eight have no subsystem in this build. What runs is: stop accepting, drain
+in-flight connections to a bounded deadline, then shut the metrics listener down after the wire door so
+the last scrape completes.
 
-| Setting | Default | Consequence of leaving it |
+**The drain has to be bounded and it has to exist.** An unbounded drain hangs a shutdown on one stuck
+client until the orchestrator's patience runs out and kills the process anyway, with the difference that
+nobody chose the moment. And a shutdown that does not wait at all cannot be given a correct grace,
+because there is nothing to wait for — it abandons work instantly, which reads as fast and is the
+failure the grace exists to prevent. That was the state of this server until M6, and the doc comment
+above the function described behaviour it did not have.
+
+> Two numbers decide whether a shutdown is orderly and **they live apart**: how long the server needs to
+> finish work already in flight, and how long the orchestrator will wait before `SIGKILL`. They are
+> edited by different people, in different files, for different reasons — and when the second is the
+> shorter, every deploy severs connections mid-result and clients see something indistinguishable from a
+> crash. So the relationship is **checked mechanically**: `xtask/src/package.rs` reads the drain
+> deadline out of `crates/sankhya-api-pg/src/listener.rs` and compares it against every deployment
+> manifest's grace.
+
+That comparison was correct and exercised by nothing until a mutation shortening the Kubernetes grace
+below the drain **survived**: it lived only in a command, and a check that is only a command is a check
+that is only sometimes made. It is a test as well now.
+
+### 13.5 The failure model
+
+| Failure | Behaviour | State |
 |---|---|---|
-| Parquet writer **page row-count limit** | effectively unlimited | The page index stores bounds *per page*. With no row cap, a narrow column packs enormous row counts into one page — a boolean can fit tens of millions — and the index degenerates to a single entry covering everything. **Page pruning silently does nothing.** Not yet measured; read the claim as unverified |
-| Parquet reader **bloom filters** | disabled | Equality predicates on high-cardinality columns cannot skip row groups that bounds cannot exclude. Measured neutral on TPC-H, which has no query of that shape — the mechanism is untested here rather than shown to be worthless |
-| Query-engine **filter reordering** | disabled | Filters run in written order, so an expensive predicate may be evaluated against rows a cheap one would have eliminated. Measured neutral on TPC-H |
-
-With a row cap in place a typical row group yields dozens of pages per column, so a selective predicate skips almost all of them. The cost is disk only: the page index lives in its own section and is read on demand.
-
-#### 8.6.1 Filter pushdown, which was required and should not have been
-
-This is the second correction to this section and it goes further than the first.
-
-Late materialization — evaluating predicates inside the Parquet decoder so payload columns are materialized only for surviving rows — is widely described as the single largest scan optimization available, and it defaults to off. An earlier draft of this document said it was worth roughly an order of magnitude. Measured on a synthetic scan, it was **1.02× — neutral**. It was pinned on anyway, on the reasoning that neutral is not harmful and the benefit was expected on wider payloads.
-
-Measured on TPC-H at scale factor 1, it is not neutral. It is a cost, at every selectivity tried:
-
-| Rows surviving the filter | Off | On | |
-|---|---|---|---|
-| 1 in ~6,000,000 | 5.6 ms | 5.5 ms | 1.02× |
-| 1 in ~1,500 | 4.5 ms | 4.8 ms | 0.94× |
-| 1 in ~60 | 4.0 ms | 4.6 ms | 0.87× |
-| 1 in ~7 | 116.6 ms | 162.0 ms | **0.72×** |
-| all rows | 110.6 ms | 111.7 ms | 0.99× |
-
-On the full queries the effect is larger still, because filter reordering compounds it: with both on, Q6 goes from 351 ms to 917 ms at eight clients — **2.6× slower**.
-
-**The reason matters more than the number.** Late materialization saves the decode of payload columns for rows a predicate eliminates. On this data those rows have already been eliminated, by row-group and page statistics, before any decoding begins — which is why the highly selective queries above finish in four to six milliseconds. Pushdown cannot save work that is not being done; what it adds is per-row bookkeeping on the scan that remains.
-
-> **The two mechanisms are not complementary here. The cheaper one has already won.**
-
-That is a property of well-maintained statistics and sorted-enough data, which is what the rest of this system exists to produce. It would look different on data with no useful bounds — and that is where the setting should be reconsidered, **per query from the statistics**, rather than pinned on for everyone.
-
-It is therefore left at the engine's default rather than pinned off: pinning a setting off is still pinning it, and the evidence supports *not always* rather than *never*.
-
-**What this says about the practice, not the setting.** Both errors came from the same place — a mechanism with a good reputation, asserted on reasoning rather than on a measurement of this system's own data. The first measurement was too narrow to contradict the reasoning; the second was a recognisable workload and did. A setting worth asserting at startup is worth measuring on something somebody else designed.
+| Compaction interrupted | Resumes from checkpoint; at worst unreferenced files, reclaimed after an age threshold | Built |
+| Compaction conflicts with a concurrent committer | Compaction rebases and retries; **the applier never backs off** | Built |
+| Storage lacks a conditional write or `link(2)` | Detected at startup; multi-writer mode **refused** | Built |
+| Applier crash mid-batch | Batch rolled back; resume from the last durable position; idempotent replay | Built and tested; no applier runs |
+| Slot invalidated | Gap marker recorded; automatic re-snapshot; stale data served with explicit provenance | Designed; §16 |
+| Incompatible schema change | Table quarantined; last consistent version stays queryable; events dead-lettered so the cursor advances | Built and tested; no applier runs |
+| Restored backup resurrects purged rows | Hot extent wins; inconsistency flagged; unified queries on that table refused until resolved | Designed; §20 |
+| Node loss (executor) | Transparent; stateless | Designed; M12 |
+| Node loss (coordinator) | Election; database failover | **Not built**, M12 |
 
 ---
 
-## 9. Storage physical design
-
-### 9.1 Tiered compaction
-
-Lakehouse compaction has the write-amplification shape of a log-structured merge tree, and the naive approach is catastrophic: recompacting a whole large partition every hour while it receives a small increment rewrites the entire partition per hour.
-
-```
-  L0   micro-batch files, arrival order, small
-        │  merge many
-        ▼
-  L1   sorted within file, medium
-        │  merge several
-        ▼
-  L2   sorted across the partition, full statistics, bloom filters where warranted
-        │
-        ▼
-  SEALED — never rewritten again
-```
-
-Each byte is written once at each level, giving roughly **3× total write amplification instead of two orders of magnitude**. When a partition's newest data falls behind a watermark it is compacted once to the top level and **sealed**; a sealed partition is never rewritten. This bounds total compaction work to a function of data volume rather than of data volume multiplied by elapsed time.
-
-#### 9.1.1 Compaction adds; a separate operation removes
-
-The rule that makes frequent compaction safe is that **a merge never deletes anything**. It writes a new file and leaves its inputs in place, so a reader holding a snapshot continues reading files that are still there. There is no window in which a file under a reader disappears.
-
-Deleting the inputs is a distinct operation with distinct preconditions, all of which must hold for a given file:
-
-1. **The replacement verifies.** Its row count is re-read from its footer at retirement time, not trusted from the merge. A merge may have completed hours earlier.
-2. **No retained snapshot can resolve to the input.** Time travel and long sessions both pin a position; a file a pinned snapshot may reach is kept however old it is.
-3. **The grace period has elapsed.** A reader that listed files a moment before the merge is entitled to open them and has no way to announce that it is doing so. The grace period must exceed the longest query the deployment permits.
-
-An input failing any precondition is **retained with a reason**, which is a correct outcome rather than a failure — retirement is an optimisation, and declining it costs only disk. The one case that is an error is a missing or short replacement: that means the compaction did not actually happen, and nothing may be removed at all.
-
-Separating the two operations means the frequent, cheap one carries essentially no risk, and the dangerous one runs rarely and under stricter conditions.
-
-#### 9.1.2 What compaction is worth, measured
-
-The claim in §9.3 is specific: small files cost query **planning** — listing, footer reads, metadata resolution — rather than scanning. That predicts a roughly *fixed* penalty per query, which should therefore dominate short queries and amortise away on long ones.
-
-Measured over 20,000,000 rows, comparing 400 fragments against the single file they merge into:
-
-| Query | 400 files | 1 file | Ratio | Absolute overhead |
-|---|---|---|---|---|
-| Short — one narrow range | 16.9 ms | 3.8 ms | **4.42×** | 13.1 ms |
-| Long — full aggregation | 121.0 ms | 97.3 ms | **1.24×** | 23.7 ms |
-
-The prediction holds. The overhead stays within the same order across a query that does thirty times more work, while the *ratio* collapses from 4.42× to 1.24×. Fragmentation is therefore an interactive-latency problem, not a throughput one — which is what makes it worth paying attention to, since interactive latency is the thing anyone notices.
-
-This required scaling the fixture before it was a real test. An earlier run over 1,000,000 rows showed 4.43× and 3.77× — apparently uniform, and it would have been read as "more files are slower". The long query simply was not long enough for planning to amortise against. A measurement that cannot distinguish the hypothesis from its negation is not evidence.
-
-Merging also reduced the data by **2.23×**, largely through better compression across a larger block and less per-file overhead.
-
-#### 9.1.3 A directory listing is not a file set
-
-A direct consequence of the add-only rule, and easy to miss because the naive version works perfectly until the first compaction runs.
-
-Between a merge and the retirement of its inputs, the directory holds **both** — the file that was written and the files it replaced, the same rows twice. That window lasts at least a full grace period and exists by design. So anything answering "which files belong to this table" by listing the directory is wrong for the whole of it:
-
-- **A planner given a listing** will plan a merge whose inputs include files an earlier merge already superseded, and the result contains those rows twice — permanently, this time.
-- **A reader given a listing** double-counts every merged row for the duration of the window.
-
-The live set is therefore a first-class value carried across maintenance ticks, not something derived from storage. A tick moves it forward: superseded inputs leave, the new output arrives, and files the tick did not touch are carried through unchanged including their declared coverage.
-
-> **This is the concrete reason the system needs a table log rather than merely liking the idea.** "Which files are live" is not answerable from the filesystem once compaction has run, and both correctness properties above depend on answering it. A directory of Parquet files is a storage layout; it is not a table.
-
-The published tier accordingly names its files individually rather than pointing at a directory. Both behaviours are tested, including the negative one: a query registered against the directory is shown to return the merged rows twice while the same query against the live set returns them once.
-
-#### 9.1.4 The log is written by hand, and validated by the kernel
-
-The table log is emitted by SANKHYA directly — a few hundred lines covering `protocol`, `metaData`, `add` and `remove`, one JSON object per line, staged and renamed so a reader never observes a partial commit. Concurrency control is the protocol's own: a writer picks the next version and fails if someone took it, and the loser rebases because its decisions were made against a state that no longer exists.
-
-> **Correction, 2026-08-28.** *"Fails if someone took it"* is the property the design requires
-> and, until M8, not the one the code delivers. `commit` claimed a version by checking the file
-> was absent and then renaming a staging file over it, and `rename(2)` replaces its destination
-> silently — so two committers could both see the version free, and the second would overwrite
-> the first with no error to either. The rebase loop never ran, because the `VersionTaken` it
-> waits for was never returned. It went unseen because every test had a single writer per
-> version. The claim becomes atomic in M8 §12.1b; see
-> [ADR-0013](adr/0013-concurrency-and-data-safety.md).
-
-The kernel is a **dev-dependency**, used as an independent oracle: it reads the log SANKHYA wrote and must agree about the schema, the version and the live set. This arrangement is what DEC-06's metadata-only coupling actually asks for — the storage library supplies a definition of correctness, not an I/O layer — and it keeps eighty-four packages and a duplicated HTTP client out of the shipped binary. That the dependency stays test-only is checked mechanically rather than left to review.
-
-**The oracle earned its place on its first run.** The log this system wrote was invalid: the `add` action's `partitionValues` field is non-nullable and had been omitted. It round-tripped through SANKHYA's own reader perfectly, because a reader ignores a field it never writes. Two implementations agreeing is worth nothing when the same author wrote both sides.
-
-**The log is checkpointed.** Every ten versions the reconciled state is written as a single Parquet file with a `_last_checkpoint` pointer, and readers start from it. This is worth ten times the read cost at fifty thousand commits, and the beneficiary is mostly *other engines* — they have no cache and start cold on every query, so without a checkpoint an external reader opens one file per commit before it reads a row.
-
-A checkpoint holds exactly what replay produces, which makes it safe in a specific way: **it can always be discarded.** A missing file, a corrupt pointer, or one left behind by a table dropped and recreated at the same path all fall back to the log and cost a replay rather than an answer. Nothing is permitted to depend on a checkpoint being present or even parseable — which is what makes writing the format by hand a defensible risk rather than a reckless one.
-
-Writing it is a *maintenance* job, not part of committing. A commit that had to checkpoint could fail for a reason that does not matter.
-
-**Bounds and null counts are written into the log**, alongside the row count. This reverses an earlier decision in this document, and the reversal is worth recording rather than quietly making.
-
-They were withheld on the grounds that a wrong bound silently drops rows and that bounds go wrong quietly under type coercion. That is true, and it is why every bound written comes from code that refuses to produce one it cannot justify: an unrecognised type gets no bound, an unorderable value gets no bound, a merge that would narrow a bound drops it instead, and a value the protocol cannot represent exactly — a non-finite float, bytes that are not text — is omitted rather than approximated.
-
-What the original reasoning did not weigh is the cost of withholding them. **An external engine can prune only on what the log tells it.** Keeping bounds private to SANKHYA means every other reader scans everything, which undercuts the reason for choosing an open format at all. The bar is higher now rather than lower: a malformed statistic costs *other people* answers, in engines that cannot be fixed from here.
-
-The cardinality sketch stays out, because the protocol has nowhere to put it. A column read back from the log therefore reports zero distinct values, which is a trap for whatever reads that figure first.
-
-One detail worth stating because getting it wrong is silent: a compaction's `remove` actions declare `dataChange: false`. Compaction rewrites files without changing rows, and a reader streaming changes from the table would otherwise see every compacted row as a deletion followed by a re-insertion — a flood of spurious changes proportional to how well maintenance is working.
-
-#### 9.1.5 Metadata-only coupling, and what it buys
-
-The provider is SANKHYA's own. The table format library says **which files exist and what is in them**; it does not read them, does not decode them, and does not appear in the execution plan. Scan execution is the query engine's Parquet source, unmodified.
-
-The reason is version skew, and it is concrete rather than stylistic. A table format library and a query engine move on independent schedules and both expose Arrow types in their signatures. Coupling to both *execution* surfaces makes every upgrade of either a coordinated upgrade of the pair, several times a year. Coupling to one for metadata and the other for execution means a format upgrade touches a file list and an engine upgrade touches a plan — neither is a negotiation.
-
-**The measurable consequence is that planning does no file I/O.** Row counts come from the log, which already records them. The alternative is one footer read per file before a single row is read — the small-file penalty of §9.1.2, moved somewhere compaction cannot help.
-
-| Files | Provider | Directory listing | |
-|---|---|---|---|
-| 50 | 0.54 ms | 1.15 ms | **2.2×** |
-| 200 | 0.63 ms | 3.02 ms | **4.8×** |
-| 800 | 1.37 ms | 10.33 ms | **7.5×** |
-
-The advantage widens with file count, which is the shape the claim predicts. Note that the provider is **not flat**: sixteen times the files costs about 2.5× more planning, because replaying the log grows with commit count. The cost has been moved from one seek per file to one sequential read of a log, not abolished — and it was the argument for log checkpoints, which are now built: a checkpoint collapses the replay to one read of a summary plus the commits after it.
-
-Two details the provider gets right and a naive one would not:
-
-- **Statistics are marked exact only when nothing can be filtered out.** A query pinned below what the tiers hold has an upper bound, not a count. Reporting it as exact lets the optimizer order joins on a number that is simply wrong — a slow plan chosen confidently, which is harder to notice than a slow plan chosen for want of information.
-- **The commit-position column is read when the query pins a position**, because the target filter is evaluated on it, and projected away afterwards. Time travel genuinely costs a column the caller did not ask for, and hiding that would be dishonest about its price. When no tier holds anything past the target the filter provably removes nothing, and neither the filter nor the column read is planned at all — which matters because the cost is per table and therefore compounds with join arity.
-- **The scan reports its own statistics, not the table's.** These are different numbers arriving at different times: the table's are read during logical planning, the scan's during physical planning, and join selection reads the second. A provider that supplies only the first leaves every table looking unmeasurable at the moment the engine decides how to join it — so it repartitions tables it could broadcast, and because tables reporting no size are ordered against tables that do, one absent figure moves every join in the query. The scan's figures are also counted over the files that survived pruning, so a selective predicate is reflected in the number the decision actually uses.
-- **File grouping is left to the engine above its own threshold.** The engine splits file groups by byte range, which balances on size and beats anything a provider can do by counting files — but only for scans large enough to be worth splitting, below which it leaves a single group alone, and a single group is a single partition. So the provider deals files out only below that threshold. Doing both is worse than either: the engine then rebalances an arrangement already unbalanced by file count.
-
-### 9.2 Commit cadence scales with volume
-
-A fixed commit interval is wrong for small tables, where metadata then dominates the data itself. The cadence is derived rather than configured:
-
-```
-commit_interval = clamp(target_landing_file_size / observed_ingest_rate, floor, ceiling)
-```
-
-A table receiving a trickle commits rarely; a table receiving a torrent commits often. One rule, no per-table tuning, and it directly prevents the pathology where a small table's metadata exceeds its data.
-
-### 9.3 Metadata economics
-
-Metadata cost is not a rounding error and it compounds in a useful direction.
-
-- Commit log entries accumulate continuously; checkpoints are periodic snapshots of live state.
-- **Checkpoint size is proportional to live file count.** Therefore small-file compaction reduces metadata cost **quadratically** — fewer files makes each checkpoint smaller *and* permits checkpointing less often.
-- Two configuration changes plus an effective compaction policy reduce daily metadata volume by well over an order of magnitude on a busy table.
-
-**A format observation that is independent of library maturity**, and therefore worth recording separately from `DEC-10`: under continuous micro-batch ingest, appending a small commit record is structurally cheaper than rewriting a whole metadata document on every commit. One format does the former, the other the latter. This is a quantified argument, not a preference.
-
-### 9.4 Compression and encoding
-
-Codecs operate on already-encoded bytes, so ratios are lower than raw-data intuition suggests. The decision rule falls out of the decode-versus-transfer crossover in the requirements document:
-
-> **Heavier compression wins when I/O-bound — which is the normal case for object storage and for any node with many cores. Lighter compression wins only when CPU-bound**, meaning many concurrent queries saturating every core against warm local data.
-
-Accordingly: moderate compression for published data, light and fast for short-lived landing files and for query spill, heavier for archived data where the compression-time knee justifies it.
-
-Per-column encoding is selected **from measured statistics**, refreshed at each top-level compaction — distinct-value counts, sortedness and average width. This requires no domain knowledge whatsoever, which is exactly right for an engine that must serve arbitrary schemas. Two rules carry most of the benefit:
-
-- **Split-stream encoding for floating-point columns.** Domain-neutral and consistently valuable, whether the floats are sensor traces, embeddings, simulation output or measurements.
-- **Dictionary encoding disabled where it cannot pay** — high distinct-value ratios, known-unique columns, and floating-point columns, where split-stream encoding strictly dominates. This *saves* write time as well as space, because the writer no longer builds a dictionary it will discard.
-
-### 9.5 Statistics
-
-Row-group and page-level bounds come from the file format. **Truncation of statistics values is important and non-obvious**: a table with a wide text column can otherwise accumulate megabytes of statistics per column per file, and truncation remains sound because a truncated lower bound rounds down and a truncated upper bound rounds up.
-
-The gap the file format does not fill is **distinct-value counts**, which the optimizer needs for join ordering and which neither the file format nor the table log carries. SANKHYA therefore maintains its own per-column, per-partition statistics — a mergeable cardinality sketch, bounds, null fraction, average width and a quantile sketch — refreshed at compaction, when the data has already been read and the marginal cost is near zero.
-
-This is what makes join ordering work on arbitrary user schemas where nobody has run an analysis command.
-
-#### 9.5.1 The rule statistics live under
-
-**A statistic may make a query slower. It may never make a query wrong.**
-
-This is what justifies keeping statistics *out* of the table log. The log says which files a table consists of, and getting that wrong makes queries fail or double-count, so it is written conservatively and never guessed at. Statistics are different in one respect that changes everything: they are **rebuildable**. A wrong statistic can be recomputed from the data, and until it is, the worst outcome should be a slow plan.
-
-That is only true if the asymmetry is enforced rather than intended:
-
-- **Bounds may skip a file only when they prove nothing in it can match.** Anything uncertain — an absent bound, a type that does not line up, a comparison that cannot be made — means the file is read. A needless read costs time; a wrong skip costs an answer, and nothing downstream can detect it.
-- **Unknown is not unbounded.** An absent bound means "may match anything", and filling it in with a default turns a missing statistic into a wrong one.
-- **A merge may not narrow a bound.** Where both sides hold values and either lacks a bound, the merged bound is absent — inheriting one side's bound would claim a limit the other may exceed. This matters because compaction *merges* statistics rather than recomputing them, so a defect here appears only after maintenance has run, on data that was correct when it was written.
-- **Distinct-value estimates never touch pruning.** They are approximate by construction, so no decision that changes an answer may depend on one however convenient it looks.
-
-The safety property is property-tested directly — if `can_skip` returns true, no value in the file satisfies the predicate — and separately over merged statistics. The converse is deliberately *not* asserted: an implementation that never skipped anything would be slow and correct, and only one direction is a defect.
-
-#### 9.5.2 The cardinality estimate
-
-Distinct-value counts are what neither the file format nor the table log carries, and they are what the optimizer needs to order joins on schemas where nobody has run an analysis command.
-
-The estimate is a HyperLogLog sketch: 4,096 registers per column, merging by register-wise maximum so a merged file's sketch equals the sketch of its inputs' union exactly — which is what makes statistics maintainable at compaction with no value re-read. Accuracy measured within 5% from 10 to 100,000 distinct values.
-
-Two properties matter more than accuracy. The sketch **merges exactly**, so maintenance never degrades it. And the hash is **fixed and process-independent**: a seed that varies per process would make two nodes disagree about a plan, and that disagreement would present as a bug in the optimizer rather than as what it is.
-
-### 9.6 Bloom filters
-
-Bloom filters help only for equality predicates on columns where bounds-based pruning fails — that is, high-distinct-value columns not used as the sort key, where every file's range spans the whole domain.
-
-> They pay when a value is likely **absent** from most row groups. The threshold is a ratio of distinct values to row-group count, and below it they are pure overhead.
-
-They are therefore **off by default and enabled per column**, subject to observed query patterns, the ratio test, exclusion of the sort key, and a hard cap on the number of bloomed columns per table — because each one costs a small percentage of the row group, which is cheap for a few and ruinous for many. The filter must be sized from the *measured* distinct-value count; a wrong estimate either wastes space or destroys the false-positive rate.
-
-### 9.7 Sort order without domain knowledge
-
-The engine knows nothing about the schema, so the default sort key is derived in priority order:
-
-1. Partition columns are excluded — they are constant within a partition.
-2. **The commit position.** Always present, always monotonic, and **free**, because data already arrives in that order. It gives perfect pruning for every as-of query, which is the one predicate shape guaranteed to exist. This is a genuinely useful default, not a placeholder.
-3. The primary key where one exists, enabling point-lookup pruning and turning merges into sorted merges.
-4. A low-cardinality column prepended, giving bounds-based pruning for the commonest filter shape.
-5. An observed key, proposed by the profiler after sufficient query samples and applied at the next top-level compaction.
-
-Declaration paths exist for the cases that genuinely need knowledge, in precedence order: an explicit tenant declaration, a source-side schema comment (so the policy travels with the schema and survives a dump and restore), a domain-pack hint, then inference, then the default.
-
-**Sorting costs approximately one additional pass over the data, once per partition, at top-level compaction.** Re-clustering historical data costs a full read and write of the table and is therefore an explicit, scheduled operator action, never automatic.
-
-**What it buys, measured.** On TPC-H Q6, which selects one year in seven of a date column:
-
-| Layout | Single query | p95 at 8 clients |
-|---|---|---|
-| Arrival order | 222 ms | 1819 ms |
-| Sorted by the filtered column | **31 ms** | **234 ms** |
-
-**7.8× at concurrency**, entirely from row groups skipped on their statistics before any decoding. It is also the difference between missing `NFR-PERF-02`'s 250 ms and meeting it.
-
-That objective names bloom filters and late materialization as its preconditions. Neither turned out to be the lever: bloom filters do not apply to a query with no equality predicate, and late materialization *costs* on this data (§8.6.1). Sorting was the third thing, and it was the one that mattered — which is worth recording, because the objective's own list of preconditions would have sent someone to build the wrong two.
-
-**Multi-dimensional interleaved ordering is not used**, for two independent reasons: an open row-duplication defect in the implementation, and — separately — interleaving defeats the delta encoding on the sort columns, so it compresses worse than plain lexicographic ordering while also being harder for the optimizer to exploit.
-
-### 9.7a Data in, data stored, data out
-
-Three crates, three responsibilities, and the boundary between them is the point rather than
-a tidiness preference.
-
-| Crate | Responsibility |
-|---|---|
-| `sankhya-ingest` | **Everything by which data arrives.** Postgres change capture today; JSON and CSV files, Kafka streams and API invocations are further front-ends onto the same hand-off. It decodes, conditions and batches — it makes arriving data *handleable* — and then it publishes |
-| `sankhya-publish` | **The one writer to the warehouse.** Layout, partitioning, statistics, the commit and its rebasing all live here, and nothing else writes a data file or a log action |
-| *(not yet built)* | **Everything by which data leaves.** Emission out of SANKHYA, designed as its own crate for the same reason ingest is |
-
-**Why one writer and not three.** A second writer is not a stylistic complaint. It is a path
-that does not get the guarantees the first one enforces, and the evidence is concrete: while
-the ingest pipeline wrote its own files, its tables carried no partition columns and violated
-`FR-STORE-20`, which every table published through the other path satisfied. The soak had its
-own writer too, so its warehouses were flat and its ten-gigabyte runs reported `PASS` against
-a layout the product does not produce.
-
-Both were routed through `sankhya-publish`, and the convergence immediately surfaced defects
-in the writer itself: a creating commit that omitted its protocol action, and file-name
-recovery that could not parse a partitioned path and would have restarted a sequence at zero
-over live files. **Neither was findable while the paths were separate**, because each path
-only ever agreed with itself.
-
-`cargo xtask check-writers` enforces this: any crate that writes a data file or commits a log
-action must be named in an allowlist with a reason. The list is required to *shrink* — an
-entry that stops being needed is reported as stale, which is how the ingest entry came to be
-deleted rather than forgotten.
-
-### 9.8 Partitioning
-
-Guardrails, all domain-neutral: a target partition size range; a ceiling on partition count per table, because every partition value is recorded in table metadata; a distinct-value ceiling above which partitioning causes path explosion; a null-fraction ceiling; a minimum table size below which partitioning is counterproductive; and a maximum depth.
-
-What is automatic: whether to partition at all, the time-bucket granularity given a chosen time column, hash-bucket counts, and the choice of time column when exactly one qualifies — falling back to the commit timestamp and logging the ambiguity when several do.
-
-What must be declared: partitioning on a business-meaningful column. **The engine cannot distinguish "a meaningful query boundary" from "merely a low-cardinality column"**, so the default is to sort on it rather than partition by it.
-
-> **The governing bias, and it matters for an engine facing unknown schemas: partitioning is a physical commitment that is expensive or impossible to undo; clustering is cheap to change at the next compaction. When uncertain, prefer the reversible decision — sort, do not partition.**
-
-### 9.9 Mirror naming, mechanically
-
-The requirement is that one name spans four naming domains. It turns out to be nearly free, because the database folds unquoted identifiers to lower case — so for the large majority of tables the source identifier, the directory name, the catalog name and the SQL name are **the same string with no transformation at all**.
-
-The work is entirely in the tail:
-
-- **Identity mapping** for identifiers that are already valid path segments — the common case, byte-for-byte.
-- **A legible substitution** for the remainder: normalize, strip marks, lower case, replace anything outside the safe set with a separator, collapse runs, trim, and prefix reserved or hidden-prefixed names. The separator chosen is not legal in an unquoted source identifier, so **its presence is itself a signal that a transformation occurred**.
-- **Reserved names are refused**, including format metadata directory names, names beginning with the hidden-file prefix — such a table would be **invisible to whole families of external readers** — and platform device names, because the local-filesystem backend must work everywhere.
-
-**Identity is recoverable from the table directory alone**, with no catalog and no SANKHYA process running, via both table properties and a sidecar document under a hidden-prefixed subdirectory. Relatability must survive the system being switched off.
-
-**Collisions are refused, never disambiguated.** Distinct identifiers can map to one segment — differing only by case, or by a character that becomes the separator. When that happens the table is quarantined with an alert naming both identifiers, and an operator resolves it with an explicit mapping, an exclusion, or a source-side rename. **Automatic disambiguation by suffix is precisely the failure mode that destroys relatability**, which is why an earlier hash-suffix proposal was withdrawn: it guaranteed uniqueness by destroying the readability that was the entire point.
-
-A preflight check scans the whole source catalog **before** onboarding and reports every collision, every transformed identifier, every reserved-name conflict and every case-only distinction — the last of which is legal in the database and fatal on a case-insensitive filesystem. It runs in continuous integration against a schema dump and belongs in the onboarding checklist, so collisions surface at install time rather than in the middle of the night.
-
-### 9.10 Renames
-
-> **The warehouse path is a published interface.** Additive schema changes are backward-compatible for consumers and are applied automatically. A table rename is a **breaking interface change to consumers SANKHYA cannot see**, and breaking changes require a human.
-
-A rename is therefore a **quarantining event** with no automatic default in production. Four resolutions are available, each with a stated cost: relocate the objects, repoint to a new directory leaving history in place, pin the original path and record an alias, or recreate from a fresh snapshot. The alert suggests one by size but never applies it.
-
-**Ingest continues throughout the quarantine.** This is only possible because ingest is keyed by a stable table identity rather than by name — changes keep landing, the replication cursor keeps advancing, and no log pressure accumulates while a human decides. Only *publication* pauses. Without that property this feature would trade a naming problem for an availability problem.
-
-Two constraints worth recording because they are easy to miss:
-
-- **Objects under immutability retention cannot be moved.** Relocation therefore moves only the mutable tier, and must report how many immutable objects will remain under the old prefix rather than silently splitting a table.
-- **A column rename and a table rename have opposite policies**, and for a good reason: with field identifiers enabled, a column rename is metadata-only and fully automatic; a table rename breaks a path. Same word, different contracts.
-
-### 9.11 Drops and re-creates
-
-A dropped table's directory is retained for a configured window, indefinitely if under legal hold or immutability retention, and **its path segment stays reserved for the whole window**. On expiry it moves to a separate area rather than being deleted outright, keeping the live warehouse namespace clean.
-
-Re-creating a dropped name is the nastiest case for name-based identity: a different table wearing the same name. The new table receives a new identity, and if the old directory is still within retention the situation is quarantined pending an explicit resolution. A fast path auto-resolves the common development case — an empty dropped table, an expired retention, or a non-production environment — because nobody should file a ticket over dropping a scratch table.
+## 14. Observability, and the two things it is easy to get wrong — **[Built]**
+
+The mechanics are [`OPERATIONS.md`](OPERATIONS.md) §8 and [`METRICS.md`](METRICS.md). What is
+architectural is two decisions.
+
+**The catalogue is the API, and it is checked twice.** Recording a metric takes the metric's
+*declaration* — meaning, unit, group, cardinality bound — so an undeclared metric is not refused at
+runtime, it cannot be typed. That [`METRICS.md`](METRICS.md) matches the declarations is one check.
+That every declared metric is **recorded somewhere in the source** is the other.
+
+> Generating documentation from a catalogue proves the document matches the catalogue. It says nothing
+> about whether the catalogue matches the program. Both checks are needed and only the second is
+> uncomfortable, because it is the one that fails.
+
+**A label is one of exactly two things**: a closed set of permitted values, or a deployment-scoped
+identifier under a cap. There is deliberately no third variant, so a label that varies per row, per
+query or per user has no way to be declared — putting a value where a dimension belongs is
+simultaneously the tenant-data leak and the cardinality explosion, and one construct prevents both. Past
+a cap, new series are **refused and counted** rather than created: a gap gets noticed and a quiet
+inaccuracy does not.
+
+The same argument extends to logs, where it is easier to break by accident. `#[instrument]` records
+*every argument of the function it decorates*, so three words on `fn query(&self, sql: &str)` put every
+statement any client sends into the log — predicate values included — with nothing at the call site
+saying so. `cargo xtask check-logging` closes that, and there is deliberately **no suppression
+comment**: a prohibition with an escape hatch is a prohibition with escapes in it.
+
+### The diagnostic reports a time, which forces it to keep a history
+
+`FR-OPS-17` asks for **time until a problem becomes user-visible** rather than a current value. The
+architectural consequence is the part that is not in the requirement and is easy to build around: **a
+time cannot be computed from one sample.** It needs a rate; a rate needs observations separated in time;
+and those need somewhere to live between runs. A diagnostic that computes projections beautifully and
+keeps no history satisfies the requirement in code and never once in operation, because every run is the
+first run.
+
+So the diagnostic owns a small append-only observation history, and three properties of it are
+deliberate. **It is beside the warehouse, not inside it**, because the warehouse is the thing being
+diagnosed and may itself be the finding. **It is not a table in this system**, because a diagnostic that
+needs a healthy database to report an unhealthy one is decoration — which is also why `doctor` reads the
+warehouse directly rather than starting the server. And **it is text, and damage is expected**: a
+process killed mid-append leaves a torn line, which is skipped and *counted*, and the count is reported;
+refusing to start over a truncated line would remove the tool at the moment somebody reaches for it, and
+hiding the count would let a history quietly losing half its lines still produce confident dates.
+
+**`Unknown` is a first-class outcome**, and **findings are ordered by *when*, not by severity** —
+severity orders a list by how loudly each item shouts, time orders it by which must be dealt with first,
+and an operator reading top-down should be reading a schedule. **"Could not run" is structurally
+separate from "found nothing", including in the exit status**, because a monitoring system that treats
+*"I could not look"* as *"nothing found"* reports all-clear for a subsystem nobody examined.
+
+### Backup: three architectural rules
+
+The procedure is [`OPERATIONS.md`](OPERATIONS.md) §11. Three rules are design rather than operation.
+
+**There are two positions, and a manifest recording one has recorded the wrong one.**
+`source_restores_to` is where the transactional store lands; `queryable_at` is the highest position at
+which *every* table is complete — the minimum over their coverage, because a query joining two tables
+can only be answered where both reach. They are rarely equal, and the difference is not noise: it is how
+much re-capture a restore implies. The rule enforced when the manifest is **built** is that no table may
+cover a position past where the source restores to, because afterwards it is **not detectable from
+either side alone**.
+
+**A drill reads the data back, because presence checks pass on the failures that happen.** A
+file-presence check passes on a truncated Parquet, and on a file whose bytes were replaced with another
+table's. What goes wrong with a backup is almost never that a file is missing — a missing file is loud.
+Both sides compute the digest through **one** implementation, because two would eventually differ on a
+null convention and every drill would then fail on data that is perfectly fine, and after the third
+false alarm the drills would stop being run.
+
+**Evidence that omits failures is not evidence.** The drill record is append-only and a failure is
+written with the same ceremony as a pass. A history with no failures across three years describes either
+a very good system or a drill that does not really run, and nothing in the history distinguishes them.
+*"When did we last prove we could restore?"* is answered with the last **pass**, never the last attempt.
+
+**Expiry and removal are separate, and the gap is the point.** Deleting a backup does not release the
+snapshots it protects; a grace period follows. It costs storage that could have been reclaimed sooner and
+buys a window in which a mistake is still a mistake. **That mechanism is library code with no caller in
+the server** — [`OPERATIONS.md`](OPERATIONS.md) §11.1 says so where an operator will meet it.
+
+### A platform baseline nobody checks is a baseline nobody meets
+
+Bundled database binaries are dynamically linked, so a fully static artifact is not achievable and the
+alternative is a **declared platform baseline** — the oldest system the artifact runs on, as a maximum
+symbol version and a set of shared objects.
+
+The declaration is not the interesting part. **The check is.** A binary built on a current distribution
+silently acquires symbol-version requirements from it; the symbols are present locally, so it links, runs
+and tests clean, and the failure appears the first time somebody on an enterprise distribution starts it.
+**Nothing on the build machine can surface this by construction** — the machine is the reason it happens.
+So the check reads what the binary *requires* rather than what the build intended, and fails only on a
+release build, because a check that fails every local build is a check everybody learns to ignore.
+
+It is currently **not met** by the shipped container image, by two glibc versions, and the gap is written
+down and printed rather than rounded off. [`OPERATIONS.md`](OPERATIONS.md) §3.2.
 
 ---
 
-## 10. Graph engine
+# Part II — Designed, and not running
 
-### 10.1 Structure
+## 15. Why this part exists at all
 
-An Arrow-backed compressed sparse row structure with a reverse index, dense internal identifiers, and attributes held as separate Arrow arrays.
+Everything below is a decision that is expensive to change after the thing exists, taken before it does.
+That is a defensible reason to write a design down and an indefensible reason to write it in the present
+tense, which is what the previous version of this document did.
 
-**Typed vertices and typed edges, with per-edge-type adjacency segments.** A single homogeneous graph is a domain-shaped assumption: it suits ownership and counterparty networks, and fails for physical networks, provider networks, telemetry topologies and routing graphs, all of which are heterogeneous and multi-relational. Under a single-type model a pack would have to encode edge types into weights, destroying both type safety and traversal performance.
-
-**Edges carry validity intervals**, and edges are stored **sorted by source and time**. That single layout choice pays three times:
-
-1. "Edges of a vertex after time *t*" becomes a binary search plus a contiguous slice, which is what makes time-respecting traversal affordable.
-2. The same sort order gives the best data skipping for the corresponding table.
-3. It eliminates the dominant cost of hydration, which is otherwise the sort.
-
-**Why not a general-purpose graph library on the critical path.** Adjacency stored as linked structures costs a cache miss per edge and drags attribute payloads through cache whether needed or not. A compressed sparse row layout touches a few bytes per edge, sequentially, within a vertex's adjacency run — near-perfect prefetch. The difference is roughly an order of magnitude, and the traversal targets depend on it. A general-purpose library remains useful for algorithms we do not wish to write, applied over a converted view, and as a differential-testing oracle.
-
-### 10.2 Epochs
-
-A hydrated graph is an **immutable, identified epoch** bound to a table snapshot, published by atomic swap, reference-counted, freed when the last reader releases it.
-
-Full hydration builds into a **shadow epoch and swaps atomically**, never blocking queries and never mutating a live epoch — so the memory budget must account for two epochs during rebuild. Incremental hydration applies deltas through a copy-on-write overlay, rebuilding fully when the overlay exceeds a bounded fraction.
-
-**A property test asserts that incremental application and full rehydration produce identical graphs.** This is the single most valuable test in the graph tier, because incremental hydration is where the subtle defects live.
-
-### 10.3 Consistency
-
-Every graph result reports its epoch, its source snapshot and its lag. Three modes are offered, and the **snapshot-consistent** mode — requiring the epoch to be at least as current as the query's snapshot — is required for any output used as evidence. Without it, a query can report an entity in its relational half that its graph half cannot see, and a conclusion is drawn from an inconsistent picture.
-
-### 10.4 Composition with SQL
-
-Graph results are exposed as **SQL table functions**, so they are first-class relations that join to relational plans and appear over every API surface for free. The round trip is:
-
-```
-  relational predicate  ──▶  candidate vertex set (Arrow array)
-                        ──▶  seeded traversal on the induced subgraph at a pinned epoch
-                        ──▶  Arrow batches
-                        ──▶  joined back into the SQL plan as a table
-```
-
-Four contract terms are mandatory:
-
-- **Seeds may be a subquery**, requiring a two-phase operator that drains the seed stream before traversal.
-- **Every traversal has a hard result limit and time budget**, and results carry an explicit truncation flag. Path enumeration is exponential; **a truncated result must never be mistakable for an absence of results**.
-- **The function reports statistics**, or the planner orders the downstream join badly.
-- **Monotone predicates are pushed into the traversal** as pruning bounds rather than applied afterwards — the difference between milliseconds and minutes on a deep search.
-
-### 10.5 Degree suppression
-
-In a power-law network a small number of vertices have enormous degree. A multi-hop traversal through one touches most of the graph, blows every latency budget, and returns paths that are analytically meaningless — connection through a universal hub is not a relationship. Every traversal therefore supports a degree cap and an exclusion list, and reports which vertices were suppressed.
-
-### 10.6 Tenancy
-
-Graphs are hydrated **per tenant**. A traversal leaving the tenant's identifier space is an invariant violation, not a filtered result.
-
-Traversing a shared graph and filtering afterwards is **not offered**, even as an optimization: it leaks existence and topology through timing and through path structure even when payloads are hidden.
+Each section states what has to exist first. Where the repository already tracks that dependency —
+`UNREACHED`, `UNREACHABLE`, or a milestone in [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) — the
+tracker is named, so this document cannot drift into claiming something is close when the build says it
+is not.
 
 ---
 
-## 10a. Multidimensional analysis
+## 16. Capture and ingest — **[Designed; the correctness contracts are built and nothing drives them]**
 
-Cubing is native rather than a layer bolted above SQL, and it is the capability this system is
-most willing to be slower than its competitors to get right. `M7` is complete and everything below
-is built, with two exceptions named where they appear: the **Ephemeral** cube lifetime (§10a.9),
-which arrives with the client contract in `M14`, and cuboid **selection** (§10a.11), which is
-waiting on data rather than on code.
-
-### 10a.1 One structure, navigated --- not five unrelated queries
-
-`GROUP BY ROLLUP(year, quarter, month)` enumerates combinations of three column names. It does not
-know that a month is inside a quarter, that a balance may not be summed across time, or that the
-previous statement and this one are two views of one thing.
-
-Slice, dice, roll up, drill down and pivot each **take a cube and return a cube**, so they compose:
-dice, then roll up, then drill into the outlier, and the result is still addressable. Roll-up is the
-only one of the five that can produce a number that was not already there --- the others remove or
-rearrange cells --- which is why the additivity rules below sit under it and not under the others.
-
-### 10a.2 The default that produces wrong numbers
-
-Every OLAP product this design was measured against defaults an undeclared measure to **summation**.
-It is the convenient choice and it is the single most productive source of wrong analytics figures
-there is, because summing a balance across time, or a rate across anything, yields a number that is
-plausible, wrong, and indistinguishable from a correct one.
-
-**SANKHYA refuses.** A measure with no declared rule for a dimension is a *definition error*,
-reported before the cube exists, naming **every** dimension it failed to declare rather than the
-first --- since fixing them one build at a time is how a person gives up and writes `Sum`
-everywhere.
-
-The two decisions this costs are the two where a cube engine produces wrong answers:
-
-- **May this measure be summed along this axis?** Refused rather than defaulted.
-- **May this query be answered from that materialised cuboid?** Refusing a valid roll-up costs a
-  slow query; permitting an invalid one produces a figure that is wrong, plausible, and derived
-  from real data.
-
-### 10a.3 Three crates, and why the algebra has no dependencies
-
-| Crate | Layer | Knows about |
-|---|---|---|
-| `sankhya-cube-algo` | 1, **no dependencies at all** | the lattice, additivity, hierarchies, ancestor selection |
-| `sankhya-cube` | 2 | tables, columns, versions, published data |
-| `sankhya-cube-sql` | 3 | table functions callable from a `FROM` clause |
-
-The algebra knows nothing about tables, columns or versions, **and so cannot be wrong about them**.
-Its functions are pure functions of a declaration, which makes their property tests fast enough to
-exhaust a space rather than sample it --- and that matters more here than anywhere, because
-ancestor selection is where a wrong number comes from.
-
-`sankhya-cube` is where the algebra meets a real warehouse: a `Definition` names published tables
-and their columns, validating it produces a `Cube`, and **a `Cube` cannot be constructed any other
-way**. Planning, consolidation and materialisation all take a `Cube`, so no code path exists that
-operates on a definition nobody checked.
-
-### 10a.4 Cubes are reachable from SQL, or they are a second product
-
-A cube that cannot be joined against a table is a separate product with its own query language, and
-the point of putting multidimensional analysis in the same engine is that it is not one.
-`FR-CUBE-14` requires slice, dice, roll-up, drill-down and pivot expressible from SQL **with no
-separate build step**, so every operation is a table function with a fixed output schema:
-
-```sql
-SELECT r.region, r.amount, p.manager
-FROM cube_rollup('figures', 'amount', 'by=region') AS r
-JOIN people AS p ON p.region = r.region
-WHERE r.completeness = 1.0 AND r.overlay IS NULL
+```
+  PostgreSQL WAL ── START_REPLICATION … LOGICAL ──▶
+  transport (vendored, behind a trait) ── bytes ──▶
+  decoder (ours, pure, fuzzed) ── events ──▶
+  apply planner (ours, pure) ──▶ arrival buffer + landing writer (append-only)
 ```
 
-### 10a.5 Everything that qualifies a number is a column
+**The decoder is ours.** The transport may be vendored — the available crates are young and thinly
+maintained — but the decoder parses untrusted bytes from a network socket and is therefore both the
+largest attack surface and the most correctness-critical component in the path. It lives in a pure crate
+at layer 0, is property-tested for round-trip fidelity, and is continuously fuzzed. Neither mainstream
+Rust PostgreSQL client offers replication support, so this was never optional.
 
-Inherited from the graph engine's truncation columns (§10.4), with more force:
+**The apply planner is pure**: decoded event stream in, table mutation plan out. That seam is the
+highest-leverage testability decision in the design, and the reason is arithmetic — it allows thousands
+of randomised crash and interleaving scenarios to run in milliseconds against an in-memory table, where
+one integration test per scenario against a real database buys single-digit coverage per minute.
 
-> A qualification that lives outside the rows is dropped by the first `SELECT` that does not
-> mention it.
+**The transaction invariant.** A batch is a set of **whole** transactions; a transaction is sealed only
+by its commit, and an in-flight one is carried forward. Splitting one publishes half a transaction, which
+for any multi-table write is a torn read no downstream consumer could detect. It has two counterparts
+elsewhere: a batch spanning partitions becomes several files in one commit, and a source transaction
+carries one commit position so a single target position includes all of it or none.
 
-For a graph, that costs a truncated result read as complete. For a cube the same mistake produces a
-**partial total read as a total**, or a **what-if figure read as fact** --- numbers that reconcile
-against nothing, in a report, with no way to tell from the value what went wrong.
+**Exactly-once is a composition**: delivery is at-least-once, application is idempotent. **Idempotence is
+per row, not per batch** — suppressing duplicates per batch is the same defect one layer down as
+declaring buffer coverage per segment (§17), and this system has made it once already.
 
-So `completeness`, `withheld`, `overlay`, `materialised` and `from_cuboid` are columns on every row.
-A query may project them away, but it has to do so on purpose, and the statement then says so in its
-own text.
+**Reconciliation turns "zero data loss" into a number**: rows are digested independently on both sides
+and compared, rather than asserted. The harness is deliberately not the pipeline's own code, for the same
+reason the Delta kernel is an oracle (§6.3).
 
-**Completeness exists because row-level policy is working.** Two principals may run the same query
-and legitimately get different totals; `4,182,900` computed over every row and `4,182,900` computed
-over the sixty percent a principal may read render identically (`FR-QUERY-13`, `FR-CUBE-13`).
-Nothing about the second says it is partial, so it gets reconciled against a complete one.
+What is built and tested: the decoder against captured bytes and against single-byte corruption; the
+transaction property under randomised interleavings; type round-tripping across 73 real columns; naming
+and collision refusal; onboarding from the stream alone; reconciliation at 3,000 rows with no
+discrepancies; capture at 1,000,000 rows across ten tables at roughly 285k rows/s with every table
+reconciling; the five-rung source-safety ladder validated against a real slot; and crash replay filtered
+per row at every crash point.
 
-**`materialised` is not there for correctness** --- `M7`'s exit criterion requires the answer to be
-identical either way, and it is, to the bit. It is there because *"why was this fast?"* and *"why
-was this slow?"* are the same question, and an operator cannot answer either from a result that
-carries only numbers.
+**What does not exist**: the streaming transport (and neither mainstream Rust client supports the
+replication protocol, so it is real work rather than wiring); the slot lifecycle driver; the backfill
+reader, so **only changes after a slot exists would be captured**; partitioning on the ingest path (§7);
+and anything that drives ingest in a running server. `sankhya-cdc-pg` is on `UNREACHED` with M2's
+remainder named against it.
 
-### 10a.6 Sparse, and the difference between nothing and zero
-
-Six dimensions of a thousand members each is 10^18 cells. A dense cube of any realistic shape does
-not fit anywhere, and well under a percent of it holds data --- most account/period/product
-combinations simply never happened. Cells are held by address and the absent ones are absent.
-
-Once cells are sparse, the convenient reading of a missing cell is `0.0`: it makes every array the
-same length, every chart complete and every total easy. It is also false. **"No transactions in this
-period" and "transactions netting to zero" are different facts**, and an operator acts differently
-on each.
-
-### 10a.7 Consolidation runs on the graph engine
-
-A declared hierarchy is a few dozen roll-up edges somebody wrote down. A real one is a dimension
-table --- an organisation chart, a chart of accounts, a product taxonomy --- hundreds of thousands
-of members deep and irregular. That is a graph, this system has a graph engine (§10), and
-consolidation is a bounded traversal over typed edges. Reimplementing it against a map would produce
-a second, worse traversal with no budget and no truncation reporting.
-
-It also inherits the three ways a consolidated total goes silently wrong: a member reachable by two
-paths and counted twice, a cycle, and a traversal truncated by budget and reported as a total.
-
-### 10a.8 Materialisation is a cache, not a second copy of the truth
-
-A materialised cuboid is keyed by *(definition version, snapshot, scope, cuboid)*. Per
-`FR-QUERY-20` the snapshot is the entire invalidation story: files are immutable and every key
-embeds the snapshot, so a new commit produces a **miss rather than a stale hit**. There is no
-invalidation protocol to get wrong, no TTL to tune, and no window in which a stale answer is
-served.
-
-That is what makes materialisation safe to automate: being wrong about what to cache costs latency
-rather than correctness.
-
-**The scope in that key is stronger than a cache key.** Per [ADR-0008](adr/0008-serving-cubes-under-policy.md)
-an aggregate computed under one entitlement is not an answer under another, and a cuboid is
-itself a published table --- so **two scopes are two tables**, separate files with separate names.
-A bug in the lookup cannot serve one principal's rows to another, because those rows are not in the
-file being read. The unrestricted scope is a named sentinel rather than a bare zero, so a caller
-reaching for it has to say what it means.
-
-It is also what decides whether materialising is worth anything: a cube whose callers hold
-different entitlements materialises mostly into cuboids nobody else may use, and Declared is then
-the honest lifetime.
-
-**The definition version is derived, not declared** --- a fingerprint of the validated content. The
-key only works if the version actually changes when the definition does, so there is no field to
-forget to increment and no review that has to catch it. The same reasoning made `queryable_at`
-derived in the backup manifest.
-
-### 10a.9 Three lifetimes, one model
-
-[ADR-0009](adr/0009-the-cube-lifecycle.md) gives a cube three lifetimes differing only in what is
-persisted and what maintains it, so a cube is **promoted or demoted rather than rebuilt**.
-
-| | Definition | Materialised | Maintained by | Dies when |
-|---|---|---|---|---|
-| **Ephemeral** *(planned, `M14`)* | session only | never | nothing | the session ends |
-| **Declared** | `_cubes/*.json` | never | nothing | it is dropped |
-| **Maintained** | `_cubes/*.json` + `target_lag` | yes | the maintenance thread | it is dropped |
-
-**Declared and Maintained are built.** Ephemeral --- a cube declared against a session and never
-written --- needs a session that outlives a statement, which is what a connected client provides;
-it is designed here and delivered in `M14` (§11a.9). It is intended to become the **default**,
-because a user exploring should not have to decide whether their question deserves to be durable:
-persisting is the deliberate act, and the reversible option is the one you get without asking.
-
-`target_lag` is a **staleness target, not a schedule**. Freshness is exact rather than estimated:
-staleness is the distance between the cuboid's snapshot and the table's current version, not a
-wall-clock guess about when a job last ran. Refresh is another job in the maintenance tick under the
-same budget, so refreshing a cube cannot starve compaction; a rebuilt cuboid is a new published
-table and the old one stays live until it commits. **A cuboid past its lag is not served as though
-it were fresh** --- the answer falls back to live aggregation, slower and correct, with
-`materialised = false` saying so.
-
-### 10a.10 Overlays --- what-if, never the published data
-
-Planning needs somewhere to put a number that is not a fact: a budget, a proposed reorganisation, a
-stress scenario. `FR-CUBE-19` makes that a separately versioned **overlay**, applied when a query is
-answered and discarded afterwards; the files underneath are unchanged.
-
-An overlaid figure reaching a report without saying so is the failure the mechanism exists to
-prevent, and it is a quiet one --- the number is well-formed and the query succeeded. Hence the
-`overlay` column of §10a.5.
-
-### 10a.11 What is deliberately not decided
-
-**Which cuboids a Maintained cube materialises.** Greedy selection under an operator budget needs
-the recorded query log, and choosing before that signal exists is an error `M7` made once already.
-The query log is built; the selection policy waits on data from it.
+> The honest summary, and it applies to the whole of this section: **the correctness contracts are built
+> and tested, and the machinery that runs them continuously is not.** Every capability above is exercised
+> by the test suite; none is exercised by a process you can start.
 
 ---
 
-## 11. Extension architecture
+## 17. The arrival buffer and the splice — **[Designed; the splice is built and not in the server's read path]**
 
-### 11.1 The boundary
+### 17.1 The problem, with the arithmetic
 
-```
-   ┌──────────────────────────────────────────────────────────┐
-   │  packs/    risk · financial-crime · telemetry · logistics │
-   │            (and anything a third party writes)            │
-   └───────────────────────────┬──────────────────────────────┘
-                               │ may depend ONLY on:
-                               ▼
-   ┌──────────────────────────────────────────────────────────┐
-   │  sankhya-ext   the published extension API                │
-   │  — SANKHYA's OWN function traits                          │
-   │  — a curated, pinned Arrow subset                         │
-   │  — the logical-type registry                              │
-   └───────────────────────────┬──────────────────────────────┘
-                               ▼
-   ┌──────────────────────────────────────────────────────────┐
-   │  the core — knows nothing about any domain                │
-   └──────────────────────────────────────────────────────────┘
-```
+Committing more often produces small files, inflates version counts and grows metadata, and the cost
+lands on **planning** — a fixed price paid before a single row is read. At one commit per second
+snapshot resolution begins to cost; at ten, metadata dominates and planning becomes the tail latency. The
+impact is inversely proportional to query size, which is what makes it insidious: **a high commit rate is
+a tax that is invisible on the queries nobody watches and severe on the queries everybody watches.**
 
-**The extension API defines its own function traits and re-exports only a curated Arrow subset.** Re-exporting the query engine's traits directly would break every pack in existence on every engine upgrade, several times a year. This is the same principle as the metadata-only storage coupling, applied a second time: **never let a fast-moving upstream type into a slow-moving contract.** It is the single most important constraint on the extension API.
+> **Freshness is a read-path property, not a write-path property.** The commit interval is tuned for
+> storage efficiency; freshness comes from an in-memory tier spliced in at query time. That single
+> inversion is what would let the backpressure ladder lengthen the commit interval under load without the
+> system becoming stale.
 
-### 11.2 What a pack may contribute
+### 17.2 The splice, and its correctness rule
 
-An enumerated set, and nothing outside it: table and schema definitions; logical types; scalar, aggregate and window functions; graph algorithms; view and materialized-view definitions; rules and detectors; named parameterized endpoints; policy vocabulary.
+> The planner selects, for each table, a set of tiers whose coverage intervals are **contiguous,
+> non-overlapping, and collectively cover `[0, target]`.**
 
-The logical-type registry resolves an otherwise intractable tension. The core forbids bare primitives in public signatures, but a pack must be able to define its own types, which the core cannot name. The resolution is that the core moves Arrow arrays paired with an **opaque logical-type identifier**, and the pack owns validation, coercion and formatting. The extension surface therefore never passes bare scalars.
+Because every committed snapshot records the exact log position it contains — the same metadata that
+provides exactly-once semantics — and every buffer epoch records its range, the boundary is **exact
+rather than approximate**. Intervals are half-open at the start, so adjacent tiers abut exactly.
 
-### 11.3 Keeping the API from rotting
+Three properties follow, and the third is the one that makes it safe for a ledger: no double counting and
+no gaps, by construction; provenance is exact, so every response reports which tiers served it and over
+which intervals; and **transactional atomicity survives the splice**, because one target position is
+applied to every tier and every table in the request. That third property is the reason the axis is log
+position rather than wall-clock time — **a design splicing on wall-clock time could show one leg of a
+transaction without the other.**
 
-An extension API rots by accretion rather than by breaking, so the mechanisms are structural:
+If a required interval cannot be covered, the planner **fails the query with a typed error**. It never
+returns a partial answer. *An incomplete answer that looks complete is the worst outcome the system can
+produce, because nothing downstream can detect it.*
 
-- **A hard size budget.** Crude, and the only mechanism that reliably survives to year three.
-- **The two-domain rule.** Nothing enters until two packs *from different domains* need it. One pack's need is a pack-local helper.
-- **No escape hatches.** Type-erased downcasting, free-form document values and open-ended string maps are prohibited — these are how interfaces rot without ever changing shape.
-- **A restricted dependency allowance for packs.** When a pack legitimately needs more, the build fails, and that failure *is* the signal that the API has a gap. It is an API design task, never grounds to widen the allowance.
-- **Compiling examples on every public item**, so bloat has a visible recurring cost.
-- **Use it or lose it.** Anything the reference packs do not exercise is removed at the next major version.
-- **Mechanical breaking-change detection**, not merely a reviewed diff.
+Merge strategy is selected by **declared table capability, never by heuristic**: union for append-only,
+latest-version-per-key for mutable, shaped as an anti-join because the buffer is tiny relative to
+published data. Inferring *"this table looks append-only because no update has arrived yet"* is correct
+until the first update, at which point every query silently starts double-counting — which was a real
+defect, and the reason the suite never caught it is that every test reading captured data used an
+append-only fixture.
 
-### 11.4 Packaging tiers
+### 17.3 Retention, not eviction
 
-| Tier | Form | Sandboxed | Hot-reload | Build cost |
-|---|---|---|---|---|
-| **Declarative** | Signed bundle: schemas, views, materialized views, SQL functions, rules, policy vocabulary, endpoints. **No code** | It is data | Yes | None |
-| **Sandboxed module** | Compiled to a portable sandboxed target for logic the declarative form cannot express | Full: fuel metering, memory cap, deadline interruption, no ambient authority | Yes | None to the server |
-| **Compiled** | Built into the binary behind a feature | **None** — pack code is core code | No | The only tier that adds build time |
+> **A segment may be released only once a durable tier covers it.** Not when it is old, not when memory
+> is tight, not when it has been read.
 
-**The declarative tier is expected to express the substantial majority of a real pack**, because most of what a domain *is* consists of schemas, views, aggregations, rules and thresholds. Building that tier well is what keeps the other two exceptional rather than routine — and it is what allows a domain analyst rather than a systems engineer to deliver a pack.
+This inverts the usual cache relationship, and the inversion is the point: a cache evicts under pressure
+and takes a miss, and this tier has nothing to miss *to* until publication has happened. Evicting under
+pressure does not degrade an answer — it destroys one, and releasing from the middle of the interval
+opens a coverage gap the splice cannot be talked into approximating.
 
-**Dynamically-loaded native extensions are rejected**, and the reasons are recorded so the decision is not relitigated annually: the language has no stable binary interface, so the crate that would be required is effectively unmaintained; a version mismatch is undefined behaviour rather than an error; a fault kills the process with no isolation; the entire Arrow type surface would have to be projected across the boundary; and every extension would need a per-compiler-version build matrix. The only benefit over the sandboxed tier is a modest constant factor.
+So when memory runs short and nothing is releasable, the only correct response is to push back on
+ingest, reported as a distinct condition rather than absorbed, because it is a **publication problem
+wearing a memory problem's clothes**: the tier is full because publication has stalled, and adding memory
+treats the symptom.
 
-### 11.5 Proving the core is actually general
+**Coverage is trimmed; data is not.** The buffer retains segments the published tier already covers but
+*declares* coverage from the durable frontier, so the two tiers abut exactly. The consequence is that a
+scan must filter **per row**, not per segment — a segment straddling the frontier is half durable and
+half not, and returning it whole would double-count its durable half.
 
-The claim is tested, not asserted, by four mechanisms of increasing strength:
+### 17.4 What is built, and what the gap is
 
-1. **A naming lint** rejecting domain vocabulary in core identifiers, filenames and documentation.
-2. **A pack-free build** of the full core test suite, preventing a core test from depending on pack fixtures.
-3. **Two reference packs, deliberately opposite** — one high-volume, narrow, time-series-shaped with essentially no graph; one entity-heavy with a physical network graph and string-heavy joins. Neither is financial. **The acceptance test is mechanical: the change that adds a reference pack must touch zero core files.**
-4. **An adversarial pack** attempting what packs must not be able to do — read another tenant's data, escape its sandbox, register a non-terminating or panicking function, exceed its budget, shadow a core name — each rejected with a named error.
+The coverage contract, the per-row filter at the frontier, the release rule and the exact-cover proof are
+built and property-tested, including the negative cases: a genuine gap, a target past every tier, and a
+tier that started mid-stream. Two defects worth carrying were found there — a tier that declared coverage
+from the durable frontier rather than from its own oldest segment (so the splice found an exact cover
+that did not exist), and the property test written to catch that defect, whose generator made the two
+values incapable of diverging and whose assertion encoded the buggy expectation.
 
-> **The lint catches leakage; the reference packs catch shape.** A core can be immaculately neutral in its naming and still be structurally bent toward one domain — which is exactly what happened to the graph model during review, and exactly what no lint would have caught. Both mechanisms are needed and only the second is hard.
-
-The adversarial pack matters because once third parties author packs, **the extension API is a security boundary** and must be tested as one. That is the difference between a plugin system and a remote code execution feature.
+**What is missing**: the epoch ring, the per-epoch key digests that let a historical query skip the tier
+at no cost, per-tenant sub-caps, and any wiring into an ingest path. And, per §3.8, **the splice is not in
+the server's read path**: the planner synthesises a coverage range rather than composing one, which is why
+`SNK-S0001` is on `UNREACHABLE`.
 
 ---
 
-## 11a. The client contract and the SDKs
+## 18. Resource governance and the pressure ladder — **[Designed; built and called by nothing]**
 
-**Planned, `M14`.** Nothing in this section is built. It is here because the decisions below are
-the ones that are expensive to change after a client exists, and because three bindings are
-coming --- Python first, then Java and Rust --- and a contract retrofitted to three clients is
-three clients that disagree. [ADR-0017](adr/0017-the-client-contract.md) is the accepted decision
-record; this section is its architectural placement.
+§4.3 states the current reality. This is the design, and it is retained because the shape is right and
+the wiring is the work.
 
-### 11a.1 What somebody actually does
+**Admission** estimates from plan cardinality and either queues or refuses; the queue is bounded, so a
+refusal arrives immediately rather than after a timeout. **A client can tell a permanent refusal from a
+temporary one** — *"too large for the pool"* and *"too large right now"* are distinct answers with a
+`retryable` flag, and collapsing them is how a client retries for ever.
 
-Every capability in this document assumes a user already has data in the warehouse and a way to
-reach it. Both assumptions do a great deal of work. From outside, the product is this sequence:
+**Tenancy** is a floor and a cap: a floor honoured under global pressure so one tenant cannot starve
+another, and a cap that binds even when nothing else is running so one cannot take an idle pool.
 
-1. Install a package.
-2. Connect to a running server, over a network, with credentials.
-3. Discover what is there --- schemas, tables, cubes, and their shapes.
-4. Query, and receive an answer that may be larger than the client's memory.
-5. Put data in --- a file, a frame, a stream.
-6. Declare a cube, materialise it, roll it up; drop it, or let it expire.
-7. Clone a table, read the clone, ask what it came from.
-8. Register an aggregation the system did not write, and use it in a cube.
-
-Steps 1 and 2 are the whole product until they work. Everything behind them is reachable today
-only by somebody willing to write SQL over a socket.
-
-### 11a.2 The contract is the product; a binding is not
-
-The temptation with three SDKs is to write the good one first and port it. That produces three
-clients that each decided for themselves what to validate, and the divergence surfaces as *"it
-worked in Python"* --- a sentence somebody then has to debug across two languages and a wire.
-
-> **An SDK contains no logic the server does not also enforce.**
-
-A client may *anticipate* a refusal to give a better message, and it may never *be* the refusal.
-If the Python binding rejects a cube whose measure declares no `merge`, and the Java binding does
-not, then the rule lives in Python and the server is not enforcing it --- and the second binding
-is a way around a correctness rule. The check belongs at the choke point (§12.1) like every other
-one, and the client's copy is a courtesy that must fail the same way or not exist.
-
-This is the same argument §11 makes about packs: the extension API is a security boundary, and a
-capability that is only enforced in one caller is not enforced.
-
-### 11a.3 Which door, and why not a third one
-
-Two doors exist and neither is new work. **Arrow Flight SQL** ([ADR-0006](adr/0006-flight-sql.md))
-is the data path for a client: it is Arrow-native end to end, it streams by construction, and it
-carries a result's schema without a second description of it. **The PostgreSQL wire protocol**
-stays what it is --- the door for tools nobody wrote for this system: `psql`, a notebook's
-existing driver, a BI product.
-
-A REST/JSON API is deliberately not a third door. The engine is columnar and typed; a
-row-oriented JSON surface converts twice, loses the type distinctions §7 spent effort preserving
---- a `Decimal(38,9)` becomes a double or a string, and both are wrong in different ways --- and
-would need its own pagination, its own error shape and its own authorization path. That is a
-second product surface maintained forever to avoid a dependency the client already has.
-
-### 11a.4 Identity on the wire
-
-`FR-SEC-03` requires federated identity tokens, mutual TLS, and scram on the wire-protocol door.
-**Transport security is built; identity is not.**
-
-**One answer to a failed `accept()`, all three doors.** `sankhya-accept` classifies the error:
-a per-connection failure continues, a descriptor shortage pauses before trying again, and
-anything unrecognised stops. It is a crate rather than three `match` arms because it was three
-`match` arms --- one that propagated the error and killed the process on a load balancer's
-health check, and two that discarded it and spun --- and the disagreement was visible only to
-somebody reading all three at once. The PostgreSQL door also caps concurrent connections at
-`MAX_CONNECTIONS`, which is what makes the shortage unreachable rather than merely survivable;
-the shipped systemd unit's `LimitNOFILE=` is the other half of that number and says so.
-
-**One certificate, both doors.** `sankhya-tls` loads it, and each door names only its own ALPN
---- `h2` for the columnar door, nothing for the wire protocol. Two loaders would mean two sets of
-refusals and two answers to *"is this key the one for this certificate?"*, and the divergence
-would surface on whichever door is used less.
-
-**The wire protocol negotiates rather than wraps.** A PostgreSQL client opens a plain socket,
-asks in eight bytes whether encryption is available, and reads a single byte back before any
-handshake exists. Encryption there is part of the protocol, which is why the decision belongs to
-the same state machine that decodes everything else and only the handshake happens outside it.
-A GSSAPI request is declined out loud for the same reason: `psql` with `gssencmode=prefer` --- a
-default on several distributions --- asks it first, and a server that says nothing leaves the
-most ordinary client on Linux waiting.
-
-**What is refused, and when:**
-
-| Situation | Answer |
-|---|---|
-| A certificate configured with no key, or a key with none | **startup stops**, naming the missing setting |
-| A key that is not the certificate's | refused at load, not at the first connection |
-| A key file named as the certificate (or the reverse) | named as such --- the most common first-day mistake |
-| A client trust bundle with no anchor | refused; trusting nobody rejects every client it was configured to accept |
-| A plain client on a door that requires TLS | `28000` and *"connect with sslmode=require"*, before authentication |
-| A peer that connects and never handshakes | dropped on a deadline --- one socket must not cost a server a task indefinitely |
-
-The half-configured case is the one worth stating twice. A server that starts in the clear
-because its key was missing is not nearly encrypted: it is a server whose operator believes it is
-encrypted, and the belief survives until somebody captures a packet. So the startup line names
-the posture in words --- clear, offered, required, or mutual --- every time.
-
-**Still missing:** identity itself. `FR-SEC-03`'s federated tokens and scram are not built, and
-a `Principal` is still a fixed tenant rather than something a certificate or token establishes.
-Mutual TLS puts the client's certificate where a door can see it, which is the hook that work
-will hang from; nothing derives an identity from it yet.
-
-On a loopback that is tolerable and honest --- the server has been a local thing. **For a client
-whose entire purpose is connecting from somewhere else it is credential exposure**, and it is why
-`M14` is gated on transport security rather than treating it as work inside the milestone. An SDK
-shipped in front of it would be a feature whose first use is a mistake.
-
-A connection carries a `Principal` (§12), and every statement is authorized at the same choke
-point a local one is. The SDK holds a session, not a permission: it must never cache an
-authorization decision, because a grant revoked between two calls has to take effect on the
-second.
-
-### 11a.5 A refusal has to survive the wire
-
-This system spends a great deal of effort on refusals that say what to do --- *"drop it first"*,
-*"materialise them first"*, *"plan again and have it read"*, *"the archive is the copy and the
-way back is a rehydration"*. Each carries a `SQLSTATE`, a stable code, and a remediation.
-
-An SDK that renders those as a string has thrown away the half that matters. So the contract
-carries all three, and a binding maps the code to a typed exception:
-
-| Server | Python |
-|---|---|
-| `SQLSTATE` + code + remediation | an exception class per code family, with `.remediation` intact |
-| a refusal naming what would break | the names, as data rather than prose to be parsed |
-
-**The names must arrive as data.** `may_drop` refuses and names the clones that would break; a
-client that can only read that out of a sentence will parse the sentence, and the message becomes
-an API nobody meant to publish.
-
-### 11a.6 An answer larger than the client
-
-`MAX_RESULT_ROWS` bounds what a statement returns today. A client asking for a hundred million
-rows must **stream**, and a binding that collects before yielding converts a working query into
-an out-of-memory kill on the user's laptop --- with the server having done nothing wrong.
-
-So the Python surface yields Arrow batches, and the convenience conversions (`to_pandas`,
-`to_polars`) are opt-in on a result the caller has decided is small. Back-pressure is the
-transport's; a slow consumer slows the scan rather than buffering it into the client.
-
-### 11a.7 Operations that are not queries
-
-Materialising a cuboid, cloning a large table, taking a backup, ingesting a file: each can outlast
-a sensible request timeout, and each is a *decision* rather than a read. Two shapes are possible
-and the choice is `M14`'s ADR: block the call and hold a connection, or return a handle to a job
-the client polls.
-
-Whichever is chosen, one property is not negotiable: **what a disconnected client has done must
-be knowable.** A clone half-created, a cuboid half-materialised, an ingest half-committed --- each
-must be either completed or absent, never a state that only the disconnected client could have
-described. This is the argument `FR-TIER-08` already makes for the purge journal, applied to a
-network boundary.
-
-### 11a.8 Aggregations the system did not write
-
-[ADR-0010](adr/0010-external-aggregations.md) decides the correctness half: an external
-aggregation is a **contract rather than a function** --- `accumulate`, `merge`, `finish`,
-`state` --- where the presence of `merge` *is* the composability declaration, no `merge` means
-`Rule::None`, what materialises is the **state** rather than the number, and determinism is
-**exercised rather than trusted**.
-
-The runtime half was left open and decided on 2026-08-31: **out of process, behind Arrow IPC.**
-
-The reasoning is the correctness argument applied to blast radius. A user's aggregation is the
-one part of a query this system did not write. In-process it shares an address space with the
-audit chain, with every other tenant's data, and with a runtime whose threads it can stall; a
-panic is a server, and an infinite loop is an outage. A sidecar that panics is a sidecar that
-dies, and the query fails with a typed error naming the aggregation.
-
-That places three obligations on the design, none of them optional:
-
-- **A registered aggregation names its sidecar**, and a query planned against it fails closed
-  when that sidecar is absent --- rather than silently falling back to computing something else.
-- **A sidecar that dies mid-query fails the query.** Partial state is not an answer, and the cube
-  model's whole point is that a materialised cell must be exactly what a full recomputation would
-  have produced.
-- **The determinism exercise runs before the aggregation is trusted**, not on first use in
-  anger --- the same input accumulated in one batch and in several, merged in two groupings,
-  compared by bits.
-
-The contract says nothing about where it runs, which is what keeps the decision reversible: an
-embedded interpreter stays available later, justified by a measurement rather than a preference.
-
-### 11a.9 Cubes as a product surface, including the ones that should not survive
-
-§10a.9 and [ADR-0009](adr/0009-the-cube-lifecycle.md) already give cubes a lifecycle, two of
-whose three lifetimes are built. What a client adds is the **ephemeral** one: a cube declared for a session, used, and gone --- the what-if that
-must not become a fixture.
-
-An ephemeral cube materialises cuboids like any other, and cuboids are storage. **A cube that
-materialises and is never dropped is `RSK-35` in a different costume** --- rehydrated copies
-accumulating into a shadow system of record, each one individually reasonable, with no day on
-which anybody could have decided otherwise. So an ephemeral cube carries a **mandatory expiry**,
-exactly as a rehydration does, and its cuboids are reclaimed by the mechanism that already
-reclaims a dropped cube's.
-
-### 11a.10 Cloning through a client
-
-Zero-copy cloning ([ADR-0016](adr/0016-zero-copy-cloning.md), built in `M10`) is a client-facing
-capability rather than an administrative one: the reason to clone is to *try something* against
-production-sized data without copying it or endangering it, and the person trying something is
-holding an SDK.
-
-Three properties have to survive the wire, and each is one the server already enforces:
-
-- **A clone is a table.** It is queried, described and dropped like any other, and a binding that
-  gives it a separate object type has invented a distinction the server does not make.
-- **Lineage is readable.** *"What did this come from, and as of when?"* is answerable from the
-  client --- origin and version --- because a clone whose provenance is only visible on the server
-  is a table whose numbers nobody can place.
-- **A refusal names what would break.** `may_drop` refuses a drop that would strand a clone and
-  names the clones; that list arrives as **data** (§11a.5), so a client can show *"three clones
-  read this"* rather than parse a sentence.
-
-The thing a client must not do is make cloning look free of consequence. A clone pins the origin's
-files at its version --- maintenance will not retire what a clone still reads --- so an interface
-that creates them freely and never surfaces them is an interface that quietly grows a warehouse.
-Listing a table's dependents is therefore part of the surface, not a diagnostic.
-
-### 11a.11 The surface, concretely
-
-Illustrative rather than normative --- the ADR in `M14` fixes the names. It is here because a
-contract argued only in prose is one where three bindings each imagine a different shape.
-
-```python
-import sankhya
-
-sank = sankhya.connect("sankhya://analytics.internal:9944", token=...)
-
-# Discovery, and an answer that may not fit in memory.
-sank.tables()                                  # -> [Table(...), ...]
-for batch in sank.sql("SELECT ...").batches(): # Arrow, streamed; never collected for you
-    ...
-df = sank.sql("SELECT ... LIMIT 1000").to_pandas()   # opt-in, on a result you decided is small
-
-# Data in.
-sank.ingest("trades", path="2026-08-31.parquet")
-
-# A cube: ephemeral by default, persisted on purpose.
-cube = sank.cube("pnl", fact="trades", dimensions=[...], measures=[
-    sankhya.Measure("balance", rule={"time": "Last", "book": "Sum"}),   # undeclared is refused
-])
-cube.slice(book="EQ").rollup(by="desk").to_arrow()
-cube.persist(target_lag="10 minutes")          # Ephemeral -> Declared -> Maintained
-cube.purge()                                   # Maintained -> Declared: stop paying, keep the model
-
-# An aggregation the system did not write. Runs out of process (§11a.8).
-@sankhya.aggregation(state="f64[2]")
-class Mean:
-    def accumulate(self, acc, values): ...
-    def merge(self, a, b): ...                 # its presence IS the composability declaration
-    def finish(self, acc): ...
-sank.register(Mean)                            # determinism is exercised here, not on first use
-
-# Zero-copy clone.
-clone = sank.clone("trades", as_="trades_experiment")
-clone.lineage()                                # Lineage(origin="trades", version=418, cloned_at=...)
-sank.table("trades").dependents()              # the clones that pin this table's files
-clone.drop()
-```
-
-Every line above is a statement the server authorizes, refuses and audits exactly as it would from
-`psql`. That is the test of the whole section: **remove the SDK and nothing about what the system
-permits changes.**
-
-Each of those lines also ships as a runnable example against a real server, and the gate executes
-them. That is not documentation policy but the same argument as everywhere else here: an example
-nobody runs is a claim nobody checked, and it is read by the person least equipped to notice it
-has gone stale.
-
-### 11a.12 Version skew
-
-An SDK is installed independently of the server it talks to, and the two will differ. This
-project already versions its artefacts (`sankhya-version`, `VERSIONS.md`) precisely so that an
-artefact from a newer release fails with *"upgrade the binary"* rather than somewhere in the
-middle of parsing.
-
-The client contract needs the same property: a mismatch says so, at connection, naming both
-versions --- rather than working for eleven calls and failing on the twelfth because a field was
-added.
-
-### 11a.13 What an SDK must never do
-
-Collected because each is a plausible convenience that costs a property this system has spent
-milestones establishing.
-
-| Never | Because |
-|---|---|
-| Cache an authorization decision | a grant revoked between two calls must take effect on the second |
-| Validate what the server validates | the check moves into one binding and out of the other two (§11a.2) |
-| Retry a non-idempotent operation | a clone or an ingest retried after a timeout is a second one |
-| Materialise a stream to make an API tidy | it turns a working query into a client-side kill (§11a.6) |
-| Reconstruct a refusal from its message text | the message becomes an API nobody meant to publish (§11a.5) |
-| Reach the filesystem the server uses | there is one write path, and a client is not it |
-
----
-
-## 12. Security architecture
-
-### 12.1 The choke point
-
-```
-  request ──▶ authenticate ──▶ Principal + SecurityContext
-                                      │
-                                      ▼
-                            ┌──────────────────────┐
-                            │      CATALOG         │  ← the ONLY path to a table
-                            │  policy rewrite:     │
-                            │   • row filter       │
-                            │   • column mask      │
-                            │   • projection limit │
-                            └──────────┬───────────┘
-                                       │
-                   ┌───────────────────┼───────────────────┐
-                   ▼                   ▼                   ▼
-              SQL engine          graph engine        tiering engine
-```
-
-**It is impossible to reach a table without a security context**, enforced by the type system: the catalog's resolution function takes one and there is no other constructor for a provider. This is principle **P8** — structural prevention rather than procedural care — applied to the highest-consequence path in the system.
-
-Enforcement happens **once, at plan construction**, not separately in three engines. The graph tier resolves through the same catalog, so an unauthorized edge is never materialized for that tenant.
-
-**Defence in depth is mandatory here**: the tenant predicate is injected by an analyzer rule *and* independently asserted by the provider, which fails if it is absent.
-
-### 12.2 Testing security
-
-A **negative test suite** is a first-class deliverable. For every policy fixture it asserts that forbidden rows, columns and edges are absent from results, absent from the physical plan, and absent from graph memory.
-
-**Mutation testing is applied to the policy component.** A surviving mutant means a test that passes for the wrong reason — which, on this component, is a data breach with a green build.
-
-### 12.3 The external-reader boundary
-
-External engines reading the warehouse **bypass row- and column-level enforcement entirely**. This is stated as an architectural limitation rather than obscured, because a security model with an unmentioned hole is worse than one with a documented boundary. §7.3 lists the compensating controls.
-
-### 12.4 Personal data
-
-The primary mechanism is design rather than deletion: **direct identifiers live only in the transactional store**, with surrogate keys downstream. Erasure becomes a transactional delete plus a vault purge, leaving analytical history, time travel and retention entirely untouched. This resolves the immutability conflict outright for most cases and cannot be retrofitted affordably.
-
-Where an identifier must exist downstream, per-subject encryption keys permit cryptographic erasure. Rewriting history is a last resort, is a distinct job class with distinct authorization, checks retention and holds first, and records that history before a given date is no longer reproducible.
-
-> **The ordinary maintenance scheduler is structurally incapable of destroying retained history.** Erasure is not a priority level of expiry; it is a different job class with a different authorization path. Anything less, and a misconfigured retention default eventually deletes records that were legally required to persist.
-
-Because different domains impose *contradictory* obligations — some records must be retained and may not be erased, others must be erased on request, frequently on different columns of the same table — a **per-column retention-and-erasure policy engine is core capability**, not a compliance afterthought. Packs declare retention classes; the core enforces them.
-
----
-
-## 13. Data tiering
-
-### 13.1 What changes when data is purged
-
-Everywhere else the published tier is *derived*: if it is wrong, rebuild it from the source. That safety net is what makes capture defects survivable. Tiering removes it — once a partition is purged, the published copy is the only copy, and any defect in it is permanent and undetectable after the fact.
-
-> **The prime directive.** Data may not be removed from the system of record until its replacement is proven durable, complete, byte-faithful, immutable and covered by the applicable retention obligation. The proof is machine-checked, recorded, and **there is no flag to skip it.**
-
-### 13.2 The trap, and four layers against it
-
-The capture path replicates deletes. An archival purge implemented as a row deletion would propagate and **erase from the published tier exactly the data the purge existed to preserve** — quietly.
-
-| Layer | Mechanism | Property |
-|---|---|---|
-| **Primitive** | Purge is partition detach then drop. Row deletion is never used for archival | The purge *cannot* emit a delete event, because it deletes no rows |
-| **Publication guard** | Tiering-eligible tables exclude delete and truncate from their publication | Even a defective code path cannot propagate a deletion |
-| **Applier tripwire** | The applier holds the archival extent map and treats any delete in an archived range as a **fatal alarm** | Catches a mis-scoped publication or a manually created slot |
-| **Attestation** | A transactional marker committed with the registry change | Provenance and ordering. **Observability, never safety** |
-
-Two candidate mechanisms were evaluated and rejected, and both rejections are recorded because both are plausible:
-
-- **Marker-bracketed suppression**, where deletes are emitted and the applier suppresses them, fails if a marker is lost, reordered, or the applier restarts mid-bracket. **Never make a safety property depend on a message arriving.**
-- **Session-level replication role** does not work at all: it disables triggers and rules and has **no effect on logical decoding**, which reads the write-ahead log directly. The deletes would still be decoded and propagated. It is recorded explicitly so nobody re-proposes it.
-
-### 13.3 Eligibility
-
-A table is tiering-eligible only if it is **append-only by contract** and **range-partitioned on the tiering key**.
-
-There is a convergence worth noting: partitioning is independently required on high-volume time-shaped tables to make retention a metadata operation rather than a bulk delete that generates enormous bloat. **The same schema decision serves both purposes**, both are made at design time, and both are expensive to retrofit.
-
-### 13.4 The gated state machine
-
-```
-Proposed → Frozen → Replicated → Verified → Durable → Sealed
-         → Detaching → Detached → Quarantined → Dropped → Complete
-                     ↘ NeedsAttention  (terminal until an operator acts)
-```
-
-Every transition is committed before the corresponding real-world action; every phase is idempotent and resumable **including within a phase**, so a crash late in a long verification does not restart it.
-
-**Verification is exhaustive, not sampled**: row count, primary-key set equality via a digest over sorted blocks, and per-column checksums over a **canonical byte encoding**. Count equality alone is not evidence. Routine reconciliation may sample; purge verification may not.
-
-The canonical encoding carries a **lossless-or-reject rule**. Types that cannot round-trip faithfully make a table ineligible, checked at policy creation rather than at purge time — discovering at purge time that a column cannot round-trip is discovering it too late.
-
-**Quarantine is mandatory.** The detached partition is retained for a grace period during which re-attachment is trivial. It costs disk for a week and buys reversible recovery from a defect found late; against permanent loss of a retained record, it is the cheapest insurance in the system.
-
-**Verification failure is terminal until a human acts.** There is no automatic retry, because failure means a defect exists and retrying is the wrong response.
-
-### 13.5 Three gates, only one irreversible
-
-| Gate | Effect | Reversible |
-|---|---|---|
-| **Archive** | Copy, verify, tag. Nothing is removed | Fully — a no-op on the source |
-| **Purge** | Detach. Data leaves the live table but remains on disk | Trivially — re-attach |
-| **Drop** | Remove from quarantine | **Never** |
-
-Separating them, and time-delaying the third, is what makes the feature safe to operate.
-
-> **The recommended production configuration is: schedule enabled, stop at Archive, purge performed deliberately by a human a few times a year under dual control.** This delivers continuous automatic proof that the published copy is complete and correct — the valuable half — while keeping the irreversible half rare and considered. A deployment that never advances past Archive still gets most of the benefit at none of the risk.
-
-### 13.6 Structural prevention of accidental purge
-
-The state machine's entry point requires an authorization value whose **only two constructors** are the command path and the schedule evaluator. No maintenance job can synthesize one.
-
-Consequently, enumerating the constructors of that type is a **complete audit of every way data can leave the system of record** — a review procedure that takes seconds and cannot be circumvented by adding a caller.
-
-### 13.7 Cross-tier queries
-
-After a purge, queries spanning hot and archived ranges are unioned automatically. The authority rule eliminates an entire class of drift defects:
-
-> **The source catalog is authoritative for whether data is still hot; the archival registry is authoritative for provenance and the cold side.** Both are read within the same source snapshot used for the hot scan — the registry lives in the same database, so this is free — making hot extent and hot scan consistent with no distributed agreement.
-
-The tie-break rule is **total**: an uncovered range intersecting the predicate fails with a typed error; a range the registry believes cold but the catalog shows attached — a restored backup resurrecting purged rows — is read once from the source, so **there is no double counting even in the failure case**, while the underlying inconsistency is separately flagged.
-
-A subtlety worth recording, because a reviewer will assume the opposite: serving the cold portion of a strongly-consistent read from the published tier does not weaken the guarantee. Archived data is immutable by policy, so nothing can change it, so a snapshot read is equivalent to a linearizable one. There is no consistency traded — only a change of storage.
-
-### 13.8 Corrections and rehydration
-
-Corrections default to a **compensating entry in the hot tier** referencing the original. This is how record-keeping already works: a posted entry is reversed, not erased. It preserves the audit trail completely and requires no rewrite.
-
-Rehydration loads into a schema **excluded from every publication** — structurally incapable of being re-captured as duplicates — is never attached to the live parent, is read-only, and **carries a mandatory expiry**. Without the expiry, rehydrated copies accumulate into a shadow system of record over a multi-year horizon.
-
----
-
-## 14. Runtime architecture
-
-### 14.1 Isolation between the sync path and the query path
-
-These two are natural enemies: both want processor time, memory and I/O. And the failure mode is asymmetric — a stalled applier stops log reclamation, which can take down the source database (**INV-2**).
-
-**Four runtimes, not one.**
-
-| Runtime | Sizing | Purpose | Why isolated |
-|---|---|---|---|
-| **Control** | Small | Supervision, health, election, admin, metrics | Must stay responsive when everything else is saturated, or an orchestrator kills a healthy node |
-| **Capture** | **Reserved cores** | Replication stream, decode, apply | Reservation, not prioritization — priority schemes fail under sustained saturation |
-| **Network** | Proportional | Accept loops, handshakes, framing, object-store I/O | Latency-sensitive, not compute-bound |
-| **Execution** | Remainder | Query execution | Compute-bound; tolerates queuing |
-
-Graph algorithms run on a **separate compute pool**, because they are long-running and non-yielding by nature.
-
-**Memory is four disjoint pools with no lending between them**, capture's allocation never lent out, and maintenance permitted to borrow from execution only inside low-duty windows.
-
-**I/O isolation is physical first, quota second.** The database's write-ahead log, query spill, and cache each live on separate filesystems or devices. A query that fills the spill volume must be incapable of filling the log volume.
-
-**Connection pools are separate and individually capped** for transactional writes, replication, analytical reads and maintenance, with the replication slot reserved and never shared. A runaway analytical workload must be structurally unable to exhaust connection slots and lock out the transactional writer — a real availability vector that is easy to miss.
-
-### 14.2 Backpressure and escalation
-
-A typed pressure bus carries signals from producers to a single, centrally-evaluated escalation ladder. Making the bus explicit — rather than letting each subsystem read others' metrics ad hoc — is what makes the behaviour testable.
+**Pressure escalates through one ladder, evaluated centrally** from a typed signal bus:
 
 | Level | Trigger | Action |
 |---|---|---|
-| **Normal** | — | Full admission; maintenance at normal duty |
-| **Watch** | Lag or compaction debt above warning | Defer optional maintenance; increase batch size |
-| **Constrain** | Lag high, or buffer filling | Reduce admission; suspend re-clustering; lengthen commit interval — freshness still served by the buffer |
-| **Protect** | Retained log or buffer critical | **Stop admitting new queries**; existing queries run to deadline; all resources to the applier; page |
-| **Sacrifice** | Retained log or freeze age near the limit | **Sacrifice the analytical tier to save the source**: advance the slot with a recorded gap marker, mark affected tables for re-snapshot, begin it automatically, report the gap in provenance until closed |
+| Normal | — | Full admission; maintenance at normal duty |
+| Watch | Lag or compaction debt above warning | Defer optional maintenance; increase batch size |
+| Constrain | Lag high, or buffer filling | Reduce admission; suspend re-clustering; lengthen the commit interval — freshness still served by the buffer |
+| Protect | Retained log or buffer critical | **Stop admitting new queries**; existing queries run to deadline; all resources to the applier; page |
+| Sacrifice | Retained log or freeze age near the limit | **Sacrifice the analytical tier to save the source**: advance the slot with a recorded gap marker, mark affected tables for re-snapshot, begin it automatically, and report the gap in provenance until closed |
 
-**Threshold ordering is the important part**: SANKHYA degrades on its own terms **before** the database invalidates the slot unilaterally, because an invalidated slot cannot be resumed and forces a full re-snapshot of every replicated table.
+The first and highest-leverage action is to **lengthen the commit interval**, which attacks the cause
+rather than the symptom — fewer, larger files reduce compaction load, metadata volume and planning
+latency at once. It is safe precisely because the arrival buffer preserves freshness as the commit rate
+falls, and it is bounded by buffer memory, so the two parameters **must be tuned together**: owned by
+different configuration sections they will drift, and the failure will occur under exactly the load that
+triggered the backpressure.
 
-The ordering rule, applied everywhere: **the source outranks the analytical tier, the analytical tier outranks maintenance, and maintenance outranks nothing — except when it is defending the source**, where freeze and log reclamation escalate above queries by design.
+The last rung is the only one that loses continuity, and it is property-tested to be reachable by its two
+source signals and nothing else.
 
-### 14.3 Why the commit interval is the primary lever
-
-Under sustained pressure the first and highest-leverage action is to **lengthen the commit interval**. It attacks the cause rather than the symptom: fewer, larger files reduce compaction load, metadata volume and planning latency simultaneously.
-
-It is safe **precisely because the arrival buffer preserves freshness as the commit rate falls**. The system can slow its writes without becoming stale. That is the payoff of the tiered read path, and it is why the buffer earns its complexity.
-
-The coupling constraint must be respected:
-
-```
-buffer_bytes ≈ write_rate × commit_interval × avg_change_size × safety_factor
-```
-
-The interval cannot grow without bound, because it is bounded by buffer memory. **These two parameters must be tuned together.** If they are owned by different configuration sections they will drift, and the failure will occur under exactly the load that triggered the backpressure.
-
-### 14.4 Failure isolation
-
-Unwinding rather than aborting, with query tasks wrapped so that a fault fails one request rather than the process. Any shared state a fault could have left inconsistent is poison-flagged rather than silently reused.
-
-**Raw task spawning is prohibited by lint.** All spawning goes through a supervisor that registers the task, attaches tracing context, and applies a declared policy per subsystem — restart with backoff for capture and hydration workers, fail-the-request for query tasks, and shutdown for the durability path, where continuing after a fault is worse than stopping.
-
-A crash-loop detector prevents thrashing: after repeated rapid failures a subsystem enters a degraded state and stops retrying, which is more useful than an infinite restart loop that looks healthy from outside.
+**What has to exist first**: something that publishes signals. No memory pool reports its occupancy, no
+subsystem publishes a signal, and no query passes through admission on its way to running. They are
+decision functions without callers — the same state the maintenance scheduler was in before its driver
+was written, which is the encouraging half of the comparison.
 
 ---
 
-## 15. Maintenance architecture
+## 19. The runtime and pool split — **[Designed; one runtime and one pool run]**
 
-One scheduler covers **both** the transactional and the analytical sides. This is not tidiness: both draw from the same machine budget and must be prioritized against each other. A freeze emergency and a compaction backlog cannot be arbitrated by two independent schedulers.
+**Four runtimes, not one**, because the sync path and the query path are natural enemies — both want
+processor time, memory and I/O — and the failure mode is asymmetric: a stalled applier stops log
+reclamation, which can take down the source database.
 
-| Class | Examples | Budget |
+| Runtime | Sizing | Why isolated |
 |---|---|---|
-| **Safety** | Transaction-identifier freeze, slot-lag remediation | **May preempt queries** |
-| **Availability** | Log and disk reclamation, emergency compaction | **May preempt queries**, audited |
-| **Performance** | Compaction, delete merging, statistics | Within duty cycle |
-| **Housekeeping** | Expiry, orphan cleanup, metadata maintenance, partition rotation, tiering | Within duty cycle, windows preferred |
-| **Optional** | Re-clustering, cold view refresh | Windows only; first deferred |
+| Control | Small | Must stay responsive when everything else is saturated, or an orchestrator kills a healthy node |
+| Capture | **Reserved cores** | Reservation, not prioritisation — **priority schemes fail under sustained saturation and reservations do not** |
+| Network | Proportional | Latency-sensitive, not compute-bound |
+| Execution | Remainder | Compute-bound; tolerates queuing |
 
-The preemption exception is deliberate and explicit: **a wraparound emergency or a full volume is worse than a slow query**, and a scheduler that cannot express that will eventually make the wrong call.
+Memory would be four disjoint pools with no lending between them. I/O isolation would be **physical
+first, quota second** — write-ahead log, query spill and cache on separate filesystems or devices, so a
+query that fills the spill volume is *incapable* of filling the log volume. Connection pools would be
+separate and individually capped for transactional writes, replication, analytical reads and maintenance,
+with the replication slot reserved and never shared, so a runaway analytical workload is structurally
+unable to lock out the transactional writer.
 
-Jobs checkpoint at natural granularity and resume; a job that can only run to completion will never complete on a busy system. **Every job is safe to run twice**, and a job killed at any instant leaves no corruption — at worst unreferenced files, which the orphan cleaner reclaims after an age threshold exceeding the maximum possible commit duration.
+> **None of that is built.** There is one bare `#[tokio::main]`, one `FairSpillPool`, one connection cap
+> on one door, and spill in the operating system's temporary directory. §4.
 
-**Maintenance is why a multi-node deployment needs coordination at all.** The query path is genuinely stateless; "who compacts this table" is not answerable without a coordinator. Election runs through the transactional store rather than a bespoke consensus implementation — correct, small, and using infrastructure already present.
-
-**Maintenance quality is the analytical latency budget, not a background nicety.** Small-file accumulation and unmerged deletes are the two leading causes of slowness, and both are produced by the sync path itself. The system therefore contains a structural feedback loop — sync creates the mess, maintenance clears it, queries pay if maintenance falls behind — which is why compaction is a first-class subsystem with its own objectives.
-
-The diagnostic reports **time until a problem becomes user-visible** rather than only its current value, because "compaction debt is large" is far less actionable than "at the current write rate, latency on this table doubles in about nine days."
+**What has to exist first**: a capture path to isolate. Reserved cores for a runtime with nothing to run
+is a partition of the machine in exchange for nothing, so this follows §16 rather than preceding it.
 
 ---
 
-## 16. Consistency model
+## 20. Data tiering and the lifecycle — **[Designed; `sankhya-tiering` is on `UNREACHED`]**
 
-### 16.1 Read modes
+Archival adds a second, orthogonal axis to the same planner, and the symmetry is exact — which is what
+keeps the planner comprehensible as it grows:
 
-| Mode | Semantics | Served from |
+| Axis | Coverage rule | Authority |
 |---|---|---|
-| **Strong** | Linearizable with respect to source commits | The transactional store |
-| **Fresh** *(default)* | Bounded staleness; blocks until lag is within bound, or fails explicitly | Published + arrival buffer |
-| **Snapshot** | A pinned, immutable version — deterministic and replayable | Published only |
+| **Log position** (freshness) | Contiguous, non-overlapping, covering `[0, target]` | Commit metadata and buffer epochs |
+| **Key range** (archival) | Hot and cold extents disjoint, together covering the declared domain | The catalogue for hot; the archival registry for cold |
 
-**Snapshot mode is the mode reproducible outputs must use**, and it is deterministic precisely *because* it excludes the arrival buffer.
+**Three gates, and only one is irreversible.** A purge detaches, quarantines, and only then removes; the
+quarantine is a partition detach rather than a row deletion, which is why the date axis (§7) is
+load-bearing rather than tidy — expiry by row deletion would need a delete path against published data,
+which the immutability argument forbids.
 
-### 16.2 Read-your-own-writes
+**Structural prevention of an accidental purge** is the principle applied at its highest-consequence
+point: where a mistake would be catastrophic, make it impossible to *express* rather than forbidden by
+convention. The scheduler has no erasure class (§8.3), and a table any clone still references is
+**ineligible** for purge with the refusal naming the clones (§11).
 
-A write returns a session token carrying its commit position. Passing that token to a subsequent analytical query sets the target position; the planner selects tiers covering it, and the change is almost certainly in the buffer rather than in a committed snapshot.
+**The attestation drill** is built and runnable and belongs to this section's argument even though it
+serves backups: it proves a write-once store still refuses writes **by trying to break it**, because
+reading a configuration flag would pass in exactly the case it exists to catch — a retention policy that
+still reports `enabled` and no longer applies. [`OPERATIONS.md`](OPERATIONS.md) §11.6.
 
-**The client therefore waits for capture, not for a commit** — a difference of seconds — and receives an answer that is exactly rather than approximately fresh.
+**M9's eleven work items are built and its exit criteria were demonstrated**: purge end to end with
+verification, quarantine and rollback; the anomaly guard halting an intentionally defective policy;
+nineteen refusal paths shown to fail closed. **The gate is not cleared, and that is not a formality.**
+One criterion needs the attestation drill run against a real non-production archive, which cannot be
+produced from development; and a separate decision holds the *arming* of destructive purge. **Building
+the purge path and arming it are two decisions**, and `sankhya-tiering` stays on `UNREACHED` with that
+milestone named against it.
 
-Without this, the very first demonstration anyone attempts — write a row, then query it — shows the row missing, and they will reasonably conclude the system is broken. It is the classic failure of this architecture pattern and it is entirely preventable.
-
-### 16.3 Shutdown ordering
-
-The drain order is a correctness property and is specified normatively:
-
-1. Report not-ready; wait for load balancers to stop sending work. Liveness stays healthy.
-2. Stop accepting new queries; let in-flight queries run to their deadline, then cancel with a typed error.
-3. Stop the capture source, but **finish applying the in-flight batch**. A partial batch is rolled back entirely, never half-committed.
-4. **Persist the applied position strictly after the commit is durable.** This ordering *is* the exactly-once guarantee.
-5. Flush and close writers; release leases.
-6. Drop graph epochs — derived state never blocks shutdown.
-7. Stop the database gracefully; verify exit.
-8. Flush telemetry. An unflushed exporter loses the traces of the incident being debugged.
-
-A second termination signal escalates to abort **and logs exactly what was abandoned**. Termination by force must always be safe; crash consistency is the real requirement.
-
-### 16.4 Snapshot registry and leases
-
-A durable registry maps table versions to commit positions and wall-clock times, and is the **single join point** between the three vocabularies a user might use to say "as of". As-of queries always resolve through it — never by inferring from file modification times, which is a well-known source of subtly wrong answers.
-
-Snapshots held by a running query or a hydrated graph are **leased with a bounded time-to-live**, and expiry refuses to delete files covered by a live lease. The bound is what stops a forgotten session from indefinitely blocking space reclamation.
+Beyond it, one milestone is named and unbuilt: **the data lifecycle policy**, one declaration governing
+how data ages across *both* tiers. The reframe that makes it safe is the one this section has been making
+throughout — **nothing moves.** Capture already published it, so ageing rows out of the transactional
+store is a **release** gated on reconciliation's proof that the analytical copy exists. Detach, never
+delete; reversible for a grace period; and a read of released data **refused by name** rather than
+answered short, which is the failure nearly every product ships.
 
 ---
 
-## 17. Cross-cutting concerns
+## 21. The client contract and the SDKs — **[Partly built; the correction below matters]**
 
-### 17.1 Observability
+> **Correction.** The previous version of this section opened *"Planned, M14. Nothing in this section is
+> built."* That is false, and it was false in a way that undersold the repository: `sdk/python/` exists,
+> with a package, tests, a soak harness and **twelve runnable examples**, each gated the way a test is —
+> by owner directive, because an example that does not run is documentation that lies. `sdk/sql/` carries
+> the SQL-side equivalents. What is not built is the Java and Rust bindings, and federated identity,
+> which is what M14 actually turns on.
 
-Metrics fall into four groups: query behaviour, resource pressure, pipeline health, and maintenance debt. **Four receive paging alerts** — retained log volume, transaction-identifier freeze age, compaction debt, and any archive job awaiting attention — because each precedes a user-visible failure by a predictable interval.
+**The contract is the product; a binding is not.** The temptation with three SDKs is to write the good one
+first and port it, which produces three clients that each decided for themselves what to validate, and the
+divergence surfaces as *"it worked in Python"* — a sentence somebody then has to debug across two languages
+and a wire.
 
-Tracing spans a request from client through planning to storage requests, with spans per stage rather than per operator: per-operator spans on a plan with thousands of batches cost more than the query.
+> **An SDK contains no logic the server does not also enforce.**
 
-**No log line, trace attribute or metric label may contain tenant data.** Query text is data: a normalized plan hash is logged by default, with full text only under explicit policy and routed to the audit store rather than to standard output.
+A client may *anticipate* a refusal to give a better message, and it may never *be* the refusal. If one
+binding rejects a cube whose measure declares no merge rule and another does not, then the rule lives in
+that binding and the server is not enforcing it — and the second binding is a way around a correctness
+rule. This is the same argument §22 makes about packs.
 
-### 17.1a The metric catalogue is the API
+**Two doors, and not a third** (§5.4). **A session, not a permission**: an SDK holds a session and must
+never cache an authorization decision, because a grant revoked between two calls has to take effect on the
+second.
 
-Recording a metric takes the metric's **declaration**, not its name. There is no `counter("some_name")`, so an undeclared metric is not refused at runtime — it cannot be typed. Every exported series therefore carries a documented meaning, a unit, a group and a bound on its cardinality, because those are fields on the thing the call site had to pass.
-
-This is the inversion that matters. The usual arrangement makes a metric a string and documentation a separate, optional artefact, and the predictable result is a dashboard carrying series with no stated meaning, no unit and no owner, which somebody then builds an alert on.
-
-**The prohibition in §17.1 is enforced by the label's type, not by review.** A label declares one of exactly two things:
-
-- a **closed set** of permitted values, where anything else is refused and counted; or
-- a **deployment-scoped identifier** — a table, a tenant — under a **cap**.
-
-There is deliberately no third variant, so a label that varies per row, per query or per user has no way to be declared. Putting a value where a dimension belongs is simultaneously the tenant-data leak and the cardinality explosion, and one construct prevents both.
-
-Past the cap, new series are **refused and counted** rather than created. The choice is between three behaviours and only one is defensible: growing without bound takes the process down; dropping silently makes a dashboard quietly wrong; refusing and reporting makes the metric visibly incomplete. A gap gets noticed and a quiet inaccuracy does not.
-
-**Two properties are checked mechanically, and they are different properties.** That the published catalogue matches the declarations — generated, then regenerated and diffed on every build. And that the declarations match reality: every declared metric must be recorded somewhere in the source, or the catalogue is a wishlist published as documentation. Where the architecture names a metric this build cannot emit, the catalogue **states the gap rather than declaring a gauge that reads zero**, because a permanently-zero gauge is indistinguishable from a healthy subsystem.
-
-**A metric that may page must name a runbook**, and the field is not optional. The interval by which it precedes user-visible failure is recorded alongside it, because that interval is the entire justification for paging: an alert with no lead time fires when the user notices, which makes it a notification.
-
-### 17.1b Every error that reaches a client carries a code and a remediation
-
-The error catalogue drives six behaviours from one classification — retry policy, protocol status, SQL state, log level, metric labelling and alerting — and it is published, generated from the same declarations. Codes are permanent: removing or renumbering one breaks every runbook, alert rule and support script that references it.
-
-**The path a person actually takes has to go through it, and that is the part that gets missed.** A catalogue can be complete, classified and published while the wire path returns the engine's own message with a status guessed from substrings — so the errors a user meets most often are precisely the ones with no code and nothing to look up. Mapping engine failures onto catalogue entries is therefore a structural obligation, matched on the failure's **variant** rather than on its text: substring matching is a mapping that changes silently when a dependency rewords a message, and the symptom is a client that stops retrying something it should retry.
-
-**A refusal is not an error.** A quota held and a permission enforced are the system working; counting them with genuine failures makes a healthy system under load indistinguishable from a broken one, which is how an error-rate alert comes to fire on correct behaviour.
-
-**A statement the system will not honour is refused, never accepted and discarded.** Confirming work that did not occur is worse than failing: it is not an error, not a wrong number, and produces no evidence at all.
-
-### 17.2 Health
-
-Distinct startup, liveness and readiness signals. **Readiness accounts for pipeline lag; liveness does not** — otherwise a lagging pipeline causes an orchestrator to kill a healthy node, converting a degradation into an outage.
-
-A separate status endpoint reports the full version matrix: binary, database, schema, table protocol, policy bundle, pack versions.
-
-### 17.2a The diagnostic reports a time, which forces it to keep a history
-
-`FR-OPS-17` requires the diagnostic to report **time until a problem becomes user-visible** rather than its current value: *"compaction debt is 400 GB"* is far less actionable than *"query latency on this table will double in about nine days"*.
-
-The architectural consequence is the part worth stating, because it is not in the requirement and it is easy to build around: **a time cannot be computed from one sample.** It needs a rate; a rate needs observations separated in time; and observations separated in time need somewhere to live between runs. A diagnostic that computes projections beautifully and keeps no history satisfies the requirement in code and never once in operation, because every run is the first run.
-
-So the diagnostic owns a small, append-only observation history, and three properties of it are deliberate:
-
-- **It is beside the warehouse, not inside it.** The warehouse is the thing being diagnosed, and may be on storage that is full or unwritable — which may itself be the finding.
-- **It is not a table in this system.** A diagnostic that needs a healthy database to report an unhealthy one is decoration. For the same reason `doctor` reads the warehouse directly rather than starting the server.
-- **It is text, and damage is expected.** A process killed mid-append leaves a torn line. That line is skipped and counted, and the count is reported. Refusing to start over a truncated line would remove the tool at the moment somebody reaches for it; hiding the count would let a history quietly losing half its lines still produce confident dates.
-
-**`Unknown` is a first-class outcome.** The diagnostic names what it is missing — too few observations, a poor linear fit, a crossing beyond what the observation window supports — rather than producing a date it cannot justify. This is uncomfortable on a first run and it is the correct discomfort: a projection invented from one sample is a number with a date attached, and a date is precisely what gets believed and scheduled around.
-
-**Findings are ordered by *when*, not by severity.** Severity orders a list by how loudly each item shouts; time orders it by which one must be dealt with first, and those are different orders. A warning that becomes an outage tomorrow outranks an error that has been stable for a month. An operator reading top-down should be reading a schedule.
-
-**"Could not run" is structurally separate from "found nothing", including in the exit status.** Both produce an empty finding list, and they are opposite facts. A monitoring system that treats "I could not look" as "nothing found" reports all-clear for a subsystem nobody examined — which is the specific failure the whole design is arranged against.
-
-See [`GUIDE.md` §10](GUIDE.md#10-the-diagnostic) for the operator-facing behaviour.
-
-### 17.3 Backup and recovery
-
-Three artifacts must agree: the transactional backup, the table snapshots, and the key generation. A backup produces a **manifest binding all three to a consistent point**, verified on restore. Three backups that do not agree with each other are worse than one.
-
-Snapshots referenced by a backup are protected from expiry for its lifetime. **Restore drills are automated and periodic with retained evidence** — an untested backup is a rumour.
-
-### 17.3a There are two positions, and a manifest that records one has recorded the wrong one
-
-`source_restores_to` is where the transactional store lands. `queryable_at` is the highest position at which **every** table is complete — the minimum over their coverage, because a query joining two tables can only be answered where both of them reach.
-
-They are rarely equal. Tables publish at their own cadence, so at any instant some are further behind than others and the transactional store is ahead of all of them. A manifest recording one number and calling it "the consistent point" has recorded whichever of the two its author happened to think of, and the difference between them is not noise: it is **how much re-capture a restore implies** before a cross-table query can reach the source's position.
-
-**The rule enforced when the manifest is built: no table may cover a position past where the source restores to.** If one does, then after a restore the analytical tier holds rows the transactional store no longer has. Capture resumes behind them and republishes that range at different positions, so those rows arrive a second time under different identity — or sit there permanently as data with no origin. It is the shape of `SNK-S0002` one layer up, and it is **not detectable afterwards from either side alone**.
-
-Which is why it is checked at build rather than at restore. A manifest that records an inconsistency has recorded a broken backup as a backup, and the moment to discover that is not the moment you need it.
-
-### 17.3b A drill reads the data back, because presence checks pass on the failures that happen
-
-`FR-OPS-15` is unusually blunt — *"an untested backup is a rumour"* — and the reason the verification must read data rather than list files is that **a file-presence check passes on a truncated Parquet.** It passes on a file whose bytes were replaced with another table's. It passes on essentially every failure that actually occurs, because what goes wrong with a backup is almost never that a file is missing: a missing file is loud, and something notices.
-
-So a drill recomputes the digest recorded at backup time. It is expensive, it runs on a schedule rather than on a request, and it is the only version of this that establishes anything.
-
-**Both sides compute that digest through one implementation.** Two would eventually differ on a null convention, a value rendering or a column order; every drill would then fail on data that is perfectly fine; and after the third false alarm the drills would stop being run. A verification that cries wolf is worse than none, because it consumes the attention that a real failure needs.
-
-**A failure names its kind, because the two need different investigations.** A row count that matches with a different checksum means rows were *altered* — every file present and the right length. A different row count means rows were *lost or duplicated*. One points at a writer that touched a frozen version; the other at retention or a restore.
-
-### 17.3c Evidence that omits failures is not evidence
-
-The drill record is append-only, and a failure is written with the same ceremony as a pass. A history with no failures across three years describes either a very good system or a drill that does not really run, and nothing in the history distinguishes them.
-
-For the same reason, **"could not start" is recorded distinctly from "ran and passed"** — the identical distinction the diagnostic draws between a clean check and one that could not run, and the identical failure if they are merged: a report saying a backup was proven when nothing examined it.
-
-An operator asking *when did we last prove we could restore* is answered with the last **pass**, never the last attempt.
-
-### 17.3d Expiry and removal are separate, and the gap is the point
-
-Deleting a backup does not release the snapshots it protects. A grace period follows, and only then are the files sweepable.
-
-The failure this prevents is specific and unrecoverable: a backup deleted by mistake — by an operator clearing space, by a retention rule, by a script with the wrong argument — its files swept by the next pass, and no way back even if the manifest is restored from somewhere minutes later. `FR-STORE-21` makes the same trade for compaction, only adding files and removing them in a separate later job, and for the same reason. It costs storage that could have been reclaimed sooner and buys a window in which a mistake is still a mistake.
-
-### 17.3e A grace shorter than a drain kills a healthy server on every deploy
-
-Two numbers decide whether a shutdown is orderly, and they live apart: how long the server needs to finish work already in flight, and how long the orchestrator will wait before sending `SIGKILL`. Nothing normally relates them. They are edited by different people, in different files, for different reasons — and when the second is the shorter, every deploy severs connections mid-result and clients see something indistinguishable from a crash.
-
-So the relationship is **checked mechanically**: the drain deadline is read from the source and every deployment manifest's grace is compared against it.
-
-**The drain itself has to be bounded, and it has to exist.** An unbounded drain hangs a shutdown on one stuck client until the orchestrator's patience runs out and kills the process anyway, with the difference that nobody chose the moment. And a shutdown that does not wait at all cannot be given a correct grace, because there is nothing to wait for: it abandons work instantly, which reads as fast and is the failure the grace exists to prevent.
-
-### 17.3f A platform baseline nobody checks is a baseline nobody meets
-
-Bundled database binaries are dynamically linked, so a fully static artifact is not achievable and the alternative is a **declared platform baseline** — the oldest system the artifact runs on, expressed as a maximum symbol version and a set of shared objects.
-
-The declaration is not the interesting part. The check is. A binary built on a current distribution silently acquires symbol-version requirements from it; the symbols are present locally, so it links, runs and tests clean, and the failure appears the first time a customer on an enterprise distribution tries to start it. **Nothing on the build machine can surface this by construction** — the machine is the reason it happens.
-
-Two consequences follow. The check reads what the binary *requires* rather than what the build *intended*. And it fails only on a release build, because a developer's machine cannot satisfy a baseline only the release environment provides, and a check that fails every local build is a check everybody learns to ignore.
-
-### 17.4 Determinism
-
-A deterministic mode fixes the clock, seeds identifier generation, sorts listings and pins reduction order, such that:
-
-> The same scenario run twice produces byte-identical committed metadata and byte-identical query output.
-
-One test, enormous coverage: it detects hash iteration order leaking into results, wall-clock creeping into metadata, unsorted directory listings, and non-deterministic parallel reduction. It is only possible because clock and identifier generation are injected seams, which is why that decision is mandatory rather than stylistic.
+**Identity on the wire is the gating dependency.** Transport security is built on both doors and identity is
+not: a principal is a fixed tenant established at the edge, not something a certificate or token
+establishes. On a loopback that is tolerable and honest — the server has been a local thing. **For a client
+whose entire purpose is connecting from somewhere else it is credential exposure**, which is why M14 is
+gated on transport security rather than treating it as work inside the milestone. An SDK shipped in front of
+it would be a feature whose first use is a mistake. [`SECURITY.md`](SECURITY.md) §6.
 
 ---
 
-## 18. Failure model
+## 22. Extensions and packs — **[Designed; the declarative tier is built and no server loads a bundle]**
 
-| Failure | Behaviour |
+The engine knows about tenants, tables, columns, edges, versions and policies. **It knows nothing about any
+industry**, and that is tested rather than asserted: `cargo xtask check-vocabulary` fails a core crate that
+names a domain concept, and `cargo xtask check-layers` fails a pack that depends outside the allowed set with
+the message *"this failure means the extension API has a gap — widen the API, not the allowance."*
+
+**The extension API is a security boundary**, which is why it defines its own function traits rather than
+re-exporting the query engine's: never let a fast-moving upstream type into a slow-moving contract. A pack
+that could reach the engine directly could reach a table provider without a `Guard`.
+
+Packs get **digest pinning rather than signatures**. An operator pins the digests of bundles they have
+reviewed and anything else is refused — **including everything when nothing is pinned, because a trust policy
+that defaults to trusting is not a policy.** A digest proves the bytes are the bytes you pinned; it proves
+nothing about who wrote them, and calling it a signature would be the overclaim.
+
+**What has to exist first**: the loader. The declarative tier is built and `sankhya-pack` is on `UNREACHED`
+with M4's remainder named against it — the piece that reads a bundle directory into a running process was
+never finished.
+
+---
+
+## 23. Scale-out, and the one honest leak — **[Designed; M12, and it needs a second machine]**
+
+One artifact, one configuration schema, one process per node. The **role is a configuration value, not a
+build variant**: coordinator (exactly one active — the transactional connection, the applier, the maintenance
+scheduler, the catalogue), executor (nothing durable, caches only; any node serves any query), graph
+(hydrated epochs, partitioned by tenant, rebuildable).
+
+> **The honest statement about the single-binary constraint.** There is no configuration in which several
+> nodes share writable state with zero coordination. Either the object store is the coordinator, through
+> atomic conditional writes, or the transactional database is. The constraint is satisfied in **packaging** —
+> one artifact, one configuration file, one process per node — and it cannot be satisfied in **topology**,
+> where a multi-writer cluster has exactly one logical coordinator by definition. SANKHYA's answer is that
+> the coordinator is a *role of the same binary*.
+
+Two independent lines of analysis arrived at that — commit serialisation for the table format, and
+coordination of maintenance jobs — and convergence from unrelated directions is good evidence the conclusion
+is correct.
+
+**Managed mode is single-node**, and that is a documented product boundary rather than a defect: a highly
+available multi-node deployment requires a highly available transactional tier, which means an externally
+managed cluster.
+
+**Ordered scaling limits**, so that the next thing to break is known rather than discovered: a single-node
+warehouse is bounded first by local storage throughput, then by planning latency as commit count grows,
+then by the coordinator's serialisation of commits. The seams designed now and built later are the shard-set
+seam ([ADR-0015](adr/0015-the-shard-set-seam.md) — a table reference resolves beneath exactly one log, so
+resolving it beneath several later is a change to one function) and the object-store backend, whose
+conditional-put requirement is already written down.
+
+**What has to exist first**: a second machine. Leader election, executor scale-out, failover and replication
+are all M12 for that reason, and it is recorded as the reason rather than dressed up as sequencing.
+
+---
+
+## 24. The transactional tier — **[Designed; the supervisor is built and unwired]**
+
+`sankhya-oltp-pg` supervises a stock PostgreSQL cluster as a child process — `initdb`, start, readiness with
+bounded backoff, stop — built and tested against a vendored, checksum-verified 17.11, and **on `UNREACHED`**
+because `Settings` has no transactional-store configuration.
+
+Three failure modes are handled explicitly because each is fatal if missed: **two processes over one data
+directory**, prevented by a directory lock taken before anything else; **an orphaned database process**,
+adopted if live and healthy, restarted if live and unhealthy, cleared if stale — getting this wrong produces
+either corruption or a boot loop; and **a supervisor that dies leaving its child running**, handled by
+parent-death signalling *plus* the boot-time check, because signalling does not survive every termination
+path.
+
+PostgreSQL 17 or later is required, and the reason is one feature: **failover-capable logical replication
+slots.** Without them a routine database failover destroys the slot and forces a full re-snapshot of every
+replicated table — a multi-hour analytical outage triggered by an ordinary availability event.
+
+What SANKHYA changes about a cluster, what it will never do to one, and the settings capture needs — above
+all `max_slot_wal_keep_size`, the setting that stops an analytical query from taking down the transactional
+store — is [`POSTGRES.md`](POSTGRES.md), which marks each item built, applied or designed.
+
+---
+
+## 25. Where these decisions are recorded
+
+| Decision | Record |
 |---|---|
-| Query exceeds memory | Rejected at admission or spilled. **Never** process termination |
-| Runaway query | Cancelled within a bounded time, including inside traversal and sandboxed code |
-| Applier crash mid-batch | Batch rolled back; resume from the last durable position; idempotent replay |
-| Applier stalls | Escalation ladder; source protected even at the cost of analytical continuity |
-| Slot invalidated | Gap marker recorded; automatic re-snapshot; stale data served with explicit provenance |
-| Incompatible schema change | Table quarantined; last consistent version remains queryable; events dead-lettered so the cursor still advances |
-| Storage unavailable | Retryable errors within the deadline; never an unbounded hang |
-| Storage lacks conditional write | Detected at startup; multi-writer mode refused |
-| Compaction interrupted | Resumes from checkpoint; at worst unreferenced files, reclaimed after an age threshold |
-| Compaction conflicts with the applier | Compaction rebases and retries; **the applier never backs off** |
-| Node loss (executor) | Transparent; stateless |
-| Node loss (graph) | Cache miss; rebuild with a published recovery time |
-| Node loss (coordinator) | Election; database failover |
-| Database failover | Slot survives on supported versions; otherwise re-snapshot with a published recovery time |
-| Verification failure during archive | Terminal until an operator acts. **No automatic retry** |
-| Restored backup resurrects purged rows | Hot extent wins; read once, no double counting; inconsistency flagged; unified queries on that table refused until resolved |
-| Pack fault | Contained by the sandbox tier; a compiled pack is core code and has no isolation, which is why the tier exists |
+| The exact-pinned dependency family | [ADR-0001](adr/0001-dependency-pin-set.md) |
+| A cryptographic hash for the audit chain | [ADR-0003](adr/0003-cryptographic-hash-for-audit.md) |
+| The date axis | [ADR-0004](adr/0004-the-date-axis.md) |
+| Array columns and numeric kernels | [ADR-0005](adr/0005-array-columns-and-numeric-kernels.md) |
+| Flight SQL as the bulk data plane | [ADR-0006](adr/0006-flight-sql.md) |
+| The cube model | [ADR-0007](adr/0007-the-cube-model.md) |
+| Serving cubes under policy | [ADR-0008](adr/0008-serving-cubes-under-policy.md) |
+| The cube lifecycle | [ADR-0009](adr/0009-the-cube-lifecycle.md) |
+| External aggregations | [ADR-0010](adr/0010-external-aggregations.md) |
+| Atomic publication, and claim-fails-rather-than-replaces | [ADR-0013](adr/0013-concurrency-and-data-safety.md) |
+| Materialized views and the cube lifetime | [ADR-0014](adr/0014-materialized-views-and-the-cube-lifetime.md) |
+| A table reference resolves beneath exactly one log | [ADR-0015](adr/0015-the-shard-set-seam.md) |
+| Zero-copy cloning | [ADR-0016](adr/0016-zero-copy-cloning.md) |
+| The client contract, and what an SDK may not contain | [ADR-0017](adr/0017-the-client-contract.md) |
+| A record that does not fit | [ADR-0018](adr/0018-a-record-that-does-not-fit.md) |
+| Named snapshots | [ADR-0019](adr/0019-named-snapshots.md) |
+| The built-in function catalogue | [ADR-0020](adr/0020-the-built-in-function-catalogue.md) |
+| Vectors and matrices across the tiers | [ADR-0021](adr/0021-vectors-matrices-across-the-tiers.md) |
+| User-defined functions | [ADR-0022](adr/0022-user-defined-functions.md) |
+| The sandbox a user function runs in | [ADR-0023](adr/0023-the-sandbox-a-user-function-runs-in.md) |
+| What a difference between two versions is | [ADR-0024](adr/0024-what-a-difference-between-two-versions-is.md) |
 
 ---
 
-## 19. Scale and evolution
+## 26. Open architectural questions
 
-### 19.1 Ordered scaling limits
+Recorded rather than resolved, because a design document that presents every question as answered is one
+whose author stopped asking.
 
-Executors scale out over shared storage, so scan throughput is not the first wall. In order:
-
-1. **Metadata and planning.** Cost grows with file count. Mitigated by compaction, which reduces it *quadratically* — fewer files makes each checkpoint smaller and permits checkpointing less often — and by commit cadence scaled to volume.
-2. **The single-writer commit path.** One applier commits one version at a time per table. Absorbed by lengthening the commit interval, which the arrival buffer makes safe. Beyond that, partition the applier by table. **This was also what kept the non-atomic version claim latent** — one writer per table cannot race itself — which is why [ADR-0013](adr/0013-concurrency-and-data-safety.md) treats an assumption that is load-bearing for correctness as something to remove rather than to document.
-3. **Maintenance throughput.** Compaction of a very large warehouse may exceed one coordinator's duty cycle, forcing a maintenance-worker role. This is the most likely place the architecture must change first.
-4. **Local cache capacity** relative to the working set.
-5. **Single-node query capacity** for queries that cannot be pruned.
-6. **Graph memory** per tenant.
-
-### 19.2 Seams to design now, build later
-
-Two were recorded as near-zero cost today and expensive retrofits. **Neither is a seam any longer, and they stopped being one for opposite reasons** — one was promoted to a criterion, the other turned out not to be a seam at all.
-
-- **Keep the commit path per-table**, never globally serialized, so the applier can be partitioned without restructuring. **Promoted from a seam to an M8 exit criterion** by [ADR-0013](adr/0013-concurrency-and-data-safety.md): the cheapest way to satisfy every safety requirement is one lock over the warehouse, and this is the criterion that forbids it. Met 2026-08-29.
-- **Allow a table reference to resolve to a shard set**, so a hot table can be split behind one logical name. **Mislabelled**, and [ADR-0015](adr/0015-the-shard-set-seam.md) says why. Resolution has never been single-valued: `plan_splice` resolves one reference to several sources and proves they cover the span exactly once, and `AddFile.partition` records every file's partition values, so shards as file groups beneath one log are built. Shards as *independently committed logs* is the expensive reading; its cost is a cross-shard commit protocol rather than anything in the resolution layer, and it is **refused rather than deferred** because §19.3's preferred distribution path partitions execution over file groups and never asks the catalog for N logs. **No code change was required to keep the option open**, because no code was holding it open.
-
-Three are legitimate future work and are named so they are not promised prematurely: replicating the arrival buffer to executors, distributed query execution, and a distributed graph with cross-shard traversal — the last being the hardest and the most likely to require a redesign rather than an extension.
-
-### 19.3 Distribution
-
-Single-node execution with query routing, with an explicit ceiling: the largest single query is bounded by one node's memory and cores. Distribution is introduced only when a *measured* workload exceeds it, and the preferred path expresses distribution as exchange operators inside otherwise-normal plans, preserving the single-node code path.
-
-The trade-off, stated plainly: scale-up gives lower latency, far simpler failure semantics, simpler memory accounting and simpler security, and costs the ability to run one query larger than one node. Scale-out inverts every one of those.
+1. **Whether a table may have two partitioned time axes.** The current answer is that a business date and an
+   arrival date are one partition key and one ordinary column. If that stops being enough, the declaration
+   becomes a list rather than a column — a schema change to the declaration rather than to the tables (§7).
+2. **What replaces `Quota` when there is more than one tenant.** The type is tenant-keyed and the deployment
+   has one tenant fixed at startup, so the model has never met the case it was designed for (§4.3).
+3. **Whether the result cache is worth building at all**, given that its key is the hard part and is already
+   built, and that the pinned-snapshot mode is the only one where caching pays (§6.6).
+4. **How the exactness gate reaches a session.** `check_exactness` is a function with no caller: nothing
+   carries a session's exactness setting and nothing attaches the watermark to a result.
+5. **Whether bounded-memory exact order statistics are achievable at the required sizes**, or whether the
+   requirement should be split into *exact* and *bounded* and answered separately (§6.5).
+6. **Whether the overflow bound should be widened past 64 bits**, which is the only thing standing between
+   the analytical tier and a silent wrong number on a wide decimal (§13.3).
 
 ---
 
-## 20. Decision index
-
-| ID | Decision | Where |
-|---|---|---|
-| `DEC-01` | Native in-process capture; no broker, no external framework | §6.1 |
-| `DEC-02` | Embedded means a supervised child process; attached is first-class | §3.3, §3.4 |
-| `DEC-03` | Three roles of one binary | §3.2 |
-| `DEC-04` | Domain-agnostic core; domains are packs | §11 |
-| `DEC-05` | Multi-relational, temporal graph model | §10.1 |
-| `DEC-06` | Own the table provider; storage libraries supply metadata only | §7.5 |
-| `DEC-07` | Append-only landing; merge on read; bulk compaction | §6.3 |
-| `DEC-08` | Two published surfaces, two freshness contracts | §6.4 |
-| `DEC-09` | Freshness is a read-path property | §5 |
-| `DEC-10` | One writable format day one, behind a seam | §7.4 |
-| `DEC-11` | Warehouse layout mirrors operational naming | §7.1, §9.9 |
-| `DEC-12` | Analytical correctness rules enforced by the planner | §8.3 |
-| `DEC-13` | Time-respecting traversal is a core primitive | §10.1 |
-| `DEC-14` | Single-node execution with routing; distribution deferred | §19.3 |
-| `DEC-15` | Tiering is explicit and gated | §13 |
-| `DEC-16` | Sandboxed by default; native dynamic extensions rejected | §11.4 |
-| `DEC-17` | The extension API defines its own traits | §11.1 |
-| `DEC-18` | Domain-neutral public benchmarks are primary | Requirements §6 |
-| `DEC-19` | File-length limit, enforceable form | Requirements §4 |
-| `DEC-20` | Coverage and data-loss claims become measured quantities | §17.4, Requirements §6.6 |
-| `DEC-21` | Personal data designed out of the analytical tier | §12.4 |
-| `DEC-22` | Two named safety invariants | §2.2 |
-| `DEC-23` | Purge by partition detach, never row deletion | §13.2 |
-| `DEC-24` | After purge, the published tier is the system of record | §13.1 |
-| `DEC-25` | Cross-tier queries unified with a total tie-break rule | §13.7 |
-| `DEC-26` | Two declared table classes: managed and external | §5.6 |
-| `DEC-27` | A table's class is declared in its own log; absence means external | §5.6.3 |
-| `DEC-28` | A strongly-consistent read of an external table is refused, never degraded | §5.6.3, §5.7.2 |
-| `DEC-29` | The tier is never part of a table's name; freshness is a request mode | §5.7.3 |
-| `DEC-30` | Open to read, tooled to write: external publication goes through this system's library | §5.6.6 |
-| `DEC-31` | A table's log is verifiable, and verification is separate from reading | §5.6.7 |
-| `DEC-32` | Repair derives, never guesses; it never deletes and only appends | §5.6.8 |
-| `DEC-33` | One date axis on every table: `sank_data_date`, of type `DATE` | [ADR-0004](adr/0004-the-date-axis.md) |
-| `DEC-34` | The date is declared per table, never defaulted per row | [ADR-0004](adr/0004-the-date-axis.md) |
-| `DEC-35` | Array columns as `FixedSizeList`; kernels in-house because they must be deterministic | [ADR-0005](adr/0005-array-columns-and-numeric-kernels.md) |
-| `DEC-36` | The diagnostic keeps its own observation history, outside the system it diagnoses | §17.2a |
-| `DEC-37` | A projection is refused by name rather than invented; `Unknown` is an outcome, not an error | §17.2a |
-| `DEC-38` | Findings sort by when they bite, not by severity | §17.2a |
-| `DEC-39` | "Could not run" is separate from "found nothing", down to the exit status | §17.2a |
-| `DEC-40` | A metric is recorded by passing its declaration, so an undeclared metric is unrepresentable | §17.1a |
-| `DEC-41` | A label is a closed value set or a capped identifier, and nothing else; the tenant-data prohibition is a type, not a review item | §17.1a |
-| `DEC-42` | Over a cardinality cap, series are refused and counted — incomplete and visibly so | §17.1a |
-| `DEC-43` | Catalogues are generated into documentation, and every declared metric must also be recorded somewhere | §17.1a |
-| `DEC-44` | Every error that reaches a client carries a permanent code and the catalogue's remediation | §17.1b |
-| `DEC-45` | Engine failures are classified by variant, never by matching on message text | §17.1b |
-| `DEC-46` | A refusal is counted separately from an error | §17.1b |
-| `DEC-47` | A statement the system will not honour is refused, never confirmed and discarded | §17.1b |
-| `DEC-48` | A backup binds two positions — where the source lands and where every table is complete | §17.3a |
-| `DEC-49` | A manifest whose analytical tier is ahead of its source is refused at build, not flagged at restore | §17.3a |
-| `DEC-50` | A drill reads data back and recomputes the digest; both sides use one implementation | §17.3b |
-| `DEC-51` | Drill evidence is append-only, keeps failures, and separates "could not run" from "passed" | §17.3c |
-| `DEC-52` | A backup is expired, then removed after a grace period | §17.3d |
-| `DEC-53` | Shutdown drains in-flight connections, and the drain is bounded | §17.3e |
-| `DEC-54` | Every manifest's termination grace is checked against the drain deadline | §17.3e |
-| `DEC-55` | The platform baseline is declared and the binary is checked against it, failing only on a release build | §17.3f |
-| `DEC-56` | An undeclared measure is a definition error, never defaulted to summation | §10a.2 |
-| `DEC-57` | Everything that qualifies a number is a column on the row, not metadata beside it | §10a.5 |
-| `DEC-58` | A cuboid is keyed by definition version, snapshot, scope and cuboid; two scopes are two tables | §10a.8 |
-| `DEC-59` | A cube's definition version is derived from its content, never declared | §10a.8 |
-| `DEC-60` | Clone lifetime is decided by reachability over the clone family, not by reference counting | [ADR-0016](adr/0016-zero-copy-cloning.md) |
-| `DEC-61` | A client binding contains no logic the server does not also enforce | §11a.2 |
-| `DEC-62` | Two doors — Flight SQL and the wire protocol; no REST/JSON surface | §11a.3 |
-| `DEC-63` | External aggregations run out of process, behind Arrow IPC | §11a.8, [ADR-0010](adr/0010-external-aggregations.md) |
-| `DEC-64` | An ephemeral cube carries a mandatory expiry | §11a.9 |
-| `DEC-65` | A long operation is a commit, not a job handle; a disconnected client asks the warehouse | [ADR-0017](adr/0017-the-client-contract.md) |
-| `DEC-66` | A refusal crosses the wire as data — code, SQLSTATE, remediation and the names it cites | §11a.5 |
-| `DEC-67` | The Python binding is pure Python; if a thin client's language matters, it is not thin enough | [ADR-0017](adr/0017-the-client-contract.md) |
-| `DEC-68` | Examples are gated artefacts, executed against a real server | §11a.11 |
-
----
-
-## 21. Open architectural questions
-
-Recorded because a design document that presents only settled decisions is not reviewable.
-
-| # | Question | Blocks | Owner |
-|---|---|---|---|
-| ~~1~~ | ~~Is the arrival buffer cleanly retrofittable behind the read-path planner interface?~~ **Answered: yes.** The tier was built against the existing `TierRef`/`plan_splice` interface with no change to the planner, and the two tiers are shown to splice. The retrofit question is closed; §5.4.1 records what governs the tier instead | — | — |
-| 2 | Capacity model and scaling roadmap for warehouses in the hundreds of terabytes: node sizing per size tier, metadata footprint, compaction throughput required, and whether maintenance must scale out | Capacity documentation; possibly node roles | Architect and query specialist |
-| 3 | Whether managed cloud database offerings preserve replication slots across failover | Any availability commitment in attached mode on managed cloud databases | Database specialist |
-| 4 | Whether the alternative format's library pushes down decimal predicates and surfaces distinct-value statistics | Whether that format is viable at all as a second implementation | Database specialist |
-| 5 | Whether liquid-style incremental clustering can be written by the chosen library | The strongest argument for the day-one format evaporates if not | Database specialist |
-| 6 | Whether the read path needs a dedicated metadata index at very large file counts | Query planning latency at scale | Query specialist |
-
----
-
-*This document is maintained under version control. Architectural changes require a decision record and a corresponding requirements amendment.*
+<p align="center"><sub>SANKHYA — to count is to make completely known.</sub></p>

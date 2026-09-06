@@ -55,3 +55,7 @@ lcov.info
 __pycache__/
 *.pyc
 config/application.local.*
+
+# Criterion writes its reports into target/, which is already ignored; this is for a
+# stray run from another directory.
+/criterion/

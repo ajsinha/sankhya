@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2802 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2807 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -1255,15 +1255,28 @@ this server was colouring output that normally goes to a file, to journald, or t
 `\x1b[3mfeed\x1b[0m\x1b[2m=\x1b[0mpostings`. Colour is now conditional on stderr actually
 being a terminal.
 
-**One thing this phase's own gate turned up.** The concurrency check's quiet-machine guard
-reads CPU idle from `/proc/stat` over two hundred milliseconds, and the measurement it guards
---- commits per second --- is bound by the **disk**. At the end of a `check-all` run, with a
-hundred and twenty-five gigabytes of build output still flushing, the cores were idle, the
-window opened, and the scaling assertion failed describing the machine rather than the code.
-The same check passed immediately afterwards. It is recorded in `sankhya-testkit` beside the
-sampling rather than fixed: reading free I/O capacity portably is a larger thing than reading
-`/proc/stat`, and a guard that is right about the common case is worth more than one that does
-not exist. If it recurs, that is the reason.
+**One thing this phase's own gate turned up, and then turned up again.** The concurrency
+check's quiet-machine guard reads CPU idle from `/proc/stat`, and the measurement it guards ---
+commits per second --- is bound by the **disk**. At the end of a `check-all` run, with the build
+output still flushing, the cores were idle, the window opened, and the scaling assertion failed
+describing the machine rather than the code. It was recorded rather than fixed, on the argument
+that a guard right about the common case beats one that does not exist.
+
+It happened a second time, on the next full run, which settles the argument.
+
+**The reason it was invisible is worth stating, because `iowait` was already being counted as
+busy.** `/proc/stat` attributes `iowait` only when a CPU is idle *and has a pending I/O of its
+own*. A machine that has just finished a large build has nothing runnable — the compiler has
+exited — while kernel flush threads write gigabytes of dirty pages. That work belongs to no
+CPU's idle accounting, so the machine reads as genuinely, correctly idle while its disk is
+saturated.
+
+So the guard now reads the condition itself rather than a proxy for it: `Dirty` plus
+`Writeback` from `/proc/meminfo`, which is a few megabytes on a quiet machine and several
+gigabytes while a build drains. Past a generous ceiling the measurement **skips loudly** rather
+than failing — which is what a measurement that cannot be taken should do, and is the
+distinction the whole `SKIPPED` mechanism exists for. A platform that cannot be asked is still
+not a reason to skip.
 
 **Phase 5 is complete except for `OPS-21`'s remaining half and `OPS-23`.** Checkpoints are
 written (5.6) and the double log replay is gone (5.6), but `OPS-22`'s per-column HyperLogLog
@@ -1400,7 +1413,81 @@ how `part5/26-roadmap.md` still called M13 complete. An absent header in the boo
 failure, all twenty-nine chapters carry the canonical line, and both false claims are corrected
 with the reason they survived recorded beside them.
 
-**Still open in Phase 6:** 6.4 through 6.8.
+**6.4 The price of determinism was stated nowhere (`PERF-07`).** Everything the reduction
+decision published was a ratio against **this project's own previous code**, so a reader came
+away believing the kernels had become fast. They had become faster than they were.
+
+Measured against an ordinary `iter().sum()` — the thing a reader would have written, and what
+every other engine does — the guarantee costs **57× at eight values, 35× at 64, 10.7× at 512 and
+12.2× at 4,096**. The narrow case is the expensive one and narrow is the common one here: a
+window of readings, a term structure, a short curve. `exact_sum` accumulates into an `i128`,
+which cannot be autovectorised, and walks the values more than once, so at eight values the
+fixed overhead is the whole cost.
+
+The trade is defensible — a warehouse whose totals move when the machine is busier is not one
+anybody can reconcile against — but only with the price on the page beside it, which is what
+`ADR-0020` now carries. An independent audit reconstructing this measured 32× at width 8 and 6×
+at 4,096; these figures are from a different machine and build and are **worse at both ends**.
+They are published as measured rather than reconciled to the friendlier number.
+
+**6.6 A protocol declaration that was parsed and thrown away (`FMT-02`).** `Action::Protocol`
+was read out of the log and discarded — the replay's arm was `Action::Protocol { .. } => {}` —
+and no comparison against a ceiling existed anywhere in the workspace.
+
+That is not a missing feature, it is a wrong answer. **Reader version 2 is column mapping**, so
+physical column names no longer match logical ones and a reader ignoring the mapping returns
+**every column as null**. **Version 3 brings deletion vectors**, so a deleted row stays in its
+file with a vector beside it recording the deletion, and a reader ignoring the vector serves the
+file whole and **returns deleted rows as live**. A table another engine had upgraded was read
+anyway, with this reader understanding only the parts of it that happen to look like version 1.
+
+The protocol's entire purpose is that a writer declares what a reader must understand. A reader
+that ignores the declaration has made the declaration pointless, and `FR-OPS-12` already states
+the rule for the write side: refuse a table whose protocol this build does not fully support,
+and report degradation rather than silently misreading. This is the read half. The ceiling is
+checked in `read_actions_after` — the one place every reader passes through — because a ceiling
+enforced in some readers and not others is a table that is refused by a query and served by a
+compaction.
+
+**The rest of the `FMT` family is not closed.** Checkpoints still write `partitionColumns`,
+`configuration` and `partitionValues` empty (`FMT-03`); an unknown action variant still ends a
+table, which is the same defect inverted — fatal on a benign unknown action, silent on a
+semantics-changing unknown field (`FMT-04`); aggregation documents are still read by substring
+scan over the whole file, including the author's own source (`FMT-05`); feed positions still
+parse "never run" from any JSON object (`FMT-06`); and `deny_unknown_fields` appears nowhere
+(`FMT-07`).
+
+**6.5 A refusal that was lifted, and the eight places nobody told (`FEA-05`).** QR, SVD and
+eigendecomposition ship. `crates/sankhya-math/src/decompose.rs` implements them by Jacobi
+rotation on symmetric input, refusing a non-symmetric matrix rather than symmetrising it, and
+they are registered as six SQL functions. Eight documents and two module comments said they were
+**deliberately absent**, with the reasoning — a subtly wrong SVD produces plausible singular
+values, which is worse than none — stated each time.
+
+The reasoning was right when written. The decision changed for a defensible reason. What did not
+happen is the retraction, and one of the comments sat three lines above the module declaring the
+code.
+
+**This is the worst class of claim in the repository, and it is worth saying why.** A reader
+checks a capability; they do not check a refusal. A refusal is the one statement a reader is
+entitled to treat as permanent — it is why `docs/book/part1/04-what-it-is-not.md` was the most
+credibility-earning document in the set before it was folded into `STATUS.md`. Reversing one
+silently spends exactly the credit that document earned.
+
+Corrected in all of them, each as a marked retraction rather than a silent edit, and each
+carrying the thing that *is* still true: the decomposition family is order-fixed and
+reproducible run to run and is **not compensated** — it does not route through
+`deterministic_sum`, and it is the family a risk calculation uses. That distinction was
+documented as one property until a reviewer read the code.
+
+**The rest of `FEA` is not closed and is now stated in one place rather than fourteen.** There
+is no write path from SQL; there is no change-capture runtime, so the CDC crate carries no
+client dependency and cannot open a connection; the graph is registered against a freshly
+constructed empty catalogue on every session and can never answer; the pack loader is not wired,
+and the two "flagship packs" the README described never existed — `packs/` holds telemetry,
+logistics and an adversarial fixture. Cube hierarchies are validated and ignored.
+
+**Still open in Phase 6:** the rest of 6.6, 6.7 and 6.8.
 
 ---
 

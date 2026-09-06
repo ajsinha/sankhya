@@ -33,9 +33,24 @@
 //! plausible number, and a plausible wrong number is the most expensive thing a numerical
 //! library can return.
 //!
-//! It also declines whole disciplines rather than doing them badly. There is no QR, no SVD
-//! and no eigendecomposition: those are where a specialist library genuinely earns its
-//! dependency, and a subtly wrong SVD produces plausible singular values.
+//! # A refusal that was lifted, and the eight places that were not told
+//!
+//! This paragraph read: *"It also declines whole disciplines rather than doing them badly.
+//! There is no QR, no SVD and no eigendecomposition."* That was true, and the reasoning was
+//! good --- a subtly wrong SVD produces plausible singular values, which is worse than none.
+//!
+//! [`decompose`] implements them now, by Jacobi rotation on symmetric input, refusing a
+//! non-symmetric matrix rather than symmetrising it. The decision changed for a defensible
+//! reason. What did not happen is the retraction: the refusal went on being stated in eight
+//! documents and in this comment, three lines above the module declaring the code.
+//!
+//! `FEA-05`, and it is worth naming the class. **A stated refusal that is silently reversed
+//! is the worst kind of claim here**, because a refusal is the one thing a reader may treat
+//! as permanent --- everything else they will check.
+//!
+//! What still holds, and is the reason to read [`reduce`] before using these: the
+//! decomposition family accumulates in a fixed order and is reproducible run to run, and it
+//! is **not compensated**. It does not route through [`deterministic_sum`].
 //!
 //! # A limitation worth stating
 //!
