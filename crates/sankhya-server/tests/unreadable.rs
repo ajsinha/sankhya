@@ -1,4 +1,4 @@
-//! What the system says when it could not look.
+//! What the system says when it could not look, and what it looks at at all.
 //!
 //! `OPS-12`. Fourteen places read a directory with `let Ok(entries) = read_dir(x) else {
 //! return empty }`, which answers "there is nothing here" to the question "what is here?"
@@ -129,5 +129,64 @@ fn a_server_started_on_an_unreadable_warehouse_does_not_serve_an_empty_catalogue
     assert!(
         printed.contains("Could not run:"),
         "a warehouse that holds a table and cannot be read must not read as empty: {printed}"
+    );
+}
+
+#[test]
+fn the_doctor_actually_looks_at_whether_the_disk_is_filling() {
+    // `OPS-26`. `check::storage_headroom` was written, tested, exported --- and called by
+    // nothing. So `doctor` would never warn about a filling disk, whatever the disk did, and
+    // the hourly cron the documentation recommends would stay green until the write path
+    // stopped. `collect::record` existed precisely so the caller that can measure free space
+    // would pass it in; nothing ever did.
+    let dir = tempfile::tempdir().expect("a directory");
+    let warehouse = dir.path().join("warehouse");
+    write_warehouse(&warehouse);
+    let data = dir.path().join("data");
+
+    let run = Command::new(env!("CARGO_BIN_EXE_sankhya-server"))
+        .arg("doctor")
+        .env("SANKHYA_WAREHOUSE", &warehouse)
+        .env("SANKHYA_DATA_DIR", &data)
+        .env_remove("SANKHYA_CONFIG")
+        .output()
+        .expect("the server binary runs");
+    let printed = format!(
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    // The measurement reached the history, which is the thing that was never happening. A
+    // projection needs more than one sample, so a single run cannot produce a *finding* ---
+    // but it must produce the sample the second run projects from, and it never did.
+    let history = std::fs::read_to_string(data.join("diagnostic-history.tsv"))
+        .expect("the diagnostic writes a history");
+    assert!(
+        history.contains("storage-headroom"),
+        "a doctor run must record free space, or nothing will ever project when it runs \
+         out: {history}\n{printed}"
+    );
+
+    // And a second run has two samples, so the check is genuinely being evaluated rather
+    // than recorded and ignored.
+    let again = Command::new(env!("CARGO_BIN_EXE_sankhya-server"))
+        .arg("doctor")
+        .env("SANKHYA_WAREHOUSE", &warehouse)
+        .env("SANKHYA_DATA_DIR", &data)
+        .env_remove("SANKHYA_CONFIG")
+        .output()
+        .expect("the server binary runs");
+    assert_ne!(
+        again.status.code(),
+        Some(2),
+        "the headroom check must run rather than report that it could not: {}",
+        String::from_utf8_lossy(&again.stdout)
+    );
+    let history = std::fs::read_to_string(data.join("diagnostic-history.tsv"))
+        .expect("the diagnostic writes a history");
+    assert!(
+        history.matches("storage-headroom").count() >= 2,
+        "each run records its own sample: {history}"
     );
 }

@@ -6398,6 +6398,24 @@ CATALOGUE = [
      "        match path.try_exists().map_err(|_| ()).or(Ok::<bool, ()>(false)) {\n            Ok(true) => {}\n            Ok(false) => break,",
      "sankhya-table-delta", 1, "log"),
 
+    # --- Phase 5.5: a diagnostic that looks, and a catalogue that tells the truth ------------------
+
+    # `OPS-26`. `check::storage_headroom` was written, tested, exported --- and called by
+    # nothing, so `doctor` could never warn about a filling disk however full it got.
+    ("server: let the doctor stop measuring free space, as it never did",
+     "crates/sankhya-server/src/doctor.rs",
+     "    match free_bytes(data_dir) {\n        Some(free) => {",
+     "    match Option::<f64>::None {\n        Some(free) => {",
+     "sankhya-server", 1, "unreadable"),
+
+    # The remediation on the only alert that can page named `sankhya maintenance compact`,
+    # and there is no `sankhya` binary.
+    ("diagnostic: name a binary this build does not ship as the remediation",
+     "crates/sankhya-diagnostic/src/check.rs",
+     "            \"Raise the maintenance duty cycle: lower `maintenance.compact_every` (or \\",
+     "            \"Compact it: `sankhya maintenance compact --table {table}`. Or \\",
+     "sankhya-diagnostic", 1, "check"),
+
 ]
 
 

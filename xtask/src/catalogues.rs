@@ -312,13 +312,7 @@ pub fn errors_markdown() -> String {
     let mut out = generated_header("crates/sankhya-error/src/lib.rs");
     out.push_str("# SANKHYA — Error catalogue\n\n");
     out.push_str(
-        "Every error code this system can produce, with what to do about it.\n\n**Codes are \
-         permanent.** Removing or renumbering one breaks every runbook, alert rule and \
-         support script that references it, so this catalogue only ever grows.\n\nThe class \
-         is the load-bearing part: one classification drives retry policy, protocol status, \
-         SQL state, log level, metric labelling and alerting. Without it each call site \
-         decides independently, and the decisions drift until an operator cannot tell from a \
-         log line whether to wake somebody.\n\n",
+        "Every error code this build defines, with what to do about it. Twelve of them are marked **not produced by this build**, and that marking is checked: `cargo xtask check-catalogues` fails when a code nothing constructs is not declared, and fails again when a declared one starts being produced and the note is left behind. An alert rule written from an undeclared code will fire; one written from a declared code will not, and now says so.\n\n**Codes are permanent.** Removing or renumbering one breaks every runbook, alert rule and support script that references it, so this catalogue only ever grows.\n\nThe class is the load-bearing part: one classification drives retry policy, protocol status, SQL state, log level, metric labelling and alerting. Without it each call site decides independently, and the decisions drift until an operator cannot tell from a log line whether to wake somebody.\n\n",
     );
 
     let mut by_class: Vec<(&str, &str, Vec<Error>)> = vec![
@@ -383,6 +377,14 @@ pub fn errors_markdown() -> String {
             if let Class::Retryable { after: Some(delay) } = error.class() {
                 let _ = writeln!(out, "*Retry after {} ms.*\n", delay.as_millis());
             }
+            if let Some((_, why)) =
+                UNREACHABLE.iter().find(|(code, _)| *code == error.code().as_str())
+            {
+                let _ = writeln!(
+                    out,
+                    "**Not produced by this build.** {why}. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.\n"
+                );
+            }
             if error.class().is_pageable() {
                 let _ = writeln!(
                     out,
@@ -437,6 +439,7 @@ pub fn check(root: &Path) -> bool {
     ok &= up_to_date(root, PLATFORMS_DOC, &platforms_markdown());
     ok &= up_to_date(root, VERSIONS_DOC, &versions_markdown());
     ok &= every_metric_is_recorded(root);
+    ok &= every_code_is_reachable_or_declared(root);
     ok &= every_pageable_thing_has_a_runbook(root);
 
     if ok {
@@ -474,6 +477,111 @@ fn up_to_date(root: &Path, relative: &str, expected: &str) -> bool {
 /// The identifier is derived from the metric's name by the convention the catalogue keeps,
 /// and `sankhya-metrics` has a test asserting the derivation holds --- so this check cannot
 /// quietly start passing because a name stopped matching its constant.
+/// Codes this build cannot yet produce, with why and what will change it.
+///
+/// # Why a list rather than deleting them
+///
+/// `OPS-25`. Twelve of twenty-one documented codes were constructed by nothing, and the
+/// catalogue said each one was something "this system can produce". Four of the six that
+/// page were among them, so an alert rule written from the document was permanently silent
+/// --- and a silent alert is indistinguishable from a healthy system right up until it is
+/// not.
+///
+/// Deleting them is wrong for the reason the catalogue's own preamble gives: codes are
+/// permanent, because removing one breaks every runbook and alert rule that references it.
+/// What was wrong was the *claim*, so the claim is what changed --- the generated document
+/// marks these as not produced by this build, and this list is what it reads.
+///
+/// Every entry names the subsystem, because that is the thing that has to exist before the
+/// code can fire. When one is built, the check below fails until its entry is removed.
+const UNREACHABLE: &[(&str, &str)] = &[
+    // Nine whose subsystem does not exist. Nothing can produce these until it does.
+    ("SNK-C0003", "nothing carries an exactness requirement for a statement to breach"),
+    ("SNK-C0004", "there is no archived tier to target: `sankhya-tiering` plans and does not run"),
+    ("SNK-C0005", "the source identifiers that could collide arrive on the ingest path, and `ING-00` records that there is no change-capture runtime"),
+    ("SNK-R0002", "tenant quotas are `sankhya-governor`, which is called with a zeroed request against `u64::MAX` ceilings and decides nothing"),
+    ("SNK-R0003", "the arrival buffer is part of the change-capture runtime (`ING-00`)"),
+    ("SNK-T0002", "a source that could be unavailable is the change-capture runtime (`ING-00`)"),
+    ("SNK-T0003", "staleness against a freshness objective needs the replication a change-capture runtime would provide (`ING-00`)"),
+    ("SNK-S0002", "an archive to conflict with is `sankhya-tiering`, which does not run"),
+    ("SNK-S0004", "an endangered source is the change-capture runtime (`ING-00`)"),
+    // And three whose condition happens today and is reported as a different type.
+    // These are the worse half: the subsystem exists, the failure occurs, and an
+    // operator alerting on the documented code sees nothing. Mapping them is what is
+    // left of `OPS-25`, and `docs/REMEDIATION.md` records it rather than leaving it
+    // to be rediscovered.
+    ("SNK-F0001", "commit conflicts do occur, and `sankhya-publish` reports them as its own `CommitError`, which nothing maps onto this code"),
+    ("SNK-X0001", "cancellation does occur, as `sankhya_governor::Stopped` and as a statement timeout, and nothing maps either onto this code"),
+    ("SNK-S0003", "backup verification does run, and reports through `sankhya-backup`’s own types rather than raising this code"),
+];
+
+/// `Error::InvalidQuery { detail: None }` becomes `InvalidQuery`.
+fn variant_of(error: &Error) -> String {
+    let rendered = format!("{error:?}");
+    rendered
+        .split_once(' ')
+        .map_or(rendered.clone(), |(name, _)| name.to_string())
+}
+
+/// Every documented code is either produced somewhere or declared unreachable.
+fn every_code_is_reachable_or_declared(root: &Path) -> bool {
+    let mut sources = String::new();
+    collect_error_sites(&root.join("crates"), &mut sources);
+
+    let declared: std::collections::BTreeSet<&str> =
+        UNREACHABLE.iter().map(|(code, _)| *code).collect();
+    let mut ok = true;
+
+    for error in Error::all() {
+        let code = error.code().as_str();
+        // The constructor, not the bare variant name: a doc comment or a match arm naming
+        // the variant is not a site that can produce it.
+        let produced = sources.contains(&format!("Error::{}(", variant_of(&error)))
+            || sources.contains(&format!("Error::{} {{", variant_of(&error)));
+        match (produced, declared.contains(code)) {
+            (false, false) => {
+                eprintln!(
+                    "  NEVER PRODUCED  {code} is documented as producible and nothing constructs it. Emit it, or add it to UNREACHABLE with the reason: an alert rule written from this catalogue is otherwise permanently silent"
+                );
+                ok = false;
+            }
+            // The same stale-permission guard `check-unsafety` and `check-mutation-coverage`
+            // carry: an excuse that outlives its reason is a lie the build keeps telling.
+            (true, true) => {
+                eprintln!(
+                    "  STALE EXCUSE    {code} is listed as unreachable and is now produced. Remove it from UNREACHABLE so the catalogue stops saying otherwise"
+                );
+                ok = false;
+            }
+            _ => {}
+        }
+    }
+    ok
+}
+
+/// Read every source file outside the error crate into one buffer.
+///
+/// `sankhya-error` is excluded for the reason `sankhya-metrics` is: it declares every
+/// variant, so counting it as a construction site would make the check pass unconditionally.
+fn collect_error_sites(dir: &Path, out: &mut String) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|n| n == "sankhya-error") {
+                continue;
+            }
+            collect_error_sites(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                out.push_str(&text);
+            }
+        }
+    }
+}
+
 fn every_metric_is_recorded(root: &Path) -> bool {
     let mut sources = String::new();
     collect_sources(&root.join("crates"), &mut sources);
