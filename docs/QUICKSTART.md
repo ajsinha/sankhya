@@ -90,7 +90,7 @@ availability event.
 ## 3. Run the tests
 
 ```bash
-cargo test --workspace          # 2794 tests, none of which needs a database
+cargo test --workspace          # 2797 tests, none of which needs a database
 ```
 
 Everything here runs without a database, in well under a minute. Nothing is mocked: the
@@ -147,7 +147,7 @@ Three gates catch things a test suite structurally cannot. All three fail the bu
 ```bash
 cargo xtask check-all            # every repository invariant — see below
 cargo xtask check-concurrency    # ADR-0013's measurements, run alone (also inside check-all)
-python3 tools/mutation-audit.py  # 904 deliberate defects, applied one at a time
+python3 tools/mutation-audit.py  # 908 deliberate defects, applied one at a time
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
 SANKHYA_RELEASE=1 cargo xtask check-package   # the release artifact's platform baseline
 ```
@@ -170,13 +170,13 @@ fail when violated, not merely to pass.
 > [`REMEDIATION.md`](REMEDIATION.md).
 
 **The mutation audit** is the answer to "the tests pass, but do they test anything?" It
-applies 904 specific defects one at a time and requires the suite to fail on each. Thirty-one
+applies 908 specific defects one at a time and requires the suite to fail on each. Thirty-one
 did not, the first time each was run — the most recent two were written for the tiering
 encoding, and both exposed tests that did not test what their names claimed: one compared two
 integer widths whose encodings already differ in length, so removing the type tag changed
 nothing, and one used a composite key that the framing bytes separate without any length
 prefix. That is precisely the silent-pass this tool exists to catch. Expect it to take a
-while — it is 904 sequential `cargo test` runs, and it edits your source files as it goes,
+while — it is 908 sequential `cargo test` runs, and it edits your source files as it goes,
 restoring each one after. Run it on a clean tree.
 
 **`check-concurrency`** is inside `check-all` and runs the four concurrency measurements

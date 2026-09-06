@@ -216,10 +216,19 @@ fn the_audit_records_what_the_statement_was_answered_under() {
         .last()
         .expect("a read was recorded");
 
+    // The *kind*, and nothing the caller chose. This asserted `select region` until the
+    // query log was written and the same helper was read again: `region` is a column the
+    // caller named, and `SELECT 'a-secret'` would have put a literal here. The shape keeps
+    // a second word only when it is one of ours --- `create table`, `show feeds` --- which
+    // is what the field is actually for: telling a select from a listing.
     assert!(
-        read.contains("\"statement\":\"select region\""),
-        "the statement's shape is recorded, so a reader can tell a select from a listing: \
+        read.contains("\"statement\":\"select\""),
+        "the statement's kind is recorded, so a reader can tell a select from a listing: \
          {read}"
+    );
+    assert!(
+        !read.contains("\"statement\":\"select region\""),
+        "and a column the caller named is not part of it: {read}"
     );
     assert!(
         read.contains("\"rows_returned\":"),
@@ -258,8 +267,15 @@ fn the_audit_does_not_become_a_second_place_the_data_lives() {
     );
     // Not vacuous: the statement really did run and really was recorded.
     assert!(
-        chain.contains("\"statement\":\"select region\""),
+        chain.contains("\"statement\":\"select\""),
         "and the shape still is: {chain}"
+    );
+    // And this test used to require `select region` --- a column the caller named --- while
+    // asserting three lines above that nothing the caller supplied reaches the audit. It was
+    // codifying the leak it exists to prevent, and had been since `SEC-07` closed.
+    assert!(
+        !chain.contains("\"statement\":\"select region\""),
+        "an identifier the caller chose must not reach the audit either: {chain}"
     );
 }
 

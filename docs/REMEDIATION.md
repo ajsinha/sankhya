@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2794 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2797 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -1212,10 +1212,64 @@ has not done. What is done is that the two numbers cannot drift silently: `check
 the measured figure against the builder image it was measured from, prints the gap on every run,
 and fails when somebody changes the builder without re-measuring.
 
-**Phase 5 is complete except for `OPS-23` and `OPS-24`** --- the query log that does not exist,
-and the runtime events still reaching `println!` rather than the subscriber this binary has
-installed since before they were written. Neither is done, and neither is hidden: they are
-listed below with everything else Phase 6 covers. `OPS-21`, `OPS-23` and `OPS-24` --- checkpoints that are never
+**5.8 A query log, and events with a time on them (`OPS-24`).**
+
+**There was no query log at all.** The audit chain records every statement and is the right
+home for *evidence* --- hash-linked, durable, tamper-evident. It is the wrong thing to read
+when a server is slow: reading it means reading a chain rather than grepping a log, and it
+carries no duration, so *"which statements are slow?"* and *"is this server busy?"* had no
+answer anywhere in the system. One `tracing` line per statement now carries who ran it, the
+statement's shape, how many tables it scanned, how many rows came back, how long it took, and
+whether it was refused.
+
+**The statement itself is not in it, and neither is the refusal's reason.** `ARCHITECTURE`
+§17.1 makes query text tenant data, `check-logging` enforces it, and `SEC-07` settled the same
+question for the audit. A planner's refusal frequently quotes what the caller typed --- `SEC-16`
+was exactly that leak reaching a client --- so the log says a statement was refused and the
+audit says which one it was.
+
+**Two audit tests were codifying the leak.** One asserted the recorded shape was
+`select region`; the other asserted, three lines apart, that nothing a caller supplied reaches
+the audit **and** that `select region` was there. `region` is a column the caller named. Both
+now require `select` and refuse `select region`, which is the property they were always about.
+
+**And writing the test found the shape leaking too.** `statement_shape` took the first two
+words, which is right for `create table` and `show feeds` and wrong for `select nosuchcolumn`
+--- a column the caller chose --- and worse for `select 'a-secret'`, which is a value. It had
+been doing that in the **audit** since 5.1a and nothing had looked. The second word is now kept
+only when it is one of ours, against a closed list; anything else is treated as caller data,
+because a shape one word too short costs an operator a little precision and one word too long
+puts a literal into a durable log.
+
+**Six runtime events still went to `println!`.** A feed that stopped, a feed that refused, a
+quarantine expiry, a reload refused, Flight stopping. The audit's sentence was *"an operator
+cannot determine when a feed halted"*, and that is exactly right: a `println!` carries no
+timestamp, no level and no target, in a binary that has had a subscriber installed since before
+any of them were written. The startup banner stays on stdout --- it is a human running a
+command --- and the events that happen afterwards are structured, with the feed as a field
+rather than interpolated into a sentence.
+
+**A test asserting on a field could not see it.** `tracing_subscriber` defaults to ANSI on, so
+this server was colouring output that normally goes to a file, to journald, or to a collector
+--- escape sequences in every line, and a field an operator filters on reading as
+`\x1b[3mfeed\x1b[0m\x1b[2m=\x1b[0mpostings`. Colour is now conditional on stderr actually
+being a terminal.
+
+**One thing this phase's own gate turned up.** The concurrency check's quiet-machine guard
+reads CPU idle from `/proc/stat` over two hundred milliseconds, and the measurement it guards
+--- commits per second --- is bound by the **disk**. At the end of a `check-all` run, with a
+hundred and twenty-five gigabytes of build output still flushing, the cores were idle, the
+window opened, and the scaling assertion failed describing the machine rather than the code.
+The same check passed immediately afterwards. It is recorded in `sankhya-testkit` beside the
+sampling rather than fixed: reading free I/O capacity portably is a larger thing than reading
+`/proc/stat`, and a guard that is right about the common case is worth more than one that does
+not exist. If it recurs, that is the reason.
+
+**Phase 5 is complete except for `OPS-21`'s remaining half and `OPS-23`.** Checkpoints are
+written (5.6) and the double log replay is gone (5.6), but `OPS-22`'s per-column HyperLogLog
+sketch --- 4 KiB per column per file, provably zero, merged on every plan --- is untouched, and
+so is `OPS-23`. Both are performance work whose claims have to be measured rather than asserted,
+which is 6.2's subject and is where they belong. `OPS-21`, `OPS-23` and `OPS-24` --- checkpoints that are never
 written, the query log that does not exist, and the remaining `println!` runtime events --- are
 not done either; `OPS-22`'s per-statement cost is 5.6 and the rest belong with it, because
 every one of them is about what a statement costs and what it leaves behind. `OPS-10`'s other half --- exposing the maintenance
