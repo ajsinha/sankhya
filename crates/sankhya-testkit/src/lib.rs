@@ -424,6 +424,19 @@ pub mod capacity {
     /// write path managed 2.5x. A proxy that cannot go wrong in the way being tested for is not
     /// a control, so free capacity is read directly instead.
     ///
+    /// # What it does not see, observed once
+    ///
+    /// This reads **CPU** idle, and the measurement it guards writes files. A machine whose
+    /// disk is saturated --- flushing a hundred gigabytes of build output, say --- has idle
+    /// cores and a commit path that will not scale, so the guard opens the window and the
+    /// assertion fails describing the machine. It happened exactly once, at the end of a
+    /// `check-all` run, and the same check passed immediately afterwards on a quiet disk.
+    ///
+    /// Not fixed here, and written down rather than left to be rediscovered: reading free
+    /// I/O capacity portably is a larger thing than reading `/proc/stat`, and a guard that
+    /// is right about the common case is worth more than one that does not exist. If this
+    /// recurs, it is the reason.
+    ///
     /// `None` where the platform does not publish it.
     #[must_use]
     pub fn idle_cores() -> Option<f64> {

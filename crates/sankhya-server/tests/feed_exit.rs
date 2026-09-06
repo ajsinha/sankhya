@@ -400,10 +400,19 @@ fn a_source_of_nothing_usable_stops_the_feed_loudly_and_it_stays_stopped() {
 
     // **Loudly.** The criterion's word, and the half a status row cannot cover: an operator
     // watching the log has to be told at the moment it happens.
+    // Asserted on the structured fields rather than on a sentence. `OPS-24` moved these to
+    // `tracing`, so the line now carries a timestamp, a level and `feed=postings` --- and
+    // "when" is the first question an operator asks about a halted feed, because it bounds
+    // what is missing. A test matching the old prose would have failed for the right change.
     assert!(
-        server.wait_until_said("STOPPED", WITHIN),
+        server.wait_until_said("a feed stopped", WITHIN),
         "the server never said the feed stopped; it said: {:?}",
-        server.said_matching("feed `postings`").collect::<Vec<_>>()
+        server.said_matching("postings").collect::<Vec<_>>()
+    );
+    assert!(
+        server.said_matching("feed=postings").next().is_some(),
+        "the line must name the feed as a field, or an operator cannot filter on it: {:?}",
+        server.said_matching("a feed stopped").collect::<Vec<_>>()
     );
 
     // Stopped means stopped. A sound source arriving afterwards is *not* ingested, because
@@ -552,12 +561,12 @@ fn the_tick_attempts_expiry_without_being_asked() {
     // The tick ran — the feed on it published — and expiry, which shares the tick, neither
     // detached a partition written minutes ago nor failed trying.
     assert!(
-        server.said_matching("quarantine could not be expired").next().is_none(),
+        server.said_matching("the quarantine could not be expired").next().is_none(),
         "expiry ran and could not: {:?}",
         server.said_matching("quarantine").collect::<Vec<_>>()
     );
     assert!(
-        server.said_matching("quarantine expired").next().is_none(),
+        server.said_matching("the quarantine was expired").next().is_none(),
         "expiry detached a partition that is minutes old"
     );
 }

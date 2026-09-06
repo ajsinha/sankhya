@@ -2596,10 +2596,12 @@ impl Server {
         // because the thread is driving the runtime. `block_in_place` hands the runtime's
         // work to another worker first, which is why the server needs a multi-threaded
         // runtime and would deadlock on a current-thread one.
+        let started = std::time::Instant::now();
         let outcome = tokio::task::block_in_place(|| {
             self.runtime
                 .block_on(run(&context, sql, Self::MAX_RESULT_ROWS))
         });
+        let took = started.elapsed();
 
         // A statement that failed to plan while naming a contested table said something true
         // and useless: "table not found", about a table that is found twice. Saying which two
@@ -2612,7 +2614,9 @@ impl Server {
         // Audited whichever way it went. A log that records only successes cannot show an
         // attempt to reach something forbidden, which is the pattern an investigation is
         // usually looking for.
-        crate::audit::record_read(self, &principal, sql, &restrictions, &touched, outcome.as_ref().ok());
+        crate::audit::record_read(
+            self, &principal, sql, &restrictions, &touched, outcome.as_ref().ok(), took,
+        );
         outcome
     }
 
@@ -2656,20 +2660,6 @@ pub(crate) fn outcome_label(outcome: &Result<QueryResult, QueryFailure>) -> &'st
             _ => "error",
         },
     }
-}
-
-/// A short, non-identifying description of a statement, for the audit record.
-///
-/// The first word or two, not the statement itself. A statement can contain the values a
-/// query was filtering on, and copying those verbatim into a durable log turns the audit
-/// into a second place the data lives — one with different retention and different access
-/// control from the table it came from.
-pub(crate) fn statement_shape(sql: &str) -> String {
-    sql.split_whitespace()
-        .take(2)
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase()
 }
 
 /// A refusal in the shape the wire wants.

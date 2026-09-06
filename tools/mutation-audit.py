@@ -6468,6 +6468,40 @@ CATALOGUE = [
      "            if false {",
      "xtask", 1, "package"),
 
+    # --- Phase 5.8: a query log, and events with a time on them -----------------------------------
+
+    # `OPS-24`. There was no query log at all: the audit records that a statement happened
+    # and has no idea how long it took, so "which statements are slow?" had no answer.
+    ("server: run a statement without leaving a line an operator can read",
+     "crates/sankhya-server/src/audit.rs",
+     "    log_statement(principal, sql, touched, rows, took, answer.is_none());",
+     "    let _ = &took;",
+     "sankhya-server", 1, "query_log"),
+
+    # And the shape that keeps the caller's own text out of it. `select nosuchcolumn` puts a
+    # column the caller chose into a durable log; `select 'a-secret'` puts a value.
+    ("server: put the word after the verb in the log whatever it is",
+     "crates/sankhya-server/src/audit.rs",
+     "        Some(second) if KEYWORDS.contains(&second.as_str()) => format!(\"{first} {second}\"),",
+     "        Some(second) => format!(\"{first} {second}\"),",
+     "sankhya-server", 1, "query_log"),
+
+    # Colour in a log that is not going to a terminal: escape sequences in every line, and a
+    # field an operator filters on reads as `\x1b[3mfeed\x1b[0m\x1b[2m=\x1b[0mpostings`.
+    ("server: colour output that is not going to a terminal",
+     "crates/sankhya-server/src/main.rs",
+     "        .with_ansi(to_a_terminal)",
+     "        .with_ansi(true)",
+     "sankhya-server", 1, "query_log"),
+
+    # `OPS-24`, the line the audit named: an operator could not determine *when* a feed
+    # halted, because a `println!` carries no timestamp --- and "when" bounds what is missing.
+    ("server: report a halted feed without a time on it",
+     "crates/sankhya-server/src/main.rs",
+     "                                tracing::error!(\n                                    feed = %name,\n                                    detail = %reason,\n                                    \"a feed stopped and will not run again until RESUME FEED\"\n                                );",
+     "                                eprintln!(\"  feed `{name}` STOPPED --- {reason}\");",
+     "sankhya-server", 1, "feed_exit"),
+
 ]
 
 

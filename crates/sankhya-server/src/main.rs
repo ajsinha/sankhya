@@ -588,7 +588,16 @@ async fn main() -> std::io::Result<()> {
     // static that only this binary has. Done first, before anything can be scraped.
     sankhya_alloc::announce(&ALLOCATOR);
 
+    // Colour only for a person watching a terminal.
+    //
+    // `tracing_subscriber` defaults to ANSI on, and this server's output normally goes to a
+    // file, to journald, or to a log collector --- where the escape sequences are in every
+    // line, `grep` has to match around them, and a field an operator filters on reads as
+    // `\x1b[3mfeed\x1b[0m\x1b[2m=\x1b[0mpostings`. Found by a test that asserted on the
+    // field and could not see it.
+    let to_a_terminal = std::io::IsTerminal::is_terminal(&std::io::stderr());
     tracing_subscriber::fmt()
+        .with_ansi(to_a_terminal)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
@@ -823,7 +832,7 @@ async fn main() -> std::io::Result<()> {
                         .serve_until(service, std::future::pending::<()>())
                         .await
                     {
-                        eprintln!("  Arrow Flight SQL stopped: {error}");
+                        tracing::error!(%error, "Arrow Flight SQL stopped");
                     }
                 });
             }
@@ -911,8 +920,10 @@ async fn main() -> std::io::Result<()> {
                     feeds::expire_quarantine(&declared, &warehouse, today(), now_micros())
                 }) {
                     None => {}
-                    Some(Ok(said)) => println!("  quarantine expired {said}"),
-                    Some(Err(why)) => eprintln!("  quarantine could not be expired — {why}"),
+                    Some(Ok(said)) => tracing::info!(detail = %said, "the quarantine was expired"),
+                    Some(Err(why)) => {
+                        tracing::warn!(detail = %why, "the quarantine could not be expired");
+                    }
                 }
 
                 for feed in &declared {
@@ -930,7 +941,7 @@ async fn main() -> std::io::Result<()> {
                             // configuration problem, and repeating it every cadence buries
                             // everything else in the log. The registry keeps it after the
                             // line has scrolled away.
-                            eprintln!("  feed `{name}` refused — {refusal}");
+                            tracing::warn!(feed = %name, detail = %refusal, "a feed refused to run");
                             standing.halted(&name, &refusal, now_micros());
                         }
                         Ok(result) => {
@@ -942,16 +953,23 @@ async fn main() -> std::io::Result<()> {
                                 now_micros(),
                             );
                             if result.published > 0 || result.quarantined > 0 {
-                                println!(
-                                    "  feed `{name}`: {} published, {} quarantined, {} \
-                                     source(s)",
-                                    result.published, result.quarantined, result.sources
+                                tracing::info!(
+                                    feed = %name,
+                                    published = result.published,
+                                    quarantined = result.quarantined,
+                                    sources = result.sources,
+                                    "a feed ran"
                                 );
                             }
                             if let Some(reason) = result.stopped {
-                                eprintln!(
-                                    "  feed `{name}` STOPPED — {reason}. It will not run \
-                                     again until somebody says `RESUME FEED {name}`"
+                                // `OPS-24`: this was the line the audit named. An
+                                // operator could not determine *when* a feed halted,
+                                // because a `println!` carries no timestamp --- and "when"
+                                // is the first question, since it bounds what is missing.
+                                tracing::error!(
+                                    feed = %name,
+                                    detail = %reason,
+                                    "a feed stopped and will not run again until RESUME FEED"
                                 );
                                 standing.halted(&name, &reason.to_string(), now_micros());
                             }
@@ -992,7 +1010,9 @@ async fn main() -> std::io::Result<()> {
                 match reloaded {
                     // Refused rather than half-applied. A reload that took the readable
                     // settings and left the rest is a configuration nobody wrote.
-                    Err(why) => eprintln!("  reload refused, keeping the running settings: {why}"),
+                    Err(why) => {
+                        tracing::warn!(detail = %why, "a reload was refused; the running settings stand");
+                    }
                     // Disabling maintenance on a reload is not honoured by stopping the
                     // thread: stopping is not reversible without a restart, which is the
                     // thing this exists to avoid. Said plainly rather than ignored.
