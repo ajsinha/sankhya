@@ -75,9 +75,18 @@ pub fn refresh(tables: &mut [ServableTable], target: Lsn, cache: &LogCache) -> u
     let coverage = sankhya_types::LsnRange::new(sankhya_types::Lsn::new(0), target);
     let mut redone = 0;
     for table in tables {
-        let now = sankhya_table_delta::live_files(&table.root)
+        // Through the cache, which is what the cache is for.
+        //
+        // `OPS-22`. This was a free-standing `live_files`, so every statement replayed every
+        // table's log **from version zero** to find out whether it had moved --- while
+        // holding, in this very function's arguments, the cache built to make that
+        // incremental. At a thousand commits a table it is a thousand file reads per table
+        // per statement to discover that nothing has changed, which is the ordinary case.
+        // The cache reads what has arrived since it last looked.
+        let now = cache
+            .live_files(&table.root)
             .ok()
-            .and_then(|live| live.version)
+            .and_then(|(live, _)| live.version)
             .unwrap_or(table.resolved_at);
         if now == table.resolved_at {
             continue;

@@ -1117,7 +1117,51 @@ are reported through crate-local types that nothing maps onto their catalogue co
 them is what remains of `OPS-25`; it is recorded here and in the `UNREACHABLE` list rather than
 left to be rediscovered.
 
-`5.6` and `5.7` are not started. `OPS-21`, `OPS-23` and `OPS-24` --- checkpoints that are never
+**5.6 What a statement cost before it read a row (`OPS-21`, `OPS-22`).**
+
+**A correction to 5.1b first, because it was wrong in the way that matters.** `bounded_session`
+built a fresh `RuntimeEnv` --- and therefore a fresh `FairSpillPool` --- on every call, so each
+statement got its own gibibyte. Ten concurrent statements got ten, and the machine died exactly
+as it had before, while the setting, its help text and this document all said the bound was what
+a server's queries may use **between them**. A pool that is not shared is not a bound; it is a
+per-statement allowance wearing a bound's name, which is worse than no bound because it reads as
+solved. Fairness was the whole argument for choosing `FairSpillPool`, and with a pool each there
+is nothing to be fair about. One runtime now, built once.
+
+The test that was supposed to prove it did not. A front-door version --- two sessions, two hash
+joins against a megabyte --- passes either way, because a per-statement pool refuses each of them
+against a megabyte of its own. It was thrown away for one that asks the question directly: the
+two sessions' runtimes, and the pools inside them, must be the same object.
+
+**Checkpoints were written only by tests (`OPS-21`).** So every log replay in the system --- at
+startup, on every statement's freshness probe, in `doctor`, in the diagnostic's file count ---
+ran from version zero: one `exists()`, one read and one JSON parse per commit, per table, for the
+life of the warehouse. The reason recorded for not wiring it was that `checkpoint_if_due` needs
+the table's `Metadata` and the log crate had no reader, and that a checkpoint written from a
+fabricated default would tell every external reader a schema the table does not have. The first
+half expired --- `latest_metadata` exists now --- and the second still stands, which is why this
+reads the metadata and skips a table that has none rather than supplying one.
+
+**The freshness probe replayed every log from the beginning, holding the cache built to stop it.**
+`warehouse::refresh` takes a `&LogCache` and then called `live_files` free-standing, so every
+statement replayed every table's log from version zero to discover the ordinary case: that
+nothing had changed. At a thousand commits a table that is a thousand file reads per table per
+statement.
+
+**A test here passed against the defect too, and the catalogue caught it.** It asserted that
+`LogCache` caches --- a property of `LogCache`, true before the change and after it. The mutation
+that reverts `refresh` to the free-standing call survived, which is exactly what a mutation
+catalogue is for. The test now asserts the thing that separates the two: after a refresh, the
+cache it was handed must already know the table.
+
+**Not measured, and this document will not claim it was.** What changed is the cost model ---
+from replay proportional to a table's whole history on every statement, to replay proportional to
+what has arrived since the last one --- and a benchmark that demonstrates it belongs with 6.2,
+where the benchmarks that do not exist are built. `OPS-22`'s remaining part, the per-column
+HyperLogLog sketch carried on every file, is not addressed here.
+
+`5.7` is not started. `OPS-23` and `OPS-24` --- the query log that does not exist, and the
+runtime events still going to `println!` --- are not done either. `OPS-21`, `OPS-23` and `OPS-24` --- checkpoints that are never
 written, the query log that does not exist, and the remaining `println!` runtime events --- are
 not done either; `OPS-22`'s per-statement cost is 5.6 and the rest belong with it, because
 every one of them is about what a statement costs and what it leaves behind. `OPS-10`'s other half --- exposing the maintenance

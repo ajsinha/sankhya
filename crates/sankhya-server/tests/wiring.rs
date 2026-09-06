@@ -797,3 +797,85 @@ fn an_aggregation_directory_nobody_can_read_is_not_a_warehouse_with_none() {
         "the complaint must name the directory: {complaints:?}"
     );
 }
+
+#[test]
+fn every_statement_shares_one_memory_pool() {
+    // `SANKHYA_QUERY_MEMORY_BYTES` names what a server's queries may use **between them** ---
+    // its documentation and its help text both say so. The first version of `bounded_session`
+    // built a fresh `RuntimeEnv`, and therefore a fresh `FairSpillPool`, on every call: each
+    // statement got its own gibibyte, ten concurrent statements got ten, and the machine died
+    // exactly as it had before while the setting read as solved.
+    //
+    // A pool that is not shared is not a bound. Fairness is the reason: a fair pool divides
+    // what there is between the consumers actually asking, so the expensive query fails
+    // itself rather than starving the others --- and with a pool each there is nothing to be
+    // fair about.
+    let policy = PolicySet::default();
+    let principal = sankhya_authz::principal::Principal::authenticated(
+        "ana",
+        TenantId::from_uuid(uuid::Uuid::from_u128(1)),
+        [Role::new("reader")],
+        sankhya_authz::principal::Authentication::Password,
+    )
+    .expect("a principal");
+
+    // No tables: the property is about the runtime the session is built on, and registering
+    // tables would only add filesystem work to a question that does not involve any.
+    let (first, _) = execute::session_for(&principal, &policy, &[]).expect("a session");
+    let (second, _) = execute::session_for(&principal, &policy, &[]).expect("a second session");
+
+    assert!(
+        std::sync::Arc::ptr_eq(&first.runtime_env(), &second.runtime_env()),
+        "two statements must run on one runtime, or the memory bound is per statement"
+    );
+    // And the pool inside it is the same object, which is the part that actually bounds
+    // anything: a shared runtime holding two pools would satisfy the line above and none of
+    // the reasoning behind it.
+    assert!(
+        std::sync::Arc::ptr_eq(
+            &first.runtime_env().memory_pool,
+            &second.runtime_env().memory_pool
+        ),
+        "two statements must reserve from one pool"
+    );
+}
+
+#[test]
+fn the_freshness_probe_goes_through_the_cache_built_for_it() {
+    // `OPS-22`. The probe that asks "has this table moved?" ran `live_files` free-standing
+    // --- a replay from version zero --- for every table, on every statement, while holding
+    // the `LogCache` built to make it incremental. At a thousand commits a table that is a
+    // thousand file reads per table per statement to discover the ordinary case: that
+    // nothing has changed.
+    //
+    // A first version of this test asserted that `LogCache` caches, which is a property of
+    // `LogCache`, was true before the fix and after it, and passed against the defect. The
+    // mutation catalogue caught that: the entry survived. What separates the two behaviours
+    // is whether `refresh` *uses* the cache it is handed, and that is what this asks.
+    use sankhya_table_delta::{LogCache, Outcome};
+
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let warehouse = dir.path().join("warehouse");
+    write_table(&warehouse, "sales", "orders");
+    let table = warehouse.join("sales").join("orders");
+
+    let target = sankhya_types::Lsn::new(u64::MAX);
+    let (found, _) = warehouse::discover(&warehouse);
+    assert_eq!(found.len(), 1, "the fixture must hold exactly one table");
+
+    // The cache `refresh` is given, and the only thing that could warm it.
+    let cache = LogCache::new();
+    let (mut tables, _) = warehouse::servable(&found, target, &cache);
+    assert_eq!(tables.len(), 1, "the table must be servable");
+
+    // A second cache, so that whatever `servable` did above cannot account for the result.
+    let probe = LogCache::new();
+    let _ = warehouse::refresh(&mut tables, target, &probe);
+
+    let (_, after) = probe.live_files(&table).expect("a readable log");
+    assert!(
+        !matches!(after, Outcome::Cold),
+        "the freshness probe replayed the log without the cache it was handed, so the next \
+         reader replays it from version zero all over again: {after:?}"
+    );
+}
