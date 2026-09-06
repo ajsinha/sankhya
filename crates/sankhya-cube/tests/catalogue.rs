@@ -272,3 +272,47 @@ fn a_target_of_zero_is_not_the_absence_of_one() {
     assert_ne!(loaded.target_lag, None);
     assert_eq!(loaded.lifetime(), sankhya_cube::model::Lifetime::Maintained);
 }
+
+#[test]
+fn a_cube_catalogue_nobody_can_read_is_an_error_rather_than_an_empty_warehouse() {
+    // `OPS-12`. `load_all` refuses to return a partial list --- its own doc says a catalogue
+    // that returns the cubes it could parse and says nothing about the one it could not is a
+    // server that comes up looking healthy and is missing a cube. A directory that exists
+    // and cannot be listed is that failure taken to its limit: every cube missing, nothing
+    // said, and the server serving queries that will not plan.
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    catalogue::save(dir.path(), &sales()).expect("storing");
+
+    // Readable first, so the assertion below is about the permissions and not about a
+    // catalogue that fails on everything.
+    assert_eq!(
+        catalogue::load_all(dir.path()).expect("a readable catalogue").len(),
+        1
+    );
+
+    // A warehouse with no catalogue directory at all is still not an error: most have none.
+    let empty = tempfile::tempdir().expect("a temporary directory");
+    assert!(catalogue::load_all(empty.path()).expect("no catalogue").is_empty());
+
+    let cubes = dir.path().join("_cubes");
+    let mut permissions = std::fs::metadata(&cubes).expect("it exists").permissions();
+    permissions.set_mode(0o000);
+    std::fs::set_permissions(&cubes, permissions).expect("setting permissions");
+    assert!(
+        std::fs::read_dir(&cubes).is_err(),
+        "still readable after chmod 000 --- this test cannot run as root"
+    );
+
+    let answer = catalogue::load_all(dir.path());
+
+    let mut permissions = std::fs::metadata(&cubes).expect("it exists").permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&cubes, permissions).ok();
+
+    assert!(
+        answer.is_err(),
+        "a catalogue directory that cannot be listed must not read as a warehouse with no cubes"
+    );
+}

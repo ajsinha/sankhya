@@ -428,9 +428,19 @@ pub fn load(warehouse: &Path, name: &str) -> Result<Definition, CatalogueError> 
 /// server that comes up looking healthy and is missing a cube.
 pub fn load_all(warehouse: &Path) -> Result<Vec<Definition>, CatalogueError> {
     let directory = warehouse.join(CUBES);
-    let Ok(entries) = std::fs::read_dir(&directory) else {
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
         // No catalogue is not an error. A warehouse with no cubes is the ordinary case.
-        return Ok(Vec::new());
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        // `OPS-12`. A directory that is there and cannot be listed used to arrive here as
+        // "this warehouse has no cubes" --- which is precisely the partial list the comment
+        // above refuses, taken to its limit: every cube missing and nothing said.
+        Err(error) => {
+            return Err(CatalogueError::Unreadable {
+                path: directory,
+                detail: error.to_string(),
+            })
+        }
     };
     let mut found = Vec::new();
     let mut paths: Vec<PathBuf> = entries

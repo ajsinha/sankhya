@@ -691,3 +691,109 @@ async fn the_user_a_connection_authenticated_as_reaches_authorization_and_audit(
         "and the chain they form still verifies"
     );
 }
+
+/// Make `path` unlistable, and refuse to continue if that did not work.
+///
+/// It does not work as root, and a test that quietly passed there would prove nothing on a
+/// container's default user --- so the precondition is asserted rather than assumed.
+fn make_unreadable(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = std::fs::metadata(path).expect("it exists").permissions();
+    permissions.set_mode(0o000);
+    std::fs::set_permissions(path, permissions).expect("setting permissions");
+    assert!(
+        std::fs::read_dir(path).is_err(),
+        "{} is still readable after chmod 000 --- this test cannot run as root",
+        path.display()
+    );
+}
+
+/// Put it back, so the temporary directory can be cleaned up.
+fn make_readable(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(metadata) = std::fs::metadata(path) else { return };
+    let mut permissions = metadata.permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions).ok();
+}
+
+#[test]
+fn a_name_in_a_warehouse_nobody_can_read_is_unknown_rather_than_absent() {
+    // `OPS-12`. `resolve` answered `Absent` for a warehouse it could not list, and `Absent`
+    // is a claim: the table is not there. The two are distinguished because one of them
+    // decides a deletion --- a snapshot pins files only if its table resolves, so "not
+    // there" on an unmounted export drops the pin and the sweeper reclaims what it was
+    // protecting, under a reader.
+    let dir = tempfile::tempdir().expect("a directory");
+    let warehouse = dir.path().join("warehouse");
+    std::fs::create_dir_all(warehouse.join("sales")).expect("a schema");
+
+    // A warehouse that is not there at all still answers "no such table", because a
+    // warehouse is created on first use and a fresh install genuinely holds nothing.
+    assert!(
+        matches!(
+            warehouse::resolve(&dir.path().join("never-created"), "orders"),
+            warehouse::Resolved::Absent
+        ),
+        "a warehouse that does not exist holds no table of that name"
+    );
+
+    make_unreadable(&warehouse);
+    let answer = warehouse::resolve(&warehouse, "orders");
+    make_readable(&warehouse);
+    assert!(
+        matches!(answer, warehouse::Resolved::Unreadable(_)),
+        "a warehouse that exists and cannot be listed must not answer that the table is absent"
+    );
+}
+
+#[test]
+fn a_feed_directory_nobody_can_read_is_not_a_deployment_with_no_feeds() {
+    // The same swallow. A server that starts cleanly and ingests nothing looks, from every
+    // table it should have been filling, exactly like a source that stopped producing.
+    let dir = tempfile::tempdir().expect("a directory");
+    let configuration = dir.path().to_path_buf();
+
+    // Not there is still silent: most deployments declare no feeds.
+    let (declared, complaints) = feeds::load(&configuration);
+    assert!(declared.is_empty() && complaints.is_empty(), "no feeds directory is not a complaint");
+
+    let feeds_dir = configuration.join("feeds");
+    std::fs::create_dir_all(&feeds_dir).expect("a feeds directory");
+    make_unreadable(&feeds_dir);
+    let (declared, complaints) = feeds::load(&configuration);
+    make_readable(&feeds_dir);
+
+    assert!(declared.is_empty(), "nothing could be read, so nothing loaded");
+    assert_eq!(complaints.len(), 1, "and that must be said: {complaints:?}");
+    assert!(
+        complaints[0].contains("feeds"),
+        "the complaint must name the directory: {complaints:?}"
+    );
+}
+
+#[test]
+fn an_aggregation_directory_nobody_can_read_is_not_a_warehouse_with_none() {
+    // The symptom of the old behaviour was a query that worked yesterday failing to plan
+    // with "unknown function" --- a message that names the caller's SQL and not the
+    // directory, so the person who reads it has no way to reach the cause.
+    let dir = tempfile::tempdir().expect("a directory");
+    let warehouse = dir.path().join("warehouse");
+    std::fs::create_dir_all(&warehouse).expect("a warehouse");
+
+    let (found, complaints) = aggregations::stored(&warehouse);
+    assert!(found.is_empty() && complaints.is_empty(), "no directory is not a complaint");
+
+    let store = warehouse.join("_aggregations");
+    std::fs::create_dir_all(&store).expect("an aggregation store");
+    make_unreadable(&store);
+    let (found, complaints) = aggregations::stored(&warehouse);
+    make_readable(&store);
+
+    assert!(found.is_empty(), "nothing could be read, so nothing loaded");
+    assert_eq!(complaints.len(), 1, "and that must be said: {complaints:?}");
+    assert!(
+        complaints[0].contains("_aggregations"),
+        "the complaint must name the directory: {complaints:?}"
+    );
+}

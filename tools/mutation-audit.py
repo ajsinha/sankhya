@@ -6321,6 +6321,43 @@ CATALOGUE = [
      "                accepted = self.listener.accept() => {",
      "sankhya-api-pg", 1, "accepting"),
 
+    # --- Phase 5.3: "I could not look" is not "there is nothing" ----------------------------------
+
+    # `OPS-12`. An unreadable warehouse returned no tables and no complaints, so the server
+    # served an empty catalogue and `doctor` --- the tool for exactly that moment --- gave it
+    # a clean bill of health.
+    ("server: report an unreadable warehouse as an empty one",
+     "crates/sankhya-server/src/warehouse.rs",
+     "        Err(error) => {\n            refused.push((warehouse.to_path_buf(), error.to_string()));\n            return (found, refused);\n        }",
+     "        Err(_) => {\n            return (found, refused);\n        }",
+     "sankhya-server", 1, "unreadable"),
+
+    # The same claim where it decides a deletion: a snapshot pins files only if its table
+    # resolves, so "absent" on an unmounted export drops the pin under a reader.
+    ("server: answer that a table is absent when nobody could look",
+     "crates/sankhya-server/src/warehouse.rs",
+     "        Err(error) => return Resolved::Unreadable(error.to_string()),",
+     "        Err(_) => return Resolved::Absent,",
+     "sankhya-server", 1, "wiring"),
+
+    ("server: report an unreadable feed directory as a deployment with no feeds",
+     "crates/sankhya-server/src/feeds.rs",
+     "        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {\n            return (Vec::new(), Vec::new())\n        }",
+     "        Err(_) => {\n            return (Vec::new(), Vec::new())\n        }\n        #[allow(unreachable_patterns)]",
+     "sankhya-server", 1, "wiring"),
+
+    ("server: report an unreadable aggregation store as a warehouse with none",
+     "crates/sankhya-server/src/aggregations.rs",
+     "        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return (out, Vec::new()),\n        Err(error) => {",
+     "        Err(_) => return (out, Vec::new()),\n        #[allow(unreachable_patterns)]\n        Err(error) => {",
+     "sankhya-server", 1, "wiring"),
+
+    ("cube: report an unreadable catalogue as a warehouse with no cubes",
+     "crates/sankhya-cube/src/catalogue.rs",
+     "        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),",
+     "        Err(_) => return Ok(Vec::new()),",
+     "sankhya-cube", 1, "catalogue"),
+
 ]
 
 
