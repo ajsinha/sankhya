@@ -559,8 +559,24 @@ pub fn read_actions_after(
     let mut version = after.map_or(0, |v| v + 1);
     loop {
         let path = commit_path(table_root, version);
-        if !path.exists() {
-            break;
+        // `try_exists`, not `exists`.
+        //
+        // `OPS-12`, and this is the worst place it appeared. `Path::exists` answers `false`
+        // for *every* failure, including "the directory holding this file cannot be
+        // searched" --- so a `_delta_log` with the wrong permissions, or under a
+        // half-mounted export, ended this walk at version zero and the table replayed as
+        // **empty**. A query then returned no rows and succeeded, which is the silent wrong
+        // answer this system exists to prevent, and maintenance ticked over it happily
+        // because there was nothing to compact.
+        match path.try_exists() {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(error) => {
+                return Err(CommitError::Io(format!(
+                    "cannot tell whether {} exists: {error}",
+                    path.display()
+                )))
+            }
         }
         to_read.push((version, path));
         version += 1;

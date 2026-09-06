@@ -1039,7 +1039,43 @@ made the same way in all five places.
 means the query is answered from the fact table instead --- slower, and not wrong. A cuboid is
 a cache, and its own doc comment already says there is nothing to report.
 
-`5.4` through `5.7` are not started.
+**5.4 Maintenance was blind and partial (`OPS-10`, `OPS-11`).**
+
+**The table list was a startup snapshot.** `tables_under` discovers rather than reads a
+configuration file, and its own doc comment explains why: a configured list goes stale the
+first time somebody creates a table, and the maintenance thread would then quietly not
+maintain it, *which looks exactly like maintenance working*. The caller then took that
+discovered list once, at startup, and froze it --- the same staleness arriving through a
+different door. A table created after the server came up was maintained by nobody, for the
+life of the process. The set is re-read at the top of every cycle now, a table is adopted with
+a line saying so, and a table that has gone is released rather than failing for ever.
+
+**A failed tick was discarded.** `Err(_) => continue`. A table whose compaction failed every
+thirty seconds was invisible --- and the aggregate reclaimed-bytes figure kept climbing from
+the other tables, so a dashboard showed a warehouse being looked after. Failures are counted
+on the handle and reported when the error *changes*, once when it starts and once when it
+stops, which is the hysteresis the declined-to-reclaim complaint already used: a line every
+thirty seconds is a line nobody reads.
+
+**And the crate had no `tracing` calls at all.** Four `eprintln!`s, with no timestamp, level or
+target, in a binary that has installed a subscriber since before any of them were written --- so
+an operator could not tell *when* a table stopped being maintained, which is the first question
+anybody asks. They are structured events now, with the table as a field rather than interpolated
+into the message.
+
+**A worse bug fell out of testing this.** The failure-counting test would not go red: making a
+table's `_delta_log` unreadable did not fail the tick. `read_actions_after` walks commits
+forward and stopped on `!path.exists()` --- and `Path::exists` answers `false` for **every**
+failure, including "the directory holding this file cannot be searched". So a log under a
+half-mounted export, or with the wrong ownership, ended the walk at version zero and the table
+replayed as **empty**: a `SELECT` against it returned no rows and *succeeded*. Zero rows that
+are wrong is the failure this whole system is arranged against, and it was one `chmod` away.
+`try_exists` distinguishes them.
+
+`5.5` through `5.7` are not started. `OPS-10`'s other half --- exposing the maintenance
+counters on `/metrics`, where an operator would look before reading a log --- belongs with the
+observability work in 5.5 and is not done here: the handle now counts what needs exposing,
+and nothing reads it.
 
 ---
 
