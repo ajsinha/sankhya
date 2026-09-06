@@ -1,3 +1,7 @@
+# Python, for the deck generator (tools/deck/GUIDE.md says how to make it)
+/.venv/
+__pycache__/
+
 # Rust
 /target/
 **/*.rs.bk

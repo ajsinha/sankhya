@@ -1,5 +1,7 @@
 # 6. Storage and the open table log
 
+**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+
 > A directory of Parquet files is a storage layout; it is not a table. This chapter shows why —
 > between a merge and the retirement of its inputs, the directory holds the same rows twice, for
 > at least a full grace period — and builds from that the case for an open transaction log. It then gives the two mechanical properties every write in the system obeys

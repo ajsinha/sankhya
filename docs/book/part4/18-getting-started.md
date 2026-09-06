@@ -1,5 +1,7 @@
 # 18. Getting started
 
+**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+
 > This chapter takes you from a running SANKHYA to a query, a clone, a cube and a refusal, in that
 > order, using nothing but `psql` and — at the end — five lines of Python. Its central claim is that
 > the whole product is reachable from a SQL prompt: there is no client library you must install to

@@ -1,5 +1,7 @@
 # 11. The graph engine
 
+**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+
 > The graph tier holds no durable state. An epoch is built by scanning published tables, carries
 > the snapshot it was built from, and is dropped on shutdown — so **an edge exists because a row
 > exists**, and the graph cannot disagree with SQL. This chapter argues that the absence of a

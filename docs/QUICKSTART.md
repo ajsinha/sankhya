@@ -90,7 +90,7 @@ availability event.
 ## 3. Run the tests
 
 ```bash
-cargo test --workspace          # 2797 tests, none of which needs a database
+cargo test --workspace          # 2802 tests, none of which needs a database
 ```
 
 Everything here runs without a database, in well under a minute. Nothing is mocked: the
@@ -152,7 +152,7 @@ cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can f
 SANKHYA_RELEASE=1 cargo xtask check-package   # the release artifact's platform baseline
 ```
 
-**`check-all`** runs twenty-five invariants: the layer graph is acyclic and points the right
+**`check-all`** runs twenty-six invariants: the layer graph is acyclic and points the right
 way, no file exceeds the length ceiling, no core crate names a domain concept, the
 dependency set has no critical duplicates, the documentation's links and version claims
 resolve and its status lines agree, test-only dependencies really are test-only, clippy

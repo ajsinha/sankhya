@@ -1,5 +1,7 @@
 # 14. Observability
 
+**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+
 > This chapter covers what SANKHYA tells you about itself: the metric catalogue, the error
 > catalogue, the runbooks they index, and the diagnostic. Its central claim is that observability
 > fails by *inversion* — the usual arrangement makes a metric a string and its documentation an

@@ -3227,8 +3227,8 @@ describe. Both corrections are recorded below rather than folded into a pass.
 
 | Gate | State |
 |---|---|
-| Performance objectives met in the pipeline, against named public-suite queries | **Met.** `NFR-PERF-02` 13 ms, `NFR-PERF-03` 796 ms, `NFR-PERF-04` 648 ms, against budgets of 250 ms, 1 s and 3 s — asserted by `cargo xtask check-performance`, which fails the build. See the correction below: this gate was previously read as failing, against queries the objectives do not describe |
-| Cancellation demonstrated within its bound, at the points M3 controls | **Met.** Bounded at one batch per partition inside a real query, across threads, and under periodic checking within its interval. The clause "including inside user code" has moved to M4 — see below |
+| Performance objectives met in the pipeline, against named public-suite queries | **Met for three of eighteen.** `NFR-PERF-02` 13 ms, `NFR-PERF-03` 796 ms, `NFR-PERF-04` 648 ms, against budgets of 250 ms, 1 s and 3 s — asserted by `cargo xtask check-performance`, which fails the build. `PERF-05`: the other fifteen are unmeasured, and seven of them were absent from the table that reports on them until `check-objectives` was written to make omission fail. The full state of all eighteen is in [book/part5/24-requirements.md](book/part5/24-requirements.md#the-service-level-objectives). `PERF-06`: the gate drives DataFusion directly and never crosses `execute.rs` or the wire, so every per-statement cost is outside the measured path. See the correction below: this gate was previously read as failing, against queries the objectives do not describe |
+| Cancellation demonstrated within its bound, at the points M3 controls | **Demonstrated, not measured.** Bounded at one batch per partition inside a real query, across threads, and under periodic checking within its interval — which is a construction argument, not a timing. `NFR-PERF-16`'s two hundred milliseconds is not established by anything, and this row said "Met" against it. The clause "including inside user code" has moved to M4 — see below |
 | A hostile aggregation under a constrained memory limit is rejected rather than terminating the process | **Met.** An aggregation that cannot reduce anything is refused under a one-megabyte pool, by name — and the process runs the same query to completion afterwards. Repeated five times, so a refusal that leaked its reservation would show up |
 | Plan snapshots stable; the SQL-semantics corpus green | **Met.** Thirty-nine semantics cases pinned by hand from the standard's rules; plan *shapes* pinned rather than plan text, plus assertions on the optimisations that fail silently |
 | Cross-engine semantic differences enumerated in a tested list | **Met, and it found three ways the analytical tier returns a wrong number.** Fifteen cases run against both engines; agreements are pinned too, so a *new* divergence fails the test |
@@ -4393,7 +4393,7 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 2797 tests, none of which needs a database
+cargo test --workspace           # 2802 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
 python3 tools/mutation-audit.py  # 908 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database

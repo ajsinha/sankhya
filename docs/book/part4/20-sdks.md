@@ -1,5 +1,7 @@
 # 20. The client contract and the SDKs
 
+**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+
 > This chapter specifies what a SANKHYA client may assume and what it may never decide. Its central
 > claim is one sentence: **a binding contains no logic the server does not also enforce**, and the
 > test of it is that deleting the package changes nothing about what the system permits, refuses or

@@ -7,6 +7,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// The directory whose documents must all declare a status.
+const BOOK: &str = "book";
+
 /// Every document's `**Status:**` line says the same thing.
 ///
 /// Documentation rot is usually not a false statement; it is two true-at-different-times
@@ -18,8 +21,22 @@ use std::path::{Path, PathBuf};
 ///
 /// Only files declaring a `**Status:**` header line participate. Prose status paragraphs
 /// are left alone: this checks the machine-readable claim, not the writing.
+///
+/// # Except that opting out was free, and the book had taken it
+///
+/// A document with no header simply did not participate, and a repository-wide search for
+/// `**Status:**` across `docs/book/` returned **nothing** --- twenty-seven chapters, none of
+/// them visible to this check. Which is how four of them came to carry milestone claims the
+/// canonical line contradicts, a digest six architecture decisions behind, and a requirement
+/// count that disagrees with its own table.
+///
+/// That is worse than disagreement. A document that disagrees is caught here; a document
+/// that declines to say anything is not, and declining costs nothing. So a chapter of the
+/// book is now **required** to carry the line, by [`BOOK`] below. The rest of the repository
+/// keeps the opt-out, because a runbook or an ADR is not making a claim about what is built.
 pub(crate) fn check_status_agreement(root: &Path, docs: &[PathBuf]) -> bool {
     let mut seen: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut silent: Vec<String> = Vec::new();
 
     for doc in docs {
         // Architecture decision records carry their own status vocabulary — Accepted,
@@ -35,12 +52,36 @@ pub(crate) fn check_status_agreement(root: &Path, docs: &[PathBuf]) -> bool {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
+        let mut declared = false;
         for line in text.lines().take(20) {
             if let Some(rest) = line.strip_prefix("**Status:** ") {
-                seen.entry(rest.trim().to_string()).or_default().push(name);
+                seen.entry(rest.trim().to_string()).or_default().push(name.clone());
+                declared = true;
                 break;
             }
         }
+        // A chapter of the book states what this system does, at length, to somebody
+        // deciding whether to use it. Saying nothing about which of it is built is the
+        // omission this check exists to catch, arriving as silence rather than as a
+        // contradiction.
+        if !declared && doc.components().any(|c| c.as_os_str() == BOOK) {
+            silent.push(
+                doc.strip_prefix(root)
+                    .unwrap_or(doc)
+                    .display()
+                    .to_string(),
+            );
+        }
+    }
+
+    let mut ok = true;
+    if !silent.is_empty() {
+        for path in &silent {
+            eprintln!(
+                "  NO STATUS       {path} declares no `**Status:**` line, so nothing checks what it claims is built"
+            );
+        }
+        ok = false;
     }
 
     if seen.len() > 1 {
@@ -52,7 +93,7 @@ pub(crate) fn check_status_agreement(root: &Path, docs: &[PathBuf]) -> bool {
     }
 
     let Some((status, files)) = seen.iter().next() else {
-        return true;
+        return ok;
     };
 
     // Agreement is not accuracy.
@@ -66,7 +107,6 @@ pub(crate) fn check_status_agreement(root: &Path, docs: &[PathBuf]) -> bool {
     // milestone table, which is edited as work lands. Every milestone that table calls
     // unfinished must be named in the status line.
     let unfinished = unfinished_milestones(root);
-    let mut ok = true;
     for milestone in &unfinished {
         if !status.contains(milestone.as_str()) {
             eprintln!(

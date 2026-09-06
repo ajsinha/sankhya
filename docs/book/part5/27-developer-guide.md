@@ -1,5 +1,7 @@
 # Developer Guide
 
+**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+
 > This chapter covers how to work on SANKHYA: the repository layout, the layer model the
 > fifty-eight workspace members live in, how to build and test, how the gate and the mutation
 > audit are run and extended, the coding standards and what each one prevents, and the
@@ -86,7 +88,7 @@ The rule is: widen the API, never the allowance.
 git clone https://github.com/ajsinha/sankhya.git && cd sankhya
 cargo build --workspace          # several minutes on a first build
 vendor/postgresql/build.sh       # ~2 min, idempotent, 35 MB installed
-cargo test --workspace           # 2797 tests, none of which needs a database
+cargo test --workspace           # 2802 tests, none of which needs a database
 ```
 
 Nothing is mocked. The Parquet is real Parquet, the Delta logs are read back by an independent

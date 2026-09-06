@@ -1,5 +1,7 @@
 # 7. The date axis
 
+**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+
 > Every table in SANKHYA carries one column, `sank_data_date`, of type `DATE`, and is
 > partitioned on it. This chapter argues that a single guaranteed time axis is what makes
 > partitioning, retention, compaction and tiering write-once instead of per-table, and that the

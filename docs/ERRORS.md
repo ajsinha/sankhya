@@ -152,6 +152,8 @@ No action. The deadline expired, the client disconnected, or the server is drain
 
 no tier covers part of the requested range
 
+**Not produced by this build.** the coverage gap it names is detected by `sankhya-plan`’s splice and reported as its own `SpliceError::CoverageGap`, which nothing maps onto this code --- and the tier splice that would raise it is not in the server’s read path, which synthesises a coverage range rather than composing one. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
+
 **Pages.** Runbook: [`snk-s0001`](runbooks/snk-s0001.md)
 
 A correctness event, not a performance one. The query was refused rather than answered partially. Investigate capture continuity and retention immediately.

@@ -18,6 +18,7 @@ mod concurrency;
 mod attribution;
 mod status;
 mod coverage;
+mod objectives;
 mod durability;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -220,6 +221,10 @@ fn main() -> ExitCode {
         failed |= !check_benchmarks(&root);
     }
 
+    if run_all || task == "check-objectives" {
+        failed |= !objectives::check(&root);
+    }
+
     if run_all || task == "check-attribution" {
         failed |= !attribution::check(&root);
     }
@@ -292,6 +297,7 @@ fn main() -> ExitCode {
                 | "check-attribution"
                 | "check-mutation-coverage"
                 | "check-benchmarks"
+                | "check-objectives"
                 | "check-durability"
                 | "write-attribution"
                 | "check-doc-numbers"
@@ -316,7 +322,7 @@ fn main() -> ExitCode {
         eprintln!(
             "usage: cargo xtask \
              [check-all|check-tests|check-concurrency|check-invariants|check-writers|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
-             |check-features|check-lints|check-unsafety|check-attribution|check-mutation-coverage|check-benchmarks|check-durability|write-attribution|check-mutations|check-doc-numbers\
+             |check-features|check-lints|check-unsafety|check-attribution|check-mutation-coverage|check-benchmarks|check-objectives|check-durability|write-attribution|check-mutations|check-doc-numbers\
              |check-catalogues|write-catalogues|check-logging|check-package|check-build-tree|check-surfaces|check-atomic-writes|check-lock-order|sweep|sweep-dry-run|sync-doc-numbers|check-performance]"
         );
         return ExitCode::from(2);

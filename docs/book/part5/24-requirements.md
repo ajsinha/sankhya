@@ -1,5 +1,7 @@
 # Requirements
 
+**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+
 > This chapter distils the requirement catalogue: what SANKHYA must do, organised by area,
 > with what is met and what is not. Its central claim is that a requirement is only a
 > requirement if it can be failed — so every non-functional requirement carries a test
@@ -290,12 +292,32 @@ encoding choice matters. Object storage sits far below; page cache sits far abov
 
 | ID | Class | Target | State |
 |---|---|---|---|
+| `NFR-PERF-01` | Primary-key point lookup, warm, 64 concurrent | p99 < 5 ms | **Unmeasured.** Nothing exercises a point lookup at concurrency; the needle-lookup measurement below is a different shape and a different budget |
 | `NFR-PERF-02` | Selective needle lookup, warm, 8 concurrent | p95 < 250 ms | **Met at 13 ms**, by statistics pruning alone |
 | `NFR-PERF-03` | Multi-dimensional pivot, warm, pruned | p95 < 1 s | **Met at 796 ms** |
 | `NFR-PERF-04` | Wide scan, warm, local cache | p95 < 3 s | **Met at 648 ms** |
-| `NFR-PERF-05` | Cold scan from object storage | p95 < 15 s | Explicitly *not* sub-second, and stated as such |
-| `NFR-PERF-09`–`14` | Graph traversal, hydration, incremental update | 50 ms to bounded-and-published | **Not met and not claimed** |
-| `NFR-PERF-16` | Cancellation, including inside sandboxed user code | Within 200 ms | Met, bounded at one batch per partition |
+| `NFR-PERF-05` | Cold scan from object storage | p95 < 15 s | **Unmeasured**, and explicitly *not* sub-second. There is no object-storage arm in the gate: every measurement here is local |
+| `NFR-PERF-06` | Aggregation over fixed-size numeric vectors with exact order statistics | p95 < 2 s | **Unmeasured.** This is the function catalogue's own requirement and the workload its performance claims are about, and it was the objective most conspicuously absent from this table |
+| `NFR-PERF-07` | The same, served from materialized aggregates | p95 < 300 ms | **Unmeasured.** Cuboids are built and served; nothing times the path |
+| `NFR-PERF-08` | Streaming evaluation against materialized baselines plus bounded graph expansion | p99 < 50 ms at 500/s | **Not met and not claimed.** It needs the graph tier, which cannot answer — nothing hydrates an epoch in the server |
+| `NFR-PERF-09`–`14` | Graph traversal, hydration, incremental update | 50 ms to bounded-and-published | **Not met and not claimed**, for the same reason |
+| `NFR-PERF-15` | End-to-end capture latency, steady state | p99 within the freshness budget | **Not met and not claimed.** It needs a change-capture runtime, and `ING-00` records that there is none |
+| `NFR-PERF-16` | Cancellation, including inside sandboxed user code | Within 200 ms | **Unmeasured.** The mechanism exists and is bounded at one batch per partition by construction; no measurement establishes the 200 ms |
+| `NFR-PERF-17` | Freshness stated separately for internal readers and external engines | Both published | **Not met.** Neither figure is published, so the separation the objective exists to force has nothing to separate |
+| `NFR-PERF-18` | The graph tier's freshness stated separately from the analytical tier's | Both published | **Not met**, for the same reason and with the same consequence |
+
+**Three of eighteen are measured.** That sentence is the one this table exists to make
+unavoidable, and it could not be read off the previous version — which listed eleven and simply
+omitted seven, including `NFR-PERF-06`. An objective recorded as *unmet* is a decision somebody
+took; an objective that is not in the table is one nobody has to think about, and to anybody
+scanning for red it reads exactly like an objective that is fine. `cargo xtask check-objectives`
+now fails when a stated objective is missing here, and it has no opinion about whether one is
+met — omission is the failure it exists to catch, because omission is the one a reader cannot
+see.
+
+Note also what "measured" means for the three: `cargo xtask check-performance` drives DataFusion
+directly and never crosses `execute.rs` or the wire (`PERF-06`), so the per-statement costs live
+outside the measured path.
 
 `cargo xtask check-performance` enforces the first three and fails the build. It was once
 recorded as *failing*, and the correction is in Chapter 23: the numbers were real and the

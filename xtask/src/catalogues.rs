@@ -513,6 +513,10 @@ const UNREACHABLE: &[(&str, &str)] = &[
     ("SNK-F0001", "commit conflicts do occur, and `sankhya-publish` reports them as its own `CommitError`, which nothing maps onto this code"),
     ("SNK-X0001", "cancellation does occur, as `sankhya_governor::Stopped` and as a statement timeout, and nothing maps either onto this code"),
     ("SNK-S0003", "backup verification does run, and reports through `sankhya-backup`’s own types rather than raising this code"),
+    // Found by a reviewer reading the gate rather than trusting it, and it had been hiding
+    // behind a substring: `SpliceError::CoverageGap` contains `Error::CoverageGap`, so this
+    // read as produced. It pages, and a runbook was written for it.
+    ("SNK-S0001", "the coverage gap it names is detected by `sankhya-plan`’s splice and reported as its own `SpliceError::CoverageGap`, which nothing maps onto this code --- and the tier splice that would raise it is not in the server’s read path, which synthesises a coverage range rather than composing one"),
 ];
 
 /// `Error::InvalidQuery { detail: None }` becomes `InvalidQuery`.
@@ -536,8 +540,9 @@ fn every_code_is_reachable_or_declared(root: &Path) -> bool {
         let code = error.code().as_str();
         // The constructor, not the bare variant name: a doc comment or a match arm naming
         // the variant is not a site that can produce it.
-        let produced = sources.contains(&format!("Error::{}(", variant_of(&error)))
-            || sources.contains(&format!("Error::{} {{", variant_of(&error)));
+        let variant = variant_of(&error);
+        let produced = constructs(&sources, &format!("Error::{variant}("))
+            || constructs(&sources, &format!("Error::{variant} {{"));
         match (produced, declared.contains(code)) {
             (false, false) => {
                 eprintln!(
@@ -557,6 +562,38 @@ fn every_code_is_reachable_or_declared(root: &Path) -> bool {
         }
     }
     ok
+}
+
+/// Whether `sources` constructs the catalogue's `Error`, and not some other type's variant.
+///
+/// # Why a plain substring was wrong, and how it was found
+///
+/// This was `sources.contains("Error::CoverageGap {")`, and `crates/sankhya-plan` has a
+/// `SpliceError::CoverageGap` --- whose text **contains that string**. So the check saw a
+/// construction site that belongs to a different type in a different crate, and `SNK-S0001`
+/// passed as producible while nothing in the workspace could raise it. It is `Class::Fatal`,
+/// so a runbook was written for it and an alert rule on it would never have fired: a
+/// thirteenth unreachable code, hiding behind the gate built to find exactly this.
+///
+/// The boundary is the fix. A match must not be preceded by a character that could be part
+/// of an identifier, so `SpliceError::` and `PackError::` no longer count as `Error::`.
+fn constructs(sources: &str, needle: &str) -> bool {
+    let mut from = 0usize;
+    while let Some(at) = sources.get(from..).and_then(|rest| rest.find(needle)) {
+        let start = from + at;
+        let preceded_by_identifier = sources
+            .get(..start)
+            .and_then(|before| before.chars().next_back())
+            // `:` is deliberately absent: `sankhya_error::Error::X` is the qualified path to
+            // the real one and must count, while `SpliceError::X` is preceded by a letter
+            // and must not.
+            .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        if !preceded_by_identifier {
+            return true;
+        }
+        from = start + needle.len();
+    }
+    false
 }
 
 /// Read every source file outside the error crate into one buffer.
@@ -667,4 +704,28 @@ fn every_pageable_thing_has_a_runbook(root: &Path) -> bool {
         }
     }
     ok
+}
+
+#[cfg(test)]
+mod reachability {
+    #[test]
+    fn another_types_variant_of_the_same_name_is_not_a_construction_site() {
+        // `SpliceError::CoverageGap {` contains `Error::CoverageGap {`. The plain substring
+        // this replaced saw that as `sankhya_error::Error::CoverageGap` being produced, and
+        // `SNK-S0001` --- which pages --- was published as reachable while nothing could
+        // raise it.
+        assert!(!super::constructs(
+            "            return Err(SpliceError::CoverageGap {",
+            "Error::CoverageGap {"
+        ));
+        // A qualified path to the real one still counts, and so does a bare use.
+        assert!(super::constructs(
+            "sankhya_error::Error::CoverageGap { detail: None }",
+            "Error::CoverageGap {"
+        ));
+        assert!(super::constructs(
+            "        Err(Error::CoverageGap { detail: None })",
+            "Error::CoverageGap {"
+        ));
+    }
 }

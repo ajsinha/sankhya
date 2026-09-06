@@ -11,16 +11,16 @@ is stale, so an added dependency cannot ship unattributed.
 
 ## Summary
 
-426 third-party packages.
+452 third-party packages.
 
 | Licence | Packages |
 |---|---|
-| `MIT OR Apache-2.0` | 194 |
-| `MIT` | 75 |
-| `Apache-2.0` | 59 |
-| `MIT/Apache-2.0` | 19 |
+| `MIT OR Apache-2.0` | 205 |
+| `MIT` | 80 |
+| `Apache-2.0` | 62 |
+| `MIT/Apache-2.0` | 23 |
+| `Apache-2.0 OR MIT` | 19 |
 | `Unicode-3.0` | 18 |
-| `Apache-2.0 OR MIT` | 16 |
 | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | 5 |
 | `BSD-3-Clause` | 4 |
 | `Unlicense OR MIT` | 4 |
@@ -55,8 +55,11 @@ is stale, so an added dependency cannot ship unattributed.
 | `aho-corasick` | 1.1.5 | `Unlicense OR MIT` | <https://github.com/BurntSushi/aho-corasick> |
 | `alloc-no-stdlib` | 2.0.4 | `BSD-3-Clause` | <https://github.com/dropbox/rust-alloc-no-stdlib> |
 | `alloc-stdlib` | 0.2.4 | `BSD-3-Clause` | <https://github.com/dropbox/rust-alloc-no-stdlib> |
+| `alloca` | 0.4.0 | `MIT` | <https://github.com/playXE/alloca-rs> |
 | `allocator-api2` | 0.2.21 | `MIT OR Apache-2.0` | <https://github.com/zakarumych/allocator-api2> |
 | `android_system_properties` | 0.1.6 | `MIT OR Apache-2.0` | <https://github.com/nical/android_system_properties> |
+| `anes` | 0.1.6 | `MIT OR Apache-2.0` | <https://github.com/zrzka/anes-rs> |
+| `anstyle` | 1.0.14 | `MIT OR Apache-2.0` | <https://github.com/rust-cli/anstyle.git> |
 | `anyhow` | 1.0.104 | `MIT OR Apache-2.0` | <https://github.com/dtolnay/anyhow> |
 | `arrayvec` | 0.7.8 | `MIT OR Apache-2.0` | <https://github.com/bluss/arrayvec> |
 | `arrow` | 59.2.0 | `Apache-2.0` | <https://github.com/apache/arrow-rs> |
@@ -104,12 +107,19 @@ is stale, so an added dependency cannot ship unattributed.
 | `bytemuck` | 1.25.2 | `Zlib OR Apache-2.0 OR MIT` | <https://github.com/Lokathor/bytemuck> |
 | `byteorder` | 1.5.0 | `Unlicense OR MIT` | <https://github.com/BurntSushi/byteorder> |
 | `bytes` | 1.12.1 | `MIT` | <https://github.com/tokio-rs/bytes> |
+| `cast` | 0.3.0 | `MIT OR Apache-2.0` | <https://github.com/japaric/cast.rs> |
 | `cc` | 1.4.4 | `MIT OR Apache-2.0` | <https://github.com/rust-lang/cc-rs> |
 | `cfg-if` | 1.0.4 | `MIT OR Apache-2.0` | <https://github.com/rust-lang/cfg-if> |
 | `cfg_aliases` | 0.2.2 | `MIT` | <https://github.com/katharostech/cfg_aliases> |
 | `chacha20` | 0.10.1 | `MIT OR Apache-2.0` | <https://github.com/RustCrypto/stream-ciphers> |
 | `chrono` | 0.4.45 | `MIT OR Apache-2.0` | <https://github.com/chronotope/chrono> |
 | `chrono-tz` | 0.10.4 | `MIT OR Apache-2.0` | <https://github.com/chronotope/chrono-tz> |
+| `ciborium` | 0.2.2 | `Apache-2.0` | <https://github.com/enarx/ciborium> |
+| `ciborium-io` | 0.2.2 | `Apache-2.0` | <https://github.com/enarx/ciborium> |
+| `ciborium-ll` | 0.2.2 | `Apache-2.0` | <https://github.com/enarx/ciborium> |
+| `clap` | 4.6.6 | `MIT OR Apache-2.0` | <https://github.com/clap-rs/clap> |
+| `clap_builder` | 4.6.6 | `MIT OR Apache-2.0` | <https://github.com/clap-rs/clap> |
+| `clap_lex` | 1.1.0 | `MIT OR Apache-2.0` | <https://github.com/clap-rs/clap> |
 | `comfy-table` | 7.2.2 | `MIT` | <https://github.com/nukesor/comfy-table> |
 | `const-random` | 0.1.18 | `MIT OR Apache-2.0` | <https://github.com/tkaitchuck/constrandom> |
 | `const-random-macro` | 0.1.16 | `MIT OR Apache-2.0` | <https://github.com/tkaitchuck/constrandom> |
@@ -120,6 +130,10 @@ is stale, so an added dependency cannot ship unattributed.
 | `cpufeatures` | 0.3.0 | `MIT OR Apache-2.0` | <https://github.com/RustCrypto/utils> |
 | `crc` | 3.4.0 | `MIT OR Apache-2.0` | <https://github.com/mrhooray/crc-rs.git> |
 | `crc-catalog` | 2.5.0 | `MIT OR Apache-2.0` | <https://github.com/akhilles/crc-catalog.git> |
+| `criterion` | 0.8.2 | `Apache-2.0 OR MIT` | <https://github.com/criterion-rs/criterion.rs> |
+| `criterion-plot` | 0.8.2 | `Apache-2.0 OR MIT` | <https://github.com/criterion-rs/criterion.rs> |
+| `crossbeam-deque` | 0.8.8 | `MIT OR Apache-2.0` | <https://github.com/crossbeam-rs/crossbeam> |
+| `crossbeam-epoch` | 0.9.21 | `MIT OR Apache-2.0` | <https://github.com/crossbeam-rs/crossbeam> |
 | `crossbeam-utils` | 0.8.22 | `MIT OR Apache-2.0` | <https://github.com/crossbeam-rs/crossbeam> |
 | `crunchy` | 0.2.4 | `MIT` | <https://github.com/eira-fransham/crunchy> |
 | `crypto-common` | 0.1.7 | `MIT OR Apache-2.0` | <https://github.com/RustCrypto/traits> |
@@ -224,6 +238,7 @@ is stale, so an added dependency cannot ship unattributed.
 | `idna_adapter` | 1.2.2 | `Apache-2.0 OR MIT` | <https://github.com/hsivonen/idna_adapter> |
 | `indexmap` | 2.14.0 | `Apache-2.0 OR MIT` | <https://github.com/indexmap-rs/indexmap> |
 | `ipnet` | 2.12.1 | `MIT OR Apache-2.0` | <https://github.com/krisprice/ipnet> |
+| `itertools` | 0.13.0 | `MIT OR Apache-2.0` | <https://github.com/rust-itertools/itertools> |
 | `itertools` | 0.14.0 | `MIT OR Apache-2.0` | <https://github.com/rust-itertools/itertools> |
 | `itertools` | 0.15.0 | `MIT OR Apache-2.0` | <https://github.com/rust-itertools/itertools> |
 | `itoa` | 1.0.18 | `MIT OR Apache-2.0` | <https://github.com/dtolnay/itoa> |
@@ -263,7 +278,9 @@ is stale, so an added dependency cannot ship unattributed.
 | `object_store` | 0.13.2 | `MIT/Apache-2.0` | <https://github.com/apache/arrow-rs-object-store> |
 | `oid-registry` | 0.8.1 | `MIT OR Apache-2.0` | <https://github.com/rusticata/oid-registry.git> |
 | `once_cell` | 1.21.4 | `MIT OR Apache-2.0` | <https://github.com/matklad/once_cell> |
+| `oorandom` | 11.1.5 | `MIT` | <https://hg.sr.ht/~icefox/oorandom> |
 | `openssl-probe` | 0.2.1 | `MIT OR Apache-2.0` | <https://github.com/rustls/openssl-probe> |
+| `page_size` | 0.6.0 | `MIT/Apache-2.0` | <https://github.com/Elzair/page_size_rs> |
 | `parking_lot` | 0.12.5 | `MIT OR Apache-2.0` | <https://github.com/Amanieu/parking_lot> |
 | `parking_lot_core` | 0.9.12 | `MIT OR Apache-2.0` | <https://github.com/Amanieu/parking_lot> |
 | `parquet` | 59.2.0 | `Apache-2.0` | <https://github.com/apache/arrow-rs> |
@@ -276,6 +293,9 @@ is stale, so an added dependency cannot ship unattributed.
 | `pin-project-internal` | 1.1.13 | `Apache-2.0 OR MIT` | <https://github.com/taiki-e/pin-project> |
 | `pin-project-lite` | 0.2.17 | `Apache-2.0 OR MIT` | <https://github.com/taiki-e/pin-project-lite> |
 | `pkg-config` | 0.3.34 | `MIT OR Apache-2.0` | <https://github.com/rust-lang/pkg-config-rs> |
+| `plotters` | 0.3.7 | `MIT` | <https://github.com/plotters-rs/plotters> |
+| `plotters-backend` | 0.3.7 | `MIT` | <https://github.com/plotters-rs/plotters> |
+| `plotters-svg` | 0.3.7 | `MIT` | <https://github.com/plotters-rs/plotters.git> |
 | `potential_utf` | 0.1.6 | `Unicode-3.0` | <https://github.com/unicode-org/icu4x> |
 | `powerfmt` | 0.2.0 | `MIT OR Apache-2.0` | <https://github.com/jhpratt/powerfmt> |
 | `ppv-lite86` | 0.2.21 | `MIT OR Apache-2.0` | <https://github.com/cryptocorrosion/cryptocorrosion> |
@@ -306,6 +326,8 @@ is stale, so an added dependency cannot ship unattributed.
 | `rand_core` | 0.9.5 | `MIT OR Apache-2.0` | <https://github.com/rust-random/rand> |
 | `rand_pcg` | 0.10.2 | `MIT OR Apache-2.0` | <https://github.com/rust-random/rngs> |
 | `rand_xorshift` | 0.4.0 | `MIT OR Apache-2.0` | <https://github.com/rust-random/rngs> |
+| `rayon` | 1.12.0 | `MIT OR Apache-2.0` | <https://github.com/rayon-rs/rayon> |
+| `rayon-core` | 1.13.0 | `MIT OR Apache-2.0` | <https://github.com/rayon-rs/rayon> |
 | `rcgen` | 0.14.10 | `MIT OR Apache-2.0` | <https://github.com/rustls/rcgen> |
 | `redox_syscall` | 0.5.18 | `MIT` | <https://gitlab.redox-os.org/redox-os/syscall> |
 | `regex` | 1.13.1 | `MIT OR Apache-2.0` | <https://github.com/rust-lang/regex> |
@@ -379,6 +401,7 @@ is stale, so an added dependency cannot ship unattributed.
 | `time-macros` | 0.2.32 | `MIT OR Apache-2.0` | <https://github.com/time-rs/time> |
 | `tiny-keccak` | 2.0.2 | `CC0-1.0` | <https://crates.io/crates/tiny-keccak> |
 | `tinystr` | 0.8.4 | `Unicode-3.0` | <https://github.com/unicode-org/icu4x> |
+| `tinytemplate` | 1.2.1 | `Apache-2.0 OR MIT` | <https://github.com/bheisler/TinyTemplate> |
 | `tinyvec` | 1.12.0 | `Zlib OR Apache-2.0 OR MIT` | <https://github.com/Lokathor/tinyvec> |
 | `tinyvec_macros` | 0.1.1 | `MIT OR Apache-2.0 OR Zlib` | <https://github.com/Soveu/tinyvec_macros> |
 | `tokio` | 1.53.1 | `MIT` | <https://github.com/tokio-rs/tokio> |
@@ -433,7 +456,10 @@ is stale, so an added dependency cannot ship unattributed.
 | `wasm-streams` | 0.4.2 | `MIT OR Apache-2.0` | <https://github.com/MattiasBuelens/wasm-streams/> |
 | `web-sys` | 0.3.104 | `MIT OR Apache-2.0` | <https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys> |
 | `web-time` | 1.1.0 | `MIT OR Apache-2.0` | <https://github.com/daxpedda/web-time> |
+| `winapi` | 0.3.9 | `MIT/Apache-2.0` | <https://github.com/retep998/winapi-rs> |
+| `winapi-i686-pc-windows-gnu` | 0.4.0 | `MIT/Apache-2.0` | <https://github.com/retep998/winapi-rs> |
 | `winapi-util` | 0.1.11 | `Unlicense OR MIT` | <https://github.com/BurntSushi/winapi-util> |
+| `winapi-x86_64-pc-windows-gnu` | 0.4.0 | `MIT/Apache-2.0` | <https://github.com/retep998/winapi-rs> |
 | `windows-core` | 0.62.2 | `MIT OR Apache-2.0` | <https://github.com/microsoft/windows-rs> |
 | `windows-implement` | 0.60.2 | `MIT OR Apache-2.0` | <https://github.com/microsoft/windows-rs> |
 | `windows-interface` | 0.59.3 | `MIT OR Apache-2.0` | <https://github.com/microsoft/windows-rs> |

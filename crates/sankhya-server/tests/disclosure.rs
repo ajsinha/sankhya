@@ -629,3 +629,56 @@ fn a_memory_bound_of_nothing_is_not_a_bound_of_nothing() {
         1000
     );
 }
+
+#[test]
+fn the_audit_keeps_being_written_past_the_size_of_its_own_window() {
+    // A regression introduced by the windowing in 5.1a, found by reading the code rather
+    // than by any test.
+    //
+    // `append` took `sequence = chain.len()`, which is the **whole chain's** count --- kept
+    // whole on purpose, because a count that shrank as records aged out is one nobody could
+    // compare against what they mirrored. It then used that number to index
+    // `chain.records()`, which returns only the retained window of 1,024. Past the
+    // thousand-and-twenty-fourth record the index is out of range, `written` is `None`, and
+    // the `if let Some(Err(..))` arm never runs --- so the journal append stopped **and** the
+    // metric that pages for exactly this could not increment.
+    //
+    // Worse on a restart: startup loads through `read_windowed`, which counts every line
+    // into `total` while keeping 1,024 in memory. On any warehouse whose chain already holds
+    // more than a window, the *first* statement of the new process missed, and the audit was
+    // never written again for that process's whole life. Silently, with the alert at zero.
+    //
+    // The fix is to take the record that was just appended --- which is the last one, whatever
+    // the window is --- rather than to compute where it ought to be.
+    let (dir, server) = running();
+    let warehouse = dir.path().join("warehouse");
+    let chain = warehouse.join("_audit").join("chain.jsonl");
+
+    // Comfortably past the window. Each statement appends at least one record, and a
+    // catalogue listing appends one too, so this is a floor rather than a count.
+    let mut session = Session::open_as(server.port, "ana");
+    for _ in 0..1_200 {
+        session
+            .run("SELECT region FROM orders LIMIT 1")
+            .expect("a reader may read");
+    }
+
+    let text = std::fs::read_to_string(&chain).expect("the audit is on disk");
+    let written = text.lines().filter(|line| !line.trim().is_empty()).count();
+    assert!(
+        written >= 1_200,
+        "the journal holds {written} records after 1,200 statements: writing stopped at the \
+         window boundary, and nothing said so"
+    );
+
+    // And the chain in memory still agrees with the file about how long it is --- which is
+    // the comparison a truncation is noticed by, and the reason `len` is the whole count.
+    let (reloaded, complaints) = sankhya_audit::journal::read(&warehouse);
+    assert!(complaints.is_empty(), "the journal must parse: {complaints:?}");
+    assert_eq!(
+        reloaded.len(),
+        written,
+        "every line of the file is a record of the chain"
+    );
+    assert!(reloaded.verify().is_ok(), "and the chain they form verifies");
+}
