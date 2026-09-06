@@ -172,16 +172,8 @@ pub fn session_and_contested(
 /// pool is an error whatever this is set to. That is worth knowing before somebody raises the
 /// limit expecting the join to start working.
 fn bounded_session() -> SessionContext {
-    use datafusion::execution::disk_manager::DiskManagerBuilder;
-    use datafusion::execution::memory_pool::FairSpillPool;
-    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-
-    let environment = RuntimeEnvBuilder::new()
-        .with_memory_pool(std::sync::Arc::new(FairSpillPool::new(query_memory_bytes())))
-        .with_disk_manager_builder(DiskManagerBuilder::default())
-        .build_arc();
-    match environment {
-        Ok(environment) => SessionContext::new_with_config_rt(
+    match shared_runtime() {
+        Some(environment) => SessionContext::new_with_config_rt(
             datafusion::prelude::SessionConfig::new(),
             environment,
         ),
@@ -189,11 +181,52 @@ fn bounded_session() -> SessionContext {
         // reason to serve with the default one and say nothing was applied. Refusing every
         // statement because a temporary directory could not be made would be worse, and this
         // is the branch that has never been observed to run.
-        Err(error) => {
-            tracing::error!(%error, "the bounded query runtime could not be built");
-            SessionContext::new()
+        None => SessionContext::new(),
+    }
+}
+
+/// The one runtime every statement runs on.
+///
+/// # This was per statement, and that made the bound a lie
+///
+/// The first version of `bounded_session` built a fresh `RuntimeEnv` --- and therefore a
+/// fresh `FairSpillPool` --- on every call, so each statement got its own gibibyte. Ten
+/// concurrent statements got ten, and the machine died exactly as before while the setting
+/// and its documentation both said "how much memory this server's queries may use **between
+/// them**". A pool that is not shared is not a bound; it is a per-statement allowance
+/// wearing a bound's name, which is worse than none because it reads as solved.
+///
+/// Fairness is the whole reason it has to be shared. A fair pool divides what there is
+/// between the consumers actually asking, so the expensive query fails itself rather than
+/// starving the others. With a pool each, there is nothing to be fair about.
+///
+/// # And it is the per-statement cost `OPS-22` is about
+///
+/// Building a runtime means building a disk manager, which touches the filesystem. Once per
+/// process rather than once per statement.
+fn shared_runtime() -> Option<std::sync::Arc<datafusion::execution::runtime_env::RuntimeEnv>> {
+    use datafusion::execution::disk_manager::DiskManagerBuilder;
+    use datafusion::execution::memory_pool::FairSpillPool;
+    use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
+
+    /// One runtime, built the first time it is asked for.
+    fn built() -> Option<std::sync::Arc<RuntimeEnv>> {
+        match RuntimeEnvBuilder::new()
+            .with_memory_pool(std::sync::Arc::new(FairSpillPool::new(query_memory_bytes())))
+            .with_disk_manager_builder(DiskManagerBuilder::default())
+            .build_arc()
+        {
+            Ok(environment) => Some(environment),
+            Err(error) => {
+                tracing::error!(%error, "the bounded query runtime could not be built");
+                None
+            }
         }
     }
+
+    static RUNTIME: std::sync::OnceLock<Option<std::sync::Arc<RuntimeEnv>>> =
+        std::sync::OnceLock::new();
+    RUNTIME.get_or_init(built).clone()
 }
 
 /// How much memory one server's queries may use between them.

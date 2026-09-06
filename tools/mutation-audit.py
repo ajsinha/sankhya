@@ -6416,6 +6416,33 @@ CATALOGUE = [
      "            \"Compact it: `sankhya maintenance compact --table {table}`. Or \\",
      "sankhya-diagnostic", 1, "check"),
 
+    # --- Phase 5.6: what a statement costs before it reads a row ----------------------------------
+
+    # The bound `SANKHYA_QUERY_MEMORY_BYTES` names is *between* a server's queries. The first
+    # version built a fresh pool per statement, so ten concurrent statements got ten
+    # gibibytes and the setting read as solved while the machine died as before.
+    ("server: give every statement its own memory pool, as 5.1b did",
+     "crates/sankhya-server/src/execute.rs",
+     "    RUNTIME.get_or_init(built).clone()",
+     "    built()",
+     "sankhya-server", 1, "wiring"),
+
+    # `OPS-22`. The freshness probe replayed every table's log from version zero on every
+    # statement, while holding the cache built to make it incremental.
+    ("server: replay every log from the beginning on every statement",
+     "crates/sankhya-server/src/warehouse.rs",
+     "        let now = cache\n            .live_files(&table.root)\n            .ok()\n            .and_then(|(live, _)| live.version)",
+     "        let now = sankhya_table_delta::live_files(&table.root)\n            .ok()\n            .and_then(|live| live.version)",
+     "sankhya-server", 1, "wiring"),
+
+    # `OPS-21`. Checkpoints were written only by tests, so every replay in the system ran
+    # from version zero for the life of the warehouse.
+    ("maintenance: leave checkpointing to the tests, as it used to",
+     "crates/sankhya-maintenance/src/service.rs",
+     "                crate::driver::checkpoint_if_due(\n                    table_root,",
+     "                #[allow(unreachable_code)] crate::driver::checkpoint_if_due(\n                    return Ok(report),",
+     "sankhya-maintenance", 1, "adoption"),
+
 ]
 
 

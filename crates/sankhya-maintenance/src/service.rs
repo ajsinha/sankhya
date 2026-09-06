@@ -311,13 +311,40 @@ impl Maintainer {
             report.files_removed.extend(swept.removed);
         }
 
-        // Checkpointing is deliberately *not* done here yet.
+        // Checkpointing, which bounds how far every reader has to replay.
         //
-        // `checkpoint_if_due` needs the table's `Metadata` --- schema, partition columns ---
-        // and there is no reader for it in the log crate today. A checkpoint written from a
-        // fabricated default would record a schema the table does not have, which is worse
-        // than replaying a long log: one costs startup time, the other tells every external
-        // reader something false. Wiring it needs a metadata reader first.
+        // `OPS-21`: this was called only from tests, so every log replay in the system --- at
+        // startup, on every statement's freshness probe, in `doctor` --- ran from version
+        // zero. One `exists()`, one read and one JSON parse per commit, per table, for the
+        // life of the warehouse.
+        //
+        // It used to say it could not be wired because `checkpoint_if_due` needs the table's
+        // `Metadata` and the log crate had no reader for it. That reasoning was right and it
+        // has expired: `latest_metadata` exists. The point it was protecting still stands ---
+        // a checkpoint written from a *fabricated* default records a schema the table does
+        // not have and tells every external reader something false --- which is why this
+        // reads the metadata and skips the table when there is none to read rather than
+        // supplying one.
+        match sankhya_table_delta::latest_metadata(table_root) {
+            Ok(Some(metadata)) => {
+                // A failure to write one is a missed optimisation, never a correctness
+                // problem: a checkpoint holds exactly what replay produces. So it is
+                // reported through the tick's own error rather than swallowed, and a table
+                // that cannot be checkpointed is still compacted, retired and swept.
+                crate::driver::checkpoint_if_due(
+                    table_root,
+                    &metadata,
+                    crate::driver::CHECKPOINT_INTERVAL,
+                )
+                .map_err(|error| Error::InvariantViolated(error.to_string()))?;
+            }
+            // A table whose log declares no metadata is not one this can summarise. It is
+            // also not a table, and `partitions_of` above would already have found nothing.
+            Ok(None) => {}
+            Err(error) => {
+                return Err(Error::InvariantViolated(error.to_string()));
+            }
+        }
 
         Ok(report)
     }

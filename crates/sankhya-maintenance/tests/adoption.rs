@@ -212,3 +212,64 @@ fn a_tick_that_fails_is_counted_rather_than_discarded() {
          skipped in silence"
     );
 }
+
+#[test]
+fn maintenance_writes_the_checkpoints_that_bound_replay() {
+    // `OPS-21`. `checkpoint_if_due` was called from tests and from nothing else, so every
+    // log replay in the system --- at startup, on every statement's freshness probe, in
+    // `doctor` --- ran from version zero: one `exists()`, one read and one JSON parse per
+    // commit, per table, for the life of the warehouse.
+    //
+    // The reason recorded for not wiring it was that `checkpoint_if_due` needs the table's
+    // `Metadata` and the log crate had no reader. That reasoning was right and it expired.
+    use sankhya_table_delta::{latest_checkpoint, read_checkpoint, Action, AddFile};
+
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let warehouse = dir.path().join("warehouse");
+    let orders = warehouse.join("sales").join("orders");
+    a_table(&orders);
+
+    // Past the interval, so one is due. Each commit is a version the next replay would
+    // otherwise have to read.
+    for version in 1..=(sankhya_maintenance::CHECKPOINT_INTERVAL + 2) {
+        std::fs::write(orders.join(format!("part-{version}.parquet")), vec![b'x'; 64])
+            .expect("a data file");
+        commit(
+            &orders,
+            version,
+            &[Action::Add(AddFile::with_rows(
+                &format!("part-{version}.parquet"),
+                64,
+                0,
+                1,
+            ))],
+        )
+        .expect("publishing");
+    }
+    assert!(
+        latest_checkpoint(&orders).is_none(),
+        "nothing has checkpointed it yet"
+    );
+
+    let handle = sankhya_maintenance::spawn_maintenance_over_warehouse(
+        warehouse.clone(),
+        brisk(),
+        None,
+        Arc::new(Mutex::new(StillReading::default())),
+    );
+    until("a checkpoint was written", || {
+        latest_checkpoint(&orders).is_some()
+    });
+    handle.stop();
+
+    // And it summarises the log rather than being an empty file that satisfies a check: the
+    // live set it holds is the live set a replay produces.
+    let version = latest_checkpoint(&orders).expect("a checkpoint");
+    let from_checkpoint = read_checkpoint(&orders, version).expect("readable");
+    let by_replay = sankhya_table_delta::live_files(&orders).expect("replayable");
+    assert_eq!(
+        from_checkpoint.len(),
+        by_replay.files.len(),
+        "a checkpoint that does not agree with replay is worse than none"
+    );
+}
