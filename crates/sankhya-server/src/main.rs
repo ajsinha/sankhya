@@ -706,7 +706,13 @@ async fn main() -> std::io::Result<()> {
     // `let _ = ...` would stop it immediately --- maintenance that runs for the length of one
     // statement is worse than none, because the log would say it started.
     let maintenance = configured_maintenance.map(|policy| {
-        let tables = sankhya_maintenance::tables_under(&warehouse_root);
+        // Counted for the banner only. The thread discovers its own set at the top of every
+        // cycle --- `OPS-10`: this list used to be *the* list, frozen, so a table created
+        // after the server came up was maintained by nobody for ever and nothing said so.
+        let (tables, unlisted) = sankhya_maintenance::tables_under_reporting(&warehouse_root);
+        for why in &unlisted {
+            eprintln!("  maintenance could not list part of the warehouse: {why}");
+        }
         println!(
             "  maintaining {} table(s) every {:?}, compacting every {} tick(s), sweeping every {}",
             tables.len(),
@@ -725,8 +731,8 @@ async fn main() -> std::io::Result<()> {
         ));
         // The *same* registry the query path pins. Building a second one here would leave the
         // sweeper watching a registry nobody announces into.
-        let handle = std::sync::Arc::new(sankhya_maintenance::spawn_maintenance_watching_pins(
-            tables,
+        let handle = std::sync::Arc::new(sankhya_maintenance::spawn_maintenance_over_warehouse(
+            warehouse_root.clone(),
             policy,
             Some(server.leases()),
             std::sync::Arc::clone(&reading),

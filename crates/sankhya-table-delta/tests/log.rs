@@ -435,3 +435,54 @@ fn a_commit_with_no_actions_is_refused() {
         "an empty commit is indistinguishable from a truncated one"
     );
 }
+
+#[test]
+fn a_log_nobody_can_read_is_an_error_rather_than_an_empty_table() {
+    // `OPS-12`, in the place it costs the most. The walk that finds commits used
+    // `Path::exists`, which answers `false` for every failure --- including "the directory
+    // holding this file cannot be searched". So a `_delta_log` with the wrong permissions,
+    // or under a half-mounted export, ended the walk at version zero and the table replayed
+    // as empty: a `SELECT` returned no rows and **succeeded**.
+    //
+    // Zero rows that are wrong is the failure mode this whole system is arranged against,
+    // and it was one `chmod` away.
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path();
+    commit(root, 0, &create(Metadata::new("t", SCHEMA.to_string(), 0))).expect("creating");
+    commit(
+        root,
+        1,
+        &[Action::Add(AddFile::with_rows("part-0.parquet", 512, 0, 1))],
+    )
+    .expect("publishing");
+
+    // It reads as one file while it is readable, so the assertion below is about the
+    // permissions rather than about a table that was empty all along.
+    assert_eq!(live_files(root).expect("a readable log").files.len(), 1);
+
+    let log = root.join("_delta_log");
+    let mut permissions = std::fs::metadata(&log).expect("it exists").permissions();
+    permissions.set_mode(0o000);
+    std::fs::set_permissions(&log, permissions).expect("setting permissions");
+    let blinded = std::fs::read_dir(&log).is_err();
+
+    let answer = live_files(root);
+
+    let mut permissions = std::fs::metadata(&log).expect("it exists").permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&log, permissions).ok();
+
+    assert!(
+        blinded,
+        "the log is still readable after chmod 000 --- this test cannot run as root"
+    );
+    match answer {
+        Err(_) => {}
+        Ok(live) => panic!(
+            "a log that cannot be read must not replay as a table with {} file(s)",
+            live.files.len()
+        ),
+    }
+}

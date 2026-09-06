@@ -6358,6 +6358,46 @@ CATALOGUE = [
      "        Err(_) => return Ok(Vec::new()),",
      "sankhya-cube", 1, "catalogue"),
 
+    # --- Phase 5.4: maintenance that can be watched -----------------------------------------------
+
+    # `OPS-10`. The table list was a startup snapshot, so a table created afterwards was
+    # maintained by nobody for ever --- and the aggregate reclaimed-bytes figure kept rising
+    # from the others, so the warehouse looked healthy.
+    ("maintenance: freeze the table list at startup, as it used to",
+     "crates/sankhya-maintenance/src/service.rs",
+     "            Self::Everything(warehouse) => tables_under_reporting(warehouse),",
+     "            Self::Everything(_) => (Vec::new(), Vec::new()),",
+     "sankhya-maintenance", 1, "adoption"),
+
+    ("maintenance: keep ticking a table that has gone",
+     "crates/sankhya-maintenance/src/service.rs",
+     "                        .filter(|table| !present.contains(table))",
+     "                        .filter(|_| false)",
+     "sankhya-maintenance", 1, "adoption"),
+
+    # `OPS-11`. The tick's error was discarded with `Err(_) => continue`, so a table whose
+    # compaction failed every thirty seconds failed silently for ever.
+    ("maintenance: discard the error from a tick that failed",
+     "crates/sankhya-maintenance/src/service.rs",
+     "                                failed.fetch_add(1, Ordering::Relaxed);",
+     "                                let _ = &failed;",
+     "sankhya-maintenance", 1, "adoption"),
+
+    ("maintenance: read an unlistable warehouse as one with no tables",
+     "crates/sankhya-maintenance/src/service.rs",
+     "                unlisted.push(format!(\"{}: {error}\", directory.display()));",
+     "                let _ = &error;",
+     "sankhya-maintenance", 1, "adoption"),
+
+    # `OPS-12` where it costs the most: `Path::exists` answers false for every failure, so a
+    # log nobody could read replayed as an empty table and a query returned no rows and
+    # succeeded.
+    ("delta: end the commit walk when a log cannot be read, as `exists` did",
+     "crates/sankhya-table-delta/src/log.rs",
+     "        match path.try_exists() {\n            Ok(true) => {}\n            Ok(false) => break,",
+     "        match path.try_exists().map_err(|_| ()).or(Ok::<bool, ()>(false)) {\n            Ok(true) => {}\n            Ok(false) => break,",
+     "sankhya-table-delta", 1, "log"),
+
 ]
 
 

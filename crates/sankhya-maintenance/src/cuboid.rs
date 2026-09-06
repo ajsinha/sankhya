@@ -109,7 +109,7 @@ pub fn materialise_quietly(
     match materialise(warehouse, key, cube, cells, rule, completeness) {
         Ok(written) => written,
         Err(error) => {
-            eprintln!("  could not materialise cuboid for cube `{cube}`: {error}");
+            tracing::warn!(cube = %cube, detail = %error, "a cuboid could not be materialised");
             false
         }
     }

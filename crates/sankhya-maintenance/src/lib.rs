@@ -52,6 +52,6 @@ pub use execute::{
 pub use orphans::{plan_orphan_cleanup, sweep, FileOnDisk, OrphanPlan, OrphanPolicy, OrphanReport};
 pub use schedule::{schedule, Class, Deferral, Job, Schedule, Scheduled, SystemState};
 pub use service::{
-    next_compaction_sequence, partitions_of, spawn as spawn_maintenance, spawn_watching as spawn_maintenance_watching, spawn_watching_pins as spawn_maintenance_watching_pins, StillReading, tables_under, MaintenanceHandle,
+    next_compaction_sequence, partitions_of, spawn as spawn_maintenance, spawn_maintaining, spawn_over_warehouse as spawn_maintenance_over_warehouse, spawn_watching as spawn_maintenance_watching, spawn_watching_pins as spawn_maintenance_watching_pins, Maintaining, StillReading, tables_under, tables_under_reporting, MaintenanceHandle,
     MaintenancePolicy, Maintainer,
 };

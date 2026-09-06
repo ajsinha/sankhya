@@ -654,11 +654,30 @@ fn list_data_files(base: &Path, at: &Path, into: &mut Vec<FileOnDisk>) {
 /// then quietly not maintain it --- which looks exactly like maintenance working.
 #[must_use]
 pub fn tables_under(warehouse: &Path) -> Vec<PathBuf> {
+    tables_under_reporting(warehouse).0
+}
+
+/// [`tables_under`], and what it could not list while looking.
+///
+/// `OPS-12` in the one place it decides whether a table is maintained at all. A directory
+/// that cannot be listed used to be `continue`, so an unmounted export was a warehouse with
+/// no tables in it --- and a maintenance thread with nothing to maintain reports nothing,
+/// reclaims nothing, and looks exactly like a warehouse that needs no maintenance.
+///
+/// Not existing is still silent: a warehouse is created on first use.
+#[must_use]
+pub fn tables_under_reporting(warehouse: &Path) -> (Vec<PathBuf>, Vec<String>) {
     let mut found = Vec::new();
+    let mut unlisted = Vec::new();
     let mut stack = vec![warehouse.to_path_buf()];
     while let Some(directory) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&directory) else {
-            continue;
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                unlisted.push(format!("{}: {error}", directory.display()));
+                continue;
+            }
         };
         for entry in entries.flatten() {
             let path = entry.path();
@@ -673,7 +692,8 @@ pub fn tables_under(warehouse: &Path) -> Vec<PathBuf> {
         }
     }
     found.sort();
-    found
+    unlisted.sort();
+    (found, unlisted)
 }
 
 /// A running maintenance thread.
@@ -698,6 +718,14 @@ pub struct MaintenanceHandle {
     /// Counted as well as printed, because a log line answers *"did this happen?"* and an
     /// operator looking at a warehouse that is not shrinking needs *"is it still happening?"*.
     declined: Arc<AtomicU64>,
+    /// Ticks that failed outright, across every table.
+    ///
+    /// Separate from `declined`, which is a tick that chose not to reclaim and is the safe
+    /// direction. This one is a tick that could not do its work at all, and the two need
+    /// different answers from whoever is looking.
+    failed: Arc<AtomicU64>,
+    /// How many tables are being maintained as of the last cycle.
+    maintaining: Arc<std::sync::atomic::AtomicUsize>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -722,6 +750,26 @@ impl MaintenanceHandle {
     #[must_use]
     pub fn declined(&self) -> u64 {
         self.declined.load(Ordering::Relaxed)
+    }
+
+    /// How many ticks failed outright.
+    ///
+    /// `OPS-11`. This was not counted and not logged: the tick's error was discarded with
+    /// `Err(_) => continue`, so a table whose compaction failed on every tick for ever was
+    /// invisible from both a log and a dashboard.
+    #[must_use]
+    pub fn failed(&self) -> u64 {
+        self.failed.load(Ordering::Relaxed)
+    }
+
+    /// How many tables this thread is maintaining right now.
+    ///
+    /// Reported rather than assumed, because the set changes: a table created after the
+    /// server started is adopted on the next cycle, and an operator asking "is my new table
+    /// being maintained?" has no other way to find out.
+    #[must_use]
+    pub fn maintaining(&self) -> usize {
+        self.maintaining.load(Ordering::Relaxed)
     }
 
     /// Hand the running thread a new policy.
@@ -821,12 +869,54 @@ pub struct StillReading {
     pub unreadable: Vec<String>,
 }
 
+/// What a maintenance thread maintains, and whether that set can change.
+///
+/// # Why this is a choice rather than always the warehouse
+///
+/// `OPS-10`. The table list used to be a `Vec<PathBuf>` taken once at startup, so a table
+/// created afterwards was **never maintained** --- its log grew, its small files were never
+/// compacted, and nothing said so, because the aggregate reclaimed-bytes figure kept rising
+/// from the tables that *were* being maintained. `tables_under`'s own doc warned about a
+/// configured list going stale; the caller then froze the discovered one, which is the same
+/// staleness arriving a different way.
+///
+/// A fixed list is still the right thing for a test that wants to maintain one table and
+/// nothing else, so it stays --- named, rather than being the only option there is.
+#[derive(Debug, Clone)]
+pub enum Maintaining {
+    /// Exactly these, for as long as the thread runs.
+    Only(Vec<PathBuf>),
+    /// Every table under this warehouse, re-discovered at the top of every cycle.
+    Everything(PathBuf),
+}
+
+impl Maintaining {
+    /// The tables to maintain this cycle, and what could not be read while looking.
+    fn now(&self) -> (Vec<PathBuf>, Vec<String>) {
+        match self {
+            Self::Only(tables) => (tables.clone(), Vec::new()),
+            Self::Everything(warehouse) => tables_under_reporting(warehouse),
+        }
+    }
+}
+
 pub fn spawn_watching(
     tables: Vec<PathBuf>,
     policy: MaintenancePolicy,
     leases: Option<Arc<Leases>>,
 ) -> MaintenanceHandle {
     spawn_watching_pins(tables, policy, leases, Arc::new(Mutex::new(StillReading::default())))
+}
+
+/// Maintain every table under `warehouse`, including the ones that do not exist yet.
+#[must_use]
+pub fn spawn_over_warehouse(
+    warehouse: PathBuf,
+    policy: MaintenancePolicy,
+    leases: Option<Arc<Leases>>,
+    reading: Arc<Mutex<StillReading>>,
+) -> MaintenanceHandle {
+    spawn_maintaining(Maintaining::Everything(warehouse), policy, leases, reading)
 }
 
 /// [`spawn_watching`], told what still reads each table.
@@ -840,10 +930,23 @@ pub fn spawn_watching_pins(
     leases: Option<Arc<Leases>>,
     reading: Arc<Mutex<StillReading>>,
 ) -> MaintenanceHandle {
+    spawn_maintaining(Maintaining::Only(tables), policy, leases, reading)
+}
+
+/// [`spawn_watching_pins`], told whether the set of tables can grow.
+#[must_use]
+pub fn spawn_maintaining(
+    maintaining: Maintaining,
+    policy: MaintenancePolicy,
+    leases: Option<Arc<Leases>>,
+    reading: Arc<Mutex<StillReading>>,
+) -> MaintenanceHandle {
     let stop = Arc::new(AtomicBool::new(false));
     let ticks = Arc::new(AtomicU64::new(0));
     let reclaimed = Arc::new(AtomicU64::new(0));
     let declined = Arc::new(AtomicU64::new(0));
+    let failed = Arc::new(AtomicU64::new(0));
+    let counted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let shared = Arc::new(Mutex::new(policy.clone()));
 
     let thread = {
@@ -851,6 +954,8 @@ pub fn spawn_watching_pins(
         let ticks = Arc::clone(&ticks);
         let reclaimed = Arc::clone(&reclaimed);
         let declined = Arc::clone(&declined);
+        let failed = Arc::clone(&failed);
+        let counted = Arc::clone(&counted);
         let shared = Arc::clone(&shared);
         std::thread::Builder::new()
             .name("warehouse-maintenance".to_string())
@@ -862,18 +967,58 @@ pub fn spawn_watching_pins(
                 // printed when the set *changes*, which is once when it starts and once when
                 // it stops, and those are the two moments an operator needs.
                 let mut complained: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
-                let mut maintainers: BTreeMap<PathBuf, Maintainer> = tables
-                    .iter()
-                    .map(|table| {
+                // The tick error last reported per table, for the same reason: a table whose
+                // compaction fails is a table whose compaction fails every thirty seconds,
+                // and a line per tick is a log nobody reads. Reported when it *changes* ---
+                // once when it starts and once when it stops.
+                let mut failing: BTreeMap<PathBuf, String> = BTreeMap::new();
+                // What could not be listed while discovering, for the same hysteresis.
+                let mut unlisted: Vec<String> = Vec::new();
+                let mut maintainers: BTreeMap<PathBuf, Maintainer> = BTreeMap::new();
+                while !stop.load(Ordering::Relaxed) {
+                    // The tables, re-read every cycle rather than frozen at startup. A table
+                    // created after the server came up used to be maintained by nobody, for
+                    // ever, in silence.
+                    let (present, could_not_list) = maintaining.now();
+                    if could_not_list != unlisted {
+                        for why in &could_not_list {
+                            tracing::warn!(detail = %why, "maintenance could not list part of the warehouse");
+                        }
+                        if could_not_list.is_empty() {
+                            tracing::info!("maintenance can list the whole warehouse again");
+                        }
+                        unlisted = could_not_list;
+                    }
+                    for table in &present {
+                        if maintainers.contains_key(table) {
+                            continue;
+                        }
                         let maintainer = Maintainer::new(policy.clone());
                         let maintainer = match leases.as_ref() {
                             Some(leases) => maintainer.watching(Arc::clone(leases)),
                             None => maintainer,
                         };
-                        (table.clone(), maintainer)
-                    })
-                    .collect();
-                while !stop.load(Ordering::Relaxed) {
+                        if !maintainers.is_empty() {
+                            // Not on the first cycle, when every table is new and the line
+                            // would be one per table on every start.
+                            tracing::info!(table = %table.display(), "maintenance adopted a table");
+                        }
+                        maintainers.insert(table.clone(), maintainer);
+                    }
+                    // A table that has gone --- dropped, or a warehouse that moved --- stops
+                    // being ticked. Kept out of the "adopted" line above so a drop and a
+                    // re-create do not read as the same table twice.
+                    let gone: Vec<PathBuf> = maintainers
+                        .keys()
+                        .filter(|table| !present.contains(table))
+                        .cloned()
+                        .collect();
+                    for table in gone {
+                        maintainers.remove(&table);
+                        complained.remove(&table);
+                        failing.remove(&table);
+                    }
+                    counted.store(maintainers.len(), Ordering::Relaxed);
                     // Read once per cycle, not once at startup. This is the whole of live
                     // reconfiguration: a setting changed while the server runs is picked up
                     // here, and the tick in progress is never re-judged halfway through.
@@ -895,6 +1040,13 @@ pub fn spawn_watching_pins(
                         maintainer.told(&reading_now, table);
                         match maintainer.tick(table) {
                             Ok(report) => {
+                                if let Some(previous) = failing.remove(table) {
+                                    tracing::info!(
+                                        table = %table.display(),
+                                        was = %previous,
+                                        "maintenance is working for a table again"
+                                    );
+                                }
                                 reclaimed.fetch_add(report.bytes_reclaimed, Ordering::Relaxed);
                                 // The complaints, which used to be dropped here.
                                 //
@@ -905,15 +1057,16 @@ pub fn spawn_watching_pins(
                                 // failure wearing the safe direction's clothes.
                                 if complained.get(table) != Some(&report.declined) {
                                     for why in &report.declined {
-                                        eprintln!(
-                                            "  maintenance is not reclaiming {}: {why}",
-                                            table.display()
+                                        tracing::warn!(
+                                            table = %table.display(),
+                                            detail = %why,
+                                            "maintenance is not reclaiming a table"
                                         );
                                     }
                                     if report.declined.is_empty() {
-                                        eprintln!(
-                                            "  maintenance is reclaiming {} again",
-                                            table.display()
+                                        tracing::info!(
+                                            table = %table.display(),
+                                            "maintenance is reclaiming a table again"
                                         );
                                     }
                                     complained.insert(table.clone(), report.declined.clone());
@@ -924,13 +1077,33 @@ pub fn spawn_watching_pins(
                                 // Never routine: it says a lease leaked, which is a defect
                                 // somewhere else that nothing else here would surface.
                                 for why in &report.presumed_leaked {
-                                    eprintln!("  maintenance backstop fired: {why}");
+                                    // Never routine: it says a lease leaked, which is a
+                                    // defect somewhere else that nothing here would surface.
+                                    tracing::warn!(detail = %why, "maintenance backstop fired");
                                 }
                             }
                             // A table that cannot be maintained this tick is not a reason to
                             // stop maintaining the others, or to bring the thread down. The
                             // next tick tries again.
-                            Err(_) => continue,
+                            //
+                            // `OPS-11`: it also used to be `Err(_) => continue`, so a table
+                            // whose compaction failed every thirty seconds was invisible ---
+                            // and the aggregate reclaimed-bytes figure kept rising from the
+                            // other tables, so the warehouse looked healthy while one of its
+                            // tables was not being maintained at all.
+                            Err(error) => {
+                                let why = error.to_string();
+                                if failing.get(table) != Some(&why) {
+                                    tracing::warn!(
+                                        table = %table.display(),
+                                        detail = %why,
+                                        "maintenance failed for a table and will try again"
+                                    );
+                                    failing.insert(table.clone(), why);
+                                }
+                                failed.fetch_add(1, Ordering::Relaxed);
+                                continue;
+                            }
                         }
                     }
                     ticks.fetch_add(1, Ordering::Relaxed);
@@ -960,6 +1133,8 @@ pub fn spawn_watching_pins(
         ticks,
         reclaimed,
         declined,
+        failed,
+        maintaining: counted,
         thread,
     }
 }
