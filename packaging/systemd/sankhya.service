@@ -52,6 +52,14 @@ Environment=SANKHYA_LISTEN=0.0.0.0:5433
 # node-local scrape rather than opening it.
 Environment=SANKHYA_METRICS_LISTEN=127.0.0.1:9464
 
+# The descriptor limit, which systemd otherwise leaves at whatever the login default is
+# --- 1024 on most distributions. A connection is a descriptor, an open data file is a
+# descriptor, and the server serves up to 1,024 connections at once (`MAX_CONNECTIONS` in
+# `sankhya-api-pg`), so a limit of 1024 is reached by connections alone before a single
+# table is read. `accept()` then returns EMFILE, which the server survives by pausing ---
+# but pausing is a server refusing callers, and the fix for that is here rather than there.
+LimitNOFILE=65535
+
 User=sankhya
 Group=sankhya
 

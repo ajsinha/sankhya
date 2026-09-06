@@ -969,7 +969,46 @@ the catalogue run had to be killed --- the same trap as the sandbox mutation in 
 asks the question cheaply first: a hash join against a megabyte, a sort against a bound of zero,
 a modest overrun before the large one.
 
-`5.2` through `5.7` are not started.
+**5.2 An `accept()` error killed the server (`OPS-08`).** The PostgreSQL door's accept loop
+was `accepted?`. The error propagated out of the serve loop and out of `main`, so the process
+exited --- and `ECONNABORTED`, which is what a load balancer produces every time a health
+check opens a connection and closes it before the handshake, is one of the errors it exited
+on. The comment three lines below said *"a failed connection is that connection's problem,
+not the server's"*; it described the **serve** error while the accept path did the opposite.
+
+**The other two doors were wrong in the other direction.** The metrics endpoint and the
+columnar door both had `let Ok((stream, _)) = accepted else { continue }`, which looks safe
+and is a hot loop: a descriptor shortage does not clear because the loop asked again
+immediately --- the retry fails instantly and the loop burns a core competing with the very
+tasks holding the descriptors it is waiting for. And a listener that is genuinely broken
+fails identically on every call for ever, so `continue` is a process that is up, answering
+nothing, and reporting nothing. An orchestrator restarts a process that dies and stares at
+one that lives.
+
+Three loops, three answers, none right, and the disagreement was only visible to somebody
+reading all three next to each other --- which is not how anybody reads code that lives in
+three crates. So `sankhya-accept` decides, once: routine per-connection failures continue, a
+shortage pauses fifty milliseconds before trying again, and anything unrecognised stops. The
+default is **stop**, deliberately: an error nobody has classified becomes a crash with the
+error in it rather than a silent hot loop an operator diagnoses from a CPU graph.
+
+**And the shortage is now much harder to reach.** There was no connection cap --- the number
+of connections was whatever clients asked for, each one a descriptor --- and the shipped
+systemd unit set no `LimitNOFILE=`, so the server inherited the login default of 1024 and
+reached it on connections alone before opening a single data file. The door serves 1,024 at
+once and the unit asks for 65,535; past the cap the accept branch is simply disabled, so
+callers wait in the kernel backlog and are served as connections finish. Refusing at the
+door is the better failure: a client sees a connection error, which is a thing clients
+retry, rather than the shortage landing on the connections already being served.
+
+**The test sets the limit in a shell.** `setrlimit` is process-wide, so a test binary cannot
+lower its own descriptor limit without lowering it for every other test in the same binary.
+`ulimit -n 64; exec sankhya-server start` sets it for exactly one process --- which is also
+how an init system does it, and is the reason the unit file now says so too. The test opens
+a hundred and twenty connections against that limit and then asks the server a question:
+before the fix, nothing was listening to ask.
+
+`5.3` through `5.7` are not started.
 
 ---
 

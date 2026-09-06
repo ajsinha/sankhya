@@ -153,7 +153,25 @@ impl Transport {
                     () = wait_for_shutdown(&mut stopped) => break,
                     accepted = listener.accept() => accepted,
                 };
-                let Ok((stream, _)) = accepted else { continue };
+                let stream = match accepted {
+                    Ok((stream, _)) => stream,
+                    // `OPS-08`. `else { continue }` spins on a descriptor shortage and
+                    // loops for ever on a listener that is broken. This task has no
+                    // caller to return an error to, so a listener that will never accept
+                    // again ends it --- the channel closes and the server stops, which is
+                    // the state an orchestrator restarts.
+                    Err(error) => match sankhya_accept::response(&error) {
+                        sankhya_accept::Response::Continue => continue,
+                        sankhya_accept::Response::Pause(how_long) => {
+                            tokio::time::sleep(how_long).await;
+                            continue;
+                        }
+                        sankhya_accept::Response::Stop => {
+                            tracing::error!(%error, "the columnar door can no longer accept");
+                            break;
+                        }
+                    },
+                };
                 let acceptor = acceptor.clone();
                 let ready = ready.clone();
                 // Spawned rather than awaited here. A handshake takes a round trip, and a

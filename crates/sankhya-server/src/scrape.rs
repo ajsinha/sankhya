@@ -64,7 +64,21 @@ pub async fn serve_until(
         tokio::select! {
             () = &mut shutdown => return Ok(()),
             accepted = listener.accept() => {
-                let Ok((stream, _)) = accepted else { continue };
+                let stream = match accepted {
+                    Ok((stream, _)) => stream,
+                    // `OPS-08`: this was `else { continue }`, which is the other wrong
+                    // answer. A descriptor shortage does not clear because the loop asked
+                    // again immediately --- it burns a core competing with the tasks
+                    // holding the descriptors it is waiting for. `sankhya-accept` decides.
+                    Err(error) => match sankhya_accept::response(&error) {
+                        sankhya_accept::Response::Continue => continue,
+                        sankhya_accept::Response::Pause(how_long) => {
+                            tokio::time::sleep(how_long).await;
+                            continue;
+                        }
+                        sankhya_accept::Response::Stop => return Err(error),
+                    },
+                };
                 let server = Arc::clone(&server);
                 // Spawned, so a collector that opens a connection and never sends anything
                 // cannot stop the next scrape from being served.

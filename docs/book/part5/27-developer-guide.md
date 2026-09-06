@@ -99,7 +99,7 @@ Five gates run outside or alongside the suite:
 ```bash
 cargo xtask check-all                        # every repository invariant (§27.4)
 cargo xtask check-concurrency                # ADR-0013's measurements, alone (also inside check-all)
-python3 tools/mutation-audit.py              # 881 deliberate defects, one at a time
+python3 tools/mutation-audit.py              # 886 deliberate defects, one at a time
 cargo xtask check-performance                # the NFR-PERF objectives, as a gate that can fail
 SANKHYA_RELEASE=1 cargo xtask check-package  # the release artifact's platform baseline
 crates/sankhya-cdc-apply/tests/run_e2e.sh    # capture against a live database
@@ -140,7 +140,7 @@ trace of which paragraph went missing — which happened to an owner decision in
 ## 27.5 The mutation audit
 
 ```bash
-python3 tools/mutation-audit.py            # the whole catalogue: 881 sequential cargo test runs
+python3 tools/mutation-audit.py            # the whole catalogue: 886 sequential cargo test runs
 python3 tools/mutation-audit.py splice     # only entries whose label matches
 ```
 
