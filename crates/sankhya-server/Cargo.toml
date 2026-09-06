@@ -62,6 +62,8 @@ sankhya-types    = { path = "../sankhya-types" }
 sankhya-error    = { path = "../sankhya-error" }
 parking_lot      = { workspace = true }
 tokio            = { workspace = true }
+# For `StreamExt`, so a result is bounded while it arrives rather than after it has arrived.
+futures          = { workspace = true }
 uuid             = { workspace = true }
 tracing          = { workspace = true }
 tracing-subscriber = { workspace = true }
