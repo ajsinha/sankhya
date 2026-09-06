@@ -17,7 +17,7 @@
     clippy::float_cmp
 )]
 
-use sankhya_audit::chain::{Broken, Chain, DataVersion, Entry, Hash, RecordedDecision};
+use sankhya_audit::chain::{Broken, Chain, DataVersion, Entry, Hash, Record, RecordedDecision};
 use sankhya_authz::policy::{Action, Mask, TableRef};
 use sankhya_authz::principal::{Authentication, Principal, Role, TenantId};
 use std::collections::BTreeMap;
@@ -66,7 +66,8 @@ fn a_record_reproduces_what_the_principal_saw() {
     let mut chain = Chain::new();
     chain.append(read_entry(&person("ana", "acme"), 1_000));
 
-    let record = chain.records().first().expect("one record");
+    let held = chain.records();
+    let record = held.first().copied().expect("one record");
     assert_eq!(record.subject, "ana");
     assert_eq!(record.authentication, "mutual-tls");
     assert_eq!(record.table, "sales.orders");
@@ -108,7 +109,8 @@ fn a_refusal_is_recorded_as_carefully_as_a_grant() {
         2_000,
     ));
 
-    let record = chain.records().first().expect("one record");
+    let held = chain.records();
+    let record = held.first().copied().expect("one record");
     assert!(!record.decision.allowed);
     assert_eq!(record.table, "hr.salaries");
     assert_eq!(record.subject, "mal");
@@ -132,7 +134,8 @@ fn the_first_record_links_to_a_fixed_genesis_value() {
     let mut chain = Chain::new();
     assert_eq!(chain.head(), Hash::genesis());
     chain.append(read_entry(&person("ana", "acme"), 1));
-    let record = chain.records().first().expect("one record");
+    let held = chain.records();
+    let record = held.first().copied().expect("one record");
     assert_eq!(record.previous, Hash::genesis());
     assert_ne!(chain.head(), Hash::genesis());
 }
@@ -147,12 +150,12 @@ fn altering_a_record_is_detected() {
 
     // Reconstruct with one record's contents changed, leaving its digest as written.
     let mut tampered = Chain::new();
-    for (index, record) in chain.records().iter().enumerate() {
+    for (index, record) in chain.records().into_iter().enumerate() {
         let mut copy = record.clone();
         if index == 2 {
             copy.rows_returned = Some(999_999);
         }
-        tampered.append_raw(copy);
+        tampered.append_raw(copy.clone());
     }
 
     let Err(broken) = tampered.verify() else {
@@ -170,11 +173,11 @@ fn removing_a_record_from_the_middle_is_detected() {
     }
 
     let mut without = Chain::new();
-    for (index, record) in chain.records().iter().enumerate() {
+    for (index, record) in chain.records().into_iter().enumerate() {
         if index == 2 {
             continue;
         }
-        without.append_raw(record.clone());
+        without.append_raw((*record).clone());
     }
 
     let Err(broken) = without.verify() else {
@@ -200,14 +203,14 @@ fn removing_a_record_and_renumbering_the_rest_is_still_detected() {
 
     let mut forged = Chain::new();
     let mut next = 0u64;
-    for (index, record) in chain.records().iter().enumerate() {
+    for (index, record) in chain.records().into_iter().enumerate() {
         if index == 2 {
             continue;
         }
         let mut copy = record.clone();
         copy.sequence = next;
         next += 1;
-        forged.append_raw(copy);
+        forged.append_raw(copy.clone());
     }
 
     let Err(broken) = forged.verify() else {
@@ -231,19 +234,19 @@ fn inserting_a_forged_record_is_detected() {
     }
 
     let mut forged = Chain::new();
-    let records = chain.records().to_vec();
+    let records: Vec<sankhya_audit::Record> = chain.records().into_iter().cloned().collect();
     let mut next = 0u64;
     for (index, record) in records.iter().enumerate() {
         let mut copy = record.clone();
         copy.sequence = next;
         next += 1;
-        forged.append_raw(copy);
+        forged.append_raw(copy.clone());
         if index == 1 {
             let mut fake = record.clone();
             fake.sequence = next;
             fake.subject = "someone-else".to_string();
             next += 1;
-            forged.append_raw(fake);
+            forged.append_raw(fake.clone());
         }
     }
 
@@ -261,7 +264,7 @@ fn reordering_two_records_is_detected() {
     }
 
     let mut swapped = Chain::new();
-    let records = chain.records().to_vec();
+    let records: Vec<sankhya_audit::Record> = chain.records().into_iter().cloned().collect();
     for index in [0, 1, 3, 2, 4] {
         if let Some(record) = records.get(index) {
             swapped.append_raw(record.clone());
@@ -285,8 +288,8 @@ fn a_truncated_chain_still_verifies_which_is_why_the_head_is_published() {
     let true_head = chain.head();
 
     let mut truncated = Chain::new();
-    for record in chain.records().iter().take(6) {
-        truncated.append_raw(record.clone());
+    for record in chain.records().into_iter().take(6) {
+        truncated.append_raw((*record).clone());
     }
 
     assert!(
@@ -333,4 +336,69 @@ fn two_records_with_identical_contents_still_have_different_digests() {
     let first = chain.append(read_entry(&person("ana", "acme"), 1_000));
     let second = chain.append(read_entry(&person("ana", "acme"), 1_000));
     assert_ne!(first, second);
+}
+
+// --- what a running process keeps ------------------------------------------
+
+#[test]
+fn a_chain_with_a_window_stops_growing() {
+    // `OPS-04`. The records were a `Vec` that only ever grew, appended on every statement
+    // **and every catalogue listing** --- every `\dt`, every JDBC metadata call, every
+    // tab-completion. Roughly 3 to 5 GB a day at a hundred statements a second, and 26 GB a
+    // day at a thousand, with no cap, no rotation and nowhere for it to go.
+    let mut chain = Chain::keeping(8);
+    for _ in 0..100 {
+        chain.append(read_entry(&person("ana", "acme"), 1));
+    }
+
+    assert_eq!(
+        chain.records().len(),
+        8,
+        "a window is a window, whatever it is fed"
+    );
+    // And the two figures that describe the *whole* chain still do. A count that shrank when
+    // records aged out would be a count nobody could compare against what they mirrored ---
+    // and comparing it is the only way a truncated chain is ever noticed.
+    assert_eq!(chain.len(), 100, "the count is of everything appended");
+    assert_ne!(chain.head(), Hash::genesis(), "and the head is the real head");
+}
+
+#[test]
+fn a_window_verifies_the_records_it_still_has() {
+    // A windowed chain cannot check a link to a record that has aged out, so it checks the
+    // links it has. What it must not do is report the first record it kept as out of order,
+    // which is what a naive index comparison does the moment anything is dropped.
+    let mut chain = Chain::keeping(8);
+    for _ in 0..100 {
+        chain.append(read_entry(&person("ana", "acme"), 1));
+    }
+    assert!(chain.verify().is_ok(), "the window links to itself");
+
+    // And it still detects tampering inside the window, which is the property that matters.
+    let held: Vec<Record> = chain.records().into_iter().cloned().collect();
+    let mut tampered = Chain::keeping(8);
+    for (index, record) in held.into_iter().enumerate() {
+        let mut copy = record;
+        if index == 3 {
+            copy.subject = "somebody else".to_string();
+        }
+        tampered.append_raw(copy);
+    }
+    assert!(
+        tampered.verify().is_err(),
+        "a record altered inside the window is still caught"
+    );
+}
+
+#[test]
+fn a_chain_that_keeps_everything_still_does() {
+    // The default, which is what verifying a whole file end to end needs. A window is a
+    // decision a server makes, not something the type does behind a caller's back.
+    let mut chain = Chain::new();
+    for _ in 0..100 {
+        chain.append(read_entry(&person("ana", "acme"), 1));
+    }
+    assert_eq!(chain.records().len(), 100);
+    assert_eq!(chain.len(), 100);
+    assert!(chain.verify().is_ok());
 }

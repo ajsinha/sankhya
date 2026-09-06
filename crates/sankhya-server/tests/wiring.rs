@@ -650,44 +650,44 @@ async fn the_user_a_connection_authenticated_as_reaches_authorization_and_audit(
         permissive_policy(&sankhya_authz::principal::TenantId::from_uuid(uuid::Uuid::from_u128(1)), tables)
     });
 
-    // The **audit chain's head** is the test, not the entry count. A chain that grew by one
-    // either way proves only that something was recorded; a head that differs proves *who* was
-    // recorded, because the subject is hashed into it.
+    // The **record**, not the entry count. A chain that grew by one either way proves only
+    // that something was recorded; a record naming the subject proves *who* was.
     //
-    // Two servers in the same state, one statement each, different users. If the identity does
-    // not reach the audit, the two heads are identical.
+    // This used to compare the audit head across two fresh servers, on the grounds that the
+    // chain is deterministic so a difference in the head is a difference in the subject. That
+    // reasoning held only while every record's timestamp was `*clock += 1` --- a counter
+    // standing in for a clock, restarting at 1 on every boot. `OPS-04` replaced it with wall
+    // clock, so two runs of the same statement no longer produce the same digest, and they
+    // should not: the time a thing happened is part of what an audit attests to.
+    //
+    // What was given up is byte-identical replay across processes. What is asserted instead is
+    // the property the test was always about.
     let ana = vec![("user".to_string(), "ana".to_string())];
     let bo = vec![("user".to_string(), "bo".to_string())];
 
     server.query("SELECT 1", &Caller::new(&ana)).ok();
-    let by_ana = audit::head(&server);
+    server.query("SELECT 1", &Caller::new(&bo)).ok();
 
-    let (second, _warehouse) = server_over(|tables| {
-        permissive_policy(
-            &sankhya_authz::principal::TenantId::from_uuid(uuid::Uuid::from_u128(1)),
-            tables,
-        )
-    });
-    second.query("SELECT 1", &Caller::new(&bo)).ok();
-    let by_bo = audit::head(&second);
-
-    assert_ne!(
-        by_ana, by_bo,
-        "the same statement by two users produced the same audit: the identity never arrived"
+    let held = server.audit.lock();
+    let records = held.0.records();
+    let subjects: Vec<&str> = records.iter().map(|record| record.subject.as_str()).collect();
+    assert!(
+        subjects.contains(&"ana") && subjects.contains(&"bo"),
+        "each statement is attributed to the user that ran it: {subjects:?}"
     );
 
-    // And a third, by `ana` again against a fresh server, reproduces the first. The chain is
-    // deterministic, so a difference is the subject rather than the clock.
-    let (third, _warehouse) = server_over(|tables| {
-        permissive_policy(
-            &sankhya_authz::principal::TenantId::from_uuid(uuid::Uuid::from_u128(1)),
-            tables,
-        )
-    });
-    third.query("SELECT 1", &Caller::new(&ana)).ok();
+    // And the two records differ in more than their subject field: the subject is hashed into
+    // the digest, which is what makes the chain evidence about *who* rather than a list with a
+    // name column somebody could edit.
+    let digests: std::collections::BTreeSet<String> =
+        records.iter().map(|record| record.digest.to_string()).collect();
     assert_eq!(
-        audit::head(&third),
-        by_ana,
-        "the audit is not reproducible, so a difference proves nothing"
+        digests.len(),
+        records.len(),
+        "every record has its own digest: {digests:?}"
+    );
+    assert!(
+        held.0.verify().is_ok(),
+        "and the chain they form still verifies"
     );
 }

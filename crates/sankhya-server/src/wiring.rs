@@ -355,7 +355,6 @@ pub struct Server {
     /// the signal it reads. Bounded per cube, and it records a *shape* --- which dimensions
     /// were grouped by --- with nowhere to put a member or a principal.
     query_log: Arc<sankhya_cube::querylog::QueryLog>,
-    pub(crate) clock: parking_lot::Mutex<i64>,
     /// How many connections are open, so the gauge can be set from either hook.
     ///
     /// A counter rather than reading the gauge back: two connections closing at once would
@@ -779,7 +778,6 @@ impl Server {
             cubes: std::sync::RwLock::new(Arc::new(Vec::new())),
             hydrated: Arc::new(sankhya_cube_sql::hydrated::Hydrated::default()),
             query_log: Arc::new(sankhya_cube::querylog::QueryLog::new()),
-            clock: parking_lot::Mutex::new(0),
             connections: AtomicUsize::new(0),
             metrics: Arc::new(Registry::new()),
             runtime: tokio::runtime::Handle::current(),
@@ -971,11 +969,9 @@ impl Server {
     /// none is an observation here and not the hardcoded value it was on the read path.
     /// [`crate::audit::record_read`] is what a statement over a table goes through.
     pub(crate) fn record(&self, principal: &Principal, table: TableRef, action: Action, allowed: bool) {
-        let at = {
-            let mut clock = self.clock.lock();
-            *clock += 1;
-            *clock
-        };
+        // Wall clock, for the reason `crate::audit::append_read` gives: a record whose time
+        // is a counter restarting at 1 each boot cannot place anything.
+        let at = self.now_micros();
         let decision = if allowed {
             RecordedDecision::allowed(None, &std::collections::BTreeMap::new())
         } else {

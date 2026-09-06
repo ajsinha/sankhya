@@ -523,6 +523,49 @@ logged, because the one thing it must not do is fail silently. A server with now
 `IN MEMORY ONLY` in its startup line, capitalised like the authentication postures and for the
 same reason.
 
+### The chain in memory is a window onto the chain on disk
+
+Making it durable did not make it bounded. The records were a `Vec` that only ever grew, appended
+on every statement **and every catalogue listing** — every `\dt`, every JDBC metadata call, every
+tab-completion — with no cap and no rotation: roughly 3 to 5 GB a day at a hundred statements a
+second, and 26 GB a day at a thousand. `OPS-04`.
+
+A running process now holds the most recent 1,024 records. **The file is the chain**; memory holds
+enough to show somebody what just happened and to link the next digest. Two things deliberately
+still describe the whole chain rather than the window:
+
+- `len` counts everything ever appended. A count that shrank as records aged out is one nobody
+  could compare against what they mirrored — and comparing it is the only way a truncated chain is
+  ever noticed.
+- `head` is the real head, kept separately from the record that carries it, because that record
+  may have aged out.
+
+Verification splits the same way. A windowed chain checks the links it still has, and reports so
+in those words; verifying the whole of it means reading the file, which is a deliberate act an
+investigation performs rather than something a boot does. Startup reads a window too — loading a
+year of audit into memory before answering anything would turn unbounded growth into an unbounded
+boot.
+
+### And the timestamp was a counter
+
+Every record's `at` was `*clock += 1`. An audit's timestamps were `1, 2, 3`, restarting at 1 on
+every boot, under a comment saying *"a real deployment supplies wall-clock time here"* — and no
+deployment did, because no deployment could. An audit that cannot say **when** answers none of the
+questions an audit is opened for.
+
+The comment was protecting something real: a component that reads a clock cannot be replayed, and
+the audit is the one thing that must reproduce exactly. The reproducible *ordering* was never the
+timestamp's job — that is the record's `sequence`, which is what the chain links and what
+verification checks — so `at` is wall-clock microseconds now.
+
+**Something was given up, and it is worth naming.** The digest covers the time, so two runs of the
+same statements no longer produce the same head. A test relied on that: it compared the audit head
+across two fresh servers on the grounds that a difference must therefore be the subject. That
+reasoning held only while the clock was fake, and the test now asserts the property it was always
+about — that each record names and hashes the user who ran the statement. Byte-identical replay
+across processes was never a property of an audit; it was a property of a counter standing in for
+a clock, and keeping it would have meant keeping an audit that cannot say when.
+
 The chain is hash-linked with SHA-256 and detects alteration, reordering and insertion. It does
 **not** detect truncation of the tail: an attacker who removes the last *n* records leaves a chain
 that verifies perfectly. Only publishing the head somewhere append-only makes the true length

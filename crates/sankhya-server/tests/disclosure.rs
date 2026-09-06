@@ -447,3 +447,45 @@ fn a_policy_that_does_not_parse_stops_the_server() {
         "and must say what it could not read --- here, a table named without its schema: {text}"
     );
 }
+
+#[test]
+fn an_audit_record_says_when() {
+    // `OPS-04`. Every record's `at` was `*clock += 1`, so an audit's timestamps were `1, 2, 3`
+    // and restarted at 1 on every boot --- under a comment saying *"a real deployment supplies
+    // wall-clock time here"*, which no deployment did. An audit that cannot say **when**
+    // answers none of the questions an audit is opened for.
+    //
+    // The reproducible ordering the counter was standing in for lives in the record's
+    // `sequence`, which is where it always belonged, so nothing was given up to fix this.
+    let (dir, server) = running();
+    let warehouse = dir.path().join("warehouse");
+
+    Session::open_as(server.port, "ana")
+        .run("SELECT region FROM orders")
+        .expect("a reader may read");
+
+    let chain = std::fs::read_to_string(warehouse.join("_audit").join("chain.jsonl"))
+        .expect("the audit is on disk");
+    let first = chain.lines().next().expect("a record");
+    let at = first
+        .split("\"at\":")
+        .nth(1)
+        .and_then(|rest| rest.split(',').next())
+        .and_then(|number| number.trim().parse::<i64>().ok())
+        .unwrap_or_default();
+
+    // Microseconds since the epoch, some time after 2020 and before 2100. Asserted as a range
+    // rather than against `now`, because a test that compares two clocks is a test that fails
+    // on a slow machine.
+    assert!(
+        at > 1_577_836_800_000_000,
+        "an audit record must carry a wall-clock time, not a counter: {at}"
+    );
+    assert!(at < 4_102_444_800_000_000, "and a plausible one: {at}");
+
+    // And the sequence is still the reproducible ordering, starting at zero.
+    assert!(
+        first.contains("\"sequence\":0"),
+        "the first record of a fresh chain is sequence zero: {first}"
+    );
+}
