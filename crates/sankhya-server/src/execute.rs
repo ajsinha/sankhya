@@ -20,6 +20,7 @@
 //! matters to whoever is reading the result.
 
 use arrow_array::{Array, RecordBatch};
+use futures::StreamExt;
 use arrow_schema::{DataType, SchemaRef, TimeUnit};
 use datafusion::catalog::{SchemaProvider, TableProvider};
 use datafusion::catalog::memory::MemorySchemaProvider;
@@ -146,6 +147,73 @@ pub fn session_and_contested(
     session_reaching(principal, policy, tables).map(|built| (built.0, built.1, built.2))
 }
 
+/// A session whose memory is bounded and which can spill when it runs out.
+///
+/// # What was unbounded
+///
+/// Everything. DataFusion runs on an **unbounded** memory pool unless it is given one, and
+/// there was no `MemoryPool`, no `FairSpillPool` and no `DiskManager` anywhere in the
+/// workspace. `sankhya-governor` states the consequence exactly --- *"hash joins do not
+/// spill… it exhausts memory and the operating system terminates the process"* --- and
+/// nothing acted on it. `OPS-06`, `OPS-07`.
+///
+/// # Why a fair pool rather than a greedy one
+///
+/// Because the failure this is about is one statement taking the machine down and every other
+/// connection with it. A greedy pool serves whoever asks first and starves the rest, which
+/// turns one expensive query into an outage for everybody; a fair pool gives each consumer a
+/// share and makes the expensive one fail *itself*. The query that asked for too much is the
+/// one that should get the error.
+///
+/// # Why spilling, and why it is not a silver bullet
+///
+/// A sort or a grouping that will not fit can write to disk and finish slowly instead of
+/// failing. A **hash join** cannot: DataFusion's does not spill, so a join too large for the
+/// pool is an error whatever this is set to. That is worth knowing before somebody raises the
+/// limit expecting the join to start working.
+fn bounded_session() -> SessionContext {
+    use datafusion::execution::disk_manager::DiskManagerBuilder;
+    use datafusion::execution::memory_pool::FairSpillPool;
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+
+    let environment = RuntimeEnvBuilder::new()
+        .with_memory_pool(std::sync::Arc::new(FairSpillPool::new(query_memory_bytes())))
+        .with_disk_manager_builder(DiskManagerBuilder::default())
+        .build_arc();
+    match environment {
+        Ok(environment) => SessionContext::new_with_config_rt(
+            datafusion::prelude::SessionConfig::new(),
+            environment,
+        ),
+        // A runtime that will not build is not a reason to serve without a bound --- it is a
+        // reason to serve with the default one and say nothing was applied. Refusing every
+        // statement because a temporary directory could not be made would be worse, and this
+        // is the branch that has never been observed to run.
+        Err(error) => {
+            tracing::error!(%error, "the bounded query runtime could not be built");
+            SessionContext::new()
+        }
+    }
+}
+
+/// How much memory one server's queries may use between them.
+///
+/// From `SANKHYA_QUERY_MEMORY_BYTES`, defaulting to 1 GiB. A default rather than a required
+/// setting because the alternative --- refusing to start until somebody chooses a number --- is
+/// how a server comes to be started with the number somebody typed to make it start.
+///
+/// Deliberately not a fraction of the machine's memory. This process shares the box with
+/// whatever else is on it, and a bound derived from the total is a bound that grows when
+/// somebody adds RAM for a different reason.
+fn query_memory_bytes() -> usize {
+    const DEFAULT: usize = 1024 * 1024 * 1024;
+    std::env::var("SANKHYA_QUERY_MEMORY_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|bytes| *bytes > 0)
+        .unwrap_or(DEFAULT)
+}
+
 /// What each table this session may read is restricted by, for the audit.
 ///
 /// `schema.table`, the row predicate in force over it, and the columns it obscures. Collected
@@ -164,7 +232,7 @@ pub fn session_reaching(
     policy: &PolicySet,
     tables: &[ServableTable],
 ) -> Result<(SessionContext, usize, BTreeMap<String, Vec<String>>, Restrictions), QueryFailure> {
-    let context = SessionContext::new();
+    let context = bounded_session();
 
     // The analytical functions the guide documents in its own sections.
     //
@@ -416,8 +484,47 @@ pub async fn run(
     // `sankhya-governor` has `Budget`, `Deadline` and `Cancel` and **the query path used none
     // of them** --- they are a polling model, and nothing in this path polls. A deadline is
     // what the execution actually admits, so a deadline is what it gets.
-    let batches = match tokio::time::timeout(statement_deadline(), frame.collect()).await {
-        Ok(collected) => collected.map_err(|error| plan_failure(&error))?,
+    // Streamed, and stopped at the bound rather than after it.
+    //
+    // `frame.collect()` materialises the whole result and *then* the row count is checked
+    // against the limit --- so a statement that would return ten million rows against a limit
+    // of ten thousand allocated all ten million first, and the refusal arrived after the
+    // damage. `OPS-05`. The bound cannot be enforced by a check that runs afterwards; it has
+    // to be enforced by not accumulating.
+    //
+    // The deadline still wraps the whole of it, for the reason it was added: a client that
+    // types a cross join over two `generate_series` and hangs up leaves a worker burning a
+    // core, and nothing else in this path polls.
+    let collected = tokio::time::timeout(statement_deadline(), async {
+        let mut stream = frame.execute_stream().await.map_err(|error| plan_failure(&error))?;
+        let mut batches: Vec<RecordBatch> = Vec::new();
+        let mut total = 0usize;
+        while let Some(batch) = stream.next().await {
+            let batch = batch.map_err(|error| plan_failure(&error))?;
+            total = total.saturating_add(batch.num_rows());
+            if total > max_rows {
+                // Refused here, holding at most one batch past the bound, rather than after
+                // the whole result is in memory. Refusing rather than truncating is the older
+                // decision and stands: a truncated result presented as a complete one is a
+                // wrong answer, and this protocol has no way to say there are more.
+                return Err(failure(
+                    sqlstate::CONFIGURATION_LIMIT_EXCEEDED.as_str(),
+                    &format!(
+                        "this result passed {max_rows} rows and was stopped there. Refusing \
+                         rather than returning the first {max_rows}: a truncated result \
+                         presented as a complete one is a wrong answer, and this protocol has \
+                         no way to say there are more. Add a LIMIT, or narrow the query"
+                    ),
+                ));
+            }
+            batches.push(batch);
+        }
+        Ok(batches)
+    })
+    .await;
+
+    let batches = match collected {
+        Ok(batches) => batches?,
         Err(_) => {
             return Err(failure(
                 // `57014`, query_canceled --- which the review found unreachable, because
@@ -433,19 +540,7 @@ pub async fn run(
             ));
         }
     };
-
     let total: usize = batches.iter().map(RecordBatch::num_rows).sum();
-    if total > max_rows {
-        return Err(failure(
-            sqlstate::CONFIGURATION_LIMIT_EXCEEDED.as_str(),
-            &format!(
-                "this result has {total} rows and the limit is {max_rows}. Refusing rather \
-                 than returning the first {max_rows}: a truncated result presented as a \
-                 complete one is a wrong answer, and this protocol has no way to say there \
-                 are more. Add a LIMIT, or narrow the query"
-            ),
-        ));
-    }
 
     let fields = describe(&Arc::new(schema));
     let mut rows = Vec::with_capacity(total);

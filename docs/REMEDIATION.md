@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2,762 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 0 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -936,7 +936,40 @@ now asserts the property it was always about: that each record names and hashes 
 the statement. Byte-identical replay across processes was never a property of an audit; it was a
 property of a counter standing in for a clock.
 
-`5.1b` and `5.2` through `5.7` are not started.
+**5.1b Nothing bounded memory (`OPS-05`, `OPS-06`, `OPS-07`).**
+
+**The row limit was checked after the whole result was in memory.** `frame.collect()`
+materialised everything and *then* the count was compared against the limit --- so a statement
+returning ten million rows against a limit of ten thousand allocated all ten million first, and
+the refusal arrived after the damage. A bound enforced by a check that runs afterwards is not a
+bound. The result is streamed now and stopped at the limit, holding at most one batch past it.
+Refusing rather than truncating is the older decision and stands.
+
+**DataFusion ran on an unbounded pool.** There was no `MemoryPool`, no `FairSpillPool` and no
+`DiskManager` anywhere in the workspace, and `sankhya-governor` states the consequence exactly ---
+*"hash joins do not spill… it exhausts memory and the operating system terminates the process"*
+--- while nothing acted on it. Queries now share a `FairSpillPool` sized by
+`SANKHYA_QUERY_MEMORY_BYTES`, one gibibyte by default, with a disk manager behind it.
+
+- **Fair rather than greedy**, because the failure is one statement taking the machine down and
+  every other connection with it. A greedy pool serves whoever asks first and starves the rest; a
+  fair one makes the expensive query fail *itself*, which is the query that should get the error.
+- **Spilling is not a silver bullet.** A sort or a grouping that will not fit finishes slowly on
+  disk. A hash join cannot spill, so it is refused whatever the limit is --- worth knowing before
+  somebody raises the limit expecting the join to start working.
+- **Zero means "say nothing", not "allow nothing".** A pool of zero bytes is a server that starts
+  and answers nothing, and an empty environment variable is how one gets set.
+
+**Three tests had to be rewritten before they proved anything.** The first asserted only that the
+server survived an expensive query --- true of an unbounded pool too, on a machine with enough
+RAM. The second used `SELECT 1` to check that a bound of zero falls back to the default; a
+statement that reserves nothing is answered by a pool of nothing, so it passed either way. The
+third made its point by materialising twenty million rows, which under the mutation took so long
+the catalogue run had to be killed --- the same trap as the sandbox mutation in 4.5. Each now
+asks the question cheaply first: a hash join against a megabyte, a sort against a bound of zero,
+a modest overrun before the large one.
+
+`5.2` through `5.7` are not started.
 
 ---
 

@@ -113,6 +113,13 @@ ENVIRONMENT:
     SANKHYA_NO_PASSWORD        serve with no authentication; presence is the signal
     SANKHYA_USER_FUNCTIONS     accept CREATE AGGREGATION, which runs supplied code
                                (default: false)
+    SANKHYA_QUERY_MEMORY_BYTES how much memory this server's queries may use between
+                               them (default: 1073741824, one gibibyte). A sort or a
+                               grouping past it spills to disk; a hash join past it is
+                               refused, because DataFusion's does not spill. Zero and
+                               anything unreadable leave the default in force, because a
+                               pool of zero bytes is a server that starts and answers
+                               nothing, and an empty variable is how one gets set
 
 Configuration is refused rather than defaulted: a setting that silently becomes something
 else is a deployment behaving as though it were configured when it is not.";
@@ -131,7 +138,10 @@ fn settings() -> Result<Settings, String> {
         for file in &files {
             if !file.exists() {
                 return Err(format!(
-                    "the configuration file `{}` named by SANKHYA_CONFIG does not exist.                      Refused rather than skipped: a named file that is not read is a server                      with no users, no roles and no policy that believes it is configured",
+                    "the configuration file `{}` named by SANKHYA_CONFIG does not exist. \
+                     Refused rather than skipped: a named file that is not read \
+                     is a server with no users, no roles and no policy that \
+                     believes it is configured",
                     file.display()
                 ));
             }

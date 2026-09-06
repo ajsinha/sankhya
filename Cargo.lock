@@ -3927,6 +3927,7 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "datafusion",
+ "futures",
  "parking_lot",
  "parquet",
  "sankhya-alloc",

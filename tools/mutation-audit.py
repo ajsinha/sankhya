@@ -4492,8 +4492,8 @@ CATALOGUE = [
 
     ("server: let a statement run with no deadline, as the query path did",
      "crates/sankhya-server/src/execute.rs",
-     "    let batches = match tokio::time::timeout(statement_deadline(), frame.collect()).await {",
-     "    let batches = match tokio::time::timeout(std::time::Duration::from_secs(86_400), frame.collect()).await {",
+     "    let collected = tokio::time::timeout(statement_deadline(), async {",
+     "    let collected = tokio::time::timeout(std::time::Duration::from_secs(86_400), async {",
      "sankhya-server"),
 
     # `ADR-0017` Decision 5: version skew is a connection-time refusal.
@@ -4940,6 +4940,33 @@ CATALOGUE = [
      "            guard.row_filter().map(str::to_owned),",
      "            None,",
      "sankhya-server"),
+
+    # --- Phase 5: what a statement may spend -------------------------------------------------------
+
+    # `OPS-05`. The whole result was materialised and *then* counted against the limit, so a
+    # statement returning ten million rows against a limit of ten thousand allocated all ten
+    # million first. A bound enforced by a check that runs afterwards is not a bound.
+    ("server: count the rows against the limit once they are all in memory",
+     "crates/sankhya-server/src/execute.rs",
+     "            if total > max_rows {",
+     "            if false {",
+     "sankhya-server", 1, "disclosure"),
+
+    # `OPS-06`, `OPS-07`. DataFusion runs on an unbounded pool unless it is given one, and there
+    # was no `MemoryPool`, no `FairSpillPool` and no `DiskManager` anywhere in the workspace ---
+    # so one statement could take the machine down and every other connection with it.
+    ("server: run every query on an unbounded memory pool",
+     "crates/sankhya-server/src/execute.rs",
+     "    let context = bounded_session();",
+     "    let context = SessionContext::new();",
+     "sankhya-server", 1, "disclosure"),
+
+    # And the bound itself, which a zero would make meaningless in the other direction.
+    ("server: bound a query's memory at whatever the environment says, including nothing",
+     "crates/sankhya-server/src/execute.rs",
+     "        .filter(|bytes| *bytes > 0)",
+     "        .filter(|_bytes| true)",
+     "sankhya-server", 1, "disclosure"),
 
     # --- Phase 5: what a running process keeps -----------------------------------------------------
 

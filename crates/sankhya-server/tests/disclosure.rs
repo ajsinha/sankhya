@@ -489,3 +489,127 @@ fn an_audit_record_says_when() {
         "the first record of a fresh chain is sequence zero: {first}"
     );
 }
+
+// --- what a statement may spend ---------------------------------------------
+
+#[test]
+fn a_result_past_the_row_limit_is_stopped_while_it_arrives() {
+    // `OPS-05`. `frame.collect()` materialised the whole result and *then* the row count was
+    // checked against the limit --- so a statement that would return ten million rows against
+    // a limit of ten thousand allocated all ten million first, and the refusal arrived after
+    // the damage. A bound enforced by a check that runs afterwards is not a bound.
+    let (_dir, server) = running();
+
+    // **The refusal first, and cheaply.** A result modestly past the limit is refused whether
+    // the check runs during or after, so this is the assertion that says the bound exists at
+    // all --- and it says it in a second rather than by materialising millions of rows, which
+    // matters because a deliberately broken version of this code has to *fail* here rather
+    // than merely take a long time.
+    let refused = Session::open_as(server.port, "ana")
+        .run("SELECT * FROM generate_series(1, 50000)")
+        .expect_err("fifty thousand rows is past the ten-thousand limit");
+    assert!(
+        refused.contains("rows") && refused.contains("LIMIT"),
+        "the refusal says what happened and what to do: {refused}"
+    );
+
+    // And now the property that only holds if the check runs *while* the result arrives: a
+    // generator far past the limit is stopped near the limit rather than after it. Measured by
+    // time, because memory is what a test cannot observe from outside a process.
+    let started = std::time::Instant::now();
+    Session::open_as(server.port, "ana")
+        .run("SELECT * FROM generate_series(1, 20000000)")
+        .expect_err("twenty million rows is also past the limit");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "a statement stopped at the bound must not first materialise everything past it: \
+         {elapsed:?}"
+    );
+
+    // Not vacuous: a result inside the bound is still answered, and answered completely.
+    let rows = Session::open_as(server.port, "ana")
+        .run("SELECT * FROM generate_series(1, 100)")
+        .expect("a hundred rows is inside the limit");
+    assert_eq!(rows, 100, "and every one of them comes back: {rows}");
+}
+
+/// A server whose queries may use `bytes` of memory between them.
+fn under_memory(bytes: &str) -> (tempfile::TempDir, Running) {
+    let dir = tempfile::tempdir().expect("a directory");
+    let warehouse = dir.path().join("warehouse");
+    write_warehouse(&warehouse);
+    let server = start_with(
+        &warehouse,
+        &dir.path().join("data"),
+        &[("SANKHYA_QUERY_MEMORY_BYTES", bytes)],
+    );
+    (dir, server)
+}
+
+#[test]
+fn a_query_that_asks_for_more_memory_than_it_may_have_is_refused_rather_than_fatal() {
+    // `OPS-06`, `OPS-07`. DataFusion runs on an **unbounded** pool unless it is given one, and
+    // there was no `MemoryPool`, no `FairSpillPool` and no `DiskManager` anywhere in the
+    // workspace. `sankhya-governor` states the consequence exactly --- "hash joins do not
+    // spill… it exhausts memory and the operating system terminates the process" --- and
+    // nothing acted on it.
+    //
+    // A **hash join**, deliberately, and a megabyte to do it in. A sort would spill to disk and
+    // succeed slowly, which is the pool working and is not what this needs to observe; a hash
+    // join cannot spill, so it is the operation that tells a bounded pool from an unbounded
+    // one. That is also the case an operator most needs to know about before raising the
+    // limit expecting a join to start working.
+    let (_dir, server) = under_memory("1048576");
+
+    let refused = Session::open_as(server.port, "ana")
+        .run(
+            "SELECT count(*) FROM generate_series(1, 400000) a \
+             JOIN generate_series(1, 400000) b ON a.value = b.value",
+        )
+        .expect_err("a hash join over 400,000 rows does not fit in a megabyte");
+    assert!(
+        !refused.is_empty(),
+        "and it is refused with something a caller can read: {refused}"
+    );
+
+    // The server is still there, which is the half that used to be a dead process.
+    assert_eq!(
+        Session::open_as(server.port, "ana")
+            .run("SELECT 1")
+            .expect("the server survived a query it could not afford"),
+        1
+    );
+
+    // Not vacuous: the same join inside the default bound is answered. Without this, a pool of
+    // zero would pass every assertion above.
+    let (_dir, generous) = running();
+    assert_eq!(
+        Session::open_as(generous.port, "ana")
+            .run(
+                "SELECT count(*) FROM generate_series(1, 400000) a \
+                 JOIN generate_series(1, 400000) b ON a.value = b.value",
+            )
+            .expect("the same join fits in the default gigabyte"),
+        1
+    );
+}
+
+#[test]
+fn a_memory_bound_of_nothing_is_not_a_bound_of_nothing() {
+    // The other direction. `SANKHYA_QUERY_MEMORY_BYTES=0` is somebody unsetting a variable by
+    // emptying it, or a template that filled in a default of zero --- and a pool of zero bytes
+    // refuses every statement, which is a server that starts and answers nothing.
+    //
+    // Read as "say nothing" rather than as "allow nothing", and the default applies.
+    let (_dir, server) = under_memory("0");
+    // A **sort**, not `SELECT 1`. A statement that reserves nothing is answered by a pool of
+    // nothing, so asserting on one would pass whether the zero was read as "say nothing" or as
+    // "allow nothing" --- which is exactly the distinction under test.
+    assert_eq!(
+        Session::open_as(server.port, "ana")
+            .run("SELECT * FROM generate_series(1, 1000) ORDER BY value DESC")
+            .expect("a bound of zero is not a bound of zero bytes"),
+        1000
+    );
+}
