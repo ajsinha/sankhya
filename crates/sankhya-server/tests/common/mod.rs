@@ -372,7 +372,39 @@ pub(crate) fn start_with(
     data: &std::path::Path,
     extra: &[(&str, &str)],
 ) -> Running {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_sankhya-server"));
+    started(Command::new(env!("CARGO_BIN_EXE_sankhya-server")), warehouse, data, extra)
+}
+
+/// [`start_with`], under a file-descriptor limit this process does not share.
+///
+/// `setrlimit` applies to the whole process, so a test binary cannot lower its own limit
+/// without lowering it for every other test in the same binary --- which is why this goes
+/// through a shell. `ulimit -n` sets the limit in the shell, `exec` replaces the shell with
+/// the server, and the limit is inherited by exactly one process.
+///
+/// This is how `OPS-08` is reachable in a test at all: the failure is what the accept loop
+/// does when the process runs out of descriptors, and nothing else makes that happen.
+pub(crate) fn start_under_descriptor_limit(
+    warehouse: &std::path::Path,
+    data: &std::path::Path,
+    extra: &[(&str, &str)],
+    descriptors: u32,
+) -> Running {
+    let mut command = Command::new("sh");
+    command.arg("-c").arg(format!(
+        "ulimit -n {descriptors}; exec {} start",
+        env!("CARGO_BIN_EXE_sankhya-server")
+    ));
+    started(command, warehouse, data, extra)
+}
+
+/// The shared body: environment, both pipes drained, and the banner waited for.
+fn started(
+    mut command: Command,
+    warehouse: &std::path::Path,
+    data: &std::path::Path,
+    extra: &[(&str, &str)],
+) -> Running {
     command
         .env("SANKHYA_NO_PASSWORD", "1")
         .env("SANKHYA_LISTEN", "127.0.0.1:0")

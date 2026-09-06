@@ -64,11 +64,34 @@ impl Encryption {
     }
 }
 
+/// The most connections this door serves at once.
+///
+/// # Why a cap exists at all
+///
+/// Without one, the number of connections is whatever clients ask for, and each is a
+/// descriptor. The process reaches its descriptor limit, `accept()` starts returning
+/// `EMFILE`, and every other thing that needs a descriptor --- opening a data file,
+/// writing the audit --- starts failing too. A cap turns that into a queue.
+///
+/// # Why refusing at the door is the better failure
+///
+/// Past the cap this loop stops accepting. New connections sit in the kernel's listen
+/// backlog and, past that, are refused by the operating system --- a client sees a
+/// connection failure, which is a thing clients retry. The alternative is accepting them
+/// all and running out of descriptors, where the failure lands on the connections already
+/// being served rather than on the ones arriving.
+///
+/// Generous against PostgreSQL's own default of a hundred, and well under the 65,535
+/// descriptors the shipped systemd unit asks for --- the two numbers are related on
+/// purpose, because a cap above the descriptor limit is not a cap.
+pub const MAX_CONNECTIONS: usize = 1024;
+
 /// A listening front door.
 #[derive(Debug)]
 pub struct PgListener {
     listener: TcpListener,
     encryption: Encryption,
+    limit: usize,
 }
 
 impl PgListener {
@@ -81,6 +104,7 @@ impl PgListener {
         Ok(Self {
             listener: TcpListener::bind(address).await?,
             encryption: Encryption::Off,
+            limit: MAX_CONNECTIONS,
         })
     }
 
@@ -88,6 +112,16 @@ impl PgListener {
     #[must_use]
     pub fn encrypted(mut self, encryption: Encryption) -> Self {
         self.encryption = encryption;
+        self
+    }
+
+    /// Serve at most `limit` connections at once, for tests.
+    ///
+    /// [`MAX_CONNECTIONS`] otherwise. A test proving the cap holds cannot open a thousand
+    /// sockets to do it, and one that tried would be measuring the machine.
+    #[must_use]
+    pub const fn limited_to(mut self, limit: usize) -> Self {
+        self.limit = limit;
         self
     }
 
@@ -130,6 +164,22 @@ impl PgListener {
     /// one stuck client, the orchestrator's patience runs out, and the process is killed
     /// anyway --- with the difference that nobody chose the moment. Waiting a bounded time
     /// and then closing is the version where the timeout is ours.
+    ///
+    /// # A failed `accept()` is not a reason to exit
+    ///
+    /// It used to be. `accepted?` propagated out of this loop and out of `main`, so
+    /// `ECONNABORTED` --- what a load balancer produces every time a health check opens a
+    /// connection and closes it --- ended the process. The comment a few lines below,
+    /// saying a failed connection is that connection's problem, described the *serve*
+    /// error while the accept path did the opposite. [`sankhya_accept`] decides now, and
+    /// the metrics door and the columnar door ask it the same question.
+    ///
+    /// # The loop stops accepting past [`MAX_CONNECTIONS`]
+    ///
+    /// Not a refusal: the branch is disabled while the set is full, so callers wait in the
+    /// kernel backlog and are served as connections finish. A descriptor shortage is the
+    /// failure that follows from having no cap, and it lands on the connections already
+    /// being served rather than on the one that caused it.
     pub async fn serve_until(
         self,
         handler: Arc<dyn Handler>,
@@ -155,8 +205,33 @@ impl PgListener {
         loop {
             tokio::select! {
                 () = &mut shutdown => break,
-                accepted = self.listener.accept() => {
-                    let (stream, _) = accepted?;
+                accepted = self.listener.accept(), if connections.len() < self.limit => {
+                    let (stream, _) = match accepted {
+                        Ok(pair) => pair,
+                        // `OPS-08`: this was `accepted?`, and it took the whole process
+                        // down. `ECONNABORTED` is what a load balancer's health check
+                        // produces; `EMFILE` is a descriptor shortage that clears. Neither
+                        // is a reason for a server to exit, and `sankhya-accept` is where
+                        // that judgement is made so that all three doors make it the same
+                        // way. What it declines to excuse still ends the loop.
+                        Err(error) => match sankhya_accept::response(&error) {
+                            sankhya_accept::Response::Continue => {
+                                tracing::debug!(%error, "a connection failed before it existed");
+                                continue;
+                            }
+                            sankhya_accept::Response::Pause(how_long) => {
+                                // `warn`, not `debug`: the server is refusing callers it
+                                // would otherwise serve, and nothing else says so.
+                                tracing::warn!(
+                                    %error,
+                                    "the server is short of descriptors and is pausing before it accepts again"
+                                );
+                                tokio::time::sleep(how_long).await;
+                                continue;
+                            }
+                            sankhya_accept::Response::Stop => return Err(error),
+                        },
+                    };
                     let handler = Arc::clone(&handler);
                     let encryption = self.encryption.clone();
                     connections.spawn(async move {

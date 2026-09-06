@@ -3346,6 +3346,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "sankhya-accept"
+version = "0.1.0"
+
+[[package]]
 name = "sankhya-alloc"
 version = "0.1.0"
 
@@ -3379,6 +3383,7 @@ dependencies = [
  "datafusion",
  "hyper-util",
  "rustls",
+ "sankhya-accept",
  "sankhya-api-flight",
  "sankhya-testkit",
  "sankhya-tls",
@@ -3399,6 +3404,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "rustls",
+ "sankhya-accept",
  "sankhya-authz",
  "sankhya-error",
  "sankhya-session",
@@ -3930,6 +3936,7 @@ dependencies = [
  "futures",
  "parking_lot",
  "parquet",
+ "sankhya-accept",
  "sankhya-alloc",
  "sankhya-api-flight",
  "sankhya-api-grpc",

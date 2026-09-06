@@ -1701,6 +1701,15 @@ second product surface maintained forever to avoid a dependency the client alrea
 `FR-SEC-03` requires federated identity tokens, mutual TLS, and scram on the wire-protocol door.
 **Transport security is built; identity is not.**
 
+**One answer to a failed `accept()`, all three doors.** `sankhya-accept` classifies the error:
+a per-connection failure continues, a descriptor shortage pauses before trying again, and
+anything unrecognised stops. It is a crate rather than three `match` arms because it was three
+`match` arms --- one that propagated the error and killed the process on a load balancer's
+health check, and two that discarded it and spun --- and the disagreement was visible only to
+somebody reading all three at once. The PostgreSQL door also caps concurrent connections at
+`MAX_CONNECTIONS`, which is what makes the shortage unreachable rather than merely survivable;
+the shipped systemd unit's `LimitNOFILE=` is the other half of that number and says so.
+
 **One certificate, both doors.** `sankhya-tls` loads it, and each door names only its own ALPN
 --- `h2` for the columnar door, nothing for the wire protocol. Two loaders would mean two sets of
 refusals and two answers to *"is this key the one for this certificate?"*, and the divergence

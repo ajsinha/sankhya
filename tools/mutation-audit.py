@@ -6281,6 +6281,46 @@ CATALOGUE = [
      "    if false {",
      "sankhya-math"),
 
+    # --- Phase 5.2: what a door does when it cannot accept -----------------------------------------
+
+    # `OPS-08`. `accept()` returning an error propagated out of the serve loop and out of
+    # `main`, so `ECONNABORTED` --- routine behind any load balancer --- ended the process.
+    # The classification is one crate so all three doors answer identically.
+    ("accept: treat a descriptor shortage as a reason to stop serving",
+     "crates/sankhya-accept/src/lib.rs",
+     "            Some(EMFILE | ENFILE | ENOBUFS | ENOMEM) => Response::Pause(PAUSE),",
+     "            Some(EMFILE | ENFILE | ENOBUFS | ENOMEM) => Response::Stop,",
+     "sankhya-accept"),
+
+    ("accept: treat an aborted connection as the server's failure",
+     "crates/sankhya-accept/src/lib.rs",
+     "        ErrorKind::ConnectionAborted | ErrorKind::ConnectionReset => Response::Continue,",
+     "        ErrorKind::ConnectionAborted | ErrorKind::ConnectionReset => Response::Stop,",
+     "sankhya-accept"),
+
+    # The other direction, and the one a silent `continue` produces: a listener that will
+    # never accept again, looped on for ever, in a process that is up and answering nothing.
+    ("accept: loop on an error nobody has classified",
+     "crates/sankhya-accept/src/lib.rs",
+     "            _ => Response::Stop,",
+     "            _ => Response::Continue,",
+     "sankhya-accept"),
+
+    # The wiring, at the door rather than in the policy: a real server must survive a real
+    # descriptor shortage rather than exit on it.
+    ("server: let a failed accept end the process, as it used to",
+     "crates/sankhya-api-pg/src/listener.rs",
+     "                                tokio::time::sleep(how_long).await;\n                                continue;",
+     "                                let _ = how_long;\n                                return Err(error);",
+     "sankhya-server", 1, "accepting"),
+
+    # And the cap that stops the shortage being reachable in the first place.
+    ("pg: accept every caller who asks, whatever it costs in descriptors",
+     "crates/sankhya-api-pg/src/listener.rs",
+     "                accepted = self.listener.accept(), if connections.len() < self.limit => {",
+     "                accepted = self.listener.accept() => {",
+     "sankhya-api-pg", 1, "accepting"),
+
 ]
 
 
