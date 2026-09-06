@@ -216,6 +216,10 @@ fn main() -> ExitCode {
         failed |= !coverage::check(&root);
     }
 
+    if run_all || task == "check-benchmarks" {
+        failed |= !check_benchmarks(&root);
+    }
+
     if run_all || task == "check-attribution" {
         failed |= !attribution::check(&root);
     }
@@ -287,6 +291,7 @@ fn main() -> ExitCode {
                 | "check-unsafety"
                 | "check-attribution"
                 | "check-mutation-coverage"
+                | "check-benchmarks"
                 | "check-durability"
                 | "write-attribution"
                 | "check-doc-numbers"
@@ -311,7 +316,7 @@ fn main() -> ExitCode {
         eprintln!(
             "usage: cargo xtask \
              [check-all|check-tests|check-concurrency|check-invariants|check-writers|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
-             |check-features|check-lints|check-unsafety|check-attribution|check-mutation-coverage|check-durability|write-attribution|check-mutations|check-doc-numbers\
+             |check-features|check-lints|check-unsafety|check-attribution|check-mutation-coverage|check-benchmarks|check-durability|write-attribution|check-mutations|check-doc-numbers\
              |check-catalogues|write-catalogues|check-logging|check-package|check-build-tree|check-surfaces|check-atomic-writes|check-lock-order|sweep|sweep-dry-run|sync-doc-numbers|check-performance]"
         );
         return ExitCode::from(2);
@@ -1118,6 +1123,55 @@ fn check_dev_only(root: &Path) -> bool {
         for (name, _) in DEV_ONLY {
             println!("  ok   {name} is test-only");
         }
+    }
+    ok
+}
+
+/// Every benchmark still compiles, and every crate that publishes a figure has one.
+///
+/// # Why this is in `check-all` and the measurement is not
+///
+/// `PERF-01`, `PERF-02`. `criterion` was in the pin set and used by no crate: zero `benches/`
+/// directories, zero `[[bench]]` targets. So `ADR-0020` published three speed tables that
+/// nothing had produced, and each restatement --- in `rows.rs`, in `STATUS.md` --- made them
+/// look more established. The rule the ADR itself states, *"every claim about speed carries
+/// its number"*, is what let them stand: a figure in prose reads as measured.
+///
+/// **Running** a benchmark needs a quiet machine and minutes, which is why `check-performance`
+/// is separate and invoked. **Compiling** one costs a build, and a benchmark that stops
+/// compiling is a figure that has quietly stopped being reproducible --- which is the state
+/// the retracted tables were in. So the targets are built here, on every run.
+fn check_benchmarks(root: &Path) -> bool {
+    println!("== check-benchmarks ==");
+    let status = Command::new(env!("CARGO"))
+        .current_dir(root)
+        .args(["build", "--workspace", "--benches", "--quiet"])
+        .status();
+    match status {
+        Ok(status) if status.success() => {}
+        _ => {
+            eprintln!("   FAILED: a benchmark target no longer builds");
+            return false;
+        }
+    }
+
+    // A crate that publishes a figure has something that produces it. Listed rather than
+    // inferred: the relationship is between a document and a directory, and nothing in the
+    // filesystem records it.
+    const MUST_MEASURE: &[&str] = &["sankhya-functions", "sankhya-math"];
+    let mut ok = true;
+    let mut found = 0usize;
+    for name in MUST_MEASURE {
+        let benches = root.join("crates").join(name).join("benches");
+        if benches.is_dir() && crate::package::files_under(&benches).iter().any(|p| p.extension().is_some_and(|e| e == "rs")) {
+            found += 1;
+        } else {
+            eprintln!("  NO BENCHMARK    {name} publishes speed figures and has no benches/ directory; a number nothing can re-run is a claim");
+            ok = false;
+        }
+    }
+    if ok {
+        println!("   {found} crate(s) that publish figures have a benchmark, and every target builds");
     }
     ok
 }

@@ -129,7 +129,9 @@ reconcile.
 
 ### Why lane-parallel accumulation cannot be the answer
 
-Eight fixed lanes with per-lane compensation is **10 to 15 times faster** and, on well-behaved
+Eight fixed lanes with per-lane compensation is **10 to 15 times faster** (an unmeasured
+figure for an implementation this system does not use --- see the retraction below) and, on
+well-behaved
 data, bit-identical. On badly-conditioned data it is neither. For a vector of `1e16, 1, -1e16, 1`
 repeated nine times, whose exact total is `18`:
 
@@ -163,22 +165,43 @@ Measured against the shipping implementation:
 
 | | Result |
 |---|---|
-| Agreement on 200,000 randomized vectors | **bit-identical, zero differences** |
-| Change under permutation | **none**, asserted on every case |
+| Change under permutation | **none** --- `reduce.rs`'s `any_permutation_gives_an_identical_total`, on every build |
+| Change under regrouping | **none** --- `exact.rs`'s `any_grouping_gives_identical_bits`, on every build |
 | The `1e16, 1, -1e16, 1` case | **18**, correct |
-| Speed of the reduction alone, 64 / 512 / 4096 dimensions | **1.5× / 2.0× / 2.7×** |
 
-And end to end through the shipping kernels, with every result bit-identical to what the same
-call returned before:
+*The exactness rows name the property tests that check them, and those run on every build. A
+row saying "agreement on 200,000 randomized vectors, bit-identical" used to stand here: the
+property it describes is real and is the one above, but the run itself is not in this
+repository and nobody can repeat it. A one-off experiment cited as evidence is a claim with a
+number on it.*
+| Speed of the reduction alone, 64 / 512 / 4096 dimensions | **3.3× / 3.0× / 3.0×** |
 
-| Kernel | 64 dims | 512 dims | 4096 dims |
-|---|---|---|---|
-| `vector::dot` | 1.33× | 2.75× | 2.36× |
-| `vector::cosine_similarity` | 1.99× | 2.35× | **3.62×** |
-| `vector::euclidean` | 1.86× | 1.95× | 2.48× |
+*The reduction figures come from `crates/sankhya-math/benches/reduce.rs`,
+`cargo bench -p sankhya-math`, on an AMD Ryzen AI 9 HX 370 (24 threads, 62 GiB) under rustc
+1.97.1, thin LTO, one codegen unit. Criterion medians of a hundred samples.*
 
-Less than the 15× a lane-parallel loop offers, and the whole of that 15× was never available:
-the fast version was computing a different, worse number.
+**And the ratio is a cost-of-route comparison, not a speedup on one input.** The fallback runs
+only where the fixed-point route **declines**, so timing it on data the fast route would have
+taken measures a branch nobody reaches. The two arms therefore sum different numbers by
+construction --- the benchmark asserts that each reaches the route it is named after, and an
+earlier version of it used a wide spread of exponents that the fixed-point route takes without
+difficulty, which the assertion caught. The published table implied a speedup on identical
+input, which cannot have been measured either.
+
+> **Two further tables from this decision are retracted rather than replaced.** `PERF-01`.
+>
+> A per-kernel table gave `vector::dot`, `vector::cosine_similarity` and `vector::euclidean` at
+> 1.33× to 3.62× against what the same call returned *before*. Nothing in this repository
+> produced it, and it cannot be reproduced now for a reason worth stating: the "before" is the
+> sorted-only implementation, which no longer exists. A before-and-after ratio whose "before"
+> has been deleted is not a measurement anybody can re-run, and publishing one is how a figure
+> becomes permanent.
+>
+> **"10 to 15 times faster"** below described a lane-parallel loop this system does not use,
+> and the same paragraph says so --- *"the whole of that 15× was never available: the fast
+> version was computing a different, worse number"*. It stays as the shape of an argument and
+> is marked here as unmeasured, because a figure attached to code that was never written reads
+> exactly like one attached to code that was.
 
 The change is made **inside `deterministic_sum`**, which takes the fixed-point route and falls
 back to the sorted one. Every caller — vector, statistics, calculus, quantile — gets this
@@ -281,9 +304,32 @@ Measured, summing a column on this machine:
 
 | Width | Copying per row | Borrowing | |
 |---|---|---|---|
-| 8 | 21.15 ms | 0.85 ms | **24.9×** |
-| 64 | 4.57 ms | 0.63 ms | **7.2×** |
-| 512 | 3.08 ms | 1.46 ms | **2.1×** |
+| 8 | 8.32 ms | 580 µs | **14.3×** |
+| 64 | 1.53 ms | 299 µs | **5.1×** |
+| 512 | 940 µs | 611 µs | **1.5×** |
+
+*Measured by `crates/sankhya-functions/benches/rows.rs`, `cargo bench -p sankhya-functions`,
+on an AMD Ryzen AI 9 HX 370 (24 threads, 62 GiB) under rustc 1.97.1, thin LTO, one codegen unit.
+Criterion medians of a hundred samples; two runs agreed within 6%. One mebibyte of doubles at
+every width, so the ratio is about access rather than about how much data each arm touched.*
+
+> **The table above replaced one that was not measured.** `PERF-01`. It previously read
+> **24.9× / 7.2× / 2.1×**, and no code anywhere in this repository's history produced those
+> figures --- the audit searched the working tree, every branch, `git log -S` on each number,
+> deletions and stashes. They existed only in prose, restated in `rows.rs` and in `STATUS.md`,
+> and each restatement made them look more established.
+>
+> The tell was internal. Against a fresh run the old *copying* arm was 2.4× faster and its
+> *borrowing* arm 27× faster; a smaller dataset would have moved both together. Only the fast
+> arm was anomalous, it was non-monotone in width, and 0.85 ms for a scalar reduction over that
+> data implies about 39 GB/s --- above this machine's memory bandwidth. **The borrowing arm was
+> almost certainly deleted by the optimiser**: its result was unused, so the loop went, while
+> the copying arm survived because heap allocation has side effects.
+>
+> Rule 3 below --- *every claim about speed carries its number* --- is what let it stand: the
+> number was there, so it read as measured. The rule needed a second half, and now has one: the
+> number carries the benchmark that produced it, as a build target, so a figure that stops
+> reproducing stops compiling.
 
 The narrow case wins most, and narrow is what a series column usually is: a window of readings,
 a term structure, a short curve. Results are identical; only the allocation changed.
@@ -296,8 +342,11 @@ So the rule for anything added here:
 2. **A reduction goes through `sankhya-math`**, which is where the order-independence argument
    lives. A kernel that sums its own way is a kernel whose answer moves when the machine is
    busier.
-3. **Every claim about speed carries its number.** The table above is the form; *"we optimised
-   it"* with no measurement is a claim, and this repository does not ship claims.
+3. **Every claim about speed carries its number, and the number carries the benchmark.** The
+   table above is the form: a figure, the file that produced it, the machine, and the build.
+   *"We optimised it"* with no measurement is a claim, and so is a measurement nothing can
+   re-run --- which is what the retracted table was. A benchmark is a build target here, so
+   one that stops compiling fails the build rather than rotting into prose.
 
 ### What is deliberately not promised
 

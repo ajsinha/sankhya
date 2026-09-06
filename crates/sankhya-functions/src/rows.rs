@@ -11,13 +11,18 @@
 //! is the same defect that made `vec_dot` slow before the fixed-point sum replaced the sorted
 //! one, written again three weeks later in four new places.
 //!
-//! Measured, on this machine, summing a column:
+//! Measured by `benches/rows.rs`, summing a column:
 //!
 //! | Width | Copying | Borrowing | |
 //! |---|---|---|---|
-//! | 8 | 21.15 ms | 0.85 ms | **24.9×** |
-//! | 64 | 4.57 ms | 0.63 ms | **7.2×** |
-//! | 512 | 3.08 ms | 1.46 ms | **2.1×** |
+//! | 8 | 8.32 ms | 580 µs | **14.3×** |
+//! | 64 | 1.53 ms | 299 µs | **5.1×** |
+//! | 512 | 940 µs | 611 µs | **1.5×** |
+//!
+//! `PERF-01`: this table used to read 24.9× / 7.2× / 2.1×, and nothing in this repository
+//! ever produced those numbers. The benchmark that produces these is a build target, and
+//! both of its arms consume their result --- an unused sum is a loop the optimiser deletes,
+//! which is what made the old fast arm imply 39 GB/s for a scalar reduction.
 //!
 //! The narrow case wins most, which is the case a series column usually is — a window of
 //! readings, a term structure, a short curve. The results are identical; this changes only

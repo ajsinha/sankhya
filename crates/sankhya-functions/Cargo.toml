@@ -21,8 +21,15 @@ arrow-schema  = { workspace = true }
 datafusion    = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 # For `vec_of`, which builds an array in a statement. A dev-dependency rather than a real
 # one: this crate must not depend on the session layer, and a test needs a way to write a
 # matrix down.
 sankhya-olap = { path = "../sankhya-olap" }
 tokio = { workspace = true }
+
+# Benchmarks are targets, so a benchmark that stops compiling fails the build rather than
+# rotting unnoticed --- which is what happened to the figures this one replaces.
+[[bench]]
+name    = "rows"
+harness = false

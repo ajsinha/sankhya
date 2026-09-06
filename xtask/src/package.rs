@@ -579,7 +579,7 @@ fn check_grace(root: &Path) -> bool {
     ok
 }
 
-fn files_under(dir: &Path) -> Vec<std::path::PathBuf> {
+pub fn files_under(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
         return out;
