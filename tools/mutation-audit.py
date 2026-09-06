@@ -4910,8 +4910,8 @@ CATALOGUE = [
     # And reading it back, without which every restart starts a new chain that links to nothing.
     ("server: start a new chain at every restart",
      "crates/sankhya-server/src/audit.rs",
-     "    let (chain, mut complaints) = sankhya_audit::journal::read(&server.settings.warehouse);",
-     "    let (chain, mut complaints) = (sankhya_audit::Chain::new(), Vec::new());",
+     "    let (chain, mut complaints) = sankhya_audit::journal::read_windowed(",
+     "    let (chain, mut complaints) = (sankhya_audit::Chain::new(), Vec::new()); let _ = (",
      "sankhya-server"),
 
     # The record's contents. The only append site hardcoded no row filter and no masks, never
@@ -4940,6 +4940,42 @@ CATALOGUE = [
      "            guard.row_filter().map(str::to_owned),",
      "            None,",
      "sankhya-server"),
+
+    # --- Phase 5: what a running process keeps -----------------------------------------------------
+
+    # `OPS-04`. The records were a `Vec` that only ever grew, appended on every statement and
+    # every catalogue listing --- roughly 3 to 5 GB a day at a hundred statements a second.
+    ("audit: keep every record a running process has ever made",
+     "crates/sankhya-audit/src/chain.rs",
+     "        while self.records.len() > window {",
+     "        while false {",
+     "sankhya-audit"),
+
+    # And the two figures that describe the whole chain rather than the part still held. A count
+    # that shrank when records aged out is one nobody can compare against what they mirrored,
+    # and comparing it is the only way a truncated chain is ever noticed.
+    ("audit: report the window's length as the chain's",
+     "crates/sankhya-audit/src/chain.rs",
+     "        usize::try_from(self.total).unwrap_or(usize::MAX)",
+     "        self.records.len()",
+     "sankhya-audit"),
+
+    # A windowed chain checks the links it has. Comparing against a position of zero reports the
+    # first record it kept as out of order, which turns every long-running server's audit into
+    # one that "does not verify".
+    ("audit: verify a window as though it began the chain",
+     "crates/sankhya-audit/src/chain.rs",
+     "            .map_or(0, |record| record.sequence);",
+     "            .map_or(0, |record| record.sequence * 0);",
+     "sankhya-audit"),
+
+    # The timestamp. `*clock += 1` gave an audit whose times were 1, 2, 3 and restarted at 1 on
+    # every boot --- so no record could be placed against anything that happened.
+    ("server: time an audit record by a counter rather than by the clock",
+     "crates/sankhya-server/src/audit.rs",
+     "    let at = server.now_micros();",
+     "    let at = 0;",
+     "sankhya-server", 1, "disclosure"),
 
     # --- Phase 4: a policy the binary can be configured with -------------------------------------
 

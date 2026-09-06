@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2,758 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2,762 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -907,11 +907,45 @@ against a policy read from a file --- both of which had, until this item, only e
 
 ---
 
+### Phase 5 — what has landed so far
+
+**5.1a The audit chain is bounded, and its timestamp is real (`OPS-04`).** Phase 4.7 made the
+chain durable and left it unbounded: the records were a `Vec` that only ever grew, appended on
+every statement **and every catalogue listing** --- every `\dt`, every JDBC metadata call, every
+tab-completion. Roughly 3 to 5 GB a day at a hundred statements a second, 26 GB at a thousand.
+
+A running process holds the most recent 1,024 records. The file is the chain. Two figures
+deliberately still describe the whole of it rather than the window: `len`, because a count that
+shrank as records aged out is one nobody could compare against what they mirrored --- and
+comparing it is the only way a truncated chain is ever noticed --- and `head`, kept separately
+from the record carrying it because that record may be gone. Startup reads a window too, since
+loading a year of audit before answering anything turns unbounded growth into an unbounded boot.
+
+**The timestamp was `*clock += 1`.** An audit's times were `1, 2, 3`, restarting at 1 each boot,
+under a comment saying *"a real deployment supplies wall-clock time here"* --- which none did,
+because none could. That comment was protecting something real: a component that reads a clock
+cannot be replayed. But the reproducible ordering was never the timestamp's job; it is the
+record's `sequence`, which is what the chain links and what verification checks. So `at` is
+wall-clock microseconds now, and the counter had no readers left and was deleted rather than kept
+as a field nothing uses.
+
+**Something was given up.** The digest covers the time, so two runs of the same statements no
+longer produce the same head --- and a test relied on exactly that, comparing heads across two
+fresh servers to prove the subject reaches the audit. It caught the change, correctly. The test
+now asserts the property it was always about: that each record names and hashes the user who ran
+the statement. Byte-identical replay across processes was never a property of an audit; it was a
+property of a counter standing in for a clock.
+
+`5.1b` and `5.2` through `5.7` are not started.
+
+---
+
 # Phase 5 — Operability
 
 | | Finding | The failure |
 |---|---|---|
-| 5.1 | `OPS-04`–`OPS-07` | Nothing bounds memory; the audit chain is an unbounded in-memory `Vec` |
+| 5.1a | `OPS-04` | The audit chain is an unbounded in-memory `Vec`, and its timestamp is a counter |
+| 5.1b | `OPS-05`–`OPS-07` | Nothing bounds memory |
 | 5.2 | `OPS-08` | An `accept()` error kills the server |
 | 5.3 | `OPS-12` | "I could not look" is recorded as "there is nothing" |
 | 5.4 | `OPS-10` `OPS-11` | Maintenance is blind and partial |

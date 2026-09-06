@@ -211,17 +211,58 @@ impl Record {
     }
 }
 
+/// How many records a chain keeps in memory when it is given a window.
+///
+/// Enough that `SHOW` and an operator looking at what just happened have something to look at,
+/// and small enough that the answer to *"how much memory does the audit use"* is a constant.
+pub const WINDOW: usize = 1024;
+
 /// An append-only sequence of records, each carrying the digest of the last.
+///
+/// # Why the records in memory can be a window onto a longer chain
+///
+/// Because they were a `Vec` that only ever grew. An entry is appended on every statement
+/// **and every catalogue listing** --- every `\dt`, every JDBC metadata call, every
+/// tab-completion --- with no cap and no rotation: roughly 3 to 5 GB a day at a hundred
+/// statements a second, and 26 GB a day at a thousand. `OPS-04`.
+///
+/// The file is the chain. Memory holds the most recent [`WINDOW`] records so that something
+/// can be shown and the next digest can be linked, and `len` and `head` go on describing the
+/// **whole** chain rather than the part still in memory --- which is what makes the count
+/// somebody mirrors mean anything.
+///
+/// A chain built with [`Chain::new`] keeps everything, because that is what a test wants and
+/// what verifying a file end to end needs.
 #[derive(Debug, Default)]
 pub struct Chain {
-    records: Vec<Record>,
+    records: std::collections::VecDeque<Record>,
+    /// How many records have ever been appended, including any no longer held.
+    total: u64,
+    /// The digest of the most recent record, held separately because the record itself may
+    /// have been forgotten.
+    head: Option<Hash>,
+    /// How many records to keep, or `None` to keep every one.
+    window: Option<usize>,
 }
 
 impl Chain {
-    /// An empty chain.
+    /// An empty chain that keeps every record.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An empty chain that keeps only the most recent `window` records.
+    ///
+    /// What a server uses. The file is where the chain lives; this is the part of it a running
+    /// process can be asked about without the answer to *"how much memory does the audit use"*
+    /// being *"as much as it has been up for"*.
+    #[must_use]
+    pub fn keeping(window: usize) -> Self {
+        Self {
+            window: Some(window.max(1)),
+            ..Self::default()
+        }
     }
 
     /// The digest of the most recent record, or the genesis value.
@@ -232,27 +273,47 @@ impl Chain {
     /// outside.
     #[must_use]
     pub fn head(&self) -> Hash {
-        self.records
-            .last()
-            .map_or_else(Hash::genesis, |r| r.digest.clone())
+        self.head.clone().unwrap_or_else(Hash::genesis)
     }
 
-    /// How many records.
+    /// How many records have ever been appended.
+    ///
+    /// The whole chain, not the part still in memory. A count that shrank when records aged
+    /// out would be a count nobody could compare against what they mirrored --- and comparing
+    /// it is the only way a truncated chain is ever noticed.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.records.len()
+        usize::try_from(self.total).unwrap_or(usize::MAX)
     }
 
     /// Whether there are none.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.records.is_empty()
+        self.total == 0
     }
 
-    /// Every record.
+    /// The records still in memory, oldest first.
+    ///
+    /// **Not necessarily every record.** See [`Chain::keeping`]; the file is the chain.
     #[must_use]
-    pub fn records(&self) -> &[Record] {
-        &self.records
+    pub fn records(&self) -> Vec<&Record> {
+        self.records.iter().collect()
+    }
+
+    /// The most recently appended record, if it is still held.
+    #[must_use]
+    pub fn last(&self) -> Option<&Record> {
+        self.records.back()
+    }
+
+    /// Drop the oldest records until the window is satisfied.
+    fn forget_old(&mut self) {
+        let Some(window) = self.window else {
+            return;
+        };
+        while self.records.len() > window {
+            self.records.pop_front();
+        }
     }
 
     /// Append one entry.
@@ -262,7 +323,7 @@ impl Chain {
     pub fn append(&mut self, entry: Entry) -> Hash {
         let previous = self.head();
         let mut record = Record {
-            sequence: u64::try_from(self.records.len()).unwrap_or(u64::MAX),
+            sequence: self.total,
             at: entry.at,
             tenant: entry.tenant.to_string(),
             subject: entry.subject,
@@ -278,7 +339,10 @@ impl Chain {
         };
         record.digest = record.compute_digest();
         let digest = record.digest.clone();
-        self.records.push(record);
+        self.head = Some(digest.clone());
+        self.total = self.total.saturating_add(1);
+        self.records.push_back(record);
+        self.forget_old();
         digest
     }
 
@@ -289,7 +353,10 @@ impl Chain {
     /// actually detects tampering. A verification routine that has never been shown a
     /// broken chain is a routine nobody has tested.
     pub fn append_raw(&mut self, record: Record) {
-        self.records.push(record);
+        self.head = Some(record.digest.clone());
+        self.total = self.total.saturating_add(1);
+        self.records.push_back(record);
+        self.forget_old();
     }
 
     /// Check the chain has not been altered.
@@ -297,10 +364,26 @@ impl Chain {
     /// Recomputes every digest and every link. Detects alteration, reordering and insertion.
     /// Does **not** detect truncation of the tail, which no local check can --- compare
     /// [`Chain::head`] against what was mirrored for that.
+    /// # What a windowed chain can and cannot check
+    ///
+    /// A chain built with [`Chain::keeping`] holds a window, so this verifies **that window**:
+    /// the links between the records it still has, and each record's own digest. It cannot
+    /// check a link to a record that has aged out, so the first record held is taken as it
+    /// stands. Verifying a whole chain means reading the file, which is what
+    /// `sankhya_audit::journal::read` into a [`Chain::new`] does.
     pub fn verify(&self) -> Result<(), Broken> {
-        let mut expected_previous = Hash::genesis();
+        // Where the window begins, so a windowed chain checks the links it has rather than
+        // reporting the first record it kept as out of order.
+        let first = self
+            .records
+            .front()
+            .map_or(0, |record| record.sequence);
+        let mut expected_previous = self
+            .records
+            .front()
+            .map_or_else(Hash::genesis, |record| record.previous.clone());
         for (index, record) in self.records.iter().enumerate() {
-            let position = u64::try_from(index).unwrap_or(u64::MAX);
+            let position = first.saturating_add(u64::try_from(index).unwrap_or(u64::MAX));
             if record.sequence != position {
                 return Err(Broken::OutOfOrder {
                     at: position,

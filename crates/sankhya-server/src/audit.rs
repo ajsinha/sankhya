@@ -101,11 +101,10 @@ principal: &Principal,
     rows: Option<u64>,
     version: sankhya_audit::DataVersion,
 ) {
-    let at = {
-        let mut clock = server.clock.lock();
-        *clock += 1;
-        *clock
-    };
+    // Wall clock, because an audit that cannot say *when* answers none of the questions an
+    // audit is opened for. The reproducible ordering lives in the record's `sequence`, which
+    // is where it always belonged.
+    let at = server.now_micros();
     let decision = match restriction {
         // Nothing was authorized, so nothing was restricted --- and this is a refusal
         // rather than a grant, which is what makes the absence honest.
@@ -148,7 +147,14 @@ principal: &Principal,
 /// start would be defensible; it is not what this server promises today, and the posture is
 /// printed at startup rather than assumed.
 pub fn resume_audit(server: &Server) -> Vec<String> {
-    let (chain, mut complaints) = sankhya_audit::journal::read(&server.settings.warehouse);
+    // A **window**, not the whole file. A warehouse with a year of audit behind it would
+    // otherwise load all of it into memory before answering anything --- which turns
+    // `OPS-04`'s unbounded growth into an unbounded boot. `len` and `head` still describe the
+    // whole chain; the records held are the recent ones somebody would actually look at.
+    let (chain, mut complaints) = sankhya_audit::journal::read_windowed(
+        &server.settings.warehouse,
+        sankhya_audit::chain::WINDOW,
+    );
     // Verified on the way in. A chain that does not verify is reported at startup rather
     // than at the moment somebody needs it, which is during an incident.
     if let Err(broken) = chain.verify() {

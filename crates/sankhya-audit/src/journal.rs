@@ -106,12 +106,33 @@ impl Journal {
 /// still the best evidence available and refusing to load it helps nobody.
 #[must_use]
 pub fn read(warehouse: &Path) -> (Chain, Vec<String>) {
+    into(warehouse, Chain::new())
+}
+
+/// The same, into a chain that keeps only its most recent records.
+///
+/// What a server uses at startup. The alternative --- what shipped --- is that a warehouse with
+/// a year of audit behind it loads the whole of it into memory before answering anything, which
+/// turns `OPS-04`'s unbounded growth into an unbounded *boot*. The file is the chain; a running
+/// process holds a window onto it, and `len` and `head` still describe the whole.
+#[must_use]
+pub fn read_windowed(warehouse: &Path, window: usize) -> (Chain, Vec<String>) {
+    into(warehouse, Chain::keeping(window))
+}
+
+/// Read every line of the journal into the chain it is given.
+///
+/// The chain decides what it keeps --- everything, or a window --- and this reads the file the
+/// same way either way. A window makes the *memory* bounded, not the reading: every line is
+/// still parsed, because a line that does not parse is a hole in the chain and reporting it is
+/// the whole point of this function.
+fn into(warehouse: &Path, chain: Chain) -> (Chain, Vec<String>) {
     let at = path_of(warehouse);
+    let mut chain = chain;
     let Ok(file) = File::open(&at) else {
         // No file is the ordinary case for a warehouse that has answered nothing yet.
-        return (Chain::new(), Vec::new());
+        return (chain, Vec::new());
     };
-    let mut chain = Chain::new();
     let mut complaints = Vec::new();
     for (number, line) in BufReader::new(file).lines().enumerate() {
         let Ok(line) = line else {
