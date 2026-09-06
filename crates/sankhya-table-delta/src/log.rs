@@ -782,18 +782,33 @@ impl LiveSet {
 pub fn live_files(table_root: &Path) -> Result<LiveSet, CommitError> {
     // Start from a checkpoint if there is a usable one, and from nothing if there is not.
     //
-    // Every failure here falls back to a full replay rather than surfacing, because a
-    // checkpoint carries no information the log does not. That is what makes a checkpoint
-    // safe to write by hand: the worst a bad one can do is be ignored.
-    let base = crate::checkpoint::latest_checkpoint(table_root)
-        .and_then(|version| {
-            let files = crate::checkpoint::read_checkpoint(table_root, version).ok()?;
-            Some(LiveSet {
-                files,
-                version: Some(version),
-            })
-        })
-        .unwrap_or_default();
+    // Almost every failure here falls back to a full replay rather than surfacing, because a
+    // checkpoint carries no information the log does not. That is what makes a checkpoint safe
+    // to write by hand: the worst a bad one can do is be ignored.
+    //
+    // **`Unsupported` is the exception, and it has to be.** It does not say *this checkpoint
+    // is unreadable*; it says *this table declares a protocol this build cannot honour*.
+    // Falling back would ignore the declaration and read the table anyway --- which is the
+    // whole of `FMT-02` restated: reader version 2 is column mapping, so every column reads
+    // null, and version 3 is deletion vectors, so deleted rows are served as live.
+    //
+    // And the fallback masked the fix. The ceiling was added to `read_actions_after`, which
+    // reads JSON commits; a table upgraded and then checkpointed starts here instead, and this
+    // `.ok()` swallowed the refusal the checkpoint reader had just produced.
+    let mut base = LiveSet::default();
+    if let Some(version) = crate::checkpoint::latest_checkpoint(table_root) {
+        match crate::checkpoint::read_checkpoint(table_root, version) {
+            Ok(files) => {
+                base = LiveSet {
+                    files,
+                    version: Some(version),
+                };
+            }
+            Err(refusal @ CommitError::Unsupported { .. }) => return Err(refusal),
+            // Anything else: the checkpoint is unusable and the log is still there.
+            Err(_) => {}
+        }
+    }
 
     advance(table_root, &base)
 }

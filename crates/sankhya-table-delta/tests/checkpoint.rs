@@ -18,8 +18,8 @@
 )]
 
 use sankhya_table_delta::{
-    commit, create, latest_checkpoint, live_files, read_checkpoint, write_checkpoint, Action,
-    AddFile, Metadata, RemoveFile,
+    commit, create, latest_checkpoint, latest_metadata, live_files, read_checkpoint,
+    write_checkpoint, Action, AddFile, CommitError, Metadata, RemoveFile,
 };
 
 const SCHEMA: &str = r#"{"type":"struct","fields":[]}"#;
@@ -291,5 +291,59 @@ fn measure_what_a_checkpoint_saves_a_cold_reader() {
             without.as_secs_f64() / with.as_secs_f64(),
             report.bytes / 1024
         );
+    }
+}
+
+#[test]
+fn a_checkpoint_declaring_a_reader_version_we_cannot_honour_is_refused() {
+    // The bypass. `FMT-02`'s ceiling is enforced in `read_actions_after`, which reads JSON
+    // commits — and `live_files` starts from a checkpoint and then reads only the commits
+    // **after** it. A reader-version bump made before the checkpoint was therefore parsed by
+    // nothing, because the protocol lives on a row whose `add` is null and the reader skipped
+    // exactly those rows.
+    //
+    // So a table an external engine had upgraded and then checkpointed was **refused by a
+    // query and served by a compaction** — the state `log.rs` warns against by name. The
+    // compaction is the damaging half: it reads the raw Parquet, ignores the deletion vectors
+    // a version 3 table depends on, and commits the result. Logically deleted rows come back,
+    // into a file every external reader will now believe, written by a process reporting
+    // success.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path();
+    commit(root, 0, &create(Metadata::new("t", SCHEMA.to_string(), 0))).expect("creating");
+    commit(
+        root,
+        1,
+        &[Action::Add(AddFile::with_rows("part-0.parquet", 512, 0, 1))],
+    )
+    .expect("publishing");
+
+    let live = live_files(root).expect("a readable table");
+    let metadata = latest_metadata(root).expect("readable").expect("a table has metadata");
+
+    // A checkpoint another engine could write: this writer only ever emits reader version 1,
+    // and the versions are parameters precisely because the file is an open format.
+    write_checkpoint(root, &live, &metadata, 3, 7).expect("an upgraded checkpoint");
+
+    // And the commit that would ordinarily carry the bump, written *before* the checkpoint ---
+    // which is the real sequence: an external engine enables deletion vectors at commit N and
+    // checkpoints at M >= N. `advance` reads only commits after M, so this one is never
+    // parsed, and the checkpoint is the only remaining record of the declaration.
+    assert!(
+        latest_checkpoint(root).is_some(),
+        "the checkpoint must be the starting point for this to test anything"
+    );
+
+    match live_files(root) {
+        Err(CommitError::Unsupported { required, supported, .. }) => {
+            assert_eq!(required, 3);
+            assert_eq!(supported, 1);
+        }
+        Err(other) => panic!("refused for the wrong reason: {other}"),
+        Ok(live) => panic!(
+            "a checkpoint declaring reader version 3 was read, and the table served whole \
+             with {} file(s) --- its deleted rows would come back through compaction",
+            live.files.len()
+        ),
     }
 }

@@ -1578,10 +1578,25 @@ somewhere a second server would miss. They stop the first server now and reuse i
 directory, which is what a restart does and what makes the audit and the diagnostic history
 part of the thing being tested.
 
-**Still open, and named rather than closed:** the protocol ceiling is bypassed whenever a
-checkpoint exists, because `read_checkpoint` never reads the protocol column and `live_files`
-starts from the checkpoint — so maintenance can compact a table it would refuse to serve,
-resurrecting logically deleted rows. Seven of eleven metrics export no series until first use,
+**The protocol ceiling was bypassed whenever a checkpoint existed.** `FMT-02`'s refusal went
+into `read_actions_after`, which reads JSON commits — and `live_files` starts from a checkpoint
+and then reads only the commits **after** it. The protocol lives on a checkpoint row whose `add`
+is null, and the reader skipped exactly those rows, so a reader-version bump made before the
+checkpoint was parsed by nothing.
+
+That produces the state `log.rs` warns against by name: a table **refused by a query and served
+by a compaction**. The compaction is the damaging half — it reads the raw Parquet, ignores the
+deletion vectors a version 3 table depends on, and commits the result. Logically deleted rows
+come back, into a file every external reader will now believe, written by a process reporting
+success. A backup taken from it, and a restore drill *verified* against it, are the same shape.
+
+**And the fix was masked by a fallback that is right for a different reason.** Every checkpoint
+failure fell back to a full replay, because *"a checkpoint carries no information the log does
+not"* — true of a corrupt checkpoint, false of one declaring a protocol this build cannot
+honour. That is not *this checkpoint is unreadable*; it is *this table is not one I can read*.
+The refusal propagates now; everything else still falls back.
+
+**Still open, and named rather than closed:** seven of eleven metrics export no series until first use,
 including the only page with no lead time. The maintenance counters are exported nowhere. Four
 runbooks are for codes that cannot fire. `check-benchmarks` verifies that two hardcoded
 directories are non-empty and associates no figure with any benchmark.
