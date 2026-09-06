@@ -45,9 +45,21 @@ fn running() -> (tempfile::TempDir, Running) {
     (dir, server)
 }
 
-/// A second server over the same warehouse, which is what a restart is.
-fn restart(dir: &tempfile::TempDir) -> Running {
-    start(&dir.path().join("warehouse"), &dir.path().join("data-again"))
+/// Stop the running server and start another on the same warehouse and data directory.
+///
+/// # What this used to be
+///
+/// A second server over the same warehouse with a *different* data directory, started while
+/// the first was still running --- and this comment called that "what a restart is". It is
+/// not. It is the two-writer state: both processes hold their own audit chain beginning at
+/// sequence zero and append to one file, which corrupts it permanently and silently.
+///
+/// It was possible only because the lock lived in the data directory, so two servers over one
+/// warehouse took two different locks. Moving the lock into the warehouse is what surfaced
+/// this, in three tests at once.
+fn restart(dir: &tempfile::TempDir, server: Running) -> Running {
+    drop(server);
+    start(&dir.path().join("warehouse"), &dir.path().join("data"))
 }
 
 /// One statement's first answer, or the refusal it produced.
@@ -160,7 +172,7 @@ fn a_restart_remembers_what_the_fact_query_reads() {
     let (dir, server) = running();
     let _ = ask(server.port, JOINED).expect("a cube over a query is accepted");
 
-    let again = restart(&dir);
+    let again = restart(&dir, server);
     let cubes = text_rows(again.port, "SELECT cube, reads FROM cubes()");
     let listed: String = cubes
         .iter()

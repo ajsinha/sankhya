@@ -731,6 +731,74 @@ mod tests {
         assert_eq!(declared_grace("nothing here"), None);
     }
 
+    /// A repository holding one manifest, one workspace version, and optionally a Dockerfile.
+    fn a_repository(image: &str, version: &str, dockerfile: bool) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            format!("[workspace.package]\nversion = \"{version}\"\n"),
+        )
+        .expect("a workspace manifest");
+        let manifests = dir.path().join(MANIFESTS).join("kubernetes");
+        std::fs::create_dir_all(&manifests).expect("a manifests directory");
+        std::fs::write(
+            manifests.join("deployment.yaml"),
+            // `image:` at the start of the trimmed line, as the real manifest writes it.
+            // A `- image:` list item does not match the parser, and a fixture that does not
+            // match makes the check return false through its *no images found* branch --- so
+            // both rejecting tests below would have passed without exercising anything. That
+            // is the failure this whole test module is here to stop, met while writing it.
+            format!("spec:\n  containers:\n    - name: sankhya\n      image: {image}\n"),
+        )
+        .expect("a deployment manifest");
+        if dockerfile {
+            std::fs::write(dir.path().join(MANIFESTS).join("Dockerfile"), "FROM scratch\n")
+                .expect("a Dockerfile");
+        }
+        dir
+    }
+
+    #[test]
+    fn a_manifest_naming_an_image_nothing_builds_is_refused() {
+        // The case the check exists for, and the one it was never shown to reject.
+        //
+        // Its only test asserted `check_images_are_built` returns **true** on the real
+        // repository --- which it does whether or not the guard runs, so a mutation removing
+        // the guard passed. The mutation catalogue could not see that either: its entry named
+        // a `--test` target `xtask` does not have, and `cargo test --test package` on a crate
+        // with no `tests/` directory exits non-zero, which the runner read as *caught*.
+        //
+        // Two mechanisms, both reporting a pass, neither having run anything. A check is
+        // tested by a case it must reject.
+        let dir = a_repository("ghcr.io/ajsinha/sankhya:0.1.0", "0.1.0", false);
+        assert!(
+            !check_images_are_built(dir.path()),
+            "a manifest naming an image with no Dockerfile anywhere must be refused"
+        );
+    }
+
+    #[test]
+    fn a_manifest_deploying_a_version_this_build_is_not_is_refused() {
+        // Two version numbers in two files that nothing relates is how a manifest comes to
+        // name an image that was never pushed.
+        let dir = a_repository("ghcr.io/ajsinha/sankhya:9.9.9", "0.1.0", true);
+        assert!(
+            !check_images_are_built(dir.path()),
+            "a manifest whose tag is not the workspace version must be refused"
+        );
+    }
+
+    #[test]
+    fn a_manifest_that_agrees_with_its_dockerfile_and_version_is_accepted() {
+        // The other half, so the two above are not passing because the function refuses
+        // everything.
+        let dir = a_repository("ghcr.io/ajsinha/sankhya:0.1.0", "0.1.0", true);
+        assert!(
+            check_images_are_built(dir.path()),
+            "a manifest naming the built image at the workspace version must pass"
+        );
+    }
+
     #[test]
     fn the_manifests_name_the_version_this_workspace_is() {
         // `RUN-11`. The Kubernetes manifest named an image at a version, and there was no

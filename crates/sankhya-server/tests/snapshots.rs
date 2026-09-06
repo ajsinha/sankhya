@@ -760,3 +760,47 @@ fn a_snapshot_records_versions_that_were_current_together() {
     // refusing on a warehouse nobody is writing to.
     query_outcome(server.port, "SET SNAPSHOT = 'together'").expect("setting it");
 }
+
+#[test]
+fn a_clone_read_under_a_snapshot_answers_its_rows_rather_than_none() {
+    // The silent wrong answer, and the worst one this system has had: a clone read under
+    // `SET SNAPSHOT` returned **zero rows and succeeded**. Not refused, not an error --- the
+    // tag said `SELECT 0` --- on the one feature whose entire purpose is a reproducible
+    // report.
+    //
+    // `ADR-0016` Decision 1a is that a clone's log names none of its origin's files, so
+    // reading one means reading two logs. The ordinary read path has always branched on
+    // `inherited` to do that, under a comment naming this exact failure. The two time-travel
+    // paths --- `at_snapshot` and `at_versions` --- were written afterwards, called
+    // `resolve_as_of`, which passes no `inherited`, and so resolved a log naming nothing.
+    // They copied `inherited` into the table they built and never used it to build it.
+    let (_dir, server) = running();
+
+    query_outcome(server.port, "CREATE TABLE sales.pinned CLONE sales.orders")
+        .expect("cloning");
+
+    // Rows, not a count, because the failure is an **empty file set** --- a `count(*)` of zero
+    // and a thousand rows are both one row on the wire, and this must count what came back.
+    let mut plain = Session::open(server.port);
+    let before = plain
+        .run("SELECT id FROM sales.pinned")
+        .expect("a clone reads its origin's rows");
+    assert!(before > 0, "the clone must read something to begin with");
+
+    query_outcome(server.port, "CREATE SNAPSHOT month_end EXPIRE AFTER 7 DAYS")
+        .expect("a snapshot");
+
+    // One session, so the setting is in force for the read that follows it.
+    let mut session = Session::open(server.port);
+    session.run("SET SNAPSHOT 'month_end'").expect("the snapshot is set");
+    let after = session
+        .run("SELECT id FROM sales.pinned")
+        .expect("a clone is readable under a snapshot");
+
+    assert_eq!(
+        after, before,
+        "the clone answered {after} rows under a snapshot and {before} without one. Zero here \
+         is not a refusal --- it is a successful statement returning nothing, which is the \
+         answer this whole system is arranged against"
+    );
+}

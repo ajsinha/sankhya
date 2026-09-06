@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2807 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2807 tests, 741 mutations and a twenty-check gate, and all of it was green while the <!-- figures-as-measured-then -->
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -1486,6 +1486,105 @@ client dependency and cannot open a connection; the graph is registered against 
 constructed empty catalogue on every session and can never answer; the pack loader is not wired,
 and the two "flagship packs" the README described never existed — `packs/` holds telemetry,
 logistics and an adversarial fixture. Cube hierarchies are validated and ignored.
+
+### The adversarial review
+
+Five reviewers were asked to break this system rather than confirm it works: correctness,
+security, the gates, operations, and the documentation's claims. The operations reviewer ran
+it — built it, started it, killed it, corrupted a Parquet file, filled a disk, and followed the
+runbooks. What follows is what they found and what was done. **Several are defects introduced
+by this remediation**, which is the most useful thing about the exercise.
+
+**The columnar door authenticated nobody, and it is on by default.** It read a **sankhya-user** metadata
+header, checked it was non-empty, and served that user's session — with no credential
+of any kind. The wire door refuses a connection when `server.require_password` is set and no
+password arrives, and then verifies what did arrive against `server.credentials`. Worse than an
+open door: `Server::principal` stamps the record `Authentication::Password` when passwords are
+required, so the audit would have said *authenticated by password* about a caller who presented
+none. Both doors call the same `Handler::authenticate` now, from `caller_of`, which every
+request passes through — two call sites is how one of them comes to be missed, which is the
+whole defect.
+
+**A clone read under `SET SNAPSHOT` or `SET VERSION OF` returned zero rows and succeeded.**
+`resolve_as_of` passes no `inherited`, and `ADR-0016` Decision 1a is that a clone's log names
+none of its origin's files — so it resolved a log naming nothing, and an empty file set is
+answered with `EmptyExec` rather than an error. The tag said `SELECT 0`, on the one feature
+whose entire purpose is a reproducible report. The ordinary read path has always branched on
+`inherited`, under a comment naming this exact failure; the two time-travel paths were written
+afterwards, never given the branch, and copied `inherited` into the table they built without
+using it to build it. The test prints *"the clone answered 0 rows under a snapshot and 1000
+without one"*.
+
+**The mutation runner was not checking that a test ran.** `judge()` returned *caught* for any
+non-zero exit that was not a compile error — and `cargo test -p xtask --test package`, for a
+crate with no `tests/` directory, prints *"no test target named `package`"* and exits 101. Two
+entries were passing on that, and **both survive their real suite**. This is `R3` — *gates
+report green when they measure nothing* — inside the mechanism built to detect exactly that. A
+verdict now requires libtest to print `test result: FAILED`; `--check` validates that a named
+target exists and that no two entries name one site; a hang is its own verdict rather than an
+exception thirty minutes in. The catalogue is **907 distinct defects, not 909**.
+
+Writing the tests those two entries needed, the first fixture used `- image:` where the parser
+requires `image:` at the start of the line — so both rejecting tests passed *vacuously*, through
+the check's no-images-found branch. The same failure mode, in the test written to fix it, caught
+only because the accepting case was written too.
+
+**Two servers over one warehouse were permitted, and corrupted the audit permanently.** The lock
+was `<data_dir>/warehouse.lock`, and the data directory is a per-process setting — so two
+servers differing only in `SANKHYA_DATA_DIR` each took a lock, both started, and neither said
+anything. They then appended to one `_audit/chain.jsonl` from two chains that each began at
+sequence zero, and the next start reports that the log has been reordered. There is no way back
+from it, nothing observes the state while it is happening, and the shipped deployment's
+`replicas: 1` is documented as a correctness constraint resting on this lock.
+
+The first fix was wrong and is worth recording: deriving the file's *name* from the warehouse
+while leaving it in the data directory changes nothing when the data directories differ — it is
+still a different file. The lock lives in the warehouse now, under `_locks/`, beside `_audit/`
+and `_snapshots/`, which discovery already skips.
+
+**And chasing that exposed a second defect.** The test helper wrote a top-level `warehouse:`
+key, which the loader does not read — so every server it started ran against the **default**
+warehouse and created bookkeeping in the repository. The tests passed regardless, because the
+lock they were about lived in the data directory, which the test does control. Moving the lock
+is what made it visible.
+
+**`doctor` reported CLEAN on a warehouse that is not there.** One transposed character in a path
+gave `0 table(s)`, `Nothing to report`, exit 0. `discover` exempts `NotFound` deliberately — a
+warehouse is created on first use, and complaining would warn on every first start. That
+reasoning does not transfer to `doctor`, which creates nothing and is the one thing run from
+cron forever: the case it exists to catch *is* the exempted one. A decision from 5.3, right for
+the server and wrong for the diagnostic.
+
+**An unreadable table directory was skipped in silence.** `Path::is_dir()` answers `false` on
+`EACCES` exactly as it does on absent, so a table whose directory permissions changed was
+classified *not a table*: the server started, said nothing, `doctor` reported clean, and the
+only symptom was a client being told the table does not exist. One level down — an unreadable
+`_delta_log` — was already loud. The directory above it was the gap, and a `chown` that missed
+a directory is the ordinary way to arrive there.
+
+**`SIGHUP` killed the server when maintenance was disabled.** The handler was installed only
+when a maintenance thread existed, and `maintenance.interval: 0` produces none — so the signal
+took its default disposition and the process died with no drain and no line. That is reachable
+by the ordinary path: the live-files gauge pages regardless of whether maintenance runs, so the
+alert fires, the operator opens the compaction-debt runbook, follows its remediation — which is
+`kill -HUP` — and kills the server, which `Restart=on-failure` brings back to fire again.
+
+**And moving the lock found three tests that were not testing what they said.** Each was named
+*"it survives a restart"* and each started a **second server on the same warehouse** with a
+different data directory while the first was still running — one of them under a doc comment
+reading *"a second server over the same warehouse, which is what a restart is"*. It is not: it
+is the two-writer state, and the tests could only be written that way because the lock was
+somewhere a second server would miss. They stop the first server now and reuse its data
+directory, which is what a restart does and what makes the audit and the diagnostic history
+part of the thing being tested.
+
+**Still open, and named rather than closed:** the protocol ceiling is bypassed whenever a
+checkpoint exists, because `read_checkpoint` never reads the protocol column and `live_files`
+starts from the checkpoint — so maintenance can compact a table it would refuse to serve,
+resurrecting logically deleted rows. Seven of eleven metrics export no series until first use,
+including the only page with no lead time. The maintenance counters are exported nowhere. Four
+runbooks are for codes that cannot fire. `check-benchmarks` verifies that two hardcoded
+directories are non-empty and associates no figure with any benchmark.
 
 **Still open in Phase 6:** the rest of 6.6, 6.7 and 6.8.
 

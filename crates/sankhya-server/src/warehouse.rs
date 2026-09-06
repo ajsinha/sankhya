@@ -208,8 +208,27 @@ pub fn discover(warehouse: &Path) -> (Vec<FoundTable>, Vec<(PathBuf, String)>) {
         for table_dir in table_dirs {
             // A directory without a log is not a table. Object stores hold all sorts of
             // things and complaining about each would bury the ones that matter.
-            if !table_dir.join("_delta_log").is_dir() {
-                continue;
+            //
+            // **But `is_dir()` answers `false` for every failure**, including "this directory
+            // cannot be searched" --- the same substitution `Path::exists` makes, one type
+            // over. So a table whose directory permissions changed was classified *not a
+            // table* and skipped in silence: the server started, said nothing, `doctor`
+            // reported clean, and the only symptom was a client being told the table does not
+            // exist. A `chown` that missed a directory, or a restore run under `sudo`, is the
+            // ordinary way to arrive there.
+            //
+            // One level down --- an unreadable `_delta_log` --- was already loud, because
+            // `open` reports it. The directory above it was the gap.
+            let log = table_dir.join("_delta_log");
+            match std::fs::metadata(&log) {
+                Ok(metadata) if metadata.is_dir() => {}
+                // Genuinely not a table. The ordinary case, and still silent.
+                Ok(_) => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    refused.push((table_dir, error.to_string()));
+                    continue;
+                }
             }
             let Some(table_name) = table_dir.file_name().and_then(|n| n.to_str()) else {
                 continue;

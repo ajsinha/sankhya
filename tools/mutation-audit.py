@@ -59,6 +59,7 @@ Usage
 """
 
 import glob
+import io
 import os
 import signal
 import subprocess
@@ -778,9 +779,18 @@ CATALOGUE = [
     # The lock type working and the server never calling it look identical from inside the type.
     ("server: start without taking the warehouse lock",
      "crates/sankhya-server/src/main.rs",
-     "    let held = match sankhya_atomicfs::WarehouseLock::take(&data.join(\"warehouse.lock\")) {\n        Ok(lock) => lock,\n        Err(why) => {\n            eprintln!(\"sankhya: {why}\");\n            std::process::exit(3);\n        }\n    };",
+     "    let held = match sankhya_atomicfs::WarehouseLock::take(&lock_file) {\n        Ok(lock) => lock,\n        Err(why) => {\n            eprintln!(\"sankhya: {why}\");\n            std::process::exit(3);\n        }\n    };",
      "    let held = ();",
-     "sankhya-server"),
+     "sankhya-server", 1, "one_server"),
+
+    # The lock guards the **warehouse**, and lived in the data directory --- which is a
+    # per-process setting, so two servers differing only in `SANKHYA_DATA_DIR` both started
+    # and permanently corrupted the audit chain between them, silently.
+    ("atomicfs: key the warehouse lock on something a second server can miss",
+     "crates/sankhya-atomicfs/src/exclusive.rs",
+     "        warehouse.join(\"_locks\").join(\"server.lock\")",
+     "        std::path::PathBuf::from(\"/tmp\").join(\"server.lock\")",
+     "sankhya-server", 1, "one_server"),
 
     # A pid is reused. Checking only that *something* has that pid calls a crashed server live,
     # so the lock is never broken and every restart is refused until somebody deletes the file
@@ -4071,19 +4081,7 @@ CATALOGUE = [
      "            if false {",
      "xtask"),
 
-    ("docs: name a check in INVARIANTS.md that does not run",
-     "xtask/src/main.rs",
-     "        if !known.contains(check.as_str()) {",
-     "        if false {",
-     "xtask"),
-
-    ("docs: run a check that INVARIANTS.md documents nowhere",
-     "xtask/src/main.rs",
-     "        if !named.contains(check) {",
-     "        if false {",
-     "xtask"),
-
-    # --- M8 §12.1: the concurrency criteria, which a global lock would satisfy ------
+            # --- M8 §12.1: the concurrency criteria, which a global lock would satisfy ------
 
     ("table-delta: serialize every commit in the warehouse behind one lock",
      "crates/sankhya-table-delta/src/log.rs",
@@ -6460,13 +6458,13 @@ CATALOGUE = [
      "xtask/src/package.rs",
      "            if !dockerfile.is_file() {",
      "            if false {",
-     "xtask", 1, "package"),
+     "xtask", 1),
 
     ("xtask: accept a manifest deploying a version this build is not",
      "xtask/src/package.rs",
      "            if tag != version {",
      "            if false {",
-     "xtask", 1, "package"),
+     "xtask", 1),
 
     # --- Phase 5.8: a query log, and events with a time on them -----------------------------------
 
@@ -6512,6 +6510,27 @@ CATALOGUE = [
      "                if *min_reader_version > SUPPORTED_READER_VERSION {",
      "                if false && *min_reader_version > SUPPORTED_READER_VERSION {",
      "sankhya-table-delta", 1, "log"),
+
+    # --- The adversarial review: a silent wrong answer, and a door with no lock -------------------
+
+    # A clone read under `SET SNAPSHOT` or `SET VERSION OF` answered **zero rows and
+    # succeeded**. `resolve_as_of` passes no `inherited`, and a clone's own log names none of
+    # its origin's files --- so it resolved a log naming nothing. The `inherited` field was
+    # copied into the table built from it and never used to build it.
+    ("server: resolve a clone under a snapshot without its origin",
+     "crates/sankhya-server/src/snapshots.rs",
+     "        let resolved = match table.inherited.as_ref() {\n            Some(inherited) => sankhya_readpath::resolve_clone_as_of(\n                std::sync::Arc::clone(&table.schema),\n                &table.root,\n                inherited,\n                at.version,",
+     "        let resolved = match Option::<&sankhya_readpath::Inherited>::None {\n            Some(inherited) => sankhya_readpath::resolve_clone_as_of(\n                std::sync::Arc::clone(&table.schema),\n                &table.root,\n                inherited,\n                at.version,",
+     "sankhya-server", 1, "snapshots"),
+
+    # The columnar door read a `sankhya-user` header, checked it was non-empty, and served
+    # that user --- with no credential of any kind, while the wire door refuses without one
+    # and verifies it. Both doors call the same `authenticate` now.
+    ("server: serve the columnar door to anyone who names a user",
+     "crates/sankhya-server/src/flight.rs",
+     "        self.authenticated(&user, request_metadata)?;",
+     "        let _ = &request_metadata;",
+     "sankhya-server", 1, "wiring"),
 
 ]
 
@@ -6617,22 +6636,107 @@ def judge(crate, hint):
     exists to prevent.
     """
     def once(arguments):
-        p = subprocess.run(["cargo", "test", "-p", crate, "--quiet"] + arguments,
-                           cwd=ROOT, capture_output=True, text=True, timeout=1800)
+        try:
+            p = subprocess.run(["cargo", "test", "-p", crate, "--quiet"] + arguments,
+                               cwd=ROOT, capture_output=True, text=True, timeout=1800)
+        except subprocess.TimeoutExpired:
+            # A mutation that hangs is worse than one that survives: it takes the whole run
+            # with it and reports nothing. This used to raise out of `main`, thirty minutes
+            # in, leaving the defect applied. Reported as its own verdict so the entry can be
+            # given a narrower test target or removed with the reasoning recorded.
+            return "HUNG", False
         out = p.stdout + p.stderr
         if "error[E" in out or "could not compile" in out:
             return "no compile", True
+
+        # A non-zero exit is not a caught mutation.
+        #
+        # This was `if p.returncode == 0: SURVIVED else: caught`, and cargo exits non-zero for
+        # reasons that have nothing to do with the defect. The one that was live: a seventh
+        # field naming a test target that does not exist --- `cargo test -p xtask --test
+        # package` prints *"no test target named `package`"* and exits 101, which read as
+        # **caught**. Two entries were passing on it, and both would have survived their real
+        # suite.
+        #
+        # So the verdict now requires libtest to say so. `test result: FAILED` is printed by
+        # the harness only when a test actually ran and actually failed, which is the thing
+        # this whole file is trying to establish.
+        #
+        # This is `R3` --- *gates report green when they measure nothing* --- inside the
+        # mechanism built to detect exactly that.
+        if "test result: FAILED" in out:
+            return "caught", True
         if p.returncode == 0:
             return "SURVIVED", False
-        return "caught", True
+        # Non-zero, no compile error, and no failing test. Cargo could not run the suite ---
+        # a missing target, a lock it could not take, a signal. Never silently a pass.
+        return "DID NOT RUN", False
 
     if hint:
         verdict, ok = once(["--test", hint])
-        # A named target that caught it, or would not compile, is the answer. Only a survival
-        # has to be checked against everything else.
-        if verdict != "SURVIVED":
+        # A named target that caught it, or would not compile, is the answer. A survival ---
+        # and now a target that could not be run at all --- is checked against everything else,
+        # because a hint naming the wrong target must cost a re-run and never a wrong answer.
+        if verdict not in ("SURVIVED", "DID NOT RUN"):
             return verdict, ok
     return once([])
+
+
+def declared_test_targets(crate):
+    """Every `--test` target `crate` actually has.
+
+    A `--test NAME` target comes from `tests/NAME.rs` or an explicit `[[test]]` in the
+    manifest, and nothing else --- so an empty set means the crate has none, which is a real
+    answer rather than a failure to look. Returning it as such is the point: the entries this
+    check exists to catch name a target in a crate with no `tests/` directory at all.
+    """
+    targets = set()
+    for base in (os.path.join(ROOT, "crates", crate), os.path.join(ROOT, crate)):
+        for path in glob.glob(os.path.join(base, "tests", "*.rs")):
+            targets.add(os.path.splitext(os.path.basename(path))[0])
+        manifest = os.path.join(base, "Cargo.toml")
+        if os.path.isfile(manifest):
+            text = io.open(manifest, encoding="utf-8").read()
+            for block in text.split("[[test]]")[1:]:
+                match = re.search(r'name\s*=\s*"([^"]+)"', block)
+                if match:
+                    targets.add(match.group(1))
+    return targets
+
+
+def check_hints_and_duplicates():
+    """Two failures `--check` could not see, both of which made an entry prove nothing.
+
+    **A hint naming a target that does not exist.** The seventh field names a test binary so a
+    verdict costs thirty seconds instead of five minutes. Nothing validated it, and
+    `cargo test -p xtask --test package` --- for a crate with no `tests/` directory at all ---
+    prints *"no test target named `package`"* and exits non-zero, which the runner read as
+    **caught**. Two entries were passing on that.
+
+    **Two entries naming one site.** `--check` counts occurrences of each entry's find-text in
+    the source, independently, so a duplicated tuple sees one occurrence and one declaration
+    and agrees with itself. The headline count is then larger than the number of distinct
+    defects, which is the one number this file exists to be trusted about.
+    """
+    problems = []
+    seen = {}
+    for entry in CATALOGUE:
+        label, relpath, find, replace, crate = entry[0], entry[1], entry[2], entry[3], entry[4]
+        hint = entry[6] if len(entry) > 6 else None
+        if hint:
+            available = declared_test_targets(crate)
+            if hint not in available:
+                problems.append(
+                    "BAD HINT   %s names test target '%s', which %s does not have. A hint that "
+                    "cannot run exits non-zero and used to read as caught" % (label, hint, crate))
+        key = (relpath, find, replace)
+        if key in seen:
+            problems.append(
+                "DUPLICATE  %s and %s are the same mutation of the same site, so the catalogue "
+                "counts one defect twice" % (seen[key], label))
+        else:
+            seen[key] = label
+    return problems
 
 
 def check_only():
@@ -6714,7 +6818,19 @@ def check_only():
               f"updating, the entry is ambiguous, or a killed run left its mutation applied "
               f"-- check `git diff` before anything else.")
         return 1
-    print(f"all {len(CATALOGUE)} catalogue entries match the source")
+
+    # Matching the source is necessary and was never sufficient. An entry can name real code,
+    # apply cleanly, and still prove nothing: because the test target it names does not exist,
+    # or because another entry already mutates the same site the same way.
+    problems = check_hints_and_duplicates()
+    if problems:
+        for problem in problems:
+            print("  " + problem)
+        print(f"\n{len(problems)} entr(ies) match the source and cannot prove anything.")
+        return 1
+
+    print(f"all {len(CATALOGUE)} catalogue entries match the source, name a test target that "
+          f"exists, and describe distinct defects")
     return 0
 
 
