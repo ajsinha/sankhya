@@ -314,15 +314,17 @@ pub fn check(root: &Path) -> bool {
     let baseline = check_baseline(root, releasing);
     let grace = check_grace(root);
     let configured = check_units_are_configured(root);
+    let images = check_images_are_built(root);
+    let builder = check_builder_is_the_one_measured(root);
 
-    if baseline && grace && configured {
+    if baseline && grace && configured && images && builder {
         println!(
             "   baseline GLIBC_{}.{}, manifests allow longer than the drain, units name a \
-             configuration",
+             configuration, images are built here",
             BASELINE_GLIBC.0, BASELINE_GLIBC.1
         );
     }
-    grace && configured && (baseline || !releasing)
+    grace && configured && images && builder && (baseline || !releasing)
 }
 
 /// Every service unit says where its configuration is.
@@ -395,6 +397,139 @@ fn check_baseline(root: &Path, releasing: bool) -> bool {
         return false;
     }
     ok
+}
+
+/// Every image a manifest names is one this repository builds, at this version.
+///
+/// # Why this is checked rather than reviewed
+///
+/// `RUN-11`. The Kubernetes manifest named `ghcr.io/ajsinha/sankhya:0.1.0` and there was no
+/// Dockerfile, Containerfile or compose file anywhere in the repository --- so the manifest
+/// could not be applied by anybody, including whoever wrote it, and nothing said so. A
+/// manifest is not run by any test; a missing image is discovered by an operator at the
+/// moment they most need it to work.
+///
+/// The tag is compared against the workspace version because that is the other half of the
+/// same failure: two version numbers in two files that nothing relates is how a manifest
+/// comes to name an image that was never pushed.
+fn check_images_are_built(root: &Path) -> bool {
+    let Some(version) = workspace_version(root) else {
+        eprintln!("  COULD NOT READ  the workspace version from Cargo.toml");
+        return false;
+    };
+    let dockerfile = root.join(MANIFESTS).join("Dockerfile");
+    let mut ok = true;
+    let mut checked = 0usize;
+
+    for path in files_under(&root.join(MANIFESTS)) {
+        if path.extension().is_none_or(|e| e != "yaml" && e != "yml") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in text.lines() {
+            let trimmed = line.trim();
+            let Some(image) = trimmed.strip_prefix("image:") else {
+                continue;
+            };
+            let image = image.trim();
+            checked += 1;
+            if !dockerfile.is_file() {
+                eprintln!(
+                    "  NO DOCKERFILE   {} names `{image}` and {} does not exist, so this manifest cannot be applied by anybody",
+                    path.display(),
+                    dockerfile.display()
+                );
+                ok = false;
+                continue;
+            }
+            let Some((_, tag)) = image.rsplit_once(':') else {
+                eprintln!("  UNTAGGED IMAGE  {} names `{image}` with no tag, so what it deploys depends on when it is applied", path.display());
+                ok = false;
+                continue;
+            };
+            if tag != version {
+                eprintln!(
+                    "  WRONG TAG       {} names `{image}` and the workspace is at {version}; the manifest deploys a version this build is not",
+                    path.display()
+                );
+                ok = false;
+            }
+        }
+    }
+
+    if checked == 0 {
+        eprintln!("  NO IMAGES       no manifest names an image, so this check is measuring nothing");
+        return false;
+    }
+    ok
+}
+
+/// What the container builder's distribution ships, and what its output actually needs.
+///
+/// # Why a table rather than a check that builds the image
+///
+/// Building the image takes tens of minutes and a network. This records the two numbers that
+/// were *measured* --- by building it and reading the binary's version references --- so that
+/// changing the builder without re-measuring fails the build rather than silently moving the
+/// platform the project runs on.
+///
+/// The gap is real and is written down rather than hidden: an image built from
+/// `packaging/Dockerfile` needs `GLIBC_2.30` and the declared baseline is 2.28, so it will
+/// not start on the oldest platform the project says it supports. Debian 10 is end-of-life
+/// and its archive has moved, so pinning the builder to it is a build that breaks on a
+/// schedule nobody controls; the honest route to 2.28 is a cross-toolchain with an old
+/// sysroot, which is work this has not done.
+const BUILDER: (&str, u32, u32) = ("rust:1.97-bullseye", 2, 30);
+
+/// The container builder is the one the measured figure belongs to.
+fn check_builder_is_the_one_measured(root: &Path) -> bool {
+    let dockerfile = root.join(MANIFESTS).join("Dockerfile");
+    let Ok(text) = std::fs::read_to_string(&dockerfile) else {
+        // Reported by `check_images_are_built`, which is where a missing Dockerfile belongs.
+        return true;
+    };
+    let declared = text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("FROM ").map(str::trim))
+        .and_then(|rest| rest.split_whitespace().next());
+    match declared {
+        Some(image) if image == BUILDER.0 => {
+            if (BUILDER.1, BUILDER.2) > BASELINE_GLIBC {
+                println!(
+                    "   note: images built from {} need GLIBC_{}.{} and the baseline is GLIBC_{}.{}; recorded in packaging/Dockerfile",
+                    dockerfile.display(),
+                    BUILDER.1,
+                    BUILDER.2,
+                    BASELINE_GLIBC.0,
+                    BASELINE_GLIBC.1
+                );
+            }
+            true
+        }
+        Some(image) => {
+            eprintln!(
+                "  BUILDER MOVED   {} builds on `{image}` and the measured figure belongs to `{}`. Build the image, read the binary's GLIBC references, and update BUILDER --- a builder changed without re-measuring moves the platform this project runs on and says nothing",
+                dockerfile.display(),
+                BUILDER.0
+            );
+            false
+        }
+        None => {
+            eprintln!("  NO BUILDER      {} declares no FROM", dockerfile.display());
+            false
+        }
+    }
+}
+
+/// The workspace version, from the manifest that declares it.
+fn workspace_version(root: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(root.join("Cargo.toml")).ok()?;
+    text.lines()
+        .find(|line| line.trim_start().starts_with("version"))
+        .and_then(|line| line.split('"').nth(1))
+        .map(ToString::to_string)
 }
 
 /// Every deployment manifest gives the drain longer than it takes.
@@ -594,5 +729,26 @@ mod tests {
         assert_eq!(declared_grace("[Service]\nTimeoutStopSec=45s\n"), Some(45));
         assert_eq!(declared_grace("    stop_grace_period: 45s\n"), Some(45));
         assert_eq!(declared_grace("nothing here"), None);
+    }
+
+    #[test]
+    fn the_manifests_name_the_version_this_workspace_is() {
+        // `RUN-11`. The Kubernetes manifest named an image at a version, and there was no
+        // Dockerfile anywhere in the repository --- so the manifest could not be applied by
+        // anybody, including whoever wrote it, and nothing said so. A manifest is not run by
+        // any test; a missing image is discovered by an operator at the moment they most
+        // need it to work.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the workspace root");
+        assert!(
+            check_images_are_built(root),
+            "every image a manifest names must be one this repository builds, at this version"
+        );
+        // Not vacuous: there is a workspace version to compare against, and it is the one
+        // the manifests are checked against rather than a default that would match anything.
+        let version = workspace_version(root).expect("a workspace version");
+        assert!(!version.is_empty());
+        assert!(version.contains('.'), "a version is a version: {version}");
     }
 }

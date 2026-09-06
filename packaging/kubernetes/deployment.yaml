@@ -40,6 +40,12 @@ spec:
           ports:
             - name: pgwire
               containerPort: 5433
+            # `RUN-10`. Flight SQL is a headline feature of this system and the shipped
+            # manifest did not declare its port, so it was unreachable in every deployment
+            # made from this file --- and unconfigurable besides, because there was no
+            # environment variable for it either.
+            - name: flight
+              containerPort: 5434
             - name: metrics
               containerPort: 9464
           env:
@@ -54,6 +60,11 @@ spec:
             # scraping it.
             - name: SANKHYA_METRICS_LISTEN
               value: 0.0.0.0:9464
+            # Every interface inside the pod, for the reason the metrics door is: the pod
+            # boundary is the isolation, and a loopback bind would make the port declared
+            # above unreachable from the Service that routes to it.
+            - name: SANKHYA_FLIGHT_LISTEN
+              value: 0.0.0.0:5434
           # Liveness: is the process alive. Nothing about lag, deliberately.
           livenessProbe:
             tcpSocket:
@@ -81,3 +92,49 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: sankhya-data
+---
+# `RUN-11`. The deployment above referenced `sankhya-data` and no manifest defined it, so
+# `kubectl apply -f` left a pod pending on a volume that does not exist.
+#
+# `ReadWriteOnce` and one replica, deliberately. The warehouse takes a lock and refuses a
+# second server --- `COR-15`: two servers each plan compactions against a live set the other
+# is changing --- so a volume that could be mounted by two pods would be a volume that lets
+# the deployment scale itself into the failure the lock exists to prevent.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sankhya-data
+  labels:
+    app.kubernetes.io/name: sankhya
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+---
+# And something to route to. The deployment shipped no Service, so nothing reached 5433 ---
+# a manifest that starts a server nobody can connect to.
+#
+# `ClusterIP` rather than `LoadBalancer`: this is a database, and the decision to expose one
+# outside the cluster belongs to whoever is deploying it rather than to a file in the
+# repository. The metrics port is deliberately absent from the Service --- it is scraped
+# from inside the pod by the annotations above, and putting it here would make the
+# deployment's shape readable from anywhere in the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: sankhya
+  labels:
+    app.kubernetes.io/name: sankhya
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: sankhya
+  ports:
+    - name: pgwire
+      port: 5433
+      targetPort: pgwire
+    - name: flight
+      port: 5434
+      targetPort: flight

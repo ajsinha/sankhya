@@ -108,6 +108,8 @@ ENVIRONMENT:
     SANKHYA_WAREHOUSE          warehouse.path
     SANKHYA_LISTEN             server.listen
     SANKHYA_METRICS_LISTEN     server.metrics_listen
+    SANKHYA_FLIGHT_LISTEN      server.flight_listen (the columnar door; default
+                               127.0.0.1:5434)
     SANKHYA_READ_AS_OF         warehouse.read_as_of
     SANKHYA_DATA_DIR           data.dir
     SANKHYA_NO_PASSWORD        serve with no authentication; presence is the signal
@@ -455,6 +457,11 @@ fn legacy_environment() -> BTreeMap<String, String> {
     const MAPPED: &[(&str, &str)] = &[
         ("SANKHYA_LISTEN", "server.listen"),
         ("SANKHYA_METRICS_LISTEN", "server.metrics_listen"),
+        // `RUN-10`. This was missing while the other two doors had one, so the columnar door
+        // could only be moved by writing a configuration file --- and a container image is
+        // configured by environment. Two instances on one host therefore always collided on
+        // 5434, and the shipped Kubernetes manifest could not expose Flight SQL at all.
+        ("SANKHYA_FLIGHT_LISTEN", "server.flight_listen"),
         ("SANKHYA_WAREHOUSE", "warehouse.path"),
         ("SANKHYA_READ_AS_OF", "warehouse.read_as_of"),
         ("SANKHYA_DATA_DIR", "data.dir"),

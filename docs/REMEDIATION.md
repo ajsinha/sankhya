@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2789 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2794 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -1160,8 +1160,62 @@ what has arrived since the last one --- and a benchmark that demonstrates it bel
 where the benchmarks that do not exist are built. `OPS-22`'s remaining part, the per-column
 HyperLogLog sketch carried on every file, is not addressed here.
 
-`5.7` is not started. `OPS-23` and `OPS-24` --- the query log that does not exist, and the
-runtime events still going to `println!` --- are not done either. `OPS-21`, `OPS-23` and `OPS-24` --- checkpoints that are never
+**5.7 A door that cannot be moved, and a manifest that cannot be applied (`RUN-10`,
+`RUN-11`).**
+
+**Arrow Flight SQL was unconfigurable and unexposed.** `SANKHYA_LISTEN` and
+`SANKHYA_METRICS_LISTEN` existed; `SANKHYA_FLIGHT_LISTEN` did not, so the columnar door could
+be moved only by writing a configuration file --- and a container image is configured by
+environment. Two instances on one host therefore always collided on 5434. The shipped
+Kubernetes manifest declared 5433 and 9464 and nothing else, so Flight SQL, a headline feature
+of this system, was unreachable in every deployment made from it.
+
+The test for it found something small on the way: the server prints *"Arrow Flight SQL on
+&lt;address&gt;"* **before** the transport binds, so a health check that trusted the banner
+would race it. The wire door's banner, printed after its bind, is the one to copy. Recorded
+here rather than changed, and the test waits rather than asserting at once.
+
+**The Kubernetes manifest could not be applied by anybody.** It named
+`ghcr.io/ajsinha/sankhya:0.1.0` and there was no Dockerfile, Containerfile or compose file
+anywhere in the repository. It referenced a `persistentVolumeClaim` no manifest defined, and it
+shipped no Service, so nothing routed to 5433 --- a manifest that starts a server nobody can
+connect to, on a volume that does not exist, from an image that was never built.
+
+All four are now here. The Dockerfile's builder image is chosen by the declared platform
+baseline rather than by taste: `glibc` 2.28 is what `xtask/src/package.rs` promises, so the
+build stage is Debian 11 and switching to Alpine would silently change the target. The runtime
+stage is not `scratch` because the storage-headroom check shells out to `df` and TLS
+verification needs a certificate store; a `scratch` image would report that it could not
+measure free space on every run, which is honest and useless. The claim is one replica and
+`ReadWriteOnce`, because the warehouse takes a lock and refuses a second server --- a volume two
+pods could mount is a volume that lets the deployment scale itself into `COR-15`.
+
+**And the gate that keeps it true.** `check-package` now reads every `image:` a manifest names,
+fails when no Dockerfile exists, and fails when the tag and the workspace version disagree ---
+because two version numbers in two files that nothing relates is how a manifest comes to name an
+image that was never pushed. Both arms were checked against the defect they describe before
+being believed.
+
+**The image was built, and building it found the thing writing it had got wrong.** A Dockerfile
+nobody has built is the same class of claim as a runbook naming a binary that does not exist, so
+it was built: it compiles, `--version` answers from it, `df` is present for the storage check,
+and it runs as uid 65532 as the manifest's `runAsUser` requires. The comment in it originally
+said the builder was chosen to meet the declared `glibc` 2.28 baseline. **It does not.** Debian
+11 ships `glibc` 2.31 and the binary the image carries needs `GLIBC_2.30` --- measured by
+extracting it and reading its version references, not assumed --- so an image built from this
+file will not start on the oldest platform the project says it supports.
+
+That gap is now written down in three places and closed in none. Debian 10 is end-of-life and
+its archive has moved, so pinning the builder to it is a build that breaks on a schedule nobody
+controls; the honest route to 2.28 is a cross-toolchain with an old sysroot, which is work this
+has not done. What is done is that the two numbers cannot drift silently: `check-package` holds
+the measured figure against the builder image it was measured from, prints the gap on every run,
+and fails when somebody changes the builder without re-measuring.
+
+**Phase 5 is complete except for `OPS-23` and `OPS-24`** --- the query log that does not exist,
+and the runtime events still reaching `println!` rather than the subscriber this binary has
+installed since before they were written. Neither is done, and neither is hidden: they are
+listed below with everything else Phase 6 covers. `OPS-21`, `OPS-23` and `OPS-24` --- checkpoints that are never
 written, the query log that does not exist, and the remaining `println!` runtime events --- are
 not done either; `OPS-22`'s per-statement cost is 5.6 and the rest belong with it, because
 every one of them is about what a statement costs and what it leaves behind. `OPS-10`'s other half --- exposing the maintenance
