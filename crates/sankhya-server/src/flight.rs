@@ -42,6 +42,7 @@
 
 use crate::execute::session_for;
 use crate::wiring::Server;
+use sankhya_api_pg::session::Handler;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use sankhya_api_flight::{Caller, Queries, Ticket};
 use std::sync::Arc;
@@ -54,6 +55,26 @@ use tonic::{Status, metadata::MetadataMap};
 /// spellings: a surface that takes `user` or `username` or `x-user` is one where a client can
 /// be authenticated by accident.
 pub const USER_KEY: &str = "sankhya-user";
+
+/// The metadata key carrying the caller's password.
+///
+/// # Why this exists, and what it replaces
+///
+/// Nothing. The columnar door read [`USER_KEY`], checked it was non-empty, and served that
+/// user's session --- **with no credential of any kind**. The wire door refuses a connection
+/// when `server.require_password` is set and no password arrives, and then verifies what did
+/// arrive against `server.credentials`. This door did neither, and it is enabled by default.
+///
+/// So a caller who could reach the port was served as any user named in `server.roles`,
+/// without a password. Worse, [`Server::principal`] stamps the record with
+/// `Authentication::Password` when passwords are required --- so the audit would have said
+/// *authenticated by password* about a caller who presented none.
+///
+/// This is the "two doors, one rule" failure the wire door's own refusals were written
+/// against, arriving on the door nobody re-read. The rule is not re-implemented here: the
+/// credential is handed to the **same** `Handler::authenticate` the wire protocol calls, so
+/// the two doors cannot drift.
+pub const PASSWORD_KEY: &str = "sankhya-password";
 
 /// This server, answering the questions Flight asks.
 pub struct Flying {
@@ -97,6 +118,26 @@ impl Flying {
     /// and dropped on the floor; every request then ran as the literal subject `"flight"`,
     /// whose roles came out of the same default branch as any unknown name's. A user an
     /// operator had deliberately left out of `server.roles` connected here and read. `SEC-03`.
+    /// Verify the caller through the wire door's own credential check.
+    ///
+    /// Not a second implementation. `Handler::authenticate` is what the PostgreSQL door calls,
+    /// and it holds the whole of the policy: the refusal when a password is required and
+    /// absent, the verifier lookup, and the single refusal for both *no such user* and *wrong
+    /// password* --- which is deliberate, because telling those apart turns a login into a
+    /// directory of who exists here.
+    ///
+    /// The refusal is deliberately uniform for the same reason: a caller learns that they were
+    /// not authenticated, and nothing about why.
+    fn authenticated(&self, user: &str, metadata: &MetadataMap) -> Result<(), Status> {
+        let password = metadata
+            .get(PASSWORD_KEY)
+            .and_then(|value| value.to_str().ok())
+            .map(str::as_bytes);
+        let parameters = [("user".to_string(), user.to_string())];
+        Handler::authenticate(self.server.as_ref(), &parameters, password)
+            .map_err(|_| Status::unauthenticated("authentication failed"))
+    }
+
     fn session_for(&self, user: &str) -> Result<datafusion::prelude::SessionContext, Status> {
         let principal = self
             .server
@@ -119,10 +160,12 @@ impl Queries for Flying {
     fn caller_of(&self, request_metadata: &MetadataMap) -> Result<Caller, Status> {
         // The tenant is still this server's, because a deployment serves one. The *subject* is
         // the caller's, which is the half that used to be read and thrown away.
-        Ok(Caller::new(
-            self.server.tenant(),
-            Self::user_of(request_metadata)?,
-        ))
+        let user = Self::user_of(request_metadata)?;
+        // Every request passes through here, which is why the check is here rather than in
+        // `plan` and `execute` separately --- two call sites is how one of them comes to be
+        // missed, which is the defect this whole change is about.
+        self.authenticated(&user, request_metadata)?;
+        Ok(Caller::new(self.server.tenant(), user))
     }
 
     async fn plan(&self, caller: &Caller, statement: &str) -> Result<u64, Status> {

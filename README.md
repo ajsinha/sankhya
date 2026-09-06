@@ -299,7 +299,7 @@ true — have each partly landed; this rewrite is an item in Phase 6.
 
 The verdict paragraph is worth reading in full, because it is the most useful sentence in this
 repository: *the reason is not the defect count — it is that a green gate did not see any of
-this.* 2,807 tests, 741 mutations and twenty checks, against silent data loss on three
+this.* 2,807 tests, 741 mutations and twenty checks, against silent data loss on three <!-- figures-as-measured-then -->
 production paths, a door with no lock, and a summation kernel that returned zero for a real
 number. The tests were not absent. They were calling the code differently from the way
 production calls it.

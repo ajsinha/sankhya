@@ -228,6 +228,12 @@ fn word_number(word: &str) -> Option<usize> {
     WORDS.iter().find(|(w, _)| *w == lowered).map(|(_, n)| *n)
 }
 
+/// What an author writes on a line whose figures record a moment rather than describe now.
+///
+/// An HTML comment, so it does not render, and spelled out rather than terse so that somebody
+/// meeting it in a diff can tell what it is for without looking it up.
+pub const AS_MEASURED_THEN: &str = "<!-- figures-as-measured-then -->";
+
 /// Every figure a line claims, as `(number, unit, the exact text that spelled it)`.
 ///
 /// The third element exists because the rewriter used to do two global `replace` calls per
@@ -236,6 +242,25 @@ fn word_number(word: &str) -> Option<usize> {
 /// across six documents. Replacing the exact substring that was matched, once, cannot.
 fn claimed_numbers(line: &str) -> Vec<(usize, &'static str, String)> {
     let mut found = Vec::new();
+    // A line that records what was true at a moment is not a claim about now, and rewriting
+    // it is not a correction --- it is falsifying a record.
+    //
+    // This tool was doing exactly that. `AUDIT_REPORT.md`, `REMEDIATION.md` and the README
+    // all carry one sentence describing the state twelve reviewers observed: *"2,807 tests,
+    // 741 mutations and twenty checks, against silent data loss on three production paths"*.
+    // The test count matched ` tests` and was rewritten on **every commit**; the mutation
+    // count did not match any marker and stayed frozen. So half the sentence tracked the
+    // present, half described 2026-09-03, and nothing said which.
+    //
+    // At one commit the tool wrote **"0 tests"** into the audit's own verdict, and it shipped.
+    //
+    // This module's own documentation already asserted the right rule --- *"a historical
+    // statement is about a moment and cannot rot, so it is left alone"* --- and had no way to
+    // tell. Now it has one, written by the author of the sentence rather than inferred: the
+    // marker below says *this figure is a record*, and the rewriter passes over the line.
+    if line.contains(AS_MEASURED_THEN) {
+        return found;
+    }
     // The third column is whether a **word** may spell this figure.
     //
     // Not everywhere. Prose says "three tests hold it" about a local fact all the time, and

@@ -45,6 +45,8 @@ mod driver;
 mod snapshots;
 #[path = "../src/audit.rs"]
 mod audit;
+#[path = "../src/flight.rs"]
+mod flight;
 #[path = "../src/wiring.rs"]
 mod wiring;
 
@@ -878,4 +880,67 @@ fn the_freshness_probe_goes_through_the_cache_built_for_it() {
         "the freshness probe replayed the log without the cache it was handed, so the next \
          reader replays it from version zero all over again: {after:?}"
     );
+}
+
+/// A verifier for the password `hunter2`, from `sankhya-server hash-password`.
+const HUNTER2: &str = "pbkdf2-sha256$600000$vJrYUsPBmwaSHbzUFQCt8laBJO6MfnsJoH31GS6QVLU=$Ge1+mh9xkPgBMqBuT8In/SK2ofRxO1A5FgCwkobGBuk=";
+
+/// Metadata carrying a user, and optionally a password.
+fn presenting(user: &str, password: Option<&str>) -> tonic::metadata::MetadataMap {
+    let mut metadata = tonic::metadata::MetadataMap::new();
+    metadata.insert(flight::USER_KEY, user.parse().expect("a header value"));
+    if let Some(password) = password {
+        metadata.insert(flight::PASSWORD_KEY, password.parse().expect("a header value"));
+    }
+    metadata
+}
+
+/// A server that requires a password and has one user who has one.
+fn guarding() -> (Server, tempfile::TempDir) {
+    let mut settings = settings(true, std::path::Path::new("."));
+    settings.credentials.insert(
+        "ana".to_string(),
+        sankhya_credential::Verifier::parse(HUNTER2).expect("a verifier"),
+    );
+    server_with(settings, permissive_policy(&tenant(), &[]))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_columnar_door_refuses_a_caller_who_presents_no_credential() {
+    // The columnar door read a `sankhya-user` header, checked it was non-empty, and served
+    // that user's session --- with **no credential of any kind**. The wire door refuses when
+    // `require_password` is set and no password arrives, and then verifies what did arrive.
+    // This door did neither, and it is enabled by default on `127.0.0.1:5434`.
+    //
+    // Worse than an open door: `Server::principal` stamps the record with
+    // `Authentication::Password` when passwords are required, so the audit would have said
+    // *authenticated by password* about a caller who presented none.
+    use sankhya_api_flight::Queries;
+
+    let (server, _dir) = guarding();
+    let flying = flight::Flying::new(std::sync::Arc::new(server));
+
+    assert!(
+        flying.caller_of(&presenting("ana", None)).is_err(),
+        "the columnar door served a caller who named a user and presented no password"
+    );
+    assert!(
+        flying.caller_of(&presenting("ana", Some("wrong"))).is_err(),
+        "the columnar door served a caller whose password does not verify"
+    );
+    // And the other half, so the two above are not passing because it refuses everybody.
+    assert!(
+        flying.caller_of(&presenting("ana", Some("hunter2"))).is_ok(),
+        "the columnar door must serve a caller who presents the right password"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_columnar_door_still_refuses_an_unnamed_caller() {
+    // The refusal that was already there, kept: an unattributable request cannot be audited.
+    use sankhya_api_flight::Queries;
+
+    let (server, _dir) = guarding();
+    let flying = flight::Flying::new(std::sync::Arc::new(server));
+    assert!(flying.caller_of(&tonic::metadata::MetadataMap::new()).is_err());
 }

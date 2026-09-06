@@ -699,13 +699,30 @@ pub(crate) fn as_of(
             // is left out and a statement naming it fails to resolve.
             continue;
         };
-        let resolved = sankhya_readpath::resolve_as_of(
-            std::sync::Arc::clone(&table.schema),
-            &table.root,
-            at.version,
-            sankhya_types::LsnRange::new(sankhya_types::Lsn::new(0), server.read_as_of()),
-            server.read_as_of(),
-        )
+        // A clone is resolved through the clone path, at the pinned version.
+        //
+        // This called `resolve_as_of` for every table, which passes no `inherited` --- and a
+        // clone's own log names none of its origin's files. So a clone read under a snapshot
+        // resolved a log naming nothing and answered **zero rows, successfully**, on the one
+        // feature whose whole purpose is a reproducible report. The `inherited` field was
+        // copied into the table built below and never used to build it.
+        let resolved = match table.inherited.as_ref() {
+            Some(inherited) => sankhya_readpath::resolve_clone_as_of(
+                std::sync::Arc::clone(&table.schema),
+                &table.root,
+                inherited,
+                at.version,
+                sankhya_types::LsnRange::new(sankhya_types::Lsn::new(0), server.read_as_of()),
+                server.read_as_of(),
+            ),
+            None => sankhya_readpath::resolve_as_of(
+                std::sync::Arc::clone(&table.schema),
+                &table.root,
+                at.version,
+                sankhya_types::LsnRange::new(sankhya_types::Lsn::new(0), server.read_as_of()),
+                server.read_as_of(),
+            ),
+        }
         .map_err(|error| {
             refusal(
                 sankhya_error::protocol::sqlstate::DATA_EXCEPTION.as_str(),
@@ -1111,13 +1128,26 @@ fn at_versions(
             continue;
         };
 
-        let resolved = sankhya_readpath::resolve_as_of(
-            std::sync::Arc::clone(&table.schema),
-            &table.root,
-            asked,
-            sankhya_types::LsnRange::new(sankhya_types::Lsn::new(0), server.read_as_of()),
-            server.read_as_of(),
-        )
+        // The clone branch, for the reason `at_snapshot` above carries it: `resolve_as_of`
+        // passes no `inherited`, and a clone resolved without one reads a log that names
+        // nothing and answers zero rows successfully.
+        let resolved = match table.inherited.as_ref() {
+            Some(inherited) => sankhya_readpath::resolve_clone_as_of(
+                std::sync::Arc::clone(&table.schema),
+                &table.root,
+                inherited,
+                asked,
+                sankhya_types::LsnRange::new(sankhya_types::Lsn::new(0), server.read_as_of()),
+                server.read_as_of(),
+            ),
+            None => sankhya_readpath::resolve_as_of(
+                std::sync::Arc::clone(&table.schema),
+                &table.root,
+                asked,
+                sankhya_types::LsnRange::new(sankhya_types::Lsn::new(0), server.read_as_of()),
+                server.read_as_of(),
+            ),
+        }
         .map_err(|error| {
             refusal(
                 sankhya_error::protocol::sqlstate::DATA_EXCEPTION.as_str(),

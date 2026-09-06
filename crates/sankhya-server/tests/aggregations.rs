@@ -120,8 +120,17 @@ fn it_survives_a_restart() {
     if !boundary_or_skip(server.port) {
         return;
     }
+    // A **real** restart: the first server is stopped before the second starts, and the second
+    // reuses the same data directory.
+    //
+    // This started a second server on the same warehouse with a *different* data directory
+    // while the first was still running, and called that a restart. It is not --- it is the
+    // two-writer state, in which both processes hold their own audit chain from sequence zero
+    // and append to one file, corrupting it permanently. It was possible only because the lock
+    // lived in the data directory; moving it into the warehouse is what surfaced this.
+    drop(server);
     let again =
-        start_with_user_functions(&dir.path().join("warehouse"), &dir.path().join("data-again"));
+        start_with_user_functions(&dir.path().join("warehouse"), &dir.path().join("data"));
     let names: Vec<String> = text_rows(again.port, "SHOW AGGREGATIONS")
         .iter()
         .filter_map(|row| row.first().cloned().flatten())

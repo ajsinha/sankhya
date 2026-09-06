@@ -124,7 +124,44 @@ impl WarehouseLock {
     /// [`NotLocked::Held`] when a running process holds it, [`NotLocked::Unreadable`] when an
     /// existing lock cannot be interpreted, and [`NotLocked::Failed`] when the file could not
     /// be written.
+    /// Where the lock guarding `warehouse` lives.
+    ///
+    /// # In the warehouse, because that is the thing being guarded
+    ///
+    /// It was `<data_dir>/warehouse.lock`, and the data directory is a **per-process** setting.
+    /// Two servers over one warehouse differing only in `SANKHYA_DATA_DIR` therefore took two
+    /// different locks, both started, and neither said anything --- then appended to one
+    /// `_audit/chain.jsonl` from two in-memory chains that each began at sequence zero. That
+    /// **permanently corrupts the audit**: the next start reports that the log has been
+    /// reordered, and there is no way back. Nothing observed the state while it was happening.
+    ///
+    /// Renaming the file was not enough, and the first attempt at this made exactly that
+    /// mistake: a name derived from the warehouse is still a *different file* in a different
+    /// data directory. The lock has to live where both processes look, which is the warehouse.
+    ///
+    /// Under `_locks/`, beside `_audit/`, `_snapshots/` and `_cubes/`. A `_`-prefixed
+    /// directory is the warehouse's own bookkeeping and discovery already skips it, so this
+    /// adds no foreign object to the published namespace --- which is the constraint that sent
+    /// the file to the data directory in the first place.
+    #[must_use]
+    pub fn guarding(warehouse: &Path) -> std::path::PathBuf {
+        warehouse.join("_locks").join("server.lock")
+    }
+
     pub fn take(file: &Path) -> Result<Self, NotLocked> {
+        // The directory holding the lock is the lock's business.
+        //
+        // `guarding` puts it under `_locks/`, which does not exist in a warehouse nobody has
+        // locked yet --- and making every caller create it first is a second thing to get
+        // right, in a function whose whole job is that there is only one of it.
+        if let Some(parent) = file.parent() {
+            if let Err(why) = std::fs::create_dir_all(parent) {
+                return Err(NotLocked::Failed {
+                    file: file.to_path_buf(),
+                    detail: why.to_string(),
+                });
+            }
+        }
         let holder = Self::me(file)?;
 
         // Bounded, because each pass either takes the lock or names a live holder. The loop

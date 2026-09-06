@@ -137,6 +137,31 @@ pub(crate) fn doctor(warehouse: &Path, data_dir: &Path, now: i64) -> i32 {
 
     let mut report = run(data_dir, &tables, now);
 
+    // A warehouse that is not there is a finding **here**, whatever `discover` does with it.
+    //
+    // `discover` exempts `NotFound` deliberately: a warehouse directory is created on first
+    // use, so a server complaining about one would warn on every first start, and a warning
+    // that is always there is a warning nobody reads.
+    //
+    // That reasoning does not transfer to this tool. `doctor` creates nothing, and it is the
+    // one thing an operator runs *from cron, forever*. The case it exists to catch is exactly
+    // the exempted one: a transposed character in a path, an unmounted volume, or step three
+    // of a restore done against the wrong directory. It reported `0 table(s)`, `Nothing to
+    // report` and **exit 0** for all three --- which is `OPS-12` again, in the tool whose
+    // whole purpose is to notice it, arriving through the exemption rather than the swallow.
+    if !warehouse.is_dir() {
+        report.skipped(
+            "warehouse",
+            format!(
+                "{} is not a directory. A fresh install creates its warehouse on first use, so \
+                 this is either a path that is wrong or a volume that is not mounted --- and \
+                 either way there is nothing here to diagnose",
+                warehouse.display()
+            ),
+        );
+    }
+
+
     // The backup's own health. Folded into the same report because an operator asking "is
     // this system all right" is asking one question, and a backup that has never been proven
     // is the most consequential answer in it.

@@ -697,7 +697,26 @@ async fn main() -> std::io::Result<()> {
         eprintln!("sankhya: the data directory {} could not be created: {why}", data.display());
         return Err(why);
     }
-    let held = match sankhya_atomicfs::WarehouseLock::take(&data.join("warehouse.lock")) {
+    // The lock is keyed on the **warehouse**, not on the data directory.
+    //
+    // It was `<data_dir>/warehouse.lock`, and `SANKHYA_DATA_DIR` is a per-process setting ---
+    // so two servers over one warehouse, differing only in that variable, both took a lock,
+    // both started, and neither said anything. They then appended to one
+    // `<warehouse>/_audit/chain.jsonl` from two in-memory chains that each began at sequence
+    // zero, which **permanently corrupts the audit**: the next start reports *"the audit
+    // record at position 1 claims to be number 0: the log has been reordered"*, and there is
+    // no way back from it.
+    //
+    // Nothing observed the second-writer state --- no log line, no metric, no refusal --- and
+    // the deployment manifest's `replicas: 1` is documented as a correctness constraint
+    // resting on this lock. One environment variable defeated it.
+    //
+    // The file stays in the data directory, because the warehouse root refuses a foreign
+    // object at startup and a lock file there would be one. What changed is the *name*: it is
+    // derived from the warehouse's own path, so two data directories over one warehouse
+    // contend for one file.
+    let lock_file = sankhya_atomicfs::WarehouseLock::guarding(&settings.warehouse);
+    let held = match sankhya_atomicfs::WarehouseLock::take(&lock_file) {
         Ok(lock) => lock,
         Err(why) => {
             eprintln!("sankhya: {why}");
@@ -990,7 +1009,19 @@ async fn main() -> std::io::Result<()> {
     // an operator has one habit rather than two. The configuration is read again from the
     // same files in the same precedence order, so a reloaded value cannot mean something a
     // booted one would not.
-    if let Some(handle) = maintenance.as_ref().map(std::sync::Arc::clone) {
+    // Installed whether or not maintenance is running.
+    //
+    // This was gated on `maintenance.as_ref()`, and `maintenance.interval: 0` produces `None`
+    // --- so with maintenance disabled there was no handler, SIGHUP took its default
+    // disposition, and the process **died**: no drain, no shutting-down line, exit 129.
+    //
+    // That is reachable by the ordinary path. The live-files gauge is computed from disk at
+    // scrape time and pages regardless of whether maintenance runs, so: alert fires, operator
+    // opens `docs/runbooks/compaction-debt.md`, follows its remediation --- which is `kill
+    // -HUP` --- and kills the server. `Restart=on-failure` brings it back and the alert fires
+    // again.
+    {
+        let handle = maintenance.as_ref().map(std::sync::Arc::clone);
         tokio::spawn(async move {
             let Ok(mut hangup) =
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
@@ -1020,7 +1051,18 @@ async fn main() -> std::io::Result<()> {
                         "  reload asks to disable maintenance, which needs a restart; the \
                          thread keeps running under the settings it has"
                     ),
+                    // Maintenance is off, so there is no thread to reconfigure. Saying so is
+                    // the whole value of handling the signal here: the alternative was the
+                    // process dying without a word.
+                    Ok(Some(_)) if handle.is_none() => tracing::warn!(
+                        "a reload arrived and maintenance is disabled for this process; the \
+                         settings were read and there is no thread to apply them to. Set \
+                         `maintenance.interval` to something non-zero and restart"
+                    ),
                     Ok(Some(policy)) => {
+                        let Some(handle) = handle.as_ref() else {
+                            continue;
+                        };
                         let was = handle.policy();
                         handle.reconfigure(policy.clone());
                         if was.interval == policy.interval

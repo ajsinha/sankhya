@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "sankhya"
 version = "0.1.0"
 description = "The SANKHYA client. Pure Python by decision: see ADR-0017."
-readme = "QUICKSTART.md"
+readme = "README.md"
 requires-python = ">=3.10"
 # No dependencies, deliberately. The wire-protocol door needs nothing, which makes this the
 # floor a client can always stand on: a stock interpreter with no build toolchain connects.

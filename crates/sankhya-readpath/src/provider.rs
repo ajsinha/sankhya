@@ -733,6 +733,48 @@ pub fn resolve_as_of(
     )
 }
 
+/// [`resolve_as_of`], for a table that is a clone.
+///
+/// # Why this had to exist
+///
+/// `resolve_as_of` passes `None` for `inherited`, which is right for an ordinary table and
+/// **silently wrong** for a clone. `ADR-0016` Decision 1a is that a clone's log names none of
+/// its origin's files, so resolving one through the single-log path reads a log that names
+/// nothing — and [`SankhyaTable::scan`] answers an empty file set with `EmptyExec` rather than
+/// an error.
+///
+/// So a clone read under `SET SNAPSHOT` or `SET VERSION OF` returned **zero rows and
+/// succeeded**. Not a refusal, not an error: the tag said `SELECT 0`. On the one feature whose
+/// entire purpose is a reproducible report.
+///
+/// The ordinary read path has always branched on `inherited` — `warehouse::refresh` and
+/// `warehouse::servable` both do, under a comment naming this exact failure. The two
+/// time-travel paths were written afterwards and were never given the branch, while faithfully
+/// copying `inherited` into the table they built. The field was carried and never read.
+///
+/// # Errors
+///
+/// As [`resolve_as_of`], plus the origin being unreadable at the pinned version.
+pub fn resolve_clone_as_of(
+    schema: SchemaRef,
+    table_root: &std::path::Path,
+    inherited: &Inherited,
+    version: sankhya_table_delta::Version,
+    published_coverage: Option<LsnRange>,
+    target: Lsn,
+) -> Result<SankhyaTable, ReadError> {
+    resolve_with(
+        schema,
+        table_root,
+        published_coverage,
+        None,
+        target,
+        None,
+        Some(inherited),
+        Some(version),
+    )
+}
+
 /// What a clone reads from the table it was cloned from.
 ///
 /// `ADR-0016`'s Decision 1a: a clone's log names none of its origin's files, so it holds only
