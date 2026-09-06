@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 0 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2789 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -1072,7 +1072,55 @@ replayed as **empty**: a `SELECT` against it returned no rows and *succeeded*. Z
 are wrong is the failure this whole system is arranged against, and it was one `chmod` away.
 `try_exists` distinguishes them.
 
-`5.5` through `5.7` are not started. `OPS-10`'s other half --- exposing the maintenance
+**5.5 A diagnostic that never looked, and a catalogue of alerts that could not fire
+(`OPS-25`, `OPS-26`).**
+
+**`doctor` could never warn about a filling disk.** `check::storage_headroom` was written,
+tested, exported --- and called by nothing. The hook for it had been there all along:
+`collect::record` exists precisely because free space needs a reading the diagnostic crate
+cannot take under `forbid(unsafe_code)`, and its doc says the caller that can measure it
+passes the number in. No caller ever did. So the hourly cron the documentation recommends
+would have stayed green until the write path stopped.
+
+It measures with `df -P` rather than a syscall or a new dependency --- the same judgement
+`soak/sample.rs` made when it read `/proc/self/status` instead of wrapping a crate around it.
+A reading that cannot be taken is `None` and is *said*, never zero: zero free bytes is a
+plausible reading and a catastrophic one, and a failure that returned it would page somebody
+about a healthy disk.
+
+**The only remediation on the only alert that can page named a binary that does not exist.**
+`sankhya maintenance compact --table ...`, in the compaction-debt runbook and in the finding's
+own remediation text. There is no `sankhya` binary; the CLI is a stub that prints "not built
+yet" and exits 2. A remediation naming a command that is not there costs the person reading it
+at three in the morning the time it takes to find out, and it is the moment they stop trusting
+the rest of the runbook. Both now name the lever that exists: lower `maintenance.compact_every`
+and send `SIGHUP`, which the server already reloads without a restart. There is deliberately no
+hand-compaction command --- the server holds the warehouse lock and a second process compacting
+the same tables is the second-writer failure `check-writers` exists to stop.
+
+**Twelve of twenty-one documented error codes were produced by nothing.** The catalogue's own
+first sentence said these were the codes "this system can produce". Four of the six that page
+were among them, so an alert rule written from the document was permanently silent --- which
+is indistinguishable from a healthy system right up until it is not.
+
+Deleting them is wrong for the reason the catalogue itself gives: codes are permanent, because
+removing one breaks every runbook and alert rule that references it. What was wrong was the
+claim. `check-catalogues` now fails when a code nothing constructs is not declared unreachable,
+and fails again when a declared one starts being produced and the note is left behind --- the
+same stale-excuse guard `check-unsafety` and `check-mutation-coverage` already carry. The
+generated document reads that list, so it says which codes cannot fire and why.
+
+**Nine of the twelve wait on a subsystem that does not exist** --- the change-capture runtime
+(`ING-00`), the archival tier, the governor that decides nothing. **Three do not, and they are
+the worse half:** commit conflicts, cancellation and backup verification all happen today and
+are reported through crate-local types that nothing maps onto their catalogue codes. Mapping
+them is what remains of `OPS-25`; it is recorded here and in the `UNREACHABLE` list rather than
+left to be rediscovered.
+
+`5.6` and `5.7` are not started. `OPS-21`, `OPS-23` and `OPS-24` --- checkpoints that are never
+written, the query log that does not exist, and the remaining `println!` runtime events --- are
+not done either; `OPS-22`'s per-statement cost is 5.6 and the rest belong with it, because
+every one of them is about what a statement costs and what it leaves behind. `OPS-10`'s other half --- exposing the maintenance
 counters on `/metrics`, where an operator would look before reading a log --- belongs with the
 observability work in 5.5 and is not done here: the handle now counts what needs exposing,
 and nothing reads it.

@@ -21,7 +21,48 @@
 //! this whole crate is arranged against, and an exit status is where that gets decided.
 
 use sankhya_diagnostic::collect::{run, TableUnderReview};
+use sankhya_diagnostic::{History, Measure, Observation};
 use std::path::Path;
+
+/// The check name under which free space is recorded.
+const STORAGE_HEADROOM: &str = "storage-headroom";
+
+/// Free bytes on the filesystem holding `path`, or `None` if it could not be established.
+///
+/// # Why `df` and not a syscall
+///
+/// `statvfs` is the direct answer and this workspace forbids `unsafe`, which rules it out;
+/// `sankhya-alloc` and `sankhya-sandbox` are the two crates excused and neither excuse
+/// covers this. A dependency for one reading is a dependency to keep pinned for ever ---
+/// the same judgement `soak/sample.rs` made when it read `/proc/self/status` rather than
+/// wrapping a crate around it. `df -P` is POSIX, its output columns are specified, and this
+/// runs once an hour from cron rather than in any hot path.
+///
+/// # Why `Option` and never zero
+///
+/// Zero free bytes is a perfectly plausible reading and a catastrophic one. A failure that
+/// returned it would page somebody about a disk that is fine; a failure that returned the
+/// filesystem's size would hide one that is not. Neither is available to be confused with
+/// "the measurement did not happen".
+fn free_bytes(path: &Path) -> Option<f64> {
+    let output = std::process::Command::new("df")
+        .arg("-P")
+        .arg("-k")
+        .arg(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    // Line 0 is the header. `-P` guarantees one line per filesystem after it, never wrapped,
+    // which is the whole reason for the flag: without it a long device name wraps and the
+    // columns move.
+    let line = text.lines().nth(1)?;
+    // Columns: filesystem, 1024-blocks, used, available, capacity, mounted-on.
+    let blocks: f64 = line.split_whitespace().nth(3)?.parse().ok()?;
+    Some(blocks * 1024.0)
+}
 
 /// Exit status for a clean run.
 pub(crate) const CLEAN: i32 = 0;
@@ -48,6 +89,45 @@ pub(crate) fn doctor(warehouse: &Path, data_dir: &Path, now: i64) -> i32 {
         );
     }
 
+    // Free space, recorded before anything is reported, so this run's own sample is in the
+    // history the projection is drawn from.
+    //
+    // `OPS-26`. `check::storage_headroom` was written, tested, exported --- and called by
+    // nothing, so `doctor` could never warn about a filling disk. The hook for it was here
+    // all along: `collect::record` exists precisely because free space needs a reading this
+    // crate cannot take, and the caller that can was supposed to pass it in.
+    let mut history = match History::read(data_dir) {
+        Ok(history) => history,
+        Err(_) => History::new(),
+    };
+    let headroom = Measure::new(STORAGE_HEADROOM, "the data directory");
+    match free_bytes(data_dir) {
+        Some(free) => {
+            let observation = Observation::new(now, free);
+            if sankhya_diagnostic::collect::record(
+                data_dir,
+                &mut history,
+                headroom.clone(),
+                observation,
+            )
+            .is_err()
+            {
+                // Usable this run even if it did not reach the file. The projection needs
+                // more than one sample, but the *value* is reportable now.
+                history.record(headroom.clone(), observation);
+            }
+        }
+        None => {
+            // Said, not assumed. A disk check that silently does not run is the failure this
+            // whole crate is arranged against, and it is why there is a third exit status.
+            eprintln!(
+                "  WARNING: free space on {} could not be measured, so nothing will warn \
+                 about it filling",
+                data_dir.display()
+            );
+        }
+    }
+
     let (found, refused) = crate::warehouse::discover(warehouse);
     let tables: Vec<TableUnderReview> = found
         .iter()
@@ -68,6 +148,20 @@ pub(crate) fn doctor(warehouse: &Path, data_dir: &Path, now: i64) -> i32 {
         report.found(finding);
     } else {
         report.clean("restore-drill");
+    }
+
+    // Whether the disk is filling, from the sample taken above and every one before it.
+    if free_bytes(data_dir).is_none() {
+        report.skipped(
+            STORAGE_HEADROOM,
+            format!("free space on {} could not be measured", data_dir.display()),
+        );
+    } else if let Some(finding) =
+        sankhya_diagnostic::check::storage_headroom(&history.trend(&headroom), now)
+    {
+        report.found(finding);
+    } else {
+        report.clean(STORAGE_HEADROOM);
     }
 
     // And whether the write-once controls anything archived depends on are still in force.

@@ -35,15 +35,27 @@ often enough to keep up with this particular table.
 
 ## What to do
 
-**Now, to relieve it:**
+**Now, to relieve it.** Lower the compaction interval in the configuration and reload:
 
-```bash
-sankhya maintenance compact --table <schema>.<table>
+```yaml
+maintenance:
+  compact_every: 1        # every tick rather than every Nth
+  interval: 10s           # and tick more often
 ```
 
-Compaction is safe to run against a live table. It commits a new file set and retires the old
-files only once no reader can still hold them, so a query running across the compaction sees
-a consistent set either way.
+```bash
+kill -HUP $(pidof sankhya-server)
+```
+
+The server reads the configuration again from the same files in the same precedence order and
+applies the new policy on the next tick — no restart, and no window to wait for. It says what
+it did, on stdout, so the reload can be confirmed rather than assumed.
+
+**There is deliberately no command that compacts by hand.** The server holds the warehouse
+lock and is the only maintainer of the warehouse it holds; a second process compacting the
+same tables is the second-writer failure `cargo xtask check-writers` exists to stop. Earlier
+versions of this runbook told you to run `sankhya maintenance compact`, which is a binary that
+does not exist.
 
 **Then, so it does not recur.** Check the diagnostic first, because it will tell you whether
 this is one table or a general shortfall:

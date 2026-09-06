@@ -3,9 +3,15 @@
 //! # Every finding carries a remediation
 //!
 //! `FR-OPS-16` requires it, and the reason is that a diagnostic without one converts an
-//! operator's problem into a support ticket. "Compaction debt is high" is a fact; "run
-//! `sankhya maintenance compact --table sales.orders`, or raise the duty cycle if this
-//! recurs" is a thing to do.
+//! operator's problem into a support ticket. "Compaction debt is high" is a fact; "lower
+//! `maintenance.compact_every` and send SIGHUP" is a thing to do.
+//!
+//! **And it has to be a thing that exists.** `OPS-26`: this one used to say *"run `sankhya
+//! maintenance compact --table sales.orders`"*, and there is no `sankhya` binary --- the CLI
+//! is a stub that prints "not built yet" and exits 2. It was the remediation on the only
+//! alert that can page. A remediation naming a command that does not exist is worse than
+//! none: it costs the person reading it at three in the morning the time it takes to find
+//! out, and it is the moment they stop trusting the rest of the runbook.
 //!
 //! # Findings are ordered by *when*, not by *how bad*
 //!
@@ -244,9 +250,12 @@ pub fn compaction_debt(table: &str, files: &Trend, now: i64) -> Option<Finding> 
         observed: format!("{} live files", latest.value as i64),
         projection,
         remediation: format!(
-            "Compact it: `sankhya maintenance compact --table {table}`. If this recurs, the \
-             maintenance duty cycle is too low for this table's write rate — raising it is \
-             the durable fix and compacting by hand is not."
+            "Raise the maintenance duty cycle: lower `maintenance.compact_every` (or \
+             `maintenance.interval`) in the configuration and send the server SIGHUP, which \
+             takes effect on the next tick without a restart. `{table}` will be compacted \
+             more often from then on. There is deliberately no command that compacts by \
+             hand: the server is the only maintainer of a warehouse it holds the lock on, \
+             and a second writer is the failure `cargo xtask check-writers` exists to stop."
         ),
     })
 }

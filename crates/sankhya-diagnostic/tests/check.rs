@@ -187,12 +187,26 @@ fn every_finding_carries_a_remediation_that_names_a_next_step() {
 
 #[test]
 fn the_compaction_remediation_names_the_table_and_the_durable_fix() {
-    // A command an operator can paste, and the reason not to keep pasting it.
+    // A thing an operator can do, and the reason it is the durable one.
     let files = [400.0, 500.0, 600.0, 700.0, 800.0, 900.0];
     let finding = compaction_debt("sales.orders", &series(&files), last_day(&files))
         .expect("a finding");
-    assert!(finding.remediation.contains("--table sales.orders"));
+    assert!(finding.remediation.contains("sales.orders"));
     assert!(finding.remediation.contains("duty cycle"));
+    // The settings by name, so it can be found in a configuration file rather than guessed.
+    assert!(finding.remediation.contains("maintenance.compact_every"));
+    assert!(finding.remediation.contains("SIGHUP"));
+
+    // `OPS-26`, and the half that makes this test worth having: it used to say `sankhya
+    // maintenance compact --table sales.orders`, which is a binary that does not exist ---
+    // the CLI is a stub that prints "not built yet" and exits 2 --- on the only alert that
+    // can page. This test asserted the old wording and passed, because it checked that the
+    // sentence was there rather than that the command was.
+    assert!(
+        !finding.remediation.contains("sankhya maintenance"),
+        "the remediation must not name a binary this build does not ship: {}",
+        finding.remediation
+    );
 }
 
 // --- how the report is ordered and what it admits -----------------------

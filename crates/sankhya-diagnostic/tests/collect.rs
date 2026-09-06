@@ -82,7 +82,7 @@ fn a_second_run_projects_from_what_the_first_recorded() {
     };
     assert_eq!(seconds / 86_400, 1, "900 files, 100 a day, 1,000 is the line");
     assert!(finding.observed.contains("900 live files"));
-    assert!(finding.remediation.contains("--table sales.orders"));
+    assert!(finding.remediation.contains("sales.orders"));
 }
 
 #[test]
