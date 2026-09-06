@@ -1,5 +1,7 @@
 # How This Is Tested
 
+**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+
 > This chapter covers how every claim in this book is verified: the test suite, the
 > mutation audit, the measurements and their controls, the soak, and the adversarial
 > review. Its central claim is that a test written to catch a defect is not evidence that
@@ -14,7 +16,7 @@ Four numbers describe the mechanised half of verification:
 
 | | |
 |---|---|
-| `cargo test --workspace` | 2797 tests, none of which needs a database |
+| `cargo test --workspace` | 2802 tests, none of which needs a database |
 | `python3 tools/mutation-audit.py` | 908 specific defects, applied one at a time |
 | `cargo xtask check-all` | twenty repository invariants, each proven to fail when violated |
 | `cargo xtask check-performance` | the `NFR-PERF` objectives, as a gate that can fail |

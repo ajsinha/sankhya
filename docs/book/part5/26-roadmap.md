@@ -1,5 +1,7 @@
 # Roadmap and Status
 
+**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+
 > This chapter covers what is built, what is not, and what comes next. Its central claim is
 > that a roadmap and a status report answer different questions and must be kept apart: a
 > roadmap describes ambition, a plan describes intent, and neither tells you what runs
@@ -41,7 +43,7 @@ a sequence is stated it is a dependency order, not a schedule.
 | **M10** Zero-copy cloning | **Complete 2026-08-31.** Design gate cleared by ADR-0016 before any code; eight work items; all five criteria met. The first milestone since M8 to close on its own terms |
 | **M11** Production reconciliation | **Not schedulable by development.** Needs a production deployment that does not exist |
 | **M12** Scale-out, HA, disaster recovery, acceptance | **Needs a second machine.** Holds M8 §12.2 and criteria 7–8 |
-| **M13** Config-driven ingest, from files | **Complete 2026-09-01.** All five criteria demonstrated through the real binary and the real wire protocol |
+| **M13** Config-driven ingest, from files | **Substantially built.** Demonstrated through the real binary and the real wire protocol. This row read *"Complete 2026-09-01. All five criteria demonstrated"* and the canonical status line has said *substantially built* throughout — one of the five claims `REMEDIATION.md` item 0.7 corrected, and the one that survived longest, because no chapter of this book carried the status header the check compares against |
 | **M14** The client contract and the Python SDK | **In progress.** Transport security built; federated identity is not |
 | **M15–M19** | Planned; see §26.5 |
 

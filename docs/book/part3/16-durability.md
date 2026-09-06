@@ -1,5 +1,7 @@
 # 16. Backup, restore and disaster
 
+**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+
 > This chapter specifies what SANKHYA promises about surviving a loss, and its central claim is
 > that **a backup is a claim about a restore, so the only evidence that establishes it is a
 > restore.** A manifest binds two positions rather than one, refuses to exist rather than record a

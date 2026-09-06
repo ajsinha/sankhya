@@ -27,7 +27,7 @@
 **No fix lands without a test written the way production calls it.**
 
 This is not a general plea for testing. It is the specific lesson of this audit. The repository
-already has 2797 tests, 741 mutations and a 25-check gate, and all of it was green while the
+already has 2802 tests, 741 mutations and a 25-check gate, and all of it was green while the
 shipped configuration prevented the server from starting, no password was ever verified, and
 compaction was corrupting external readability on every tick. The tests were not absent. They were
 **calling the code differently from the way production calls it** — against a fixture the
@@ -1331,8 +1331,76 @@ run and fails when a crate that publishes figures has none --- because a benchma
 compiling is a figure that has quietly stopped being reproducible, which is the state these
 tables were in.
 
-**Still open in Phase 6:** 6.3 through 6.8, and `PERF-05`'s fifteen unmeasured `NFR-PERF`
-objectives, which is the next item.
+**6.3 Fifteen of eighteen objectives unmeasured, and seven not in the table at all
+(`PERF-05`).** The table reporting the state of the `NFR-PERF` objectives listed eleven. Seven
+were absent — not recorded as unmet, not recorded as untested, simply not there — including
+`NFR-PERF-06`, which is the function catalogue's own requirement and the workload its
+performance claims are about.
+
+That is a worse failure than a bad verdict. An objective recorded as unmet is a decision
+somebody took; an objective that is not in the table is one nobody has to think about, and to a
+reader scanning the table for red it reads exactly like one that is fine. It is the same shape
+as a metric nothing emits and an alert that can never fire: **absence rendering as health.**
+
+So the fix is a check rather than an edit. `check-objectives` fails when a stated objective is
+missing from the table that reports on it, and it has no opinion about whether one is met —
+omission is the failure it catches, because omission is the one a reader cannot see. It
+reproduced the audit's seven independently on its first run. All eighteen are now listed:
+three met, and the rest marked unmeasured or not-claimed with the reason. `STATUS.md`'s
+"Performance objectives met" row now says *met for three of eighteen*, and its cancellation row
+says *demonstrated, not measured* — the two-hundred-millisecond bound in `NFR-PERF-16` is
+established by nothing and that row said "Met" against it.
+
+### Two defects a fresh reading found, both introduced by this remediation
+
+Three reviewers were asked to read the documentation against the code rather than against other
+documents. They found what is below, and it is worth separating from the documentation work:
+**these are live defects in code written during Phase 5, and both are in mechanisms built to
+prevent exactly the class of failure they exhibit.**
+
+**The audit stopped being written to disk after 1,024 records, silently, with its alert at
+zero.** `append` took the record it had just added by index — `chain.records().get(chain.len())`
+— and those two numbers count different things *on purpose*. `len` is the whole chain, kept
+whole because a count that shrank as records aged out is one nobody could compare against what
+they mirrored, and comparing it is the only way a truncated chain is ever noticed.
+`records()` is the retained window of 1,024. So past the thousand-and-twenty-fourth record the
+index was out of range, the write silently stopped, and the `Some(Err(..))` arm — the one that
+increments `sankhya_audit_unwritten_total`, which pages — became unreachable.
+
+On a restart it was immediate rather than eventual. Startup loads through `read_windowed`,
+which counts every line into the total while keeping a window in memory, so on any warehouse
+with more than a window of history the **first** statement of the new process missed and the
+audit was never written again for that process's entire life. The tamper-evident record, and
+the alert for its absence, both off, together, from one arithmetic assumption.
+
+Introduced by 5.1a, which is the item that made the chain durable and bounded. The test now
+runs 1,200 statements and reads the file; it failed at exactly 1,024. The fix takes the last
+record rather than computing where it ought to be, which is a fact about `append` rather than a
+relationship between two counters that are deliberately not the same number.
+
+**And the reachability gate from 5.5 was defeated by a substring.** It asked whether the
+sources contain `Error::CoverageGap {`, and `sankhya-plan` has a `SpliceError::CoverageGap`
+whose text contains that string. So `SNK-S0001` read as producible while nothing in the
+workspace could raise it — a **thirteenth** unreachable code, `Class::Fatal`, with a runbook
+written for it and an alert rule on it that would never have fired. Four of the six codes that
+page cannot fire; the catalogue said three. The check built in 5.5 to find precisely this
+failed at precisely this, and a reviewer found it by reading the gate rather than trusting it.
+It requires a word boundary now, with a test that a different type's variant of the same name
+does not count.
+
+**A third structural finding, and the one with the widest reach.** `R4` — *documents assert;
+nothing checks the assertion* — survived **inside the fix for `R4`**. The status check compares
+the documents that *declare* a `**Status:**` line, and a document with none simply did not
+participate. A search across `docs/book/` found no such line in any of its twenty-nine
+chapters: the entire book was invisible to the check written to stop documentation drift, and
+opting out cost nothing. That is how `part1/01-introduction.md` — in the section headed *"the
+one to read before believing anything else in this book"* — still carried **"Complete: M0
+through M8, M10 and M13"**, the exact sentence item 0.7 retracted from thirteen documents, and
+how `part5/26-roadmap.md` still called M13 complete. An absent header in the book is now a
+failure, all twenty-nine chapters carry the canonical line, and both false claims are corrected
+with the reason they survived recorded beside them.
+
+**Still open in Phase 6:** 6.4 through 6.8.
 
 ---
 

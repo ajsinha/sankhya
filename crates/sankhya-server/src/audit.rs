@@ -190,7 +190,6 @@ pub fn audit_is_durable(server: &Server) -> bool {
 pub(crate) fn append(server: &Server, entry: Entry) {
     {
         let mut held = server.audit.lock();
-        let sequence = held.0.len();
         held.0.append(entry);
         // Written through to the file, if there is one. A chain that lives only in memory
         // is erased by a restart, and a restart is the event most likely to accompany the
@@ -201,9 +200,28 @@ pub(crate) fn append(server: &Server, entry: Entry) {
         // what this server promises today; what it must not do is fail silently, because an
         // audit that quietly stopped recording is worse than one that was never claimed.
         let (chain, journal) = &mut *held;
+        // The record that was just appended, taken as **the last one** rather than found by
+        // index.
+        //
+        // It was `chain.records().get(chain.len())`, and those two numbers count different
+        // things on purpose. `len` is the whole chain --- kept whole because a count that
+        // shrank as records aged out is one nobody could compare against what they mirrored,
+        // and comparing it is the only way a truncated chain is ever noticed. `records()` is
+        // the retained window, at most `WINDOW`. So past the thousand-and-twenty-fourth
+        // record the index was out of range, the write silently stopped, and the `Some(Err)`
+        // arm below --- the one that increments the metric that pages for exactly this ---
+        // became unreachable.
+        //
+        // On a restart it was immediate rather than eventual: startup loads through
+        // `read_windowed`, which counts every line into the total while keeping a window in
+        // memory, so on any warehouse with more than a window of history the *first*
+        // statement missed and the audit was never written again for that process's life.
+        //
+        // The last record is the one just appended whatever the window is, which is a fact
+        // about `append` rather than an arithmetic relationship between two counters that
+        // are deliberately not the same number.
         let written = chain
-            .records()
-            .get(sequence)
+            .last()
             .cloned()
             .zip(journal.as_mut())
             .map(|(record, journal)| journal.append(&record));

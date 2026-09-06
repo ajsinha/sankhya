@@ -1,5 +1,7 @@
 # 17. Packaging and deployment
 
+**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+
 > This chapter covers what you install, where it runs, and how it is configured. Its central claim
 > is that **the number of build targets is the number of things that can silently break**, and that
 > a declared platform baseline nobody checks is a baseline nobody meets — a binary built on a

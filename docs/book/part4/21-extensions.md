@@ -1,5 +1,7 @@
 # 21. Extensions and packs
 
+**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+
 > This chapter covers how a domain reaches a general-purpose engine: the published extension API, the
 > three packaging tiers a pack may take, and the contract for an aggregation the system did not write.
 > Its central claim is a constraint rather than a capability — **never let a fast-moving upstream type

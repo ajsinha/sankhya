@@ -1,5 +1,7 @@
 # 8. The read path
 
+**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+
 > The naive cure for analytical lag is to commit more often, and it makes the system slower —
 > because metadata cost lands on *planning*, which is a fixed price paid before a single row is
 > read. This chapter gives the alternative: freshness is a read-path property, delivered by

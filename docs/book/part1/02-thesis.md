@@ -1,5 +1,7 @@
 # 2. The thesis
 
+**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+
 > This chapter argues that the three-engine data estate is not a set of tools that happen to
 > sit beside each other but a single architectural mistake made three times, and that the
 > mistake is now correctable. The central claim is that one governed copy of the data, held in

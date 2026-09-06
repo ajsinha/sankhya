@@ -1,5 +1,7 @@
 # 4. What it is not
 
+**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+
 > A system defined only by what it does will be evaluated against everything it does not, and
 > lose. This chapter states SANKHYA's boundaries: the things it will not become, the things it
 > is not yet, and the things it is *choosing* not to be. The distinction between those three

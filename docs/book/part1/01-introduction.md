@@ -1,5 +1,7 @@
 # 1. Introduction
 
+**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+
 > SANKHYA is a single Rust binary that holds a transactional store, a vectorised analytical
 > engine and a temporal graph over one governed copy of the data, with no JVM and no sidecar.
 > This chapter says what that means concretely, who the system is for, and what problem it is
@@ -119,10 +121,23 @@ clause by clause.
 
 This section is the one to read before believing anything else in this book.
 
-**Complete:** M0 through M8, M10 and M13. **In progress:** M9 (its work built and demonstrated,
-its gate deliberately held) and M14. **Not schedulable by development:** M11, which needs a
-production deployment. **Blocked on hardware:** M12, which needs a second machine. **Not
-started:** M15 through M19.
+The `**Status:**` line at the head of this chapter is the canonical one, and it is checked ---
+`cargo xtask check-docs` fails when any document disagrees with it, and now fails when a
+chapter of this book declines to carry it at all. Read it rather than this paragraph.
+
+What that line says, in prose: **M0, M1, M3, M4, M7 and M10 are complete.** M2 and M13 are
+substantially built. M5 closed on four of five exit criteria, M6 on six of seven, M8 on six of
+eight with its scale-out half moved to M12 for want of a second machine. M9's work is built and
+demonstrated and its gate is deliberately held for M11. M14, M17 and M18 are in progress. M11
+needs a production deployment and M12 needs a second machine, so neither is schedulable here.
+
+> **This paragraph used to read "Complete: M0 through M8, M10 and M13."** That sentence was
+> wrong in thirteen documents at once, and correcting it is item 0.7 of
+> [REMEDIATION.md](../../REMEDIATION.md). It survived here longer than anywhere else for a
+> structural reason worth stating in the chapter that asks to be believed: the check that
+> compares status lines only looked at documents which *declared* one, and no chapter of this
+> book did. Opting out cost nothing, so the book opted out of the check written to stop
+> exactly this. An absent header here is now a failure.
 
 What runs today, exercised by tests and by clients rather than by assertion:
 
