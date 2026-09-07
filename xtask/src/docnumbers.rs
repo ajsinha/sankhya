@@ -280,6 +280,10 @@ fn claimed_numbers(line: &str) -> Vec<(usize, &'static str, String)> {
         (" tests", "tests", false, ""),
         (" specific defects", "mutations", false, ""),
         (" deliberate defects", "mutations", false, ""),
+        // A third spelling, found because `REMEDIATION.md` used it to correct a stale figure
+        // --- "the catalogue is **907 distinct defects, not 909**" --- and then went stale
+        // itself. Two wrong numbers in one sentence about how many there are.
+        (" distinct defects", "mutations", false, ""),
         (" sequential", "mutations", false, ""),
         (" runnable examples", "examples", true, ""),
         (" example scripts", "examples", true, ""),
@@ -291,15 +295,28 @@ fn claimed_numbers(line: &str) -> Vec<(usize, &'static str, String)> {
         let mut from = 0usize;
         while let Some(at) = line.get(from..).and_then(|rest| rest.find(marker)) {
             let end = from + at;
-            // Walk back over the digits and separators immediately before the marker.
+            // Walk back over the digits and separators immediately before the marker ---
+            // and over the emphasis around them.
+            //
+            // `**909** specific defects` stopped this walk dead on the first `*`, so it
+            // collected nothing, the parse failed, and the figure was invisible. Two stale
+            // counts were living behind exactly that: `docs/TESTING.md` claimed **909**
+            // mutations and `docs/REMEDIATION.md` **907**, against a catalogue of 921, in the
+            // two documents that describe this check. `TESTING.md` contradicted itself
+            // eighty-eight lines apart and the tool built to catch that could not see either
+            // number, because the author had made them bold.
+            //
+            // The emphasis is dropped from what is collected, so the rewriter still replaces
+            // the digits and leaves the `**` where it was.
             let prefix = line.get(..end).unwrap_or("");
             let digits: String = prefix
                 .chars()
                 .rev()
-                .take_while(|c| c.is_ascii_digit() || *c == ',')
+                .take_while(|c| c.is_ascii_digit() || *c == ',' || *c == '*' || *c == '_')
                 .collect::<Vec<char>>()
                 .into_iter()
                 .rev()
+                .filter(|c| *c != '*' && *c != '_')
                 .collect();
             if let Ok(value) = digits.replace(',', "").parse::<usize>() {
                 found.push((value, unit, digits.clone()));

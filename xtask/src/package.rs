@@ -324,7 +324,9 @@ pub fn check(root: &Path) -> bool {
             BASELINE_GLIBC.0, BASELINE_GLIBC.1
         );
     }
-    grace && configured && images && builder && (baseline || !releasing)
+    // `baseline` now decides for itself which profiles bind, so its verdict is taken as it
+    // is rather than being waved through when an environment variable is absent.
+    grace && configured && images && builder && baseline
 }
 
 /// Every service unit says where its configuration is.
@@ -366,10 +368,22 @@ fn check_units_are_configured(root: &Path) -> bool {
 
 /// The built binaries fit inside the declared baseline.
 fn check_baseline(root: &Path, releasing: bool) -> bool {
-    let label = if releasing { "OUTSIDE BASELINE" } else { "not a release build" };
     let mut ok = true;
     let mut looked = 0usize;
     for profile in ["release", "debug"] {
+        // A violation in the **release** binary is a violation, whoever is running this.
+        //
+        // The verdict used to be discarded entirely unless `SANKHYA_RELEASE` was set, and no
+        // automated run sets it --- `gate.yml` sets only `SANKHYA_CI` --- so the glibc floor
+        // this whole check exists to hold was enforced by nobody, ever. The violation was even
+        // relabelled "not a release build" on the way past, which reads like an explanation.
+        //
+        // `target/release/sankhya-server` **is** the artifact that ships; whether the person
+        // building it called it a release is not a property of the binary. A debug build is
+        // genuinely a different question --- it links differently and is nobody's artifact ---
+        // so it stays advisory unless the flag says otherwise.
+        let binding = profile == "release" || releasing;
+        let label = if binding { "OUTSIDE BASELINE" } else { "not a shipped artifact" };
         let binary = root.join("target").join(profile).join("sankhya-server");
         if !binary.exists() {
             continue;
@@ -383,7 +397,9 @@ fn check_baseline(root: &Path, releasing: bool) -> bool {
             Ok(requires) => {
                 for reason in outside_baseline(&requires) {
                     eprintln!("  {label}  target/{profile}/sankhya-server {reason}");
-                    ok = false;
+                    if binding {
+                        ok = false;
+                    }
                 }
             }
         }

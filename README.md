@@ -11,11 +11,11 @@
 
 **One binary, three engines, one reckoning — that is the design. Today, one engine runs.**
 
-[![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE) [![Status](https://img.shields.io/badge/status-M0%2C%20M1%2C%20M3%2C%20M4%2C%20M7%2C%20M10%20complete%3B%20M2%2C%20M5%2C%20M6%2C%20M8%2C%20M13%20partial%3B%20M9%2C%20M14%2C%20M17%2C%20M18%20in%20progress-yellow.svg)](docs/STATUS.md) [![Rust](https://img.shields.io/badge/rust-1.97%2B-b7410e.svg)](https://www.rust-lang.org) [![JVM](https://img.shields.io/badge/JVM-none-success.svg)](#design-principles)
+[![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE) [![Status](https://img.shields.io/badge/status-M0%2C%20M1%2C%20M3%2C%20M4%2C%20M7%2C%20M10%2C%20M13%20complete%3B%20M2%2C%20M5%2C%20M6%2C%20M8%20partial%3B%20M9%2C%20M14%2C%20M17%2C%20M18%20in%20progress-yellow.svg)](docs/STATUS.md) [![Rust](https://img.shields.io/badge/rust-1.97%2B-b7410e.svg)](https://www.rust-lang.org) [![JVM](https://img.shields.io/badge/JVM-none-success.svg)](#design-principles)
 
 </div>
 
-**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+**Status:** Implementation — M0, M1, M3, M4, M7, M10 and M13 complete; M2 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
 
 ---
 
@@ -234,7 +234,7 @@ format reads what this system writes, on every build, and disagreeing with it fa
 ---
 ## Status
 
-**M0, M1, M3, M4, M7 and M10 are complete; M2 and M13 are substantially built; M5 closed on four of five exit criteria, M6 on six of seven, and M8 on six of eight with its scale-out half moved to M12 for want of a second machine; M9 is built and demonstrated with its gate deliberately held for M11; and M14, M17 and M18 are in progress.** What runs today is the analytical half — a server `psql` connects to, authenticates against and queries over real Parquet, with cubes, clones, named snapshots, maintenance on a timer, Arrow Flight SQL and a hash-chained audit. What does not run is everything upstream of it: no change-capture runtime, no transactional tier wired into the server, and no second node — so of the three engines, one runs, one is a library nothing hydrates, and one is a supervised process nothing starts.
+**M0, M1, M3, M4, M7, M10 and M13 are complete; M2 is substantially built; M5 closed on four of five exit criteria, M6 on six of seven, and M8 on six of eight with its scale-out half moved to M12 for want of a second machine; M9 is built and demonstrated with its gate deliberately held for M11; and M14, M17 and M18 are in progress.** What runs today is the analytical half — a server `psql` connects to, authenticates against and queries over real Parquet, with cubes, clones, named snapshots, maintenance on a timer, Arrow Flight SQL and a hash-chained audit. What does not run is everything upstream of it: no change-capture runtime, no transactional tier wired into the server, and no second node — so of the three engines, one runs, one is a library nothing hydrates, and one is a supervised process nothing starts.
 
 [`docs/STATUS.md`](docs/STATUS.md) leads with a one-screen *what works today* and holds the **single canonical inventory of what is not built**, with the evidence for each entry; every other document links there rather than keeping its own copy.
 

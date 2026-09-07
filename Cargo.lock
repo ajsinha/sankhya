@@ -3645,6 +3645,7 @@ dependencies = [
 name = "sankhya-audit"
 version = "0.1.0"
 dependencies = [
+ "sankhya-atomicfs",
  "sankhya-authz",
  "sankhya-types",
  "serde",
@@ -4229,6 +4230,7 @@ dependencies = [
  "datafusion",
  "parquet",
  "proptest",
+ "sankhya-atomicfs",
  "sankhya-cdc-apply",
  "sankhya-cdc-model",
  "sankhya-error",

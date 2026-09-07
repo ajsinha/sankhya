@@ -12,7 +12,7 @@
 
 **Derived from:** `AUDIT_REPORT.md` — 129 findings across twelve audits
 **Date:** 2026-09-03 · **Commit audited:** `710848b`
-**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+**Status:** Implementation — M0, M1, M3, M4, M7, M10 and M13 complete; M2 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
 
 > **The status line above is now correct — item 0.7, done.** It previously read *"M0–M8, M10 and
 > M13 complete"* in all thirteen documents, and `check-docs` enforced that agreement while looking
@@ -1545,7 +1545,7 @@ entries were passing on that, and **both survive their real suite**. This is `R3
 report green when they measure nothing* — inside the mechanism built to detect exactly that. A
 verdict now requires libtest to print `test result: FAILED`; `--check` validates that a named
 target exists and that no two entries name one site; a hang is its own verdict rather than an
-exception thirty minutes in. The catalogue is **907 distinct defects, not 909**.
+exception thirty minutes in. The catalogue is **921 distinct defects**.
 
 Writing the tests those two entries needed, the first fixture used `- image:` where the parser
 requires `image:` at the start of the line — so both rejecting tests passed *vacuously*, through

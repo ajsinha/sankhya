@@ -127,6 +127,44 @@ fn sync_parent(path: &Path) -> io::Result<()> {
     }
 }
 
+/// Create a directory, and make the entry naming it durable.
+///
+/// # Why this is not `create_dir_all`
+///
+/// Creating a directory modifies its **parent**, and that modification lives in the page cache
+/// like any other write. Every fsync in this workspace syncs the directory holding the file
+/// just written; none synced the directory holding the newly created *directory*.
+///
+/// So a first commit into a new partition could be acknowledged and then, after power loss,
+/// come back with the fully-synced Parquet and `_delta_log` inodes present and unreferenced ---
+/// in `lost+found` --- because the table root's directory block never reached the medium.
+/// Losing the partition entry leaves a commit pointing at a path that does not exist; losing
+/// `_delta_log` leaves the table reading as absent.
+///
+/// Each level is synced as it is created, so a path several levels deep is durable throughout
+/// rather than at its leaf. A parent that cannot be opened is not fatal, for the reason
+/// [`sync_parent`] gives.
+///
+/// # Errors
+///
+/// The underlying I/O error from creating a directory.
+pub fn create_dir_durably(path: &Path) -> io::Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            create_dir_durably(parent)?;
+        }
+    }
+    match std::fs::create_dir(path) {
+        Ok(()) => sync_parent(path),
+        // Somebody else created it between the check and the call, which is the same outcome.
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// Write `bytes` to a name only if nothing holds it, failing if something does.
 ///
 /// Returns [`io::ErrorKind::AlreadyExists`] when the name is taken. That is not an error
@@ -149,12 +187,21 @@ pub fn claim(final_path: &Path, bytes: &[u8]) -> io::Result<()> {
     // The directory entry the link created, made durable before the caller is told the name
     // is theirs. A commit that reports success and is not there after a power loss is worse
     // than one that reports failure.
-    if claimed.is_ok() {
-        sync_parent(final_path)?;
-    }
+    //
+    // Held rather than returned with `?`. The `?` was here, before the `remove_file` below, so
+    // a parent-directory sync that failed returned `Err` **after the hard link was already in
+    // place** --- the caller was told its claim failed while the name was taken, and the
+    // staging file leaked into a directory that gets replayed. The two are a bad pair: a
+    // writer that believes it lost the race rebases, and `Publication::append_rebasing` gives
+    // the rebase a new file name, so the same rows are committed twice under different paths
+    // and replay dedups by path.
+    let synced = if claimed.is_ok() { sync_parent(final_path) } else { Ok(()) };
     // Removed either way. After a successful link the bytes are reachable through
     // `final_path`, so the staging name is litter; after a failed one it is a body nobody
     // wants. Leaking it would put debris in directories that get replayed.
     let _ = std::fs::remove_file(&staging);
-    claimed
+    // The claim first: it is what the caller acts on, and `AlreadyExists` must reach them
+    // unchanged. A durability failure over a link that did happen is reported only when the
+    // link itself succeeded, which is the only case where it means anything.
+    claimed.and(synced)
 }

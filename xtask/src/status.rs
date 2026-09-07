@@ -187,17 +187,50 @@ fn is_unsettled(row: &str) -> bool {
         "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
         "eleven", "twelve",
     ];
-    if row.contains("in progress") || row.contains("substantially") {
-        return true;
-    }
+    let row = row.to_lowercase();
+
+    // Where the row last hedged.
+    let mut hedged: Option<usize> = None;
+    let mut note = |at: Option<usize>| {
+        if let Some(at) = at {
+            hedged = Some(hedged.map_or(at, |held: usize| held.max(at)));
+        }
+    };
+    note(row.rfind("in progress"));
+    note(row.rfind("substantially"));
     for first in NUMBERS {
         for second in NUMBERS {
-            if row.contains(&format!("{first} of {second}")) {
-                return true;
-            }
+            note(row.rfind(&format!("{first} of {second}")));
         }
     }
-    false
+    let Some(hedged) = hedged else {
+        return false;
+    };
+
+    // And where it last settled.
+    //
+    // These rows are **chronological**: a milestone's cell accumulates its history, so M13's
+    // reads "Substantially built 2026-08-31 ... Complete 2026-09-01". Matching "substantially"
+    // anywhere therefore judged the row by a verdict it had already superseded --- and because
+    // `check-docs` propagates this decision, it *required* all eighteen documents carrying a
+    // status line to keep publishing "M13 substantially built" after STATUS.md itself said
+    // Complete. The check written to stop the whole repository agreeing on a stale claim was
+    // the thing holding one in place, which is the same incident it exists to prevent, inverted.
+    //
+    // Bold verdicts only, and only these two.
+    //
+    // The table's convention is `**Complete 2026-09-01**`, and prose like "not complete until"
+    // would otherwise settle a row that says the opposite. `**Built` looks like a third and is
+    // not: M14's row carries `**built 2026-09-03**` half a dozen times for its *sub-items*
+    // --- transport security, authorization, TLS in the binding --- while the milestone itself
+    // is still in progress. A marker that a sub-item can raise is a marker that settles a row
+    // nobody settled.
+    let settled = ["**complete", "**closed"]
+        .iter()
+        .filter_map(|marker| row.rfind(marker))
+        .max();
+
+    settled.is_none_or(|at| at < hedged)
 }
 
 pub(crate) fn unfinished_milestones(root: &Path) -> Vec<String> {

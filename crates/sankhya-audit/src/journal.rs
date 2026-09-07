@@ -61,7 +61,7 @@ impl Journal {
     pub fn open(warehouse: &Path) -> std::io::Result<Self> {
         let at = path_of(warehouse);
         if let Some(parent) = at.parent() {
-            std::fs::create_dir_all(parent)?;
+            sankhya_atomicfs::create_dir_durably(parent)?;
             // The directory entry, made durable before anything is written into it. A file
             // whose bytes are synced and whose *name* is not is a file a crash loses whole,
             // which is the failure `sankhya-atomicfs` exists to spell out --- and an audit that

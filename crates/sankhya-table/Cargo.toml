@@ -14,6 +14,7 @@ layer = 2
 workspace = true
 
 [dependencies]
+sankhya-atomicfs = { path = "../sankhya-atomicfs" }
 sankhya-types     = { path = "../sankhya-types" }
 sankhya-error     = { path = "../sankhya-error" }
 sankhya-schema    = { path = "../sankhya-schema" }
