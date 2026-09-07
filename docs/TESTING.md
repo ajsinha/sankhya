@@ -1,6 +1,6 @@
 # SANKHYA — Testing and evidence
 
-**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+**Status:** Implementation — M0, M1, M3, M4, M7, M10 and M13 complete; M2 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
 
 > How this repository decides that something is true. The gates that run on every build, the
 > mutation catalogue that asks whether the tests would notice a defect, the benchmarks that
@@ -140,7 +140,7 @@ rather than in a footnote, because it is the largest hole in this document.
 
 ## 3. The mutation catalogue
 
-`tools/mutation-audit.py` holds **909** specific defects. Each is applied to the source, the
+`tools/mutation-audit.py` holds **921** specific defects. Each is applied to the source, the
 suite is run, and the entry passes only if the suite **fails**. A mutation that survives is a
 hole in the tests, named and located.
 

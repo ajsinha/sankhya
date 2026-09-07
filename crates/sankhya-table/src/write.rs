@@ -88,7 +88,7 @@ pub fn write_parquet(
     covers_through: Lsn,
     config: WriterConfig,
 ) -> Result<WriteReport> {
-    std::fs::create_dir_all(directory)
+    sankhya_atomicfs::create_dir_durably(directory)
         .map_err(|e| Error::StorageUnavailable(format!("creating {}: {e}", directory.display())))?;
 
     let path = directory.join(file_name);

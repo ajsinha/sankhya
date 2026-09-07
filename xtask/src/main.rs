@@ -292,12 +292,12 @@ fn main() -> ExitCode {
     }
     if task == "sync-doc-numbers" {
         let mut docs = Vec::new();
-        collect_markdown(&root, &mut docs);
+        collect_figures(&root, &mut docs);
         failed |= !docnumbers::sync(&root, &docs);
     }
     if run_all || task == "check-doc-numbers" {
         let mut docs = Vec::new();
-        collect_markdown(&root, &mut docs);
+        collect_figures(&root, &mut docs);
         failed |= !docnumbers::check(&root, &docs);
     }
     // Last, and part of `check-all` on purpose: `check-tests` has just rebuilt the
@@ -892,6 +892,30 @@ fn check_the_motto(root: &Path, docs: &[PathBuf]) -> bool {
     }
     println!("   {carried} document(s) carry the motto beneath the wordmark");
     ok
+}
+
+/// The documents `check-doc-numbers` reads: the markdown, plus the deck's generator.
+///
+/// The deck publishes a test count and a mutation count on the slide headed "Four questions,
+/// four mechanisms", and it is a `.py` file --- so the artefact most likely to be shown to
+/// somebody outside the project carried the oldest numbers in the repository, 2,805 tests and
+/// 909 mutations, with no check able to open the file.
+///
+/// Separate from [`collect_markdown`] rather than widening it. `check-docs` and `check-loc`
+/// share that collector, and handing them Python source made a crate name inside
+/// `tools/mutation-audit.py` read as a missing crate and a word inside an SDK soak read as a
+/// broken link. A collector is not a place to be generous.
+fn collect_figures(root: &Path, out: &mut Vec<PathBuf>) {
+    collect_markdown(root, out);
+    let deck = root.join("tools/deck/deck");
+    if let Ok(entries) = std::fs::read_dir(&deck) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "py") {
+                out.push(path);
+            }
+        }
+    }
 }
 
 fn collect_markdown(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -1737,8 +1761,31 @@ fn check_invariants(root: &Path) -> bool {
         return false;
     };
 
+    // The generated table is not documentation, and counting it made half this check
+    // unfailable.
+    //
+    // `gates.rs` writes one row per element of `known_checks()` into `docs/TESTING.md` between
+    // these markers, and forces the document to match byte for byte. Scanning the whole file
+    // therefore compared `known_checks()` against a list *derived from* `known_checks()`, so
+    // the set difference the reverse loop below tests could never be non-empty: adding a check
+    // and documenting it nowhere still passed, because regenerating the mandatory table
+    // documented it for you.
+    //
+    // Prose only. A check has to be explained by a person somewhere outside the table it is
+    // listed in, which is what the reverse loop was written to require.
+    const GENERATED: (&str, &str) = ("<!-- BEGIN GATE TABLE -->", "<!-- END GATE TABLE -->");
+    let prose = match (text.find(GENERATED.0), text.find(GENERATED.1)) {
+        (Some(begin), Some(end)) if begin < end => {
+            let mut kept = String::with_capacity(text.len());
+            kept.push_str(text.get(..begin).unwrap_or(""));
+            kept.push_str(text.get(end + GENERATED.1.len()..).unwrap_or(""));
+            kept
+        }
+        _ => text.clone(),
+    };
+
     let mut named: BTreeSet<String> = BTreeSet::new();
-    for token in text.split(|c: char| !(c.is_alphanumeric() || c == '-')) {
+    for token in prose.split(|c: char| !(c.is_alphanumeric() || c == '-')) {
         // `check-all` is the runner, not a check. It reads as one to a scanner looking for
         // the prefix, and a document cannot describe the gate without naming it.
         if token == "check-all" {
@@ -1749,9 +1796,18 @@ fn check_invariants(root: &Path) -> bool {
         }
     }
 
+    let mut in_the_table: BTreeSet<String> = BTreeSet::new();
+    for token in text.split(|c: char| !(c.is_alphanumeric() || c == '-')) {
+        if token != "check-all" && token.starts_with("check-") && token.len() > 6 {
+            in_the_table.insert(token.to_string());
+        }
+    }
+
     let known = known_checks();
     let mut ok = true;
-    for check in &named {
+    // The forward half reads the whole document, table included: a name xtask does not run is
+    // a false guarantee wherever it is written.
+    for check in &in_the_table {
         if !known.contains(check.as_str()) {
             eprintln!(
                 "  UNKNOWN CHECK  docs/TESTING.md names `{check}`, which xtask does not \

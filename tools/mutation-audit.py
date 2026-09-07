@@ -4153,8 +4153,8 @@ CATALOGUE = [
 
     ("table-delta: serialize every commit in the warehouse behind one lock",
      "crates/sankhya-table-delta/src/log.rs",
-     "    std::fs::create_dir_all(log_dir(table_root))\n        .map_err(|e| CommitError::Io(format!(\"creating the log directory: {e}\")))?;",
-     "    static ONE_LOCK_FOR_THE_WAREHOUSE: std::sync::Mutex<()> = std::sync::Mutex::new(());\n    let _serialized = ONE_LOCK_FOR_THE_WAREHOUSE\n        .lock()\n        .unwrap_or_else(std::sync::PoisonError::into_inner);\n    std::fs::create_dir_all(log_dir(table_root))\n        .map_err(|e| CommitError::Io(format!(\"creating the log directory: {e}\")))?;",
+     "    sankhya_atomicfs::create_dir_durably(&log_dir(table_root))\n        .map_err(|e| CommitError::Io(format!(\"creating the log directory: {e}\")))?;",
+     "    static ONE_LOCK_FOR_THE_WAREHOUSE: std::sync::Mutex<()> = std::sync::Mutex::new(());\n    let _serialized = ONE_LOCK_FOR_THE_WAREHOUSE\n        .lock()\n        .unwrap_or_else(std::sync::PoisonError::into_inner);\n    sankhya_atomicfs::create_dir_durably(&log_dir(table_root))\n        .map_err(|e| CommitError::Io(format!(\"creating the log directory: {e}\")))?;",
      "sankhya-table-delta"),
 
     ("publish: probe for the newest version from zero on every append, not from the last seen",

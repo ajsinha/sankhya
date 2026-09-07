@@ -409,7 +409,7 @@ pub fn commit(
     version: Version,
     actions: &[Action],
 ) -> Result<Version, CommitError> {
-    std::fs::create_dir_all(log_dir(table_root))
+    sankhya_atomicfs::create_dir_durably(&log_dir(table_root))
         .map_err(|e| CommitError::Io(format!("creating the log directory: {e}")))?;
 
     let path = commit_path(table_root, version);

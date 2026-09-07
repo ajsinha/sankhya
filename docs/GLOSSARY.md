@@ -11,7 +11,7 @@
 
 **Document ID:** SNK-GL-001
 **Version:** 0.1.0
-**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+**Status:** Implementation — M0, M1, M3, M4, M7, M10 and M13 complete; M2 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
 **Date:** 2026-09-06
 
 ---
@@ -61,14 +61,14 @@ and M16. A higher number does not mean later.
 | **M10** | Zero-copy cloning | Complete |
 | **M11** | Production reconciliation | Not schedulable by development |
 | **M12** | Scale-out, HA, disaster recovery, production-like acceptance | Needs a second machine |
-| **M13** | Config-driven ingest, from files | Substantially built |
+| **M13** | Config-driven ingest, from files | Complete |
 | **M14** | The client contract and the Python SDK | In progress |
 | **M15** | Ingest without a file | Not started |
 | **M16** | The Java and Rust SDKs | Not started |
 | **M17** | Named snapshots | In progress |
 | **M18** | Derived results | In progress |
 | **M19** | The data lifecycle policy | Not started |
-| **M20** | What changed between two versions | Not started |
+| **M20** | What changed between two versions | Built |
 | **M21** | The built-in function catalogue | Design gate met |
 
 Two of these mean something specific and are easy to misread. **M11 is not late** — it is

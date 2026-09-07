@@ -11,7 +11,7 @@
 
 **Document ID:** SNK-OP-001
 **Version:** 0.1.0
-**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+**Status:** Implementation — M0, M1, M3, M4, M7, M10 and M13 complete; M2 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
 **Date:** 2026-09-06
 **Companions:** [`ARCHITECTURE.md`](ARCHITECTURE.md) — why it is built this way. [`SECURITY.md`](SECURITY.md) — the posture and the policy file. [`GUIDE.md`](GUIDE.md) — every feature by worked example. [`QUICKSTART.md`](QUICKSTART.md) — build it and load data. [`POSTGRES.md`](POSTGRES.md) — what this does to a PostgreSQL cluster.
 

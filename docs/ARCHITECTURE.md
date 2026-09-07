@@ -11,7 +11,7 @@
 
 **Document ID:** SNK-AD-001
 **Version:** 0.2.0
-**Status:** Implementation — M0, M1, M3, M4, M7 and M10 complete; M2 and M13 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
+**Status:** Implementation — M0, M1, M3, M4, M7, M10 and M13 complete; M2 substantially built; M5 closed on four of five exit criteria; M6 on six of seven; M8 on six of eight, its scale-out half moved to M12 for want of a second machine; M9 in progress, its work built and demonstrated and its gate held for M11; M14, M17 and M18 in progress
 **Date:** 2026-09-06
 **Companions:** [`REQUIREMENTS.md`](REQUIREMENTS.md) — what it must do. [`INVARIANTS.md`](TESTING.md) — the rules and what enforces each. [`OPERATIONS.md`](OPERATIONS.md) — running it. [`SECURITY.md`](SECURITY.md) — the posture and the policy. [`STATUS.md`](STATUS.md) — the dated record of what is built.
 
