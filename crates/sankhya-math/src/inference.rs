@@ -48,6 +48,20 @@ pub enum InferenceError {
         /// Which cell.
         at: usize,
     },
+    /// A `NaN` or an infinity where a finite number was required.
+    ///
+    /// Refused rather than propagated. A `NaN` travelling through a fit reaches the
+    /// significance test as a `NaN` statistic, and `!t.is_finite()` is a condition an infinite
+    /// statistic also meets --- for which a p-value of zero is correct. So a single missing
+    /// value reported **every** coefficient as significant at `p = 0`, which is the most
+    /// confident possible statement about the least information.
+    ///
+    /// A null is filtered before it reaches here; a `NaN` is not a null, and a column that has
+    /// been through a divide-by-zero upstream carries them.
+    NotFinite {
+        /// Which input.
+        which: &'static str,
+    },
 }
 
 impl std::fmt::Display for InferenceError {
@@ -72,6 +86,13 @@ impl std::fmt::Display for InferenceError {
                  evidence, it is a sample somebody needs to look at"
             ),
             Self::Domain(detail) => write!(f, "{detail}"),
+            Self::NotFinite { which } => write!(
+                f,
+                "the {which} holds a value that is not a finite number. Refused rather than \
+                 propagated: a NaN reaching the significance test makes every coefficient \
+                 report a p-value of zero, which is the most confident possible claim made \
+                 from the least information"
+            ),
             Self::ZeroExpected { at } => write!(
                 f,
                 "the expected count in cell {at} is zero, which a chi-squared statistic \

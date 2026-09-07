@@ -284,3 +284,57 @@ fn a_rank_deficient_matrix_has_a_zero_singular_value() {
     near(values[1], 0.0, 1e-7);
     assert!(values.iter().all(|v| v.is_finite()), "{values:?}");
 }
+
+// --- what a NaN and a small magnitude do -----------------------------------------------
+
+#[test]
+fn a_covariance_matrix_with_a_missing_price_will_not_factor() {
+    // The whole point of `cholesky`, per this module: a covariance matrix that will not factor
+    // is not a numerical accident, it is a statement about the data.
+    //
+    // Three comparisons used to be NaN-blind in the same direction. `f64::max` returns the
+    // non-NaN operand, so a NaN never reached the symmetry scale; `NaN > x` is false, so the
+    // symmetry test passed; and `NaN <= 0.0` is false, so the non-positive-pivot refusal never
+    // fired and `sqrt(NaN)` was stored. A matrix with one missing price was pronounced
+    // symmetric, factored, and positive definite --- so
+    // `WHERE mat_is_positive_definite(cov) = 1` passed on exactly the input it exists to
+    // catch, and the correlated draws seeded from that factor are all NaN.
+    let with_a_gap = [4.0, 2.0, 1.0, 2.0, f64::NAN, 0.5, 1.0, 0.5, 3.0];
+
+    assert!(!is_symmetric(&with_a_gap, 3), "a NaN is not symmetric with anything");
+    assert!(cholesky(&with_a_gap, 3).is_err(), "a matrix holding a NaN did not factor");
+    assert!(!is_positive_definite(&with_a_gap, 3), "and it is not positive definite");
+
+    // The same matrix with the gap filled does factor, so the refusal is about the NaN and
+    // not about the shape.
+    let filled = [4.0, 2.0, 1.0, 2.0, 3.0, 0.5, 1.0, 0.5, 3.0];
+    assert!(is_positive_definite(&filled, 3), "the same shape, with a number in it");
+}
+
+#[test]
+fn a_small_matrix_is_rotated_rather_than_declared_already_diagonal() {
+    // The convergence bound is relative to the matrix, and this is why.
+    //
+    // As an absolute `1e-15` against the unscaled off-diagonal norm, any matrix whose entries
+    // were already that small was declared converged before a single rotation ran, and the
+    // input's diagonal came back as its eigenvalues. Here that gave `5e-16` and `1e-16`
+    // against a true `6.6056e-16` and `-6.0555e-17`: the larger 24% low, and **the smaller
+    // with the wrong sign**, so an indefinite matrix passes an all-non-negative test.
+    //
+    // The true values are the roots of `x² - 6e-16·x - (5e-32 - 9e-32)`, computed by hand.
+    let small = [1e-16, 3e-16, 3e-16, 5e-16];
+    let values = eigenvalues_symmetric(&small, 2).expect("a symmetric 2x2");
+
+    let (low, high) = (values[0].min(values[1]), values[0].max(values[1]));
+    near(high, 6.605_551_275_463_989e-16, 1e-28);
+    near(low, -6.055_512_754_639_893e-17, 1e-28);
+    assert!(low < 0.0, "this matrix is indefinite and must not report as positive semidefinite");
+
+    // And the scale-freedom that a relative bound buys: the same matrix multiplied by 1e16 has
+    // the same eigenvalues multiplied by 1e16.
+    let scaled: Vec<f64> = small.iter().map(|v| v * 1e16).collect();
+    let big = eigenvalues_symmetric(&scaled, 2).expect("a symmetric 2x2");
+    let (blow, bhigh) = (big[0].min(big[1]), big[0].max(big[1]));
+    near(bhigh / 1e16, high, 1e-28);
+    near(blow / 1e16, low, 1e-28);
+}

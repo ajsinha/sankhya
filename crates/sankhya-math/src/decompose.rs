@@ -22,7 +22,21 @@
 
 use crate::matrix::MatrixError;
 
-/// How close to zero an off-diagonal must be before a sweep stops.
+/// How close to zero an off-diagonal must be, **relative to the matrix**, before a sweep stops.
+///
+/// Relative rather than absolute, and that is the whole of it. As an absolute bound this read
+/// `1e-15` against the unscaled off-diagonal norm, so any matrix whose entries were already
+/// that small was declared converged before a single rotation ran --- and `eigen_symmetric`
+/// returned the input's diagonal with the identity as its basis, reporting `Ok`.
+///
+/// For `[[1e-16, 3e-16], [3e-16, 5e-16]]` that gives eigenvalues `5e-16` and `1e-16` against a
+/// true `6.6056e-16` and `-6.0555e-17`: the larger is 24% low and **the smaller has the wrong
+/// sign**, so an indefinite matrix passes an "all eigenvalues are non-negative" test.
+/// `singular_values` builds `AᵀA` and squares the scale, which makes the early exit far easier
+/// to reach and leaves a small singular value 2.4× too large --- a condition number wrong in
+/// the reassuring direction.
+///
+/// A relative bound is also scale-free, which is what the constant was always meant to be.
 const CONVERGED: f64 = 1e-15;
 
 /// How many sweeps before Jacobi gives up.
@@ -52,6 +66,19 @@ fn put(values: &mut [f64], columns: usize, row: usize, column: usize, value: f64
 #[must_use]
 pub fn is_symmetric(values: &[f64], size: usize) -> bool {
     if values.len() != size * size {
+        return false;
+    }
+    // A `NaN` is not symmetric with anything, including itself.
+    //
+    // Every comparison below is NaN-blind in the same direction: `f64::max` returns the
+    // non-NaN operand so a `NaN` never affects the scale, and `NaN > x` is false so the
+    // difference test passes. A covariance matrix with one missing price was therefore judged
+    // symmetric, factored by `cholesky`, and pronounced positive definite --- and this
+    // module's own header makes the failure of that factorisation the *definition* of a usable
+    // covariance matrix. `mat_is_positive_definite(cov) = 1` was a guard that passed on
+    // exactly the input it exists to catch, and the correlated draws seeded from that factor
+    // are all `NaN`.
+    if values.iter().any(|v| !v.is_finite()) {
         return false;
     }
     let scale = values.iter().fold(0.0f64, |m, v| m.max(v.abs())).max(1.0);
@@ -100,13 +127,16 @@ pub fn cholesky(values: &[f64], size: usize) -> Result<Vec<f64>, MatrixError> {
                 sum -= at(&lower, size, row, k) * at(&lower, size, column, k);
             }
             if row == column {
-                if sum <= 0.0 {
+                // `!(sum > 0.0)` rather than `sum <= 0.0`, so a `NaN` pivot is refused.
+                // `NaN <= 0.0` is false, so the old test let `sqrt(NaN)` be stored and the
+                // factorisation reported success on a matrix it had not factored.
+                if !(sum > 0.0) {
                     return Err(MatrixError::Singular);
                 }
                 put(&mut lower, size, row, column, sum.sqrt());
             } else {
                 let pivot = at(&lower, size, column, column);
-                if pivot == 0.0 {
+                if !pivot.is_finite() || pivot == 0.0 {
                     return Err(MatrixError::Singular);
                 }
                 put(&mut lower, size, row, column, sum / pivot);
@@ -241,6 +271,16 @@ pub fn eigen_symmetric(
         put(&mut vectors, size, i, i, 1.0);
     }
 
+    // The scale the convergence bound is relative to, taken once from the input rather than
+    // from the iterate: a threshold that moved as the matrix was rotated would be a different
+    // question asked at every sweep.
+    //
+    // Deliberately **not** floored at one. A floor of one is what an absolute bound is, for
+    // every matrix smaller than the floor --- which is the entire defect --- and the first
+    // attempt at this fix carried one, so it changed nothing for exactly the inputs it was
+    // written for. The zero matrix it was meant to protect is handled by comparing with `<=`
+    // below: zero off-diagonal against a zero bound is converged, and correctly so.
+    let scale = a.iter().fold(0.0f64, |m, v| m + v * v).sqrt();
     let mut converged = false;
     for _ in 0..SWEEPS {
         // The magnitude still off the diagonal. A sweep stops when there is nothing left to
@@ -252,7 +292,7 @@ pub fn eigen_symmetric(
                 off += value * value;
             }
         }
-        if off.sqrt() < CONVERGED {
+        if off.sqrt() <= CONVERGED * scale {
             converged = true;
             break;
         }

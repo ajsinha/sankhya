@@ -225,7 +225,13 @@ pub struct LinearFit {
     /// The intercept.
     pub intercept: f64,
     /// The coefficient of determination, between zero and one.
-    pub r_squared: f64,
+    ///
+    /// `None` when the response does not vary. `R² = 1 - SSE/SST` is then `0/0`, and the two
+    /// numbers this crate used to answer with --- one here, zero in [`crate::regression`] ---
+    /// were the two furthest apart it could have chosen, on one SQL surface, with nothing on
+    /// the result to say which a caller had received. Neither was wrong about the arithmetic;
+    /// both were inventing a number where there is not one.
+    pub r_squared: Option<f64>,
 }
 
 /// Fit `y = slope * x + intercept` by least squares.
@@ -252,19 +258,28 @@ pub fn linear_fit(x: &[f64], y: &[f64]) -> Result<LinearFit, VectorError> {
     // R² from the correlation, which is exact for a single predictor and avoids a second
     // pass over the residuals.
     let r_squared = match correlation(x, y) {
-        Ok(r) => r * r,
-        // A constant response. The correlation is 0/0 and undefined, but the *fit* is not
-        // ambiguous at all: the slope is zero, the intercept is the constant, and every
-        // residual is exactly zero. A horizontal line through a horizontal series is a
-        // perfect fit, so this is one.
+        Ok(r) => Some(r * r),
+        // A constant response, where the correlation is `0/0`.
         //
-        // An earlier version returned zero here on the reasoning that the fit explains none
-        // of the variance. Arithmetically that is defensible --- there is no variance to
-        // explain --- but it reads as "these points are not described by a line", which is
-        // the opposite of the truth, and a caller asking r² how straight a series is gets
-        // told a flat one is as crooked as noise. `x` is already known to vary, so this arm
-        // is reachable only for constant `y`.
-        Err(VectorError::ZeroMagnitude) => 1.0,
+        // This arm has held both answers and an argument for each. One: the slope is zero,
+        // the intercept is the constant, every residual is exactly zero, and a horizontal
+        // line through a horizontal series is a perfect fit. Zero: there is no variance, so
+        // no fraction of it has been explained. `crate::regression` shipped the second while
+        // this shipped the first, and `vec_regression_r2` and `regress_r2` answered `1.0` and
+        // `0.0` for one input, from one server.
+        //
+        // Neither argument is wrong, which is why picking between them kept producing a
+        // number somebody could reasonably dispute. `None` is the answer that is not a claim:
+        // undefined, reported as undefined, which the SQL surfaces render as NULL. A caller
+        // who holds a view --- and `sankhya-diagnostic` does, quite reasonably --- supplies it
+        // at the point they hold it, rather than having it supplied for them here.
+        //
+        // Refusing outright was the other candidate and is worse for this shape: these run per
+        // row, so one flat series in ten million would fail the whole statement. A null
+        // propagates the way every other null does.
+        //
+        // `x` is already known to vary, so this arm is reachable only for constant `y`.
+        Err(VectorError::ZeroMagnitude) => None,
         Err(other) => return Err(other),
     };
     Ok(LinearFit {

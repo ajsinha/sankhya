@@ -10,7 +10,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::float_cmp)]
 
 use sankhya_math::distribution::{
-    binomial_cdf, binomial_pmf, chisq_inv, chisq_sf, exponential_cdf, f_inv, f_sf, lognormal_cdf,
+    binomial_cdf, binomial_pmf, chisq_cdf, chisq_inv, chisq_sf, exponential_cdf, f_inv, f_sf, lognormal_cdf,
     norm_cdf, norm_inv, norm_pdf, poisson_cdf, poisson_pmf, t_cdf, t_inv, t_two_sided,
     uniform_cdf,
 };
@@ -340,4 +340,31 @@ fn a_binomial_cumulative_over_a_thousand_trials_is_right_and_immediate() {
     let below = binomial_cdf(499, 1000, 0.5).expect("a cumulative");
     let upto = binomial_cdf(500, 1000, 0.5).expect("a cumulative");
     near(below + upto, 1.0, 1e-12);
+}
+
+#[test]
+fn the_chi_squared_series_converges_at_the_degrees_of_freedom_a_table_can_hold() {
+    // `chisq_cdf(f, f)` is a shade above one half for every `f`, and stays there.
+    //
+    // `gamma_p` routes everything with `x < a + 1` through the series representation, which is
+    // the whole lower half of every chi-squared and gamma distribution. The series needs about
+    // `x` terms; it was capped at three hundred, and past the cap it fell out of the loop and
+    // **returned the partial sum** with no error and no flag:
+    //
+    //   f = 10_000    returned 0.5018679  against 0.5018806   (2.5e-5)
+    //   f = 100_000   returned 0.41100    against 0.50059     (18%)
+    //   f = 1_000_000 returned 0.16483    against 0.50019     (67%)
+    //
+    // A 67% error reported as a probability, from a crate whose `lib.rs` promises that every
+    // function "either produces an exact, reproducible answer or refuses".
+    for freedom in [1_000.0, 10_000.0, 100_000.0, 1_000_000.0] {
+        let p = chisq_cdf(freedom, freedom).expect("a positive shape and a positive value");
+        assert!(
+            (p - 0.5).abs() < 0.01,
+            "chisq_cdf({freedom}, {freedom}) = {p}, which is not near one half"
+        );
+        // And its complement, which takes the other branch, agrees with it.
+        let q = chisq_sf(freedom, freedom).expect("the same arguments");
+        assert!((p + q - 1.0).abs() < 1e-9, "the two tails do not sum to one: {p} + {q}");
+    }
 }

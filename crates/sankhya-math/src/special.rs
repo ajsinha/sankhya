@@ -9,9 +9,27 @@
 //!
 //! # What accuracy is promised
 //!
-//! [`erfc`] is a Chebyshev fit with relative error below `1.2e-7`. [`ln_gamma`] is Lanczos'
-//! approximation. [`gamma_p`], [`gamma_q`] and [`beta_i`] iterate to `3e-16` relative, so
-//! everything built on them is good to the last few bits.
+//! [`erfc`] is computed by continued fraction and series rather than by the Chebyshev fit this
+//! paragraph used to describe --- that fit was removed, and the sentence describing it outlived
+//! it by long enough to be quoted in `docs/GUIDE.md`. [`ln_gamma`] is Lanczos' approximation.
+//! [`gamma_p`], [`gamma_q`] and [`beta_i`] iterate to `3e-16` relative.
+//!
+//! `3e-16` is the **iteration tolerance**, and it is not the delivered accuracy. What is
+//! delivered is bounded by [`ln_gamma`], which is Lanczos at roughly `4e-13` relative in the
+//! log, and `exp` then amplifies that. Measured against exact references:
+//!
+//! | call | relative error |
+//! |---|---|
+//! | `erf(1)`, `erfc(1)`, `erfc(20)` | ~1e-13 |
+//! | `t_two_sided(8, 30)` | ~5e-13 |
+//! | `binom_cdf(500, 1000, ½)` | ~1.5e-10 |
+//! | `poisson_cdf(100, 100)` | ~1e-10 |
+//!
+//! So: about `1e-13` for the continuous families, and about `1e-10` where a large `ln_gamma`
+//! difference is exponentiated. That is ample for every use these have and it is nowhere near
+//! "the last few bits", which is what this said. A claim about accuracy is the one kind of
+//! claim a numerical library cannot be loose with, because it is the claim a caller uses to
+//! decide whether to trust the fourth digit.
 //!
 //! # The rule about the tails
 //!
@@ -32,6 +50,14 @@ pub enum DomainError {
     },
     /// A value outside the distribution's support.
     OutsideSupport,
+    /// A series or continued fraction that did not settle within its iteration bound.
+    ///
+    /// Refused rather than returned. A partial sum from a series that was still moving is a
+    /// number with no error bound at all, and it arrives looking exactly like a converged one.
+    DidNotConverge {
+        /// Which routine.
+        routine: &'static str,
+    },
 }
 
 impl std::fmt::Display for DomainError {
@@ -47,6 +73,12 @@ impl std::fmt::Display for DomainError {
                 "`{parameter}` must be greater than zero, and it is not. A distribution with a \
                  non-positive scale or degrees of freedom is not a narrow distribution --- it \
                  is not a distribution"
+            ),
+            Self::DidNotConverge { routine } => write!(
+                f,
+                "`{routine}` did not settle within its iteration bound for these arguments, so \
+                 there is no answer here to report. Refused rather than returned: a partial sum \
+                 carries no error bound and is indistinguishable from a converged one"
             ),
             Self::OutsideSupport => write!(
                 f,
@@ -154,7 +186,7 @@ pub fn gamma_p(a: f64, x: f64) -> Result<f64, DomainError> {
     // own side and slowly on the other, and using one everywhere is how a cumulative comes to
     // take a thousand iterations to be wrong.
     if x < a + 1.0 {
-        Ok(gamma_series(a, x))
+        gamma_series(a, x)
     } else {
         Ok(1.0 - gamma_continued(a, x))
     }
@@ -179,28 +211,58 @@ pub fn gamma_q(a: f64, x: f64) -> Result<f64, DomainError> {
         return Ok(1.0);
     }
     if x < a + 1.0 {
-        Ok(1.0 - gamma_series(a, x))
+        gamma_series(a, x).map(|p| 1.0 - p)
     } else {
         Ok(gamma_continued(a, x))
     }
 }
 
 /// `P(a, x)` by its series representation, for `x` below `a + 1`.
-fn gamma_series(a: f64, x: f64) -> f64 {
-    const ITERATIONS: usize = 300;
+///
+/// # The iteration bound, and why it is now a refusal
+///
+/// This series needs about `x` terms, and `gamma_p` routes everything with `x < a + 1` here ---
+/// which is the whole lower half of every chi-squared and gamma distribution. At three hundred
+/// iterations it stopped converging around a thousand degrees of freedom and then **fell out of
+/// the loop and returned the partial sum**, with no error and no flag:
+///
+/// | `chisq_cdf(f, f)` | iterations needed | returned | converged | error |
+/// |---|---|---|---|---|
+/// | `f = 10_000` | 569 | 0.5018679 | 0.5018806 | 2.5e-5 |
+/// | `f = 100_000` | 1,745 | 0.41100 | 0.50059 | 18% |
+/// | `f = 1_000_000` | 5,391 | 0.16483 | 0.50019 | **67%** |
+///
+/// The crate's own promise (`lib.rs`) is that every function *"either produces an exact,
+/// reproducible answer or refuses. There is no approximate path."* This was the approximate
+/// path, and it was silent.
+///
+/// The bound is raised to a figure that covers any degrees of freedom a table can hold, and
+/// exceeding it is now a refusal rather than a number. The counterpart `beta_continued` needs
+/// under forty iterations out to `1e7`, so nothing else in the file shares this shape.
+///
+/// # Errors
+///
+/// [`DomainError::DidNotConverge`] when the series has not settled within its bound.
+fn gamma_series(a: f64, x: f64) -> Result<f64, DomainError> {
+    const ITERATIONS: usize = 100_000;
     const TOLERANCE: f64 = 3e-16;
     let mut ap = a;
     let mut sum = 1.0 / a;
     let mut term = sum;
+    let mut settled = false;
     for _ in 0..ITERATIONS {
         ap += 1.0;
         term *= x / ap;
         sum += term;
         if term.abs() < sum.abs() * TOLERANCE {
+            settled = true;
             break;
         }
     }
-    sum * (-x + a * x.ln() - ln_gamma(a)).exp()
+    if !settled {
+        return Err(DomainError::DidNotConverge { routine: "gamma_series" });
+    }
+    Ok(sum * (-x + a * x.ln() - ln_gamma(a)).exp())
 }
 
 /// `Q(a, x)` by its continued fraction, for `x` at or above `a + 1`.

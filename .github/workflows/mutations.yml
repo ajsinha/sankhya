@@ -1,0 +1,74 @@
+# The mutation catalogue, actually run.
+#
+# `check-all` invokes `tools/mutation-audit.py --check`, which is string matching: it confirms
+# every entry still names one site in the source, that its hint names a real test target, and
+# that no two entries mutate the same place. It compiles nothing and runs no test.
+#
+# The audit itself --- apply a deliberate defect, run the tests, and require them to notice ---
+# had no caller at all. Not `check-all`, not CI, not a script. `docs/STATUS.md` describes 921
+# defects "applied one at a time, each required to fail the suite", and until this file nothing
+# applied any of them. Delete every assertion from a test the catalogue names and the whole
+# gate stays green.
+#
+# # Why nightly rather than in the gate
+#
+# Each entry is a full rebuild plus a test target. Four of them, run by hand, exceeded the time
+# available in one sitting; 921 is a scale that belongs on a schedule and never in a pre-push
+# check. `check-all` keeps the cheap half --- an entry that has gone stale is caught in
+# milliseconds --- and this proves the expensive half while nobody is waiting.
+#
+# The run holds a lock and restores the tree on every signal it can catch. `--check` runs first
+# here anyway: a catalogue that does not match the source cannot prove anything, and finding
+# that out after six hours of building is worse than finding it out in one second.
+
+name: mutations
+
+on:
+  schedule:
+    # 02:00 UTC, which is outside the working day in every timezone this is developed in.
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: 2
+
+jobs:
+  audit:
+    name: every catalogued defect is caught
+    runs-on: ubuntu-latest
+    # Long, and deliberately so. A timeout that trips is a run that reports nothing, and this
+    # job exists because something that reported nothing was believed for weeks.
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show the toolchain
+        run: rustc --version && cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Staleness first. A catalogue entry whose text has moved proves nothing, and it costs a
+      # second to find out rather than six hours.
+      - name: The catalogue matches the source
+        run: python3 tools/mutation-audit.py --check
+
+      # Warm, so the per-mutation builds are incremental rather than from scratch.
+      - name: Build the test targets once
+        run: cargo test --locked --workspace --no-run
+
+      - name: Apply every catalogued defect
+        run: python3 tools/mutation-audit.py
+
+      # The audit restores the tree itself, including on SIGTERM. This is the backstop: if a
+      # mutation is still applied here, the run's verdict cannot be trusted and the diff is the
+      # first thing anybody investigating needs to see.
+      - name: The tree was restored
+        if: always()
+        run: |
+          if ! git diff --quiet; then
+            echo "::error::a mutation was left applied; the verdict above cannot be trusted"
+            git --no-pager diff
+            exit 1
+          fi
+          echo "the working tree is as checked out"

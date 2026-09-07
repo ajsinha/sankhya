@@ -2402,7 +2402,7 @@ CATALOGUE = [
 
     ("diagnostic: project a date through a sawtooth",
      "crates/sankhya-diagnostic/src/projection.rs",
-     "        if fit.r_squared < LINEAR_ENOUGH && self.observations.len() > MINIMUM_OBSERVATIONS {",
+     "        if straightness < LINEAR_ENOUGH && self.observations.len() > MINIMUM_OBSERVATIONS {",
      "        if false {",
      "sankhya-diagnostic"),
 
@@ -2460,10 +2460,13 @@ CATALOGUE = [
      "                None => {}",
      "sankhya-diagnostic"),
 
-    ("math: call a constant series a bad linear fit",
+    # `R²` is `0/0` for a constant response and is now reported as undefined. The defect worth
+    # pinning is no longer "which of the two numbers" --- it is answering with a number at all,
+    # because that is what made `vec_regression_r2` and `regress_r2` disagree on one surface.
+    ("math: answer an undefined R-squared with a number",
      "crates/sankhya-math/src/stats.rs",
-     "        Err(VectorError::ZeroMagnitude) => 1.0,",
-     "        Err(VectorError::ZeroMagnitude) => 0.0,",
+     "        Err(VectorError::ZeroMagnitude) => None,",
+     "        Err(VectorError::ZeroMagnitude) => Some(1.0),",
      "sankhya-math"),
     ("metrics: let a closed label accept any value",
      "crates/sankhya-metrics/src/metric.rs",
@@ -5811,8 +5814,8 @@ CATALOGUE = [
 
     ("math: report plain R-squared as the adjusted one, rewarding a useless predictor",
      "crates/sankhya-math/src/regression.rs",
-     "        1.0 - (rss / freedom) / (tss / (n - 1.0))",
-     "        1.0 - rss / tss",
+     "        Some(1.0 - (rss / freedom) / (tss / (n - 1.0)))",
+     "        Some(1.0 - rss / tss)",
      "sankhya-math"),
 
     ("math: fit a model with more parameters than observations",
@@ -5849,14 +5852,14 @@ CATALOGUE = [
 
     ("math: take the upper tail by subtracting the lower one",
      "crates/sankhya-math/src/special.rs",
-     "    if x < a + 1.0 {\n        Ok(1.0 - gamma_series(a, x))\n    } else {\n        Ok(gamma_continued(a, x))\n    }",
+     "    if x < a + 1.0 {\n        gamma_series(a, x).map(|p| 1.0 - p)\n    } else {\n        Ok(gamma_continued(a, x))\n    }",
      "    Ok(1.0 - gamma_p(a, x)?)",
      "sankhya-math"),
 
     ("math: use the series everywhere instead of switching at the crossover",
      "crates/sankhya-math/src/special.rs",
-     "    if x < a + 1.0 {\n        Ok(gamma_series(a, x))\n    } else {\n        Ok(1.0 - gamma_continued(a, x))\n    }",
-     "    Ok(gamma_series(a, x))",
+     "    if x < a + 1.0 {\n        gamma_series(a, x)\n    } else {\n        Ok(1.0 - gamma_continued(a, x))\n    }",
+     "    gamma_series(a, x)",
      "sankhya-math"),
 
     ("math: reflect the incomplete beta on the wrong side of its crossover",
@@ -5890,8 +5893,8 @@ CATALOGUE = [
 
     ("math: accept a non-positive Cholesky pivot, so an impossible matrix factors",
      "crates/sankhya-math/src/decompose.rs",
-     "                if sum <= 0.0 {\n                    return Err(MatrixError::Singular);\n                }",
-     "                if false {\n                    return Err(MatrixError::Singular);\n                }",
+     "                if !(sum > 0.0) {\n                    return Err(MatrixError::Singular);\n                }",
+     "                if sum < 0.0 {\n                    return Err(MatrixError::Singular);\n                }",
      "sankhya-math"),
 
     ("math: choose the Householder sign toward the head, cancelling the subtraction",
@@ -6729,7 +6732,17 @@ def judge(crate, hint):
             return "HUNG", False
         out = p.stdout + p.stderr
         if "error[E" in out or "could not compile" in out:
-            return "no compile", True
+            # Not caught. The compiler refusing a mutation says nothing about the tests.
+            #
+            # This returned `True`, which `main` reads as "not a survivor", and the run then
+            # printed *"all N mutations were caught"*. A catalogue in which every single entry
+            # failed to compile reported total success --- which is the failure the comment
+            # eighteen lines below warns about, inside the mechanism built to detect it.
+            #
+            # Reported as its own verdict rather than as a survivor: a mutation the compiler
+            # rejects is an entry that needs rewriting, not a hole in the tests, and calling it
+            # a survivor would send somebody to look for coverage that is not the problem.
+            return "no compile", False
 
         # A non-zero exit is not a caught mutation.
         #
@@ -6957,7 +6970,7 @@ def main():
             before[path] = digest(path)
 
 
-    survivors, missing = [], []
+    survivors, missing, unproven = [], [], []
     for entry in entries:
         label, relpath, find, repl, crate = entry[:5]
         count = entry[5] if len(entry) > 5 else 1
@@ -6978,7 +6991,10 @@ def main():
             finish(path, original)
 
         print(f"{verdict:10} {label}")
-        if not ok:
+        if verdict in ("no compile", "HUNG"):
+            # Neither caught nor survived: the run never got far enough to ask.
+            unproven.append((verdict, label))
+        elif not ok:
             survivors.append(label)
 
     for path in regression_files() - pre_existing:
@@ -7000,12 +7016,17 @@ def main():
               f"actually cover them:")
         for s in survivors:
             print(f"  - {s}")
+    if unproven:
+        print(f"{len(unproven)} mutation(s) never reached a verdict, so nothing was proved "
+              f"about them either way:")
+        for verdict, label in unproven:
+            print(f"  - [{verdict}] {label}")
     if missing:
         print(f"{len(missing)} catalogue entr(ies) no longer match the source and are "
               f"proving nothing; update or remove them.")
-    if not survivors and not missing:
+    if not survivors and not missing and not unproven:
         print(f"all {len(entries)} mutations were caught")
-    return 1 if (survivors or missing) else 0
+    return 1 if (survivors or missing or unproven) else 0
 
 
 if __name__ == "__main__":

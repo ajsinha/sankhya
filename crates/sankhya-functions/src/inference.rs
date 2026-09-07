@@ -116,10 +116,10 @@ pub fn functions() -> Vec<ScalarUDF> {
                 .map(|f| f.p_values.get(1).copied().unwrap_or(f64::NAN))
                 .map_err(|e| e.to_string())
         })),
-        ScalarUDF::from(Multi::new("regress_r2", 2, |a| {
+        ScalarUDF::from(Multi::defined_sometimes("regress_r2", 2, |a| {
             regression::simple(&a[0], &a[1]).map(|f| f.r_squared).map_err(|e| e.to_string())
         })),
-        ScalarUDF::from(Multi::new("regress_adj_r2", 2, |a| {
+        ScalarUDF::from(Multi::defined_sometimes("regress_adj_r2", 2, |a| {
             regression::simple(&a[0], &a[1])
                 .map(|f| f.adjusted_r_squared)
                 .map_err(|e| e.to_string())
@@ -128,7 +128,7 @@ pub fn functions() -> Vec<ScalarUDF> {
             regression::simple(&a[0], &a[1]).map(|f| f.residual_error).map_err(|e| e.to_string())
         })),
         // --- multiple regression: a flat design matrix, the targets, and the predictor count ---
-        ScalarUDF::from(Multi::new("regress_multiple_r2", 3, |a| {
+        ScalarUDF::from(Multi::defined_sometimes("regress_multiple_r2", 3, |a| {
             let predictors = crate::multi::one(a, 2, "the number of predictors")?;
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let predictors = predictors as usize;

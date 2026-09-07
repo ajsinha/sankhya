@@ -1457,10 +1457,21 @@ Four suffixes, the same four everywhere, so a caller who has met one family can 
 > **A count must be whole.** `binom_pmf(2.7, 10, 0.5)` is refused rather than rounded —
 > rounding answers a question about a different number of events, silently.
 
-The cumulatives iterate to `3e-16`, so they are good to the last few bits. `erf` and `erfc`
-come from the incomplete gamma rather than a rational fit, because the usual fit gives
-`erf(0) = -5.9e-8` — a standard normal whose median is not zero. Note that `gamma_p`,
+The cumulatives iterate to `3e-16` — which is the **iteration tolerance**, not the delivered
+accuracy, and this paragraph used to conflate the two. What is delivered is bounded by
+`ln_gamma`, a Lanczos approximation good to roughly `4e-13` in the log, which `exp` then
+amplifies: about `1e-13` for the continuous families, and about `1e-10` where a large
+`ln_gamma` difference is exponentiated (`binom_cdf(500, 1000, ½)` is `1.5e-10` off an exact
+rational sum). Ample for every use these have, and nowhere near the last few bits.
+
+`erf` and `erfc` come from the incomplete gamma rather than a rational fit, because the usual
+fit gives `erf(0) = -5.9e-8` — a standard normal whose median is not zero. Note that `gamma_p`,
 `gamma_q` and `beta_i` are on §9's uncompensated list.
+
+> **`R²` is NULL when the response does not vary.** It is `0/0` there, and the two
+> implementations behind `vec_regression_r2` and `regress_r2` used to answer `1.0` and `0.0`
+> for the same input — the two furthest apart values available, with nothing on the result
+> saying which you had. The slope and intercept are unaffected; those were never in doubt.
 
 ### Inference and regression
 

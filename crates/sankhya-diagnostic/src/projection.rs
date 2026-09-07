@@ -362,9 +362,20 @@ impl Trend {
         // them reports where in a cycle the samples fell rather than a trend. A sawtooth ---
         // debt accumulating and being compacted away --- is exactly that shape.
         const LINEAR_ENOUGH: f64 = 0.80;
-        if fit.r_squared < LINEAR_ENOUGH && self.observations.len() > MINIMUM_OBSERVATIONS {
+        // A flat series is perfectly described by a line, and here that reading is right.
+        //
+        // `LinearFit::r_squared` is `None` when the response does not vary, because `0/0` is
+        // undefined and the maths layer stopped inventing an answer for it. This consumer does
+        // hold a view: a metric that has not moved is not a sawtooth and is not noise, it is a
+        // flat trend, and treating "undefined" as "not linear enough" would abandon a
+        // projection precisely when the data is at its most orderly.
+        //
+        // Supplied at the point the opinion is held rather than baked into the fit, which is
+        // the whole reason the fit stopped supplying it.
+        let straightness = fit.r_squared.unwrap_or(1.0);
+        if straightness < LINEAR_ENOUGH && self.observations.len() > MINIMUM_OBSERVATIONS {
             return Projection::Unknown {
-                reason: Unknown::NotLinear { fit: fit.r_squared },
+                reason: Unknown::NotLinear { fit: straightness },
             };
         }
 
@@ -403,7 +414,7 @@ impl Trend {
             } else {
                 Confidence::Weak
             },
-            fit: fit.r_squared,
+            fit: straightness,
         }
     }
 }
