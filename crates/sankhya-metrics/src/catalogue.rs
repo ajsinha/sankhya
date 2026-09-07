@@ -239,9 +239,11 @@ pub static MAINTENANCE_TICKS_TOTAL: Metric = Metric {
     unit: Unit::Count,
     labels: &[],
     group: Group::Maintenance,
-    help: "Maintenance passes completed since this server started. A rate of zero while \
-           tables are being written means the maintainer is not running, which is a \
-           different fault from a duty cycle that is too low.",
+    help: "Maintenance cycles completed since this server started, one per interval \
+           regardless of how many tables it visited. A rate of zero while tables are being \
+           written means the maintainer is not running, which is a different fault from a \
+           duty cycle that is too low --- and reads the same as maintenance being \
+           configured off, which is a supported deployment.",
     alert: None,
 };
 
@@ -258,20 +260,40 @@ pub static MAINTENANCE_BYTES_RECLAIMED_TOTAL: Metric = Metric {
     alert: None,
 };
 
-/// Passes that declined to act because something was still reading.
+/// Table-passes that declined to reclaim because the pin set could not be established.
 ///
-/// Not a fault: declining is the sweeper honouring a lease, a clone or a snapshot, and is
-/// the mechanism that stops a reader's files being reclaimed underneath it. It is here
-/// because it is the benign explanation for reclaimed bytes staying flat, and separating it
-/// from `sankhya_maintenance_failures_total` is what makes that counter mean one thing.
+/// # What this does *not* count
+///
+/// A lease, clone or snapshot legitimately holding files. That resolves, lands in the pinned
+/// set, and the sweeper simply retires nothing --- silently and correctly. This counter is
+/// the **other** case: `Maintainer::tick` stops before reclamation when a snapshot or clone
+/// document cannot be read, or a pinned version's file set cannot be resolved
+/// (`sankhya-maintenance/src/service.rs`, the `blind`/`holes` guard).
+///
+/// The first version of this help said the opposite --- *"declined because a lease, clone or
+/// snapshot still reads the files. Expected and healthy"* --- and the runbook categorised it
+/// as healthy on that basis. It is the reverse: a disk filling up while a document nobody can
+/// read sits in the way. The handle's own doc comment had it right and the metric inverted it.
+///
+/// # Why "table-passes" and not "passes"
+///
+/// This increments once per **table** per cycle, while `sankhya_maintenance_ticks_total`
+/// increments once per cycle. On a fifty-table warehouse one blind cycle adds fifty here and
+/// one there, so this can and routinely will exceed the tick count --- and a `blind` set is
+/// warehouse-global, so one unreadable document makes every table decline on every cycle.
+/// A dashboard dividing the two gets a number in no unit at all.
 pub static MAINTENANCE_DECLINED_TOTAL: Metric = Metric {
     name: "sankhya_maintenance_declined_total",
     kind: Kind::Counter,
     unit: Unit::Count,
     labels: &[],
     group: Group::Maintenance,
-    help: "Passes that declined to reclaim because a lease, clone or snapshot still reads \
-           the files. Expected and healthy; it explains reclaimed bytes staying flat.",
+    help: "Table-passes that declined to reclaim because the pin set could not be \
+           established --- a snapshot or clone document that cannot be read, or a pinned \
+           version whose files cannot be resolved. **Not** a lease legitimately holding \
+           files, which resolves and retires nothing. Rising means the warehouse is \
+           deliberately not shrinking, which is the safe direction and not a free one. \
+           Counted per table per cycle, so it is not comparable with the tick count.",
     alert: None,
 };
 
@@ -290,8 +312,9 @@ pub static MAINTENANCE_FAILURES_TOTAL: Metric = Metric {
     unit: Unit::Count,
     labels: &[],
     group: Group::Maintenance,
-    help: "Maintenance passes that failed. Above zero means compaction and reclamation are \
-           not happening for at least one table, and file counts are rising unopposed.",
+    help: "Table-passes that failed. Above zero means compaction and reclamation are not \
+           happening for at least one table, and file counts are rising unopposed. Counted \
+           per table per cycle, so it is not comparable with the tick count.",
     alert: Some(Alert {
         runbook: "maintenance-stalled",
         consequence: "files accumulate unopposed until reads slow and the disk fills; the \

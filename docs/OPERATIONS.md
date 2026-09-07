@@ -363,7 +363,7 @@ A metric that may page carries an `Alert`, and that field is **not** an `Option`
 | `sankhya_audit_unwritten_total` | above zero | **none** — the first failure is already a gap | [`audit-unwritten`](runbooks/audit-unwritten.md) |
 | `sankhya_table_live_files_max` | approaching 1,000 | days, at ordinary write rates | [`compaction-debt`](runbooks/compaction-debt.md) |
 | `sankhya_table_live_files` | as above, per table | as above | [`compaction-debt`](runbooks/compaction-debt.md) |
-| `sankhya_maintenance_failures_total` | above zero | days — file counts climb before a read is slow enough to notice | [`maintenance-stalled`](runbooks/maintenance-stalled.md) |
+| `sankhya_maintenance_failures_total` | `increase(…[1h]) > 0` | days — file counts climb before a read is slow enough to notice | [`maintenance-stalled`](runbooks/maintenance-stalled.md) |
 
 The interval by which a metric precedes user-visible failure is recorded beside it, because that interval is the entire justification for paging. An alert with no lead time fires when the user notices, which makes it a notification.
 
@@ -457,7 +457,7 @@ There is deliberately **no command that compacts by hand.** The server holds the
 
 ### 10.3 What you can see of it
 
-Very little, and that is a gap worth naming. The maintenance handle carries counters — ticks, bytes reclaimed, ticks that declined to reclaim, failures, tables being maintained, merges awaiting retirement — and **the server reads none of them.** They are neither exported as metrics nor logged.
+Four of the six are now exported. The maintenance handle carries counters — ticks, bytes reclaimed, ticks that declined to reclaim, failures, tables being maintained, merges awaiting retirement — and until 2026-09-06 **the server read none of them**: they were neither exported as metrics nor logged, which is why the compaction-debt page could tell you the duty cycle was too low with nothing to check that against. Ticks, bytes reclaimed, declines and failures are published on the maintenance cadence (§8.3). **Tables being maintained and merges awaiting retirement still are not**, and the first of those is the one an operator asks for by name — *"is my new table being maintained?"* — so it remains a gap rather than a completed sentence.
 
 The observable surface is `sankhya_table_live_files_max` and, behind `server.metrics_detail`, the per-table `sankhya_table_live_files`; plus `sankhya-server doctor`, and the structured events the maintenance crate emits when a table is adopted, released, or starts and stops failing. A table whose compaction failed every thirty seconds used to be invisible while the aggregate reclaimed-bytes figure climbed from the other tables; failures are counted and reported on change now — once when they start and once when they stop.
 
@@ -682,7 +682,7 @@ One per alert that can page, and the relationship is enforced rather than aspira
 |---|---|---|
 | [`audit-unwritten`](runbooks/audit-unwritten.md) | `sankhya_audit_unwritten_total` above zero | Records are being made and are not reaching disk. **No lead time — the first failure is already a gap**, and nothing a user sees changes |
 | [`compaction-debt`](runbooks/compaction-debt.md) | `sankhya_table_live_files_max` near 1,000 | One table's queries get slower and nothing else on the box looks different. Lower `maintenance.compact_every` or `interval` and `SIGHUP` |
-| [`maintenance-stalled`](runbooks/maintenance-stalled.md) | `sankhya_maintenance_failures_total` above zero | Maintenance passes are running and failing, so files accumulate unopposed. Separates a dead maintainer, a failing pass, a sweeper honouring a reader, and a duty cycle that is simply too low — four states that all read as "file counts are rising" |
+| [`maintenance-stalled`](runbooks/maintenance-stalled.md) | `increase(sankhya_maintenance_failures_total[1h]) > 0` | Cycles are running and at least one table is failing, so files accumulate unopposed. Separates a dead maintainer, a failing pass, a sweeper that cannot establish the pin set, and a duty cycle that is simply too low — four states that all read as "file counts are rising" |
 | [`restore-drill`](runbooks/restore-drill.md) | `doctor` reports no passing drill, a stale one, or a drill exited `1` | Nothing is broken; what is wrong is epistemic. Distinguishes *never ran* from *ran and failed* from *the backup is not a backup*, and forbids taking a fresh backup to silence the alert |
 | [`snk-s0001`](runbooks/snk-s0001.md) | `SNK-S0001` | Coverage gap: a query is refused because no tier covers part of the range it asked for. Fatal, and intermittent-looking |
 | [`snk-s0002`](runbooks/snk-s0002.md) | `SNK-S0002` | Archive conflict: the registry says a range was purged and the catalogue says those rows are present. Every query on that table is refused until a human acts |

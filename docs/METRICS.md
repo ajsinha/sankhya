@@ -115,7 +115,7 @@ Files a table currently consists of. A scan pays per file — opening it, readin
 
 ## `sankhya_maintenance_ticks_total`
 
-Maintenance passes completed since this server started. A rate of zero while tables are being written means the maintainer is not running, which is a different fault from a duty cycle that is too low.
+Maintenance cycles completed since this server started, one per interval regardless of how many tables it visited. A rate of zero while tables are being written means the maintainer is not running, which is a different fault from a duty cycle that is too low --- and reads the same as maintenance being configured off, which is a supported deployment.
 
 | | |
 |---|---|
@@ -139,7 +139,7 @@ Bytes returned to the filesystem by retiring superseded files. Flat while file c
 
 ## `sankhya_maintenance_declined_total`
 
-Passes that declined to reclaim because a lease, clone or snapshot still reads the files. Expected and healthy; it explains reclaimed bytes staying flat.
+Table-passes that declined to reclaim because the pin set could not be established --- a snapshot or clone document that cannot be read, or a pinned version whose files cannot be resolved. **Not** a lease legitimately holding files, which resolves and retires nothing. Rising means the warehouse is deliberately not shrinking, which is the safe direction and not a free one. Counted per table per cycle, so it is not comparable with the tick count.
 
 | | |
 |---|---|
@@ -151,7 +151,7 @@ Passes that declined to reclaim because a lease, clone or snapshot still reads t
 
 ## `sankhya_maintenance_failures_total`
 
-Maintenance passes that failed. Above zero means compaction and reclamation are not happening for at least one table, and file counts are rising unopposed.
+Table-passes that failed. Above zero means compaction and reclamation are not happening for at least one table, and file counts are rising unopposed. Counted per table per cycle, so it is not comparable with the tick count.
 
 | | |
 |---|---|

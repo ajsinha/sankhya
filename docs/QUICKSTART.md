@@ -565,9 +565,16 @@ element count is refused **when the query is planned**, not partway through a sc
 **Every reducing kernel is bit-deterministic.** A dot product is a floating-point sum, and a sum
 whose order depends on how the query was partitioned returns a different number when the machine
 is busier. These use fixed-point accumulation, where integer addition *is* associative, so
-order-independence holds by construction rather than by sorting — and it is 1.3× to 3.6× faster
-than the sorted sum it replaced ([bench: sankhya-math/deterministic-sum], which runs both arms
-over the same vectors).
+order-independence holds by construction rather than by sorting.
+
+The route costs **3.3×, 3.0× and 3.0×** less than the sorted-expansion fallback at 64, 512 and
+4,096 values ([bench: sankhya-math/deterministic-sum]). Read that as a *cost of route* and not
+as a speedup on one input: the fallback runs only where the fixed-point route **declines**, so
+the two arms sum different numbers by construction and the benchmark asserts that each reaches
+the route it is named after. An earlier version of this sentence said "1.3× to 3.6× faster than
+the sorted sum it replaced", which is a figure [ADR-0020](adr/0020-the-built-in-function-catalogue.md)
+retracts: its "before" is the sorted-only implementation, which no longer exists, so nothing
+can re-run it.
 
 Lane-parallel SIMD accumulation was rejected for this: it is 10–15× faster and computes a
 different, worse number. On `1e16, 1, -1e16, 1` repeated, whose exact total is 18, it returns 5 —

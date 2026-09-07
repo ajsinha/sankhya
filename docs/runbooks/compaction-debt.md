@@ -18,6 +18,7 @@ low, and it looks identical to a maintainer that has stopped:
 ```promql
 rate(sankhya_maintenance_ticks_total[15m])   # zero: not running. Nothing below applies
 increase(sankhya_maintenance_failures_total[1h])  # above zero: `maintenance-stalled`, not this
+increase(sankhya_maintenance_declined_total[1h])  # above zero: also `maintenance-stalled`
 ```
 
 If either says so, go to [`maintenance-stalled`](maintenance-stalled.md). The rest of this page
@@ -47,10 +48,16 @@ maintenance is running**, which is what the counters at the top of this page are
 means **the maintenance duty cycle is too low for this table's write rate.** Compaction is
 running; it is not running often enough to keep up with this particular table.
 
-`sankhya_maintenance_declined_total` rising while reclaimed bytes stay flat is the other benign
-reading: passes are running and choosing not to reclaim, because a lease, a clone or a snapshot
-still reads the files. That is the sweeper honouring a reader, and the fix is to release whatever
-holds them --- not to raise the duty cycle, which will change nothing.
+`sankhya_maintenance_declined_total` rising while reclaimed bytes stay flat is a **different
+fault**, not a benign reading, and this paragraph said the opposite until it was checked
+against the source. It does not count the sweeper honouring a lease --- a lease that resolves
+lands in the pinned set and the sweeper simply retires nothing, silently and correctly. It
+counts the sweeper being unable to establish the pin set at all: a snapshot or clone document
+that cannot be read, or a pinned version whose files will not resolve. The warehouse then
+deliberately stops shrinking, which is the safe direction and not a free one.
+
+The fix is to repair the unreadable document, not to release a reader and not to raise the
+duty cycle. [`maintenance-stalled`](maintenance-stalled.md) is that page.
 
 ## What to do
 

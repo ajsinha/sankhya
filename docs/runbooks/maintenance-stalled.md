@@ -1,6 +1,9 @@
 # Runbook --- maintenance is failing
 
-**Alert:** `sankhya_maintenance_failures_total` is above zero.
+**Alert:** `increase(sankhya_maintenance_failures_total[1h]) > 0`.
+
+Written as an increase rather than on the total, because it is a counter: a rule on
+`> 0` fires permanently after one transient failure and clears only on restart.
 
 **Lead time:** days. File counts climb before any read is slow enough to notice.
 
@@ -18,10 +21,15 @@ all look like "file counts are rising":
 
 | What you see | What it is |
 |---|---|
-| `rate(sankhya_maintenance_ticks_total[15m])` is zero | The maintainer is not running at all --- see below |
-| Ticks rise, `sankhya_maintenance_failures_total` rises | Passes are running and failing. This page |
-| Ticks rise, `sankhya_maintenance_declined_total` rises, bytes reclaimed flat | Healthy. Something is still reading the files: a lease, a clone or a snapshot |
+| `rate(sankhya_maintenance_ticks_total[15m])` is zero | The maintainer is not running, **or maintenance is configured off** --- check the configuration first, because both read the same |
+| Ticks rise, `increase(sankhya_maintenance_failures_total[1h])` above zero | Cycles are running and at least one table is failing. This page |
+| Ticks rise, `increase(sankhya_maintenance_declined_total[1h])` above zero, bytes reclaimed flat | **Not healthy.** The pin set cannot be established: a snapshot or clone document that cannot be read, or a pinned version whose files will not resolve. The warehouse is deliberately not shrinking |
 | Ticks rise, nothing else moves, file counts climb | The duty cycle is too low. [`compaction-debt`](compaction-debt.md) |
+
+**Do not divide one of these by another.** `sankhya_maintenance_ticks_total` counts one per
+cycle; `declined` and `failures` count one per **table** per cycle. On a fifty-table warehouse
+a single bad cycle adds fifty to one and one to the other, so `declined` routinely exceeds
+`ticks` and the ratio is in no unit at all. Read each against its own rate.
 
 ## What is actually wrong
 
@@ -35,22 +43,32 @@ The usual causes, in the order they are worth checking:
   writable. The server log carries the underlying error; this counter only says it happened.
 - **A table will not replay.** A corrupt or truncated commit in one table's log fails that
   table's pass every cadence. `sankhya-server doctor` names it.
-- **The warehouse lock is held by another process.** Only one maintainer may act on a
-  warehouse. A second server started against the same directory is refused the lock, which is
-  the design working --- but if the *wrong* one holds it, the one you are watching does
-  nothing.
 
-If ticks are not rising at all, maintenance is disabled or its thread is gone. Check the
-configuration first: `maintenance:` absent, or present with no `interval`, disables it, and
-that is a supported configuration for a deployment whose warehouse another process maintains.
-The server says which at startup.
+An earlier version of this page listed *"the warehouse lock is held by another process"* third.
+It cannot be the cause: a server that fails to take the lock exits `3` before anything starts,
+so there is no state in which the server you are watching is running, publishing these metrics,
+and losing a lock race. It has been removed rather than left as something to check at 3 a.m.
+
+If ticks are not rising at all, maintenance is disabled or its thread is gone, **and the four
+counters cannot tell you which.** With maintenance off nothing publishes them, and they read a
+flat zero --- which is what a thread that died on its first cycle also reads. `absent()` does
+not help either: the series is present, because an unlabelled metric is emitted at zero from
+startup. Check the configuration and the startup line, which say so in words:
+
+```
+  maintaining 12 table(s) every 30s, compacting every 4 tick(s), sweeping every 16
+```
+
+`maintenance:` absent, or present with `interval: 0`, disables it --- a supported
+configuration for a deployment whose warehouse another process maintains. **On such a
+deployment the alert on this page is disarmed**, and nothing in the metrics says so.
 
 ## What to do
 
 **First, find out which table.** The counter is unlabelled on purpose --- a per-table label
-names the warehouse to an unauthenticated endpoint, the same reason
-`sankhya_table_live_files` is gated. The diagnostic answers it to somebody who has
-authenticated:
+names the warehouse to an unauthenticated endpoint, the same reason `sankhya_table_live_files`
+is gated. The diagnostic answers it. It takes **no principal**: it reads the warehouse off
+disk, and what protects it is shell access to the host rather than a login.
 
 ```bash
 sankhya-server doctor
