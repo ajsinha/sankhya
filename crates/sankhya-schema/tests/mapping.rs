@@ -169,12 +169,25 @@ fn the_physical_schema_carries_provenance() {
         ]
     );
 
-    // Provenance columns are never null: a row without a position could not be
-    // reconciled or replayed.
-    for name in LogicalSchema::system_column_names() {
+    // The two that order a row are never null: a row without a position or an operation
+    // could not be reconciled or replayed.
+    for name in ["_sankhya_commit_lsn", "_sankhya_op"] {
         let field = arrow.field_with_name(name).expect("present");
         assert!(!field.is_nullable(), "{name} must not be nullable");
     }
+
+    // The timestamp is the exception, and this assertion used to cover it too --- under the
+    // same sentence, which is right about position and wrong about time. A commit time is not
+    // an ordering coordinate; it is recorded for a human to read. Declared non-null, the
+    // writer had to supply one it does not have, and what it supplied was the Unix epoch on
+    // every captured row. `ING-09`.
+    assert!(
+        arrow
+            .field_with_name("_sankhya_commit_ts")
+            .expect("present")
+            .is_nullable(),
+        "a commit time this build cannot know must be null rather than 1970"
+    );
 }
 
 #[test]

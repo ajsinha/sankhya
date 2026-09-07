@@ -147,10 +147,19 @@ impl LogicalSchema {
             DataType::UInt64,
             false,
         )));
+        // Nullable, and that is the fix rather than an omission. A `Mutation` carries a
+        // commit **position** and no commit time --- the time is on the transaction's `BEGIN`
+        // in the replication stream, and nothing in this build reads a replication stream
+        // (`ING-00`). Declared non-null, the writer had to put *something* in it, and what
+        // it put was `0`: every captured row timestamped `1970-01-01T00:00:00Z`, which is a
+        // wrong instant wearing the shape of a real one. `ING-09`.
+        //
+        // A null says the thing that is true. It is also what a capture runtime would fill,
+        // so the column does not have to change shape when one exists.
         fields.push(Arc::new(ArrowField::new(
             "_sankhya_commit_ts",
             DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-            false,
+            true,
         )));
         fields.push(Arc::new(ArrowField::new(
             "_sankhya_op",

@@ -20,8 +20,21 @@ use std::fmt;
 /// How a table may be written, determined by what identifies its rows.
 ///
 /// This is not a preference. Without row identity the source itself rejects updates
-/// and deletes, so an append-only strategy is the only possible one — and knowing that
-/// at onboarding is what lets the storage layer skip merge machinery it will never need.
+/// and deletes, so an append-only strategy is the only possible one.
+///
+/// # What `Mergeable` does and does not mean today
+///
+/// It means the *source* will emit updates and deletes for this table. It does **not** mean
+/// they are folded: there is no merge, no upsert and no key-based fold anywhere in this
+/// build, and no reader applies `_sankhya_op`. A table receiving updates is therefore stored
+/// as every historical version of every row plus tombstones, and `SELECT *` returns all of
+/// them.
+///
+/// This doc comment used to end *"knowing that at onboarding is what lets the storage layer
+/// skip merge machinery it will never need"*, which reads as though the other branch has
+/// merge machinery. Neither does. What the value actually drives is the onboarding warning
+/// below and nothing else. `ING-09`; the fold arrives with the change-capture runtime,
+/// `ING-00`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WriteStrategy {
     /// Rows can be identified, so updates and deletes can be applied.

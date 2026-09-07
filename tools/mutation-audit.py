@@ -2467,6 +2467,17 @@ CATALOGUE = [
      "                continue;",
      "sankhya-metrics"),
 
+    ("table: stamp the epoch on a commit time nothing knows",
+     "crates/sankhya-table/src/encode.rs",
+     "        ts.append_null();",
+     "        ts.append_value(0);",
+     "sankhya-table", 1, "encode"),
+
+    ("schema: declare a commit time non-null so the writer must invent one",
+     "crates/sankhya-schema/src/model.rs",
+     '            "_sankhya_commit_ts",\n            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),\n            true,',
+     '            "_sankhya_commit_ts",\n            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),\n            false,',
+     "sankhya-schema", 1, "mapping"),
     ("plan: report a coverage gap as a freshness problem",
      "crates/sankhya-plan/src/splice.rs",
      "            SpliceError::CoverageGap { from, to } => {\n                sankhya_error::Error::CoverageGap(format!(\"no tier covers ({from}, {to}]\"))",

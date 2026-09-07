@@ -102,6 +102,26 @@ fn the_commit_position_travels_with_every_row() {
 }
 
 #[test]
+fn a_commit_time_nothing_knows_is_null_rather_than_the_epoch() {
+    // A `Mutation` carries a commit **position** and no commit time: the time is on the
+    // transaction's `BEGIN` in a replication stream, and nothing in this build reads one
+    // (`ING-00`). The column was declared non-null, so the writer had to supply something,
+    // and it supplied `0` --- every captured row stamped `1970-01-01T00:00:00Z`.
+    //
+    // That is worse than a null in the way that matters here: a reader cannot tell it from a
+    // real instant, and `WHERE _sankhya_commit_ts > <anything>` silently excludes every row
+    // while looking like a filter that found nothing. `ING-09`.
+    let s = schema(vec![("id", LogicalType::Int64, false)]);
+    let batch = encode_batch(&s, &[row(vec![Some("1")], 7)]).expect("encodes");
+    let ts = batch
+        .column(2)
+        .as_any()
+        .downcast_ref::<arrow_array::TimestampMicrosecondArray>()
+        .expect("a timestamp column");
+    assert!(ts.is_null(0), "the epoch is a wrong instant, not a missing one");
+}
+
+#[test]
 fn decimals_are_exact_and_never_pass_through_floating_point() {
     // A value that f64 cannot represent exactly. Going via floating point would
     // introduce error in the one type whose entire purpose is not to have any.

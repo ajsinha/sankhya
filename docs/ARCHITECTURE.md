@@ -361,6 +361,31 @@ nothing maps a table *name* to one automatically, so the caller assembles the tw
 does not exist — **its key does**, because key correctness is a security property and the right time
 to fix it is before anything caches (§6.6).
 
+**And no reader folds a change log.** This is the boundary a reader is most likely to walk into and
+the one nothing in this repository stated until `ING-09` said so. The write path appends every
+mutation with an `_sankhya_op` of `I`, `U` or `D`; there is no merge, no upsert and no key-based
+fold, and **nothing on the read side applies the operation.** A table that receives updates is
+therefore stored as every historical version of every row plus a tombstone per delete, and
+`SELECT *` returns all of them.
+
+`WriteStrategy::Mergeable`, computed at onboarding, does not change this. It records that the
+*source* will emit updates and deletes for the table — which is why onboarding warns when it
+cannot — and no code downstream reads it. Its own doc comment used to imply otherwise, saying the
+value *"lets the storage layer skip merge machinery it will never need"*, which reads as though the
+other branch has some. Neither does.
+
+This costs nothing today, because nothing captures (`ING-00`) so no table receives updates through
+this path. It is stated here rather than left to be discovered because the day a capture runtime
+exists is the day a table silently returns its whole history to a `SELECT *`, and a reader who
+learned that from the data rather than from this document has already believed a wrong number. The
+fold arrives with the runtime, not before it.
+
+One related value is now **null rather than wrong**: `_sankhya_commit_ts`. A commit time lives on
+the transaction's `BEGIN` in a replication stream and a mutation does not carry one, so the column
+was declared non-null and the writer stamped `1970-01-01T00:00:00Z` on every captured row. A reader
+cannot tell that from a real instant, and a `WHERE _sankhya_commit_ts > …` excludes every row while
+looking like a filter that found nothing. The column is nullable and the writer writes null, which
+is what a capture runtime would later fill.
 ---
 
 ## 4. What bounds a query — **[Built, with a named gap]**
