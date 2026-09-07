@@ -1,7 +1,5 @@
 # ============================================================ 3 · POSITIONS
-divider("3", "Four Positions, and What Each One Costs",
-        "Each is a choice with a price, and the price is stated.",
-        [])
+chapter("3", "Four positions, and what each costs")
 
 sl, top = content("Four positions, and their cost",
                   kicker="THE STANCE · WHAT IS CHOSEN")

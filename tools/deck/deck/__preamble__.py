@@ -180,3 +180,80 @@ def part(number, title, subtitle, chapters):
         para(tf, chapter, size=11.5, color=RGBColor(0xE4, 0xDE, 0xD6),
              space_after=8, line=1.15)
     return sl
+
+# ---------------------------------------------------------------- the spine
+#
+# One source for the title slide's part list, for each part divider's chapter
+# list, and for the footer. The previous deck kept two hand-written lists and
+# they disagreed twice --- the title promised a storage chapter in Part III
+# while cubes sat in Part II, and a part divider listed a chapter sixteen that
+# did not exist. A reader who catches one of those stops trusting every table
+# after it, which is a fair response.
+#
+# `part_of(n)` draws the divider by looking the part up here, so a chapter
+# added to the map appears on the divider without anybody editing a second
+# place.
+
+PARTS = [
+    ("I", "The reckoning",
+     "what counting commits a system to, and the four positions that follow"),
+    ("II", "One substrate",
+     "the layer all three data models stand on, and one statement crossing it"),
+    ("III", "The cube",
+     "a declared model, and one dataset sliced, diced and rolled up"),
+    ("IV", "Versions and copies",
+     "time travel, snapshots, and a clone that costs nothing"),
+    ("V", "The other two engines",
+     "the graph tier, the transactional tier, one catalogue on every path"),
+    ("VI", "Evidence",
+     "four kinds, then the hundred and twenty-nine things they did not catch"),
+]
+
+CHAPTERS_OF = {
+    "I": ["1 · The name, and what it is for",
+          "2 · The estate, and the arithmetic of copies",
+          "3 · Four positions, and what each costs"],
+    "II": ["4 · The shape of the whole thing",
+           "5 · What a statement does, end to end",
+           "6 · Storage, and why the log is the table",
+           "7 · Time as an axis, not a column",
+           "8 · What a statement may see",
+           "9 · Bounds, and what an operator can find out"],
+    "III": ["10 · Why GROUP BY CUBE is not a cube",
+            "11 · The model",
+            "12 · A worked example",
+            "13 · Completeness, and cubes under policy",
+            "14 · Cuboids",
+            "15 · Cubes you define yourself"],
+    "IV": ["16 · Time travel and named snapshots",
+           "17 · Zero-copy clone, and the premise it breaks",
+           "18 · Lineage, dependents and diffs"],
+    "V": ["20 · The graph engine",
+          "21 · The transactional tier and the capture bridge",
+          "22 · One catalogue, on every path"],
+    "VI": ["23 · Four kinds of evidence",
+           "24 · Would the tests notice?",
+           "25 · What twelve reviewers found",
+           "26 · What none of it catches"],
+}
+
+
+def part_of(numeral):
+    """The divider for a part, with its chapters read from the one map."""
+    for num, title, subtitle in PARTS:
+        if num == numeral:
+            return part(num, title, subtitle, CHAPTERS_OF[num])
+    raise KeyError(numeral)
+
+
+def chapter(number, title):
+    """Set the running chapter without spending a slide on saying so.
+
+    The previous deck opened every chapter with a `divider()` whose points
+    list was empty --- fifteen full pages carrying a number, a title and one
+    line of subtitle, for thirty-five slides of content. The part divider
+    already lists the chapters, and the footer already says where the reader
+    is; a page that repeats both is a page.
+    """
+    _state["chapter"] = f"{number} · {title}"
+

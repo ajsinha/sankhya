@@ -1,7 +1,5 @@
 # ============================================================ 8 · WHAT BOUNDS IT
-divider("8", "What Bounds a Statement",
-        "Four limits, one of which was a lie until recently.",
-        [])
+chapter("9", "Bounds, and what an operator can find out")
 
 sl, top = content("Four bounds, and which door each applies to",
                   kicker="THE SYSTEM · LIMITS")

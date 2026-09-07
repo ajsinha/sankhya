@@ -1,7 +1,5 @@
 # ============================================================ 5 · THE DATE AXIS
-divider("5", "The Date Axis",
-        "One column, on every table, meaning one thing.",
-        [])
+chapter("7", "Time as an axis, not a column")
 
 sl, top = content("Two dates, and the question that separates them",
                   kicker="FOUNDATIONS · WHAT A DATE MEANS")

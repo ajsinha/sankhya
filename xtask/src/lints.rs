@@ -87,10 +87,30 @@ fn shipping_build_is_silent(root: &Path) -> bool {
         eprintln!("   FAILED: could not build the workspace to read its warnings");
         return false;
     };
+    // The exit status first, and this was missing. A workspace that does not compile emits
+    // `error:` lines and **zero** `warning:` lines, so counting warnings alone returned
+    // `true` and printed "the shipping build says nothing at all" for a build that said
+    // nothing because it never got that far. A gate that passes hardest when the code is
+    // most broken is worse than no gate.
+    if !output.status.success() {
+        eprintln!("   FAILED: `cargo build --workspace` did not build, so it has no warnings to be silent about:");
+        let text = String::from_utf8_lossy(&output.stderr);
+        for line in text.lines().filter(|line| line.starts_with("error")).take(10) {
+            eprintln!("     {line}");
+        }
+        return false;
+    }
     let text = String::from_utf8_lossy(&output.stderr);
+    // `!line.contains("generated")` drops cargo's per-crate summary --- "`x` (lib) generated
+    // 3 warnings" --- which counts what is already listed. Anchored on the summary's exact
+    // shape rather than on the bare word, because a real warning whose text happens to
+    // contain "generated" ("generated code is never read") would otherwise be dropped with
+    // it, and the filter would hide precisely the class of warning it exists to surface.
     let warnings: Vec<&str> = text
         .lines()
-        .filter(|line| line.starts_with("warning:") && !line.contains("generated"))
+        .filter(|line| line.starts_with("warning:"))
+        .filter(|line| !(line.contains(") generated ") && line.ends_with("warnings")
+            || line.contains(") generated 1 warning")))
         .collect();
     if warnings.is_empty() {
         println!("   and the shipping build says nothing at all");

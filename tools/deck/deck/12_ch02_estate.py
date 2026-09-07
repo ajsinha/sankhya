@@ -1,7 +1,5 @@
 # ============================================================ 2 · THE ESTATE
-divider("2", "The Estate, and What It Costs to Keep",
-        "Three engines, three copies, and a reconciliation function with no analytical output.",
-        [])
+chapter("2", "The estate, and the arithmetic of copies")
 
 sl, top = content("What an estate actually holds",
                   kicker="THE PROBLEM · WHAT IS THERE")

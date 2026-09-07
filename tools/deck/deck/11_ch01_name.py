@@ -1,7 +1,5 @@
 # ============================================================ 1 · THE NAME
-divider("1", "The Name, and What It Is For",
-        "सांख्य --- to count is to make completely known.",
-        [])
+chapter("1", "The name, and what it is for")
 
 sl, top = content("सांख्य — enumeration, not arithmetic",
                   kicker="THE NAME · WHAT IT MEANS")

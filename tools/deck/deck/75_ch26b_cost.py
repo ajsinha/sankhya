@@ -1,7 +1,5 @@
 # ============================================================ 15 · THE COST
-divider("15", "What It Cost, and What Is Still Open",
-        "Six defects found while fixing five, and the list nobody has closed.",
-        [])
+chapter("26", "What none of it catches")
 
 sl, top = content("Fixing it found more of it",
                   kicker="THE AUDIT · WHAT THE WORK TURNED UP")

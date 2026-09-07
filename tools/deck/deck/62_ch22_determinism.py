@@ -1,7 +1,5 @@
 # ============================================================ 4 · DETERMINISM
-divider("4", "A Total That Does Not Move",
-        "Order-independence by construction, and what it costs.",
-        [])
+chapter("22", "One catalogue, on every path")
 
 sl, top = content("The problem, in four numbers",
                   kicker="FOUNDATIONS · WHY IT MATTERS")
