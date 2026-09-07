@@ -37,7 +37,8 @@
 //! was not: **a label's values are as public as the port**, and nothing structural checks them.
 
 use crate::wiring::Server;
-use sankhya_metrics::catalogue::{ALL, MEMORY_IN_USE_BYTES, MEMORY_PEAK_BYTES};
+use sankhya_metrics::catalogue::{self, ALL, MEMORY_IN_USE_BYTES, MEMORY_PEAK_BYTES};
+use sankhya_metrics::metric::Metric;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -136,7 +137,24 @@ async fn respond(mut stream: TcpStream, server: &Server) -> std::io::Result<()> 
     if let Some(bytes) = sankhya_alloc::peak() {
         metrics.set(&MEMORY_PEAK_BYTES, &[], bytes as f64);
     }
-    let body = server.metrics().render(ALL);
+    // Everything, unless maintenance is off --- in which case the five metrics only the
+    // maintenance thread produces are omitted rather than served as a flat zero. A zero there
+    // reads exactly like a thread that died on its first cycle, and `absent()` cannot
+    // distinguish them while the series is present. Omitted, `absent()` says the true thing:
+    // nothing is maintaining this warehouse.
+    let exported: Vec<&'static Metric> = if server.maintains() {
+        ALL.to_vec()
+    } else {
+        ALL.iter()
+            .filter(|metric| {
+                !catalogue::PUBLISHED_BY_MAINTENANCE
+                    .iter()
+                    .any(|off| off.name == metric.name)
+            })
+            .copied()
+            .collect()
+    };
+    let body = server.metrics().render(&exported);
     stream
         .write_all(&response(200, "text/plain; version=0.0.4", &body))
         .await

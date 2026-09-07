@@ -49,11 +49,20 @@ It cannot be the cause: a server that fails to take the lock exits `3` before an
 so there is no state in which the server you are watching is running, publishing these metrics,
 and losing a lock race. It has been removed rather than left as something to check at 3 a.m.
 
-If ticks are not rising at all, maintenance is disabled or its thread is gone, **and the four
-counters cannot tell you which.** With maintenance off nothing publishes them, and they read a
-flat zero --- which is what a thread that died on its first cycle also reads. `absent()` does
-not help either: the series is present, because an unlabelled metric is emitted at zero from
-startup. Check the configuration and the startup line, which say so in words:
+If ticks are not rising at all, the maintenance thread is gone --- **and you can tell that from
+the metrics alone**, which was not true when this page was written. A server configured with
+`maintenance.interval: 0` exports none of these five metrics at all, rather than exporting them
+at a flat zero that reads exactly like a thread that died on its first cycle. So:
+
+```promql
+absent(sankhya_maintenance_ticks_total)          # maintenance is configured off
+rate(sankhya_maintenance_ticks_total[15m]) == 0  # it is configured on and not running
+```
+
+The second is this page. The first is a deployment whose warehouse another process maintains,
+which is supported --- and on one of those **the alert on this page is disarmed**, which is why
+it is worth an `absent()` rule of its own rather than being left to be noticed. The startup
+line says which in words:
 
 ```
   maintaining 12 table(s) every 30s, compacting every 4 tick(s), sweeping every 16

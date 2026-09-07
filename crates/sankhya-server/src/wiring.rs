@@ -778,6 +778,17 @@ impl Server {
         }
     }
 
+    /// Whether this process maintains its own warehouse.
+    ///
+    /// Read by the scrape endpoint, which omits the metrics only the maintenance thread can
+    /// produce when it does not run --- a flat zero there is indistinguishable from a thread
+    /// that died, and `maintenance.interval: 0` is a supported configuration rather than a
+    /// mistake.
+    #[must_use]
+    pub fn maintains(&self) -> bool {
+        self.settings.maintenance.is_some()
+    }
+
     /// What this process exports, for the scrape endpoint.
     #[must_use]
     pub fn metrics(&self) -> Arc<Registry> {

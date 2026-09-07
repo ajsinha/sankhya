@@ -86,13 +86,13 @@ Two gates are **not** in `check-all`, deliberately, and are worth knowing about:
 
 ```bash
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 921 deliberate defects, applied one at a time
+python3 tools/mutation-audit.py  # 920 deliberate defects, applied one at a time
 ```
 
 `check-performance` needs a TPC-H dataset and takes long enough that putting it in the default
 gate would make people stop running the default gate — which also means **the performance
 budgets do not run in CI**, since CI runs `check-all`. The mutation audit is the answer to
-*"the tests pass, but do they test anything?"*: it applies 921 specific defects one at a time
+*"the tests pass, but do they test anything?"*: it applies 920 specific defects one at a time
 and requires the suite to fail on each. It edits your source files as it goes, restoring each
 one after, so run it on a clean tree.
 

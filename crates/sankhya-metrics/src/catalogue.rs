@@ -348,6 +348,35 @@ pub static MAINTENANCE_FAILURES_TOTAL: Metric = Metric {
     }),
 };
 
+/// The metrics only the maintenance thread can produce.
+///
+/// # Why a scrape leaves these out when maintenance is off
+///
+/// Because an unlabelled metric is rendered at zero from startup --- which is the whole point
+/// of that rule, and which turns into the opposite of the point when the subsystem behind it
+/// is not running. `maintenance.interval: 0` is a supported configuration, for a deployment
+/// whose warehouse another process maintains. On one of those, a flat
+/// `sankhya_maintenance_ticks_total 0` reads exactly like a maintenance thread that died on
+/// its first cycle, and `absent()` cannot help because the series is present.
+///
+/// This module's own header refuses that shape for [`NOT_YET_EMITTED`]: *"declaring them
+/// anyway would produce three metrics permanently reading zero, which is indistinguishable
+/// from three healthy subsystems."* The same argument applies to a subsystem an operator
+/// turned off, so the endpoint omits them and `absent()` means what it should: nothing is
+/// maintaining this warehouse.
+///
+/// `sankhya_table_live_files_max` is deliberately **not** here. It is in the same group and
+/// is computed from the servable set at the moment of the scrape, so it is meaningful with or
+/// without a maintenance thread --- and filtering by group rather than by producer would have
+/// removed the metric that pages.
+pub static PUBLISHED_BY_MAINTENANCE: &[&Metric] = &[
+    &MAINTENANCE_TICKS_TOTAL,
+    &MAINTENANCE_BYTES_RECLAIMED_TOTAL,
+    &MAINTENANCE_DECLINED_TOTAL,
+    &MAINTENANCE_TABLES,
+    &MAINTENANCE_FAILURES_TOTAL,
+];
+
 /// The whole catalogue, in the order it is documented.
 pub static ALL: &[&Metric] = &[
     &QUERIES_TOTAL,

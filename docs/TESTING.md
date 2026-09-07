@@ -227,8 +227,8 @@ This is the section to read if you are deciding how much to trust the rest.
 
 ```bash
 cargo run -p xtask -- check-all       # every gate above
-cargo test --workspace                # 2,827 tests
-python3 tools/mutation-audit.py       # 921 defects, one at a time --- hours
+cargo test --workspace                # 2,830 tests
+python3 tools/mutation-audit.py       # 920 defects, one at a time --- hours
 python3 tools/mutation-audit.py --check   # every entry still matches its source, in seconds
 cargo bench -p sankhya-math           # and -p sankhya-functions
 cargo run -p xtask -- check-performance   # the objectives; needs a quiet machine

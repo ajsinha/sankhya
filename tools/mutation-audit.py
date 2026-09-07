@@ -1634,6 +1634,11 @@ CATALOGUE = [
      "            Unservable::NotReconciled { .. } => sankhya_error::Error::CoverageGap(detail),",
      "sankhya-tiering", 1, "unification"),
 
+    ("server: export a flat zero from a server that maintains nothing",
+     "crates/sankhya-server/src/scrape.rs",
+     "    let exported: Vec<&'static Metric> = if server.maintains() {",
+     "    let exported: Vec<&'static Metric> = if true {",
+     "sankhya-server", 1, "published"),
     ("server: stop publishing what maintenance has done",
      "crates/sankhya-server/src/main.rs",
      "    if let Some(handle) = maintenance.clone() {\n        let metrics = server.metrics();",

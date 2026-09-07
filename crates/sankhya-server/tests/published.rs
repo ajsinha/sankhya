@@ -12,7 +12,15 @@
 //! One server, one temporary warehouse, killed at the end. Nothing here writes to a warehouse
 //! another process is writing to.
 
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+// `indexing_slicing` because `common` builds its own fixtures and indexes them, and a module
+// included with `mod` inherits the including file's crate attributes. Every other test that
+// includes it allows the same lint, for the same reason: a test chooses all of its data.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 mod common;
 
@@ -49,6 +57,22 @@ impl Drop for Killed {
 /// The port is read from the banner rather than fixed, because a fixed port makes two tests
 /// running at once fail on `AddrInUse` --- for a reason that has nothing to do with either.
 fn started(warehouse: &std::path::Path, data: &std::path::Path) -> (Killed, String) {
+    started_with(warehouse, data, true)
+}
+
+/// The same, with maintenance configured off.
+fn started_without_maintenance(
+    warehouse: &std::path::Path,
+    data: &std::path::Path,
+) -> (Killed, String) {
+    started_with(warehouse, data, false)
+}
+
+fn started_with(
+    warehouse: &std::path::Path,
+    data: &std::path::Path,
+    maintains: bool,
+) -> (Killed, String) {
     let config = warehouse.parent().expect("a parent").join("application.yaml");
     let mut yaml = String::new();
     yaml.push_str(&format!("warehouse:\n  path: {}\n", warehouse.display()));
@@ -63,7 +87,13 @@ fn started(warehouse: &std::path::Path, data: &std::path::Path) -> (Killed, Stri
     // The shortest cadence the configuration accepts. `200ms` is refused, and rightly: a
     // duration is written in the units an operator writes, and a setting that silently became
     // something else would be a deployment behaving as though it were configured.
-    yaml.push_str("maintenance:\n  interval: 1s\n");
+    yaml.push_str(if maintains {
+        "maintenance:\n  interval: 1s\n"
+    } else {
+        // `0` disables it, said in the configuration rather than by deleting the setting, so
+        // a deployment that turns it off leaves a record of having decided to.
+        "maintenance:\n  interval: 0\n"
+    });
     std::fs::write(&config, yaml).expect("writing the configuration");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_sankhya-server"))
@@ -173,6 +203,40 @@ fn the_running_server_publishes_what_maintenance_has_done() {
         value(&later, "sankhya_maintenance_failures_total"),
         Some(0.0),
         "a healthy warehouse must not fail a pass:\n{later}"
+    );
+}
+
+#[test]
+fn a_server_that_maintains_nothing_exports_no_maintenance_metrics() {
+    // `maintenance.interval: 0` is a supported configuration --- a deployment whose warehouse
+    // another process maintains --- and on one of those a flat `sankhya_maintenance_ticks_total 0`
+    // reads exactly like a thread that died on its first cycle. `absent()` cannot tell them
+    // apart while the series is there, so it is not there.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let warehouse = dir.path().join("warehouse");
+    std::fs::create_dir_all(&warehouse).expect("a warehouse");
+    let data = dir.path().join("data");
+    let (_child, address) = started_without_maintenance(&warehouse, &data);
+
+    let body = scrape(&address);
+    for metric in [
+        "sankhya_maintenance_ticks_total",
+        "sankhya_maintenance_bytes_reclaimed_total",
+        "sankhya_maintenance_declined_total",
+        "sankhya_maintenance_failures_total",
+        "sankhya_maintenance_tables",
+    ] {
+        assert!(
+            !body.contains(metric),
+            "{metric} was exported at zero by a server that maintains nothing, which is what a \
+             dead maintainer looks like:\n{body}"
+        );
+    }
+    // And the one in the same group that is still meaningful is still there: it is computed
+    // from the servable set at the moment of the scrape, not by the maintenance thread.
+    assert!(
+        body.contains("sankhya_table_live_files_max"),
+        "filtering by group rather than by producer would have removed the metric that pages"
     );
 }
 
