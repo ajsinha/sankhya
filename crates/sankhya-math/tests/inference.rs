@@ -28,6 +28,16 @@ fn near(actual: f64, expected: f64, tolerance: f64) {
 
 // --- t-tests --------------------------------------------------------------
 
+
+/// The `R²` of a fixture whose response varies, which every fixture here does.
+///
+/// `LinearFit::r_squared` and `Fit::r_squared` are `Option` because `R²` is `0/0` for a
+/// constant response, and the crate stopped answering that with a number. A test that supplies
+/// varying data is entitled to say so out loud.
+fn defined(value: Option<f64>) -> f64 {
+    value.expect("this fixture's response varies, so R² is defined")
+}
+
 #[test]
 fn a_one_sample_t_test_matches_a_worked_example() {
     // Ten observations with mean 5.0 and sample deviation about 1.15, tested against 4.0.
@@ -169,7 +179,7 @@ fn a_regression_on_an_exact_line_recovers_it_with_no_residual() {
 
     near(fit.coefficients[0], 3.0, 1e-9);
     near(fit.coefficients[1], 2.0, 1e-9);
-    near(fit.r_squared, 1.0, 1e-12);
+    near(defined(fit.r_squared), 1.0, 1e-12);
     for residual in &fit.residuals {
         near(*residual, 0.0, 1e-9);
     }
@@ -196,12 +206,27 @@ fn a_regression_reports_the_uncertainty_a_slope_is_useless_without() {
         (fit.coefficients[1] - 1.5).abs() > 1e-6,
         "the estimate is not the true slope, and pretending otherwise hides the noise"
     );
-    assert!(fit.standard_errors[1] > 0.0, "a slope with no standard error: {fit:?}");
-    // `t = 8.7` on eighteen degrees of freedom, so `p ≈ 6e-8`. Written as the numbers they
-    // are rather than as a comfortable threshold: an assertion of `t > 20` passed nothing and
-    // only said the author had not looked.
-    assert!(fit.t_statistics[1] > 8.0, "{:?}", fit.t_statistics);
-    assert!(fit.p_values[1] < 1e-6, "{:?}", fit.p_values);
+    // The standard errors, pinned to the value rather than to a sign.
+    //
+    // These read `> 0.0` and `t > 8.0`, and the comment beside them reasoned about `t = 8.7`
+    // on eighteen degrees of freedom. `8.7` was the **defective** figure: the diagonal of
+    // `(X'X)^-1` needs the squared norm of a *row* of `R^-1` and the code took a *column*, so
+    // the slope's standard error came out 10.5x too large and the intercept's 2.08x too small.
+    // The trace of the two is identical, which is why nothing summing them noticed, and a
+    // threshold of `> 8.0` passes on both 8.7 and the true 91.7 --- so the assertion written to
+    // pin this quantity was the thing keeping the defect in place.
+    //
+    // Pinned to four significant figures now. Derived independently: `SE(b) = s / sqrt(Sxx)`
+    // with `s = 0.42005` (residual standard error, 18 d.f.) and `Sxx = 665`.
+    near(fit.standard_errors[0], 0.195_1, 1e-3);
+    near(fit.standard_errors[1], 0.016_29, 1e-4);
+    near(fit.t_statistics[1], 91.72, 0.05);
+    assert!(
+        fit.t_statistics[1] > 50.0,
+        "a slope this clean cannot have a single-digit t-statistic: {:?}",
+        fit.t_statistics
+    );
+    assert!(fit.p_values[1] < 1e-20, "{:?}", fit.p_values);
     near(fit.freedom, 18.0, 0.0);
     assert!(fit.residual_error > 0.0, "{}", fit.residual_error);
 }
@@ -215,7 +240,7 @@ fn a_slope_that_is_not_there_is_not_reported_as_significant() {
     let fit = simple(&x, &y).expect("a fit");
 
     assert!(fit.p_values[1] > 0.2, "an absent relationship was called significant: {fit:?}");
-    assert!(fit.r_squared < 0.3, "{}", fit.r_squared);
+    assert!(defined(fit.r_squared) < 0.3, "{}", defined(fit.r_squared));
 }
 
 #[test]
@@ -248,17 +273,17 @@ fn the_adjusted_r_squared_falls_when_a_useless_predictor_is_added() {
     let two = least_squares(&design, rows, 3, &y).expect("a fit");
 
     assert!(
-        two.r_squared >= one.r_squared - 1e-12,
+        defined(two.r_squared) >= defined(one.r_squared) - 1e-12,
         "plain R-squared fell, which it cannot"
     );
     assert!(
-        two.adjusted_r_squared < one.adjusted_r_squared,
+        defined(two.adjusted_r_squared) < defined(one.adjusted_r_squared),
         "the adjusted form rewarded a useless predictor: {} then {}",
-        one.adjusted_r_squared,
-        two.adjusted_r_squared
+        defined(one.adjusted_r_squared),
+        defined(two.adjusted_r_squared)
     );
     // And there is genuinely something to penalise, so the comparison means something.
-    assert!(one.r_squared < 0.999, "the fixture has no residual variance: {}", one.r_squared);
+    assert!(defined(one.r_squared) < 0.999, "the fixture has no residual variance: {}", defined(one.r_squared));
 }
 
 #[test]
@@ -338,9 +363,9 @@ fn a_regression_on_a_badly_conditioned_design_still_recovers_its_coefficients() 
     near(fit.coefficients[2], 0.5, 1e-9);
     near(fit.coefficients[1], -2.0, 1e-4);
     assert!(
-        fit.r_squared > 1.0 - 1e-12,
+        defined(fit.r_squared) > 1.0 - 1e-12,
         "an exact quadratic was not fitted exactly: R² = {}",
-        fit.r_squared
+        defined(fit.r_squared)
     );
     for residual in &fit.residuals {
         assert!(residual.abs() < 1e-4, "a residual of {residual} on exact data");
@@ -401,4 +426,30 @@ fn the_f_test_is_symmetric_in_the_way_the_distribution_is() {
         forward.p_value,
         backward.p_value
     );
+}
+
+#[test]
+fn a_regression_over_a_column_holding_a_nan_is_refused_rather_than_declared_significant() {
+    // The most confident possible claim, made from the least information.
+    //
+    // `!t.is_finite()` is true of an infinity and of a NaN, and only one of them has a p-value
+    // of zero. A coefficient over a zero standard error really is infinitely significant; a
+    // coefficient that is NaN because one observation was carries no information at all, and
+    // the p-value arm reported `0.0` for both.
+    //
+    // Nulls are filtered upstream. A NaN is not a null, and a column that has been through a
+    // divide-by-zero in an upstream job carries them.
+    let x: Vec<f64> = (1..=10).map(f64::from).collect();
+    let mut y: Vec<f64> = x.iter().map(|v| 2.0 * v + 1.0).collect();
+    y[4] = f64::NAN;
+
+    assert!(
+        simple(&x, &y).is_err(),
+        "a regression over a NaN reported a fit rather than refusing"
+    );
+
+    // The same data without the NaN fits, so the refusal is about the value and not the shape.
+    let clean: Vec<f64> = x.iter().map(|v| 2.0 * v + 1.0).collect();
+    let fit = simple(&x, &clean).expect("an exact line");
+    near(fit.coefficients[1], 2.0, 1e-9);
 }

@@ -210,7 +210,7 @@ fn a_least_squares_fit_recovers_a_line_it_was_given() {
 
     close(fit.slope, 3.0);
     close(fit.intercept, 2.0);
-    close(fit.r_squared, 1.0);
+    close(fit.r_squared.expect("y varies"), 1.0);
 }
 
 #[test]
@@ -218,11 +218,8 @@ fn a_noisy_fit_has_an_r_squared_below_one() {
     let x = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
     let y = [2.1, 3.9, 6.2, 7.8, 10.1, 11.9];
     let fit = linear_fit(&x, &y).expect("varying");
-    assert!(
-        fit.r_squared > 0.99 && fit.r_squared < 1.0,
-        "{}",
-        fit.r_squared
-    );
+    let r_squared = fit.r_squared.expect("y varies");
+    assert!(r_squared > 0.99 && r_squared < 1.0, "{r_squared}");
     assert!((fit.slope - 2.0).abs() < 0.1);
 }
 
@@ -255,14 +252,22 @@ fn an_empty_series_has_no_range_rather_than_a_zero_one() {
 }
 
 #[test]
-fn a_constant_series_is_fitted_perfectly_by_a_horizontal_line() {
-    // 0/0 in the correlation, but not ambiguous in the fit: slope zero, intercept the
-    // constant, every residual exactly zero. Reporting r² = 0 here says "not described by a
-    // line" about the straightest series there is, and a caller using r² to ask how linear
-    // something is then treats a flat measure as noise.
+fn a_constant_series_has_a_line_but_no_r_squared() {
+    // The fit is not ambiguous --- slope zero, intercept the constant, every residual exactly
+    // zero --- but `R²` is, because it is `0/0`.
+    //
+    // This test used to assert `r² = 1.0`, on the reasoning that a horizontal line through a
+    // horizontal series is a perfect fit. `regression::least_squares` returned `0.0` for the
+    // same input on the reasoning that no variance means none explained. Both arguments are
+    // sound, both shipped, and `vec_regression_r2` and `regress_r2` therefore answered `1.0`
+    // and `0.0` for one input from one server --- the two furthest apart values available,
+    // with nothing on the result saying which you had.
+    //
+    // Undefined is now reported as undefined, which the SQL surfaces render as NULL. The slope
+    // and intercept are unchanged, because those were never in doubt.
     let fit = linear_fit(&[1.0, 2.0, 3.0, 4.0], &[7.0, 7.0, 7.0, 7.0])
         .expect("a varying predictor admits a fit");
     close(fit.slope, 0.0);
     close(fit.intercept, 7.0);
-    close(fit.r_squared, 1.0);
+    assert_eq!(fit.r_squared, None, "R² is 0/0 for a constant response");
 }

@@ -57,13 +57,16 @@ pub struct Fit {
     /// The residuals, in the order the observations arrived.
     pub residuals: Vec<f64>,
     /// The fraction of variance explained.
-    pub r_squared: f64,
+    /// `None` when the response does not vary --- see [`crate::stats::LinearFit::r_squared`].
+    pub r_squared: Option<f64>,
     /// `R²` penalised for the number of predictors.
     ///
     /// Reported beside `R²` because `R²` never falls when a predictor is added --- including a
     /// predictor of pure noise --- so comparing two models by `R²` alone always prefers the
     /// larger one.
-    pub adjusted_r_squared: f64,
+    /// `None` for the same reason [`Fit::r_squared`] is, and also when there are no residual
+    /// degrees of freedom left to adjust by.
+    pub adjusted_r_squared: Option<f64>,
     /// The residual standard error.
     pub residual_error: f64,
     /// The *F* statistic for the model against an intercept alone.
@@ -99,6 +102,26 @@ pub fn least_squares(
     }
     if design.len() != rows * predictors {
         return Err(InferenceError::Unpaired { left: design.len(), right: rows * predictors });
+    }
+    // Refused at the door, rather than three quantities later.
+    //
+    // A NaN propagates through the factorisation into `beta`, `variance` and `error`, and the
+    // significance test then meets it as a NaN statistic. `!t.is_finite()` is true of an
+    // infinity too, and for an infinity `p = 0` is right --- a coefficient over a zero standard
+    // error is infinitely significant --- so a single missing observation reported **every**
+    // coefficient at `p = 0`.
+    //
+    // Guarding at the p-value was the first attempt and it does not work: a NaN standard error
+    // fails `error > 0.0`, so `t` is set to `INFINITY` and never looks like a NaN at all. The
+    // only place the two are still distinguishable is here, before any arithmetic has run.
+    //
+    // A null is filtered upstream. A NaN is not a null, and a column that has been through a
+    // divide-by-zero in an upstream job carries them.
+    if design.iter().any(|v| !v.is_finite()) {
+        return Err(InferenceError::NotFinite { which: "design" });
+    }
+    if y.iter().any(|v| !v.is_finite()) {
+        return Err(InferenceError::NotFinite { which: "response" });
     }
 
     // `A = QR`, so `Rβ = Qᵀy`. The condition number stays as the design matrix's rather than
@@ -151,13 +174,30 @@ pub fn least_squares(
     // is needed. Formed from `R` rather than from `X` for the same conditioning reason.
     let mut inverse_diagonal = vec![0.0f64; predictors];
     for j in 0..predictors {
-        // Solve `R z = e_j` for the `j`-th column of `R⁻¹`, then take its squared norm.
+        // Solve `Rᵀ z = e_j`, which gives the `j`-th **row** of `R⁻¹`.
+        //
+        // `(XᵀX)⁻¹ = R⁻¹R⁻ᵀ`, so its `j`-th diagonal entry is `Σ_k (R⁻¹)_{jk}²` --- the
+        // squared norm of a row. This solved `R z = e_j` instead, which is back-substitution
+        // and yields the `j`-th **column**, and then took that norm.
+        //
+        // The trace of the two is the same, so anything summing them agreed and the defect
+        // sat in every reported standard error, t-statistic and p-value. On this crate's own
+        // fixture (`x = 1..20`, `y = 5 + 1.5x`) the slope's standard error came out 10.5×
+        // too large and its t-statistic 8.7 against a true 91.7 --- and
+        // `tests/inference.rs` asserted `t > 8.0`, reasoning in its comment about the
+        // defective figure, so the bug was pinned by its own regression test.
+        //
+        // The direction of harm is the worst available: the intercept's error is understated
+        // and an alpha looks more significant than it is, while the slope's is inflated and a
+        // real factor loading is declared insignificant.
+        //
+        // `Rᵀ` is lower triangular, so this is forward substitution. Rows below `j` are zero
+        // because `e_j` is, so the walk starts at `j`.
         let mut z = vec![0.0f64; predictors];
-        put(&mut z, j, 1.0);
-        for k in (0..=j).rev() {
-            let mut sum = at(&z, k);
-            for m in (k + 1)..=j {
-                sum -= at(&r, k * predictors + m) * at(&z, m);
+        for k in j..predictors {
+            let mut sum = if k == j { 1.0 } else { 0.0 };
+            for m in j..k {
+                sum -= at(&r, m * predictors + k) * at(&z, m);
             }
             let pivot = at(&r, k * predictors + k);
             if pivot.abs() < 1e-300 {
@@ -175,19 +215,24 @@ pub fn least_squares(
     for j in 0..predictors {
         let error = (variance * at(&inverse_diagonal, j)).sqrt();
         standard_errors.push(error);
+        // `INFINITY` here means a zero standard error, which really is infinitely significant.
+        // It can no longer mean "something was NaN": non-finite input is refused at the door
+        // above, precisely because the two are indistinguishable by the time they arrive here.
         let t = if error > 0.0 { at(&beta, j) / error } else { f64::INFINITY };
         t_statistics.push(t);
         p_values.push(if t.is_finite() { t_two_sided(t, freedom)? } else { 0.0 });
     }
 
-    let r_squared = if tss > 0.0 { 1.0 - rss / tss } else { 0.0 };
+    // Undefined rather than zero when the response does not vary. This returned `0.0` while
+    // `stats::linear_fit` returned `1.0` for the same input, on the same SQL surface.
+    let r_squared = if tss > 0.0 { Some(1.0 - rss / tss) } else { None };
     // Penalised for the predictor count. `R²` never falls when a predictor is added, so
     // comparing models by it always prefers the larger one --- including when the addition is
     // noise.
     let adjusted_r_squared = if freedom > 0.0 && tss > 0.0 {
-        1.0 - (rss / freedom) / (tss / (n - 1.0))
+        Some(1.0 - (rss / freedom) / (tss / (n - 1.0)))
     } else {
-        0.0
+        None
     };
 
     // The model against an intercept alone.

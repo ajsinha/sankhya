@@ -59,12 +59,27 @@ pub fn check(root: &Path) -> bool {
         };
         checked += 1;
 
-        // The file's own bytes.
-        if !text.contains("sync_all()") && !text.contains("sync_data()") {
+        // The file's own bytes --- counted, not merely present somewhere in the file.
+        //
+        // `text.contains("sync_all()")` was satisfied by **either** of the two calls every one
+        // of these files makes, and they are in different functions. Deleting the one that
+        // makes a commit's bytes durable left the directory sync behind, which still contains
+        // the string, and this check went on printing that all three writers sync both their
+        // bytes and their directory. It passed with the durability removed --- and since
+        // `write_durably` and `sync_parent` are named in no test in the workspace, it was the
+        // only guard there was.
+        //
+        // A directory sync is always reached through opening the directory, so counting those
+        // separates the two: at least one sync must be left over that is not a directory's.
+        let syncs = text.matches("sync_all()").count() + text.matches("sync_data()").count();
+        let on_a_directory = text.matches("File::open(parent)").count()
+            + text.matches("File::open(directory)").count();
+        if syncs <= on_a_directory {
             eprintln!(
-                "  NOT DURABLE  {relative} ({what}) never waits for the medium. A rename over \
-                 unsynced bytes leaves a file that exists, is the right length, and holds what \
-                 those blocks held before"
+                "  NOT DURABLE  {relative} ({what}) makes {syncs} sync call(s) and opens a \
+                 directory {on_a_directory} time(s), so nothing is left that syncs the file's \
+                 own bytes. A rename over unsynced bytes leaves a file that exists, is the \
+                 right length, and holds what those blocks held before"
             );
             ok = false;
         }
@@ -84,7 +99,10 @@ pub fn check(root: &Path) -> bool {
     }
 
     if ok {
-        println!("   {checked} durable writer(s) sync both their bytes and their directory");
+        println!(
+            "   {checked} durable writer(s) sync their bytes and their directory, in \
+             distinguishable calls"
+        );
     }
     ok
 }

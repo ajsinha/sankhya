@@ -77,6 +77,27 @@ impl Multi {
         }
     }
 
+    /// A function of `arity` arguments whose answer may be **undefined** for some input.
+    ///
+    /// `None` is a NULL in that row, not a failed statement. See
+    /// [`sankhya_math::stats::LinearFit::r_squared`] for the case this exists for.
+    pub fn defined_sometimes(
+        name: &'static str,
+        arity: usize,
+        kernel: impl Fn(&[Vec<f64>]) -> std::result::Result<Option<f64>, String>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        Self {
+            name,
+            arity,
+            gives_series: false,
+            kernel: Arc::new(move |operands| kernel(operands).map(|value| vec![value])),
+            signature: Signature::variadic_any(Volatility::Immutable),
+        }
+    }
+
     /// A function of `arity` arguments that answers with a **series**.
     ///
     /// A rolling statistic is the shape this exists for: a series and a window in, a series

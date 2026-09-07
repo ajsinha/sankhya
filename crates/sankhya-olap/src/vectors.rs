@@ -130,7 +130,8 @@ pub fn functions() -> Vec<ScalarUDF> {
         ScalarUDF::from(VectorFunction::binary("vec_regression_intercept", |a, b| {
             stats::linear_fit(a, b).map(|fit| fit.intercept)
         })),
-        ScalarUDF::from(VectorFunction::binary("vec_regression_r2", |a, b| {
+        // NULL, not a number, when the response does not vary --- see `LinearFit::r_squared`.
+        ScalarUDF::from(VectorFunction::binary_defined_sometimes("vec_regression_r2", |a, b| {
             stats::linear_fit(a, b).map(|fit| fit.r_squared)
         })),
         // The population forms, beside the sample ones above. Which divisor a variance uses
@@ -210,7 +211,8 @@ pub fn series_functions() -> Vec<ScalarUDF> {
 }
 
 /// A kernel of one or two vectors, returning a number.
-type Kernel = Arc<dyn Fn(&[&[f64]]) -> std::result::Result<f64, vector::VectorError> + Send + Sync>;
+type Kernel =
+    Arc<dyn Fn(&[&[f64]]) -> std::result::Result<Option<f64>, vector::VectorError> + Send + Sync>;
 
 /// One vector function, wired to the planner.
 ///
@@ -245,7 +247,7 @@ impl VectorFunction {
             name,
             arity: 1,
             kernel: Arc::new(move |args| match args.first() {
-                Some(a) => kernel(a),
+                Some(a) => kernel(a).map(Some),
                 None => Err(vector::VectorError::Empty),
             }),
             // Immutable in the strong sense: the same arguments give the same *bits*, not
@@ -256,6 +258,30 @@ impl VectorFunction {
     }
 
     /// A function of two vectors.
+    /// A function of two vectors whose answer may be **undefined** for some input.
+    ///
+    /// Distinct from an error, and the distinction is the point. An error is a statement about
+    /// the call --- mismatched lengths, an empty vector --- and it fails the statement, which
+    /// for a per-row function means one bad row takes ten million good ones with it. Undefined
+    /// is a statement about the answer, and SQL already has a word for that.
+    fn binary_defined_sometimes(
+        name: &'static str,
+        kernel: impl Fn(&[f64], &[f64]) -> std::result::Result<Option<f64>, vector::VectorError>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        Self {
+            name,
+            arity: 2,
+            kernel: Arc::new(move |args| match (args.first(), args.get(1)) {
+                (Some(a), Some(b)) => kernel(a, b),
+                _ => Err(vector::VectorError::Empty),
+            }),
+            signature: Signature::any(2, Volatility::Immutable),
+        }
+    }
+
     fn binary(
         name: &'static str,
         kernel: impl Fn(&[f64], &[f64]) -> std::result::Result<f64, vector::VectorError>
@@ -267,7 +293,7 @@ impl VectorFunction {
             name,
             arity: 2,
             kernel: Arc::new(move |args| match (args.first(), args.get(1)) {
-                (Some(a), Some(b)) => kernel(a, b),
+                (Some(a), Some(b)) => kernel(a, b).map(Some),
                 _ => Err(vector::VectorError::Empty),
             }),
             signature: Signature::any(2, Volatility::Immutable),
@@ -332,7 +358,9 @@ impl ScalarUDFImpl for VectorFunction {
             }
             let borrowed: Vec<&[f64]> = operands.iter().map(Vec::as_slice).collect();
             match (self.kernel)(&borrowed) {
-                Ok(value) => out.push(Some(value)),
+                // `None` is the kernel saying the answer is undefined, not that it failed.
+                // It becomes a NULL in this row and the rest of the column is unaffected.
+                Ok(value) => out.push(value),
                 Err(reason) => return exec_err!("{}: {reason}", self.name),
             }
         }
