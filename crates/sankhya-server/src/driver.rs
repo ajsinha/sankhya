@@ -20,6 +20,44 @@ use sankhya_api_pg::session::{QueryFailure, QueryResult};
 
 use crate::wiring::refusal;
 
+/// The row-locking clause a statement carries, if it carries one.
+///
+/// Text rather than plan, because the plan does not have it: `datafusion-sql` destructures
+/// `locks` away during parsing --- three lines from where it returns `not_impl_err` for
+/// `FETCH` --- so by the time a `LogicalPlan` exists the clause is gone without a word.
+///
+/// Single-quoted literals are removed before looking, so `WHERE note = 'for update'` selects a
+/// row rather than refusing the statement that selects it. The scanner toggles on each quote,
+/// so a doubled quote inside a literal toggles twice and leaves the state where it was.
+fn names_a_lock(sql: &str) -> Option<&'static str> {
+    let mut outside = String::with_capacity(sql.len());
+    let mut in_literal = false;
+    for c in sql.chars() {
+        if c == '\'' {
+            in_literal = !in_literal;
+            outside.push(' ');
+        } else if in_literal {
+            outside.push(' ');
+        } else {
+            outside.push(c.to_ascii_uppercase());
+        }
+    }
+    let words: Vec<&str> = outside.split_whitespace().collect();
+    for (at, word) in words.iter().enumerate() {
+        if *word != "FOR" {
+            continue;
+        }
+        match words.get(at + 1..).unwrap_or(&[]) {
+            ["NO", "KEY", "UPDATE", ..] => return Some("FOR NO KEY UPDATE"),
+            ["KEY", "SHARE", ..] => return Some("FOR KEY SHARE"),
+            ["UPDATE", ..] => return Some("FOR UPDATE"),
+            ["SHARE", ..] => return Some("FOR SHARE"),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Answer a statement a driver sends around a query, or `None` if it is not one.
 ///
 /// # Why these are answered rather than refused
@@ -57,6 +95,36 @@ pub(crate) fn run_session_statement(
     // `SNAPSHOT` is no longer here: it is **honoured** now rather than refused, which is the
     // only other acceptable answer. `READ_AS_OF` stays, because nothing reads it.
     const CHANGES_AN_ANSWER: &[&str] = &["READ_AS_OF"];
+    // Settings that make a promise this build cannot keep.
+    //
+    // These were accepted with the tag `SET` and no effect, and the comment beside
+    // `CHANGES_AN_ANSWER` asserted there were none of them --- *"a setting that did change an
+    // answer would have to be refused instead, and there is none"*. There are four.
+    //
+    // An isolation level is a claim about what concurrent statements may observe, and this
+    // server cannot honour any of them: `BEGIN` is a no-op and every statement re-resolves its
+    // tables, so two reads inside one transaction can see two versions. `SET ROLE` is worse
+    // than a no-op --- an application that drops to a lesser role before running untrusted SQL
+    // is told it succeeded and continues at full privilege.
+    //
+    // Matched on the statement rather than on its second word, because `SET SESSION` is also
+    // the ordinary form for every harmless setting and refusing all of it would break the
+    // connection handshake of every driver.
+    let promises_more_than_it_can_keep = compact.contains("ISOLATION LEVEL")
+        || compact.starts_with("SET ROLE")
+        || compact.starts_with("SET LOCAL ROLE")
+        || compact.starts_with("SET SESSION AUTHORIZATION");
+    if promises_more_than_it_can_keep {
+        return Some(Err(refusal(
+            "0A000",
+            "this server cannot honour that setting, and it is refused rather than accepted \
+             quietly. An isolation level is a claim about what concurrent statements may \
+             observe --- and here `BEGIN` is a no-op and every statement re-resolves its \
+             tables, so two reads inside one transaction may see two versions. `SET ROLE` is \
+             refused for the same reason in the other direction: an application that drops \
+             privilege before running untrusted SQL must not be told that it worked",
+        )));
+    }
     if matches!(first, "SET" | "RESET") {
         let named = compact
             .split_whitespace()
@@ -77,6 +145,28 @@ pub(crate) fn run_session_statement(
                 ),
             )));
         }
+    }
+
+    // A lock clause is refused rather than dropped on the floor.
+    //
+    // `SELECT ... FOR UPDATE` reaches this server as an ordinary projection: DataFusion's
+    // parser destructures `locks` away without a word (`FETCH`, three lines from it in the same
+    // file, returns `not_impl_err`). So the one statement whose entire purpose is mutual
+    // exclusion was answered with rows and no lock of any kind --- and an application ported
+    // here on a pessimistic-locking design reads as working while having none.
+    //
+    // Detected in the text because the plan no longer carries it. Quoted literals are stripped
+    // first, so a row containing the words does not refuse the statement selecting it.
+    if let Some(clause) = names_a_lock(sql) {
+        return Some(Err(refusal(
+            "0A000",
+            &format!(
+                "`{clause}` is refused rather than ignored. This server is a read path over a \
+                 published warehouse and has no lock manager, so the clause could only ever be \
+                 discarded --- and a statement whose whole purpose is mutual exclusion, \
+                 answered with rows and no lock, is indistinguishable from one that worked"
+            ),
+        )));
     }
 
     // A transaction of one statement, which is what a read path has.

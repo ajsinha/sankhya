@@ -5,7 +5,7 @@ sl, top = content("Four questions, four mechanisms",
                   kicker="EVIDENCE · THE LADDER")
 h = table(sl, [
     ["Mechanism", "Answers", "Fails when", "Count"],
-    ["Tests", "does it do the thing?", "behaviour changes", "2,837 tests"],
+    ["Tests", "does it do the thing?", "behaviour changes", "2,843 tests"],
     ["Gates", "does the repository still hold its own rules?", "a rule breaks anywhere, **including in a document**", "27"],
     ["Mutations", "would the tests notice if it stopped?", "a deliberate defect survives the suite", "921 deliberate defects"],
     ["Benchmarks", "is the number real?", "a published figure has nothing that produces it", "2 suites"],

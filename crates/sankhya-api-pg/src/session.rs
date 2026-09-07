@@ -464,6 +464,14 @@ struct Portal {
     /// alternative is planning without executing, which needs a planner this layer does not
     /// have and must not acquire --- a second planner would disagree with the first.
     answered: Option<Result<QueryResult, QueryFailure>>,
+    /// How many rows this portal has already sent.
+    ///
+    /// A portal is a **cursor**, and this is its position. Without it `Execute` always resent
+    /// the first `max_rows` rows and answered `PortalSuspended` again, so a client streaming a
+    /// large result with a fetch size --- `setFetchSize` in JDBC, a server-side cursor in
+    /// psycopg --- received rows 1..=n forever, in an infinite loop that never errored and
+    /// whose every message was individually correct.
+    sent: usize,
 }
 
 impl Connection {
@@ -662,7 +670,7 @@ impl Connection {
                     ),
                     Some(sql) => {
                         let sql = substitute(sql, &parameters);
-                        self.portals.insert(portal, Portal { sql, answered: None });
+                        self.portals.insert(portal, Portal { sql, answered: None, sent: 0 });
                         encode(&BackendMessage::BindComplete, output);
                     }
                 }
@@ -840,6 +848,7 @@ impl Connection {
             self.statements.get(name).map(|sql| Portal {
                 sql: sql.clone(),
                 answered: None,
+                sent: 0,
             })
         } else {
             self.portals.get(name).cloned()
@@ -913,11 +922,20 @@ impl Connection {
                 // client that asked for the first ten rows and was told the statement was
                 // complete would never ask for the eleventh.
                 let bound = usize::try_from(max_rows).unwrap_or(0);
-                let sending = if bound == 0 { result.rows.len() } else { bound.min(result.rows.len()) };
-                for row in result.rows.iter().take(sending) {
+                // From where this portal left off. `Portal::sent` is the cursor position, and
+                // resuming from it is the difference between a fetch loop that terminates and
+                // one that returns its first page for ever.
+                let from = portal.sent.min(result.rows.len());
+                let remaining = result.rows.len() - from;
+                let sending = if bound == 0 { remaining } else { bound.min(remaining) };
+                for row in result.rows.iter().skip(from).take(sending) {
                     encode(&BackendMessage::DataRow { values: row_bytes(row) }, output);
                 }
-                if bound > 0 && sending < result.rows.len() {
+                let now_at = from + sending;
+                if let Some(held) = self.portals.get_mut(name) {
+                    held.sent = now_at;
+                }
+                if bound > 0 && now_at < result.rows.len() {
                     encode(&BackendMessage::PortalSuspended, output);
                 } else {
                     encode(&BackendMessage::CommandComplete { tag: result.tag }, output);
