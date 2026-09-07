@@ -992,10 +992,24 @@ async fn a_dice_is_not_answered_from_a_cuboid_that_rolled_its_dimension_away() {
         .expect("the slice answers");
 
     assert_eq!(total_from(&sliced), 30.0, "north's total, and only north's");
+    // The **period** breakdown survives, which is what says the pinned cuboid was not used.
+    //
+    // This assertion used to read `materialised == "f"`, and it could not fail: `cube_slice`
+    // passed a literal `false` for that column, so the test compared a constant against
+    // itself. Now that the column reports what happened, `t` is the honest and correct
+    // answer --- `refresh_maintained_cubes` always builds the **base** cuboid alongside the
+    // pinned shape, and a `[region, period]` base cuboid can express this query perfectly
+    // well. "The only cuboid on disk" was never true.
+    //
+    // The property the test is actually for is falsified by the *shape*: a slice served from
+    // the `[period]` cuboid has no `region` axis to fix, so it would be refused outright, and
+    // one served from a cuboid that had rolled `period` away would come back as a single
+    // undifferentiated row.
+    let periods = first_column(&sliced, "period");
     assert_eq!(
-        first_column(&sliced, "materialised"),
-        vec!["f".to_string(); first_column(&sliced, "materialised").len()],
-        "the only cuboid on disk cannot express this query, so it must not have been used"
+        periods.len(),
+        2,
+        "the period breakdown survived the slice, so the cuboid that rolled it away was not used"
     );
 }
 

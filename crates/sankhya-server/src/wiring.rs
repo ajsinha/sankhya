@@ -997,11 +997,30 @@ impl Handler for Server {
         parameters: &[(String, String)],
         password: Option<&[u8]>,
     ) -> Result<(), QueryFailure> {
-        let user = parameters
+        // One identity, resolved one way.
+        //
+        // This matched `key == "user"` exactly while every downstream consumer --- the
+        // principal, the roles, the policy, the visible catalogue, the audit subject --- goes
+        // through `Caller::named`, which matches case-insensitively. A startup packet carrying
+        // `("User", "admin")` before `("user", "guest")` therefore authenticated **guest** and
+        // then ran every statement as **admin**, including in the audit record, so the actor
+        // who really connected left no trace at all.
+        //
+        // Resolved case-insensitively here to agree with `Caller::named`, and a packet naming
+        // the user more than once is refused rather than resolved: two spellings of one
+        // identity in one packet is not a connection to disambiguate, it is one to reject.
+        let named: Vec<&str> = parameters
             .iter()
-            .find(|(key, _)| key == "user")
+            .filter(|(key, _)| key.eq_ignore_ascii_case("user"))
             .map(|(_, value)| value.as_str())
-            .unwrap_or_default();
+            .collect();
+        if named.len() > 1 {
+            return Err(refusal(
+                statuses_for_unauthenticated().sqlstate.as_str(),
+                "the startup packet names the user more than once; one connection is one identity",
+            ));
+        }
+        let user = named.first().copied().unwrap_or_default();
 
         // A connection with no user is refused rather than given a default. An
         // unattributable connection cannot be audited, and an audit that cannot name who
@@ -1279,8 +1298,28 @@ impl Server {
                 {
                     scopes.push(sankhya_cube::materialise::Key::UNRESTRICTED);
                 }
+                // A pinned session is never served from a cuboid.
+                //
+                // `snapshot` above is deliberately the table's **present** version, and every
+                // cuboid on disk is keyed under it. A session holding `SET VERSION OF t = 3` or
+                // `SET SNAPSHOT` asked for a different position entirely, and nothing in the
+                // cuboid key can express that --- so a hit here answered a time-travel query
+                // with today's numbers, stamped `snapshot` with today's version, and disagreed
+                // with plain SQL over the same table inside one session.
+                //
+                // `Key::pin` records this exact defect (`COR-20`) for the in-memory cache and
+                // was fixed there. The cuboid path is consulted **first**, so the fix was
+                // reached only when this one missed. Under `SET SNAPSHOT` it was worse than a
+                // stale number: a snapshot deliberately drops the tables it does not name so a
+                // statement fails to resolve, and answering from `_cubes/` on disk walks past
+                // that refusal.
+                //
+                // Zero is the unpinned digest --- `Caller::position_digest` folds nothing and
+                // returns zero when no setting pins the session.
+                let may_use_a_cuboid = pin == 0;
                 if let Some(published) = scopes
                     .into_iter()
+                    .filter(|_| may_use_a_cuboid)
                     .find_map(|under| {
                         self.from_a_cuboid(cube, measure, under, snapshot, session, &needed)
                     })
@@ -1443,13 +1482,38 @@ impl Server {
                 let Some(cells) = roll_to(&base_cells, shape, measure) else {
                     continue;
                 };
-                let Some(rule) = cube
-                    .dimensions()
-                    .first()
-                    .and_then(|d| measure.rule(&d.name))
-                else {
+                // The rule that folds this cuboid's cells is the rule along the dimensions
+                // **rolled away to reach this shape** --- which is the same question the read
+                // path asks, so it is asked with the same function.
+                //
+                // It used to be `dimensions().first()`, the rule along whichever dimension the
+                // author happened to declare first. That is not a property of the shape being
+                // stored, and `to_batch` consumes the rule to decide both what the cell holds
+                // and whether the exact expansion survives. A cube declaring
+                // `(SUM ALONG region, MAX ALONG period)` had its `by=region` cuboid folded by
+                // `Sum` and then re-reduced by `Max`, so materialisation on and off returned
+                // different numbers for one query at one snapshot --- `M7` exit criterion 3a,
+                // the invariant this file asserts most often.
+                let kept: Vec<String> =
+                    shape.dimensions().into_iter().map(str::to_string).collect();
+                let Ok(rule) = sankhya_cube_sql::functions::reduction_for(measure, &kept) else {
                     continue;
                 };
+                // A rule this layer cannot apply is a cuboid this layer must not write.
+                //
+                // `store::to_batch` already refuses such a cell (`Rule::None` has no reduction
+                // from partials, and `Rule::Supplied` lives in the user's own process, which
+                // `sankhya-cube` cannot reach). But it refuses **per cell** with `continue`, so
+                // an unreachable rule produced an *empty* cuboid rather than none --- and an
+                // empty cuboid `exists()`, is selected, and serves zero rows as an answer.
+                // Refusing the whole shape here is what keeps that guard from becoming its own
+                // silent wrong answer.
+                if matches!(
+                    rule,
+                    sankhya_cube::algo::Rule::None | sankhya_cube::algo::Rule::Supplied { .. }
+                ) {
+                    continue;
+                }
                 // The completeness of the *hydration*, not of the roll-up. Rolling up moves
                 // cells between addresses and withholds nothing, so what a coarser cuboid saw
                 // is exactly what the base saw.
@@ -1624,15 +1688,18 @@ impl Server {
             })
         })?;
 
-        // The rule along the *first* dimension. A cuboid stores one measure's cells and the
-        // reduction that produced them, and every dimension of a stored cuboid shares the
-        // grain --- so any declared rule reads it back identically. Named rather than
-        // defaulted because a wrong rule here would round a stored expansion under the wrong
-        // operation.
-        let rule = cube
-            .dimensions()
-            .first()
-            .and_then(|d| measure.rule(&d.name))?;
+        // The rule this cuboid was folded under, derived the same way the writer derived it:
+        // from the dimensions **rolled away** to reach this shape.
+        //
+        // The previous comment here argued that "any declared rule reads it back identically",
+        // and that is true of `Contributions::reduce`, which early-returns for a cell already
+        // marked reduced. It is not true of `store::to_batch`, which is where the rule is
+        // actually consumed --- it decides whether the cell is written at all and whether the
+        // unrounded expansion survives. Read and write must therefore ask the same question of
+        // the same function, or a cuboid is read back under an operation that did not produce
+        // it.
+        let kept: Vec<String> = dimensions.clone();
+        let rule = sankhya_cube_sql::functions::reduction_for(measure, &kept).ok()?;
         let mut cells = sankhya_cube::cells::Cells::over(dimensions.clone());
         // Every batch of a cuboid must agree on its completeness, for the same reason every
         // row must: the file records one hydration, and two answers to "how much did this
@@ -1696,11 +1763,24 @@ impl Server {
     ///
     /// `false` when there is no guard at all: no access is not unrestricted access.
     fn withholds_nothing(&self, principal: &Principal, table: &str) -> bool {
+        // Both spellings, for the reason given on `snapshot_of`.
+        //
+        // A cube names its tables as its author typed them. Matching only the bare half meant a
+        // qualified name fell to the `TableRef::new("", table)` fallback --- a reference with an
+        // empty schema, which no rule granted by `permissive_policy` (or by any configured
+        // policy) can match, so this answered `false` for every caller. Safe, and silently so:
+        // the unrestricted cuboid was then built on every maintenance tick and could serve
+        // nobody, with no log line and no metric to say the storage was being spent for nothing.
         let reference = self
             .servable
             .read()
             .iter()
-            .find(|servable| servable.reference.table == table)
+            .find(|servable| match table.split_once('.') {
+                Some((schema, name)) => {
+                    servable.reference.schema == schema && servable.reference.table == name
+                }
+                None => servable.reference.table == table,
+            })
             .map(|servable| servable.reference.clone())
             .unwrap_or_else(|| TableRef::new("", table));
         Guard::authorize(&self.policy, principal, &reference, Action::Read)
@@ -1892,10 +1972,27 @@ impl Server {
     /// a cube over it would be cached once and never refreshed. A wrong-but-low snapshot
     /// causes a rehydration; a wrong-but-constant one causes a stale answer.
     fn snapshot_of(&self, table: &str) -> u64 {
+        // Both spellings, because a cube holds the name **as its author typed it**.
+        //
+        // `ServableTable.reference` is a schema and a table held apart; `Cube::reads()` returns
+        // whatever the DDL said, which for `CREATE CUBE c FROM sales.orders` is the qualified
+        // string. Matching only the bare half meant every cube declared over a qualified table
+        // missed here and took the `unwrap_or(0)` --- and a wrong-but-**constant** snapshot is
+        // exactly the stale answer the doc comment above warns about, not the harmless
+        // rehydration. It also froze the maintained cuboid: written once, then always judged
+        // fresh, because `lag(0, 0)` is zero for every target.
+        //
+        // `scope_for` was given both forms and this was not; they resolve the same name and
+        // must resolve it the same way.
         self.servable
             .read()
             .iter()
-            .find(|servable| servable.reference.table == table)
+            .find(|servable| match table.split_once('.') {
+                Some((schema, name)) => {
+                    servable.reference.schema == schema && servable.reference.table == name
+                }
+                None => servable.reference.table == table,
+            })
             .and_then(|servable| sankhya_table_delta::live_files(&servable.root).ok())
             .and_then(|live| live.version)
             .unwrap_or(0)

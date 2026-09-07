@@ -596,13 +596,18 @@ impl TableFunctionImpl for Slice {
         let completeness = published.completeness;
         check_completeness(&completeness, &args)?;
 
+        // **What happened, not a constant.** This was the literal `false`, so a slice served
+        // from a cuboid reported that it was not --- the same echo-your-own-input defect
+        // `RollUp` above had fixed, surviving in the other navigation because only one of the
+        // two was repaired.
+        let materialised = published.from_cuboid;
         batch(
             &published,
             &sliced,
             &measure,
             overlay.as_deref(),
             &completeness,
-            false,
+            materialised,
             self.2.as_ref(),
         )
     }

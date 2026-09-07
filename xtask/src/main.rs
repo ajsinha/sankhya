@@ -1260,6 +1260,24 @@ fn check_performance(root: &Path) -> bool {
 
 /// Enumerate tests without running them.
 pub(crate) fn list_tests(root: &Path, ignored_only: bool) -> Option<usize> {
+    // Build first, and refuse to count if the build fails.
+    //
+    // `cargo test -- --list` enumerates only the binaries it managed to produce, and it does
+    // not stop when one does not compile --- so the count silently shrinks by however many
+    // tests were in the binary that failed. That is a number which disagrees with itself
+    // depending on the state of `target/`, and it disagreed by **thirty-one** across two runs
+    // an hour apart, sending a document back and forth between two figures that were both
+    // reported as the truth.
+    let built = Command::new(env!("CARGO"))
+        .current_dir(root)
+        .args(["test", "--workspace", "--no-run", "--quiet"])
+        .status()
+        .ok()?;
+    if !built.success() {
+        eprintln!("   FAILED: the test binaries do not all build, so any count of them is short by however many are in the one that did not");
+        return None;
+    }
+
     let mut arguments = vec!["test", "--workspace", "--", "--list"];
     if ignored_only {
         arguments.push("--ignored");
@@ -1269,6 +1287,11 @@ pub(crate) fn list_tests(root: &Path, ignored_only: bool) -> Option<usize> {
         .args(&arguments)
         .output()
         .ok()?;
+    if !output.status.success() {
+        eprintln!("   FAILED: enumerating the tests exited {}, so the list stops at whichever binary refused and the count is short by the rest", output.status);
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        return None;
+    }
     let text = String::from_utf8_lossy(&output.stdout);
     Some(text.lines().filter(|line| line.ends_with(": test")).count())
 }

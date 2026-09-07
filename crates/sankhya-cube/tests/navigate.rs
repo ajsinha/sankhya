@@ -322,6 +322,64 @@ fn consolidating_by_position_without_an_order_is_refused() {
     ));
 }
 
+#[test]
+fn consolidating_by_position_reduces_along_the_dimension_not_along_the_alphabet() {
+    // The order is stated, so it must be used.
+    //
+    // `consolidate_along` refused a positional rule without an order and then reduced over
+    // `BTreeMap` address order, which is lexicographic by member name. With the quarter's
+    // months as members that gives `dec, nov, oct`, so `Last` returned **October's** closing
+    // balance --- the exact reading of the trap this module's header opens with.
+    //
+    // Written with a stated order whose alphabetical order is the reverse of its real one, so
+    // a reduction that ignores the order cannot pass by accident.
+    let mut cells = Cells::over(vec!["period".to_string(), "entity".to_string()]);
+    cells.add(address(&["oct", "a"]), 100.0).expect("oct");
+    cells.add(address(&["nov", "a"]), 200.0).expect("nov");
+    cells.add(address(&["dec", "a"]), 300.0).expect("dec");
+
+    let parents = |member: &str| {
+        matches!(member, "oct" | "nov" | "dec").then(|| "q4".to_string())
+    };
+    let calendar = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov",
+        "dec"];
+    let rolled = consolidate_along(
+        &cells,
+        "period",
+        &parents,
+        &balance(),
+        Ordered::By(&calendar),
+    )
+    .expect("the order is stated");
+
+    assert_eq!(
+        rolled.get(&address(&["q4", "a"]), Rule::Last),
+        Some(300.0),
+        "the quarter closes on December, not on whichever month sorts last"
+    );
+}
+
+#[test]
+fn consolidating_by_position_refuses_a_member_the_order_does_not_name() {
+    // The order having been demanded, a member missing from it is a refusal rather than a
+    // silent position of zero --- which would put an unnamed member first.
+    let mut cells = Cells::over(vec!["period".to_string(), "entity".to_string()]);
+    cells.add(address(&["oct", "a"]), 100.0).expect("oct");
+    cells.add(address(&["smarch", "a"]), 200.0).expect("smarch");
+
+    let parents = |_: &str| Some("q4".to_string());
+    assert!(matches!(
+        consolidate_along(
+            &cells,
+            "period",
+            &parents,
+            &balance(),
+            Ordered::By(&["oct"]),
+        ),
+        Err(Refused::MemberNotOrdered { .. })
+    ));
+}
+
 // --- composition --------------------------------------------------------
 
 #[test]
