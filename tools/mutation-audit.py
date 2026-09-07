@@ -3389,12 +3389,12 @@ CATALOGUE = [
 
     ("server: store base cells under a coarser cuboid's key, at a grain it does not have",
      "crates/sankhya-server/src/wiring.rs",
-     "                let Some(cells) = roll_to(&base_cells, shape, measure) else {\n                    continue;\n                };",
+     "                let Some(cells) = crate::cubes::roll_to(&base_cells, shape, measure) else {\n                    continue;\n                };",
      "                let cells = base_cells.clone();",
      "sankhya-server"),
 
     ("server: cost every cuboid the same, so selection can never choose one",
-     "crates/sankhya-server/src/wiring.rs",
+     "crates/sankhya-server/src/cubes.rs",
      "        ASSUMED_MEMBERS.saturating_pow(u32::try_from(cuboid.width()).unwrap_or(u32::MAX))",
      "        let _ = cuboid;\n        ASSUMED_MEMBERS",
      "sankhya-server"),

@@ -365,3 +365,83 @@ fn remove(
     server.record(principal, TableRef::new("", name), Action::Delete, true);
     Ok(acknowledged(tag))
 }
+
+// --- cuboid shape and cost -----------------------------------------------------------------
+//
+// Moved here from `wiring.rs` when that file crossed its length ceiling. The cut is along a
+// real seam rather than wherever the count happened to fall: everything below answers *which
+// shapes are worth holding, and what does one cost*, and none of it touches a session, a
+// principal or a catalogue. It lives beside the cube DDL rather than in a module of its own
+// because every test that includes `wiring.rs` already includes this file, and a third module
+// would have cost thirteen `#[path]` declarations to say the same thing.
+
+/// Roll base-grain cells to the grain a cuboid names.
+///
+/// `None` when a dimension cannot be rolled away --- the measure does not compose along it ---
+/// which is a shape that must not be materialised rather than one to store approximately.
+pub(crate) fn roll_to(
+    cells: &sankhya_cube::cells::Cells,
+    shape: &sankhya_cube::algo::Cuboid,
+    measure: &sankhya_cube::algo::Measure,
+) -> Option<sankhya_cube::cells::Cells> {
+    let keep: Vec<&str> = shape.dimensions();
+    let dropping: Vec<String> = cells
+        .dimensions()
+        .iter()
+        .filter(|name| !keep.contains(&name.as_str()))
+        .cloned()
+        .collect();
+    let mut out = cells.clone();
+    for dimension in dropping {
+        out = sankhya_cube::navigate::roll_up(
+            &out,
+            &dimension,
+            measure,
+            sankhya_cube::navigate::Ordered::Unstated,
+        )
+        .ok()?;
+    }
+    Some(out)
+}
+
+/// What a cuboid costs, when nothing better is known.
+///
+/// # Why this is not uniform, which was the first attempt
+///
+/// Counting every cuboid the same makes selection a **no-op**, and not obviously: a cuboid is
+/// chosen for the rows it *saves*, and if every cuboid costs the same then answering from a
+/// coarser one saves nothing, so nothing is ever worth holding. The first version of this
+/// returned a constant and carried a comment claiming it "still selects usefully". It selects
+/// nothing, and a test asking for one shape five times and finding it unmaterialised is what
+/// said so.
+///
+/// So cost is monotone in width: a cuboid over fewer dimensions holds fewer distinct member
+/// combinations. `ASSUMED_MEMBERS` per dimension is an estimate and is stated as one --- the
+/// real figure is the distinct combinations actually present, which nothing here has measured.
+/// What matters for selection is not the absolute number but that dropping a dimension makes a
+/// cuboid cheaper, and that is true of the data whatever the constant is.
+///
+/// Replaced when cardinality is recorded rather than assumed; until then this is a shape that
+/// ranks correctly rather than a number anybody should read.
+pub(crate) struct EstimatedCost;
+
+/// Distinct members assumed per dimension, for want of a measurement.
+const ASSUMED_MEMBERS: u64 = 100;
+
+impl sankhya_cube::algo::Cost for EstimatedCost {
+    fn rows(&self, cuboid: &sankhya_cube::algo::Cuboid) -> u64 {
+        ASSUMED_MEMBERS.saturating_pow(u32::try_from(cuboid.width()).unwrap_or(u32::MAX))
+    }
+}
+
+/// How many versions of drift a superseded cuboid is allowed before it is removed.
+///
+/// **Not** a `target_lag`. That decides what may be *served* and is a per-cube setting; this
+/// decides what may be *deleted* and must be strictly more generous, because a query that
+/// resolved a cuboid a moment ago is still reading it and a file deleted from under a running
+/// scan fails naming a path the caller never mentioned.
+///
+/// A hundred versions is far beyond any query's lifetime and still collects a cuboid within
+/// minutes on a table under continuous ingest. The cost of it being too large is storage; the
+/// cost of it being too small is a query that fails.
+pub(crate) const CUBOID_DRIFT_TOLERATED: u64 = 100;
