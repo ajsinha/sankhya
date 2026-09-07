@@ -913,7 +913,7 @@ through better compression across a larger block. (Recorded in [`STATUS.md`](STA
 That required scaling the fixture before it was a real test: an earlier run over 1,000,000 rows showed
 4.43× and 3.77× — apparently uniform, and it would have been read as *"more files are slower"*. The
 long query simply was not long enough for planning to amortise against. **A measurement that cannot
-distinguish the hypothesis from its negation is not evidence.**
+distinguish the hypothesis from its negation is not evidence.** §Measurements.
 
 ### 8.2 Compaction adds; a separate operation removes
 

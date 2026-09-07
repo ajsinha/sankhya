@@ -243,7 +243,7 @@ its size. A built-in is compiled, in process, over borrowed slices, with no boun
 no trust to extend — two to three orders of magnitude faster than a worker, and available to a
 principal who will never be granted `CREATE FUNCTION`.
 [ADR-0020](0020-the-built-in-function-catalogue.md)'s breadth is not only a convenience; it is
-what keeps the number of people who need this feature small.
+what keeps the number of people who need this feature small. [historical: an order-of-magnitude comparison from the literature on process spawn versus in-process dispatch; nothing in this repository times a worker]
 
 **Nothing here is a substitute for a container or a VM.** An operator running the server inside
 one has a second boundary, and it composes with this one. What it does not do is remove the need

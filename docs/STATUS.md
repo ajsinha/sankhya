@@ -3578,7 +3578,7 @@ that would be published with it do not exist.
 correction below. It used a bare engine rather than this system's configured session, so
 the numbers described the engine's defaults. Running it properly made three of four
 queries *slower* — Q6 by 2.6× — which is how a setting that had been asserted as required
-since M3 began turned out to be a cost.
+since M3 began turned out to be a cost. Recorded in §A required setting that was costing 2.6×.
 
 **What this is not:** an audited TPC-H result. Scale factor 1 on a development machine,
 single node, four of twenty-two queries, no substitution rules, no refresh streams. Using
@@ -4251,7 +4251,7 @@ On a 24-core machine with NVMe storage.
 |---|---|
 | Filter pushdown, 5M rows / 523 MiB / 1-in-10,000 selectivity | **1.02× — neutral** |
 | The same measurement with a compressible payload | 0.74× — *slower*, an artefact of the fixture |
-| The same measurement, fixture written by the product's writer (2026-08-28) | 1.06×, 0.94×, 0.96× across runs — noise around neutral |
+| The same measurement, fixture written by the product's writer (2026-08-28) | 1.06×, 0.94×, 0.96× across runs — noise around neutral | [historical: an artefact of one fixture, recorded when it was seen and not re-run since --- the row says so rather than being dropped]
 
 **This corrected a claim rather than confirming one.** Earlier drafts of the
 requirements and architecture documents asserted that filter pushdown was worth roughly

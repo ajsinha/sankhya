@@ -1308,12 +1308,11 @@ the same build or a regression appears in one and not the other.
 a row instead of copying it, restated in `rows.rs` and again in `STATUS.md`. No code anywhere in
 this repository's history produced them --- the audit searched the working tree, every branch,
 `git log -S` on each figure, deletions and stashes. The tell was internal: against a fresh run
-([bench: sankhya-functions/row-access]) the *copying* arm was 2.4× faster and the *borrowing*
-arm 27× faster, only the fast arm was
+the *copying* arm was 2.4× faster and the *borrowing* arm 27× faster, only the fast arm was
 anomalous, it was non-monotone in width, and 0.85 ms for a scalar reduction implied about
 39 GB/s --- above memory bandwidth. **The fast arm was almost certainly deleted by the
 optimiser**, its result being unused, while the copying arm survived because allocation has
-side effects.
+side effects. [historical: a one-off run made during the audit, against the retracted table's "before" --- the sorted-only implementation, which no longer exists. No benchmark here can reproduce a ratio whose other operand was deleted]
 
 **Measured now, by a benchmark that is a build target and whose arms consume their results:**
 14.3× at width 8, 5.1× at 64, 1.5× at 512. Two runs agreed within 6%. That is neither the
@@ -1328,7 +1327,7 @@ whose "before" has been deleted cannot be re-run by anybody. *"10 to 15 times fa
 a lane-parallel loop this system does not use, and the same paragraph already said the 15× was
 never available; it is marked unmeasured where it stands. The *"agreement on 200,000 randomized
 vectors"* row named a one-off experiment nobody can repeat, and is replaced by the two property
-tests that check the same properties on every build.
+tests that check the same properties on every build. [historical: quoted as one of the retracted tables, not restated as true --- nothing in this repository's history produced it]
 
 **The reduction table is replaced with a measurement, and with what the measurement is not.**
 `3.3× / 3.0× / 3.0×` at 64 / 512 / 4096, against the published `1.5× / 2.0× / 2.7×`. The

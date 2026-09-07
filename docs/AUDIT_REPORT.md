@@ -1262,16 +1262,15 @@ Reconstructed faithfully, best-of-9 with warm-up and `black_box`, at load 2.6:
 | 512 | 2.1× | 1.1× |
 
 The shape of the claim is right — narrow rows win most — and the magnitude is off by roughly ten.
-The tell is an internal inconsistency: against the fresh run ([bench: sankhya-functions/row-access]),
-the ADR's *copying* arm is 2.4× faster, but its *borrowing* arm is 27× faster. A smaller dataset would scale both together. Only
+The tell is an internal inconsistency: against the fresh run, the ADR's *copying* arm is 2.4× faster, but its *borrowing* arm is 27× faster. A smaller dataset would scale both together. Only
 the fast arm is anomalous, it is **non-monotone**, and 0.85 ms for a scalar fixed-point reduction
 implies ~39 GB/s — above memcpy bandwidth. **The borrowing arm was almost certainly optimised
 away**: its result was unused and LLVM deleted the loop, while the copying arm survived because
-heap allocation has side effects. That is precisely the *benchmark that optimises away* failure.
+heap allocation has side effects. That is precisely the *benchmark that optimises away* failure. [historical: a one-off run made during the audit, against the retracted table's "before" --- the sorted-only implementation, which no longer exists. No benchmark here can reproduce a ratio whose other operand was deleted]
 
 The same applies to every other speed table in ADR-0020 Decision 3 — the reduction speedups, the
 per-kernel figures, "10 to 15 times faster", the 200,000-vector experiment. **None exists in the
-repo.** The exactness claims in that ADR *are* well backed; every speed claim is not.
+repo.** The exactness claims in that ADR *are* well backed; every speed claim is not. [historical: quoted as one of the retracted tables, not restated as true --- nothing in this repository's history produced it]
 
 Decision 3 rule 5 reads: *"Every claim about speed carries its number… this repository does not
 ship claims."*
@@ -1312,8 +1311,10 @@ where one would do. `dot`, `norm_l1`, `norm_l2` and `euclidean` each **allocate 
 `Vec` before reducing** — so `rows.rs` removed the wrapper's per-row allocation and the kernel
 immediately makes one of the same size.
 
-Measured against an ordinary sum ([bench: sankhya-math/determinism-price], which is what that
-group exists to price): **32× slower at width 8**, 6× at 4096. The tradeoff is
+Measured against an ordinary sum **32× slower at width 8**, 6× at 4096. The tradeoff is
+[historical: a one-off run made during the audit, against a different machine and a different build. `sankhya-math/determinism-price` prices the same thing on this one and records 57x / 35x / 10.7x / 12.2x, which ADR-0020 publishes instead because they are worse]
+
+The tradeoff is
 defensible and well argued. But the documentation states only that the new reduction is 1.5–2.7×
 faster **than the project's own previous code** — a reader comes away believing the kernels got
 fast. Against an owner directive for "very high performance", the absolute price of the guarantee

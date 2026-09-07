@@ -1184,26 +1184,33 @@ fn check_dev_only(root: &Path) -> bool {
 /// the retracted tables were in. So the targets are built here, on every run.
 fn check_benchmarks(root: &Path) -> bool {
     println!("== check-benchmarks ==");
+
+    // The text half first, and unconditionally. It costs milliseconds and needs no build ---
+    // and running it after the compile meant a single broken benchmark target suppressed every
+    // provenance diagnostic, so the half that finds unbacked figures could not be run at all
+    // without a full workspace build succeeding first.
+    let has_benches = crate::benchmarks::every_publisher_can_measure(root);
+    let figures_backed = crate::benchmarks::every_figure_is_backed(root);
+
     let status = Command::new(env!("CARGO"))
         .current_dir(root)
         .args(["build", "--workspace", "--benches", "--quiet"])
         .status();
-    match status {
-        Ok(status) if status.success() => {}
+    let builds = match status {
+        Ok(status) if status.success() => true,
         _ => {
-            eprintln!("   FAILED: a benchmark target no longer builds");
-            return false;
+            eprintln!("   FAILED: a benchmark target no longer builds, so a figure citing one has quietly stopped being reproducible");
+            false
         }
-    }
+    };
 
-    // Two questions, and the second is the one that bites. That a crate publishing figures
-    // has benchmarks at all is necessary and proves nothing about any particular number ---
-    // a directory is not a measurement. That every published ratio names something that
-    // produced it, and that the reference resolves, is what stops a figure from being
-    // established by restatement.
-    let has_benches = crate::benchmarks::every_publisher_can_measure(root);
-    let figures_backed = crate::benchmarks::every_figure_is_backed(root);
-    has_benches && figures_backed
+    // Three questions, and the middle one is the one that bites. That a crate publishing
+    // figures has benchmarks at all is necessary and proves nothing about any particular
+    // number --- a directory is not a measurement. That every published ratio names something
+    // that produced it, and that the reference resolves, is what stops a figure from being
+    // established by restatement. That the targets still compile is what stops a cited
+    // benchmark from quietly ceasing to be re-runnable.
+    has_benches && figures_backed && builds
 }
 
 /// The `NFR-PERF-*` objectives, run as a gate.

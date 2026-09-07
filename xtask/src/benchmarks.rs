@@ -23,9 +23,22 @@ const MUST_MEASURE: &[&str] = &["sankhya-functions", "sankhya-math"];
 ///
 /// Everything under `docs/`, because a figure is as persuasive in a tutorial as in an ADR ---
 /// more so, since a reader reaches a tutorial without the context that would make them ask.
+///
+/// And `README.md`, `sdk/`, `packaging/` and the deck generator, because a figure published
+/// outside `docs/` is published just the same. This scanned `docs/` alone for one round, and
+/// the README, a slide in `tools/deck/` and a doc comment in `rows.rs` --- *the* place
+/// `TESTING.md` names as where the retracted tables were restated --- all sat outside it.
 fn documents(root: &Path) -> Vec<std::path::PathBuf> {
     let mut found = Vec::new();
-    let mut stack = vec![root.join("docs")];
+    if root.join("README.md").is_file() {
+        found.push(root.join("README.md"));
+    }
+    let mut stack = vec![
+        root.join("docs"),
+        root.join("sdk"),
+        root.join("packaging"),
+        root.join("tools").join("deck"),
+    ];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -34,7 +47,10 @@ fn documents(root: &Path) -> Vec<std::path::PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "md") {
+            } else if path
+                .extension()
+                .is_some_and(|e| e == "md" || e == "py")
+            {
                 found.push(path);
             }
         }
@@ -45,35 +61,47 @@ fn documents(root: &Path) -> Vec<std::path::PathBuf> {
 
 /// Whether a line states how much faster or slower something is.
 ///
-/// Narrow on purpose. A ratio with a direction is the shape that reads as a benchmark result
-/// and is the shape that gets restated until it looks established; a bare number in a table of
-/// timings is a datum, and the surrounding text is what claims something about it.
+/// # What this catches, and what it deliberately does not
+///
+/// A ratio with a direction is the shape that reads as a benchmark result and the shape that
+/// gets restated until it looks established. The first version of this asked for
+/// `<digit>x faster` with exactly one space, on one line, and that saw **fourteen** lines in
+/// the whole of `docs/` while well over a hundred published ratios went unchecked --- among
+/// them `"10 to 15 times faster"`, which is one of the three retracted tables this gate was
+/// written for, sitting uncited while its *restatement* elsewhere was made to carry a marker.
+///
+/// So: the direction word may be anywhere in the same line rather than adjacent, a ratio may
+/// be spelled in words, and a table cell counts. What is still not caught is a direction word
+/// that wraps to the next line, and that is stated in `TESTING.md` rather than implied ---
+/// widening the window to the paragraph would make every row of a timings table a claim.
 fn states_a_ratio(line: &str) -> bool {
-    let mut chars = line.char_indices().peekable();
-    while let Some((at, c)) = chars.next() {
+    let lowered = line.to_ascii_lowercase();
+    // `faster` and `slower` only. `cost`, `price`, `worse` and `cheaper` were in this list for
+    // one run and matched ordinary prose everywhere --- "the price of pinning down", "costs
+    // differ" --- which is how a gate becomes something people add markers to in order to
+    // silence rather than something they read.
+    let directed = lowered.contains("faster") || lowered.contains("slower");
+    if !directed {
+        return false;
+    }
+    // A ratio in figures: a digit immediately before a multiplier sign.
+    for (at, c) in lowered.char_indices() {
         if c != '\u{d7}' && c != 'x' {
             continue;
         }
-        // A digit before it, so `2.4x` counts and `x` in a word does not.
-        let digit_before = line[..at]
-            .chars()
-            .next_back()
-            .is_some_and(|p| p.is_ascii_digit());
-        if !digit_before {
-            continue;
-        }
-        let after = line[at..].to_ascii_lowercase();
-        if after.starts_with("\u{d7} faster")
-            || after.starts_with("\u{d7} slower")
-            || after.starts_with("x faster")
-            || after.starts_with("x slower")
-        {
+        if lowered[..at].chars().next_back().is_some_and(|p| p.is_ascii_digit()) {
             return true;
         }
     }
-    false
+    // A ratio in words, and the direction word has to be adjacent to the magnitude ---
+    // "three times in one sitting" is a repetition and not a factor, and it was caught by an
+    // earlier version of this that asked only whether both a number word and `times` appeared
+    // anywhere on the line.
+    lowered.contains("times faster")
+        || lowered.contains("times slower")
+        || lowered.contains("magnitude faster")
+        || lowered.contains("magnitude slower")
 }
-
 /// The paragraph a line belongs to: the run of non-blank lines around it.
 ///
 /// Provenance is allowed anywhere in the paragraph rather than on the line itself, because a
@@ -95,11 +123,11 @@ fn paragraph(lines: &[&str], at: usize) -> String {
 fn groups_of(root: &Path, krate: &str) -> Vec<String> {
     let benches = root.join("crates").join(krate).join("benches");
     let mut names = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&benches) else {
-        return names;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
+    // Recursive, and through the same helper `every_publisher_can_measure` uses --- a
+    // non-recursive `read_dir` here and a recursive walk there is two answers to "what is a
+    // benchmark file", and a citation to a group in `benches/sub/x.rs` would fail as NO SUCH
+    // BENCH while the crate counted as having benchmarks.
+    for path in crate::package::files_under(&benches) {
         if !path.extension().is_some_and(|e| e == "rs") {
             continue;
         }
@@ -157,6 +185,28 @@ fn rejected_reference(paragraph: &str) -> Option<String> {
     (!why.is_empty()).then(|| why.to_string())
 }
 
+/// The `[historical: why]` marker in a paragraph, if it carries one.
+///
+/// # A fourth form, and the failure that needed it
+///
+/// Some ratios are observations from a run that happened once, against code that has since
+/// been replaced --- an audit reconstructing a retracted table, a figure from a different
+/// machine and a different build. No benchmark here can produce them, and a benchmark that
+/// *resolves* is worse than none for exactly those: `[bench: sankhya-functions/row-access]`
+/// resolves, and that group measures borrowing against copying in the **current** build, not
+/// the ratio between an audit's reconstruction and a table nothing ever produced. A citation
+/// that resolves and does not measure the figure is the failure this gate exists to stop,
+/// arriving through the gate.
+///
+/// So a historical figure says so, and says why, and the reason is required.
+fn historical_reference(paragraph: &str) -> Option<String> {
+    let at = paragraph.find("[historical: ")?;
+    let rest = &paragraph[at + "[historical: ".len()..];
+    let end = rest.find(']')?;
+    let why = rest[..end].trim();
+    (!why.is_empty()).then(|| why.to_string())
+}
+
 /// The `§Section` citation in a paragraph, if it carries one.
 fn section_reference(paragraph: &str) -> Option<String> {
     let at = paragraph.find('\u{a7}')?;
@@ -206,6 +256,10 @@ pub fn every_figure_is_backed(root: &Path) -> bool {
                 .display()
                 .to_string();
             let context = paragraph(&lines, index);
+            if historical_reference(&context).is_some() {
+                backed += 1;
+                continue;
+            }
             if let Some((krate, group)) = bench_reference(&context) {
                 if groups_of(root, &krate).iter().any(|name| *name == group) {
                     backed += 1;
@@ -215,7 +269,9 @@ pub fn every_figure_is_backed(root: &Path) -> bool {
                 }
                 continue;
             }
-            if rejected_reference(&context).is_some() {
+            // Before the bench form, so a paragraph carrying both is scored by the narrower
+            // claim rather than by whichever the scanner happened to find first.
+            if historical_reference(&context).is_some() || rejected_reference(&context).is_some() {
                 backed += 1;
                 continue;
             }
@@ -232,7 +288,7 @@ pub fn every_figure_is_backed(root: &Path) -> bool {
                 }
                 continue;
             }
-            eprintln!("  UNBACKED FIGURE {shown}:{} states a speed ratio and names nothing that produced it. Cite a benchmark as `[bench: crate/group]`, the recorded measurement as `§Section` of STATUS.md, or `[rejected: why]` for an alternative this build does not contain --- a figure in prose reads as measured", index + 1);
+            eprintln!("  UNBACKED FIGURE {shown}:{} states a speed ratio and names nothing that produced it. Cite a benchmark as `[bench: crate/group]`, the recorded measurement as `§Section` of STATUS.md, `[rejected: why]` for an alternative this build does not contain, or `[historical: why]` for a run against code that no longer exists --- a figure in prose reads as measured", index + 1);
             ok = false;
         }
     }
