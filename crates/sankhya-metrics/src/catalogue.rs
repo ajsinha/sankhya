@@ -297,6 +297,31 @@ pub static MAINTENANCE_DECLINED_TOTAL: Metric = Metric {
     alert: None,
 };
 
+/// How many tables the maintenance thread is looking after right now.
+///
+/// # Why a gauge, and why this one
+///
+/// Because the set changes: a table created after the server started is adopted on the next
+/// cycle, and an operator asking *is my new table being maintained?* has no other way to
+/// find out. `OPERATIONS` named this as the counter an operator asks for by name while it
+/// was still exported nowhere.
+///
+/// It is also the one maintenance number that is **not zero on a healthy idle warehouse**,
+/// which makes it the only one a bounded test can use to prove the publisher runs at all.
+/// The four counters are published in one block; a test that can check this one has checked
+/// that the block executes.
+pub static MAINTENANCE_TABLES: Metric = Metric {
+    name: "sankhya_maintenance_tables",
+    kind: Kind::Gauge,
+    unit: Unit::Count,
+    labels: &[],
+    group: Group::Maintenance,
+    help: "Tables the maintenance thread is looking after right now. The set is discovered \
+           at the top of every cycle, so a table created after the server started appears \
+           here once it has been adopted.",
+    alert: None,
+};
+
 /// Passes that failed.
 ///
 /// # Why this pages and the other three do not
@@ -336,6 +361,7 @@ pub static ALL: &[&Metric] = &[
     &MAINTENANCE_TICKS_TOTAL,
     &MAINTENANCE_BYTES_RECLAIMED_TOTAL,
     &MAINTENANCE_DECLINED_TOTAL,
+    &MAINTENANCE_TABLES,
     &MAINTENANCE_FAILURES_TOTAL,
     &MEMORY_IN_USE_BYTES,
     &MEMORY_PEAK_BYTES,

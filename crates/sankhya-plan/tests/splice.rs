@@ -262,32 +262,25 @@ fn a_coverage_gap_reports_the_code_its_runbook_is_indexed_by() {
 #[test]
 fn a_position_past_the_frontier_is_not_reported_as_a_correctness_event() {
     // The distinction that makes the conversion worth having. `SNK-S0001` is `Class::Fatal`
-    // and pages; being early is a freshness question that resolves by waiting. Mapping both
-    // onto the fatal code would page somebody for a query that simply arrived first.
+    // and pages; asking for a position nothing reaches is the caller's mistake, and paging
+    // for it would page somebody for a typo.
+    //
+    // It is also not `SNK-T0003`, which is where this pointed first. That code is retryable
+    // with a delay, and half of what reaches here is a position that will never exist --- so
+    // the honest half of the mapping would have told those callers to retry for ever, and
+    // any middleware honouring a 503 would have done it for them.
     let tiers = [tier("published", 0, 10)];
     let refusal = plan_splice(&tiers, Lsn::new(50)).expect_err("beyond the frontier");
     let reported: sankhya_error::Error = refusal.into();
-    assert_eq!(reported.code().as_str(), "SNK-T0003");
-}
-
-#[test]
-fn two_tiers_claiming_the_same_positions_is_an_invariant_violation() {
-    // And the third: overlapping coverage is a defect in whatever produced the metadata, not
-    // a statement about the data. `SNK-S0005` says so; `SNK-S0001` would say the rows are
-    // missing, and they are present twice.
-    //
-    // Constructed rather than planned, because the planner trims each chosen tier so it abuts
-    // exactly --- overlapping input is the ordinary case it exists to resolve, and this
-    // refusal is for coverage metadata that cannot be resolved. The subject here is the
-    // mapping, and a test that could not reach the variant would be testing nothing.
-    let overlap = SpliceError::Overlap {
-        left: "archive",
-        right: "published",
-    };
-    let reported: sankhya_error::Error = overlap.into();
-    assert_eq!(reported.code().as_str(), "SNK-S0005");
+    assert_eq!(reported.code().as_str(), "SNK-C0007");
     assert!(
-        reported.to_string().contains("archive") && reported.to_string().contains("published"),
-        "the detail must name which two tiers disagree: {reported}"
+        !matches!(reported.class(), sankhya_error::Class::Retryable { .. }),
+        "a position that will never exist must not be answered with a retry delay"
+    );
+    assert!(
+        reported.to_string().contains(&Lsn::new(10).to_string()),
+        "the frontier has to be in the detail, or a caller who was merely early cannot \
+         tell how long to wait: {reported}"
     );
 }
+

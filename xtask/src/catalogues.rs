@@ -517,6 +517,7 @@ const UNREACHABLE: &[(&str, &str)] = &[
     ("SNK-R0002", "tenant quotas are `sankhya-governor`, which is called with a zeroed request against `u64::MAX` ceilings and decides nothing"),
     ("SNK-R0003", "the arrival buffer is part of the change-capture runtime (`ING-00`)"),
     ("SNK-T0002", "a source that could be unavailable is the change-capture runtime (`ING-00`)"),
+    ("SNK-T0003", "staleness against a freshness objective needs the replication a change-capture runtime would provide (`ING-00`). `SpliceError::BeyondFrontier` briefly mapped here and no longer does: half of what reaches it is a position that will never exist, and a retryable code tells that caller to retry for ever"),
     ("SNK-S0004", "an endangered source is the change-capture runtime (`ING-00`)"),
     // And three whose condition happens today and is reported as a different type.
     // These are the worse half: the subsystem exists, the failure occurs, and an
@@ -548,8 +549,8 @@ const UNREACHABLE: &[(&str, &str)] = &[
 /// honest.
 const MAPPED_BUT_UNREACHABLE: &[(&str, &str)] = &[
     ("SNK-S0001", "the coverage gap it names is detected by `sankhya-plan`’s splice, which now maps onto this code --- but the only splice in a read path is composed from a coverage range the server synthesises to span the request, so no query can produce a gap"),
+    ("SNK-C0002", "the ingest pipeline constructs it for a source type this build cannot map, and nothing outside that crate’s own tests constructs a pipeline — the three crates depending on `sankhya-ingest` import only its digest types. It reaches a caller when the change-capture runtime does (`ING-00`)"),
     ("SNK-S0002", "`Registry::servable_or_refuse` now raises `Unservable::NotReconciled` --- which was declared and constructed nowhere --- and it maps onto this code. Nothing calls it outside its tests, because nothing runs the tiering planner: there is no archive for the registry to disagree with"),
-    ("SNK-T0003", "`SpliceError::BeyondFrontier` now maps onto this code, and the frontier it compares against is the change-capture runtime’s (`ING-00`), so nothing advances past it"),
 ];
 
 /// `Error::InvalidQuery { detail: None }` becomes `InvalidQuery`.
@@ -570,6 +571,36 @@ fn every_code_is_reachable_or_declared(root: &Path) -> bool {
     let mapped: std::collections::BTreeSet<&str> =
         MAPPED_BUT_UNREACHABLE.iter().map(|(code, _)| *code).collect();
     let mut ok = true;
+
+    // An entry naming a code that does not exist guards nothing, and says so to nobody.
+    //
+    // The loop below walks `Error::all()`, so a misspelled code --- a renumber, a stray
+    // space, `SNK-S0007` --- is never visited, renders nothing into the catalogue, and
+    // silently stops being an excuse for anything. `check-surfaces` has had this reverse
+    // check for its own list since it was written, under the reason *"an excuse for a crate
+    // that is now reachable, or gone, must go too --- or the list only grows and stops
+    // describing anything"*. Splitting one error list into two doubled the number that
+    // needed it.
+    let real: std::collections::BTreeSet<String> = Error::all()
+        .iter()
+        .map(|error| error.code().as_str().to_string())
+        .collect();
+    for (list, code) in UNREACHABLE
+        .iter()
+        .map(|(code, _)| ("UNREACHABLE", *code))
+        .chain(
+            MAPPED_BUT_UNREACHABLE
+                .iter()
+                .map(|(code, _)| ("MAPPED_BUT_UNREACHABLE", *code)),
+        )
+    {
+        if !real.contains(code) {
+            eprintln!(
+                "  NO SUCH CODE    {list} names {code}, which is not a code in the catalogue. It excuses nothing and nothing will ever tell you"
+            );
+            ok = false;
+        }
+    }
 
     // A code cannot be both. `UNREACHABLE` says nothing constructs it and
     // `MAPPED_BUT_UNREACHABLE` says something does, and the two lists disagreeing is a
@@ -665,6 +696,18 @@ fn collect_error_sites(dir: &Path, out: &mut String) {
         let path = entry.path();
         if path.is_dir() {
             if path.file_name().is_some_and(|n| n == "sankhya-error") {
+                continue;
+            }
+            // `src/` only. A code constructed in a test, a benchmark or an example is not a
+            // code this build can produce --- and both lists rest entirely on this
+            // predicate, in opposite directions. Somebody writing `Error::CommitConflict("x")`
+            // in a test would have made the gate print `STALE EXCUSE`, the entry would have
+            // been dutifully removed, and the generated catalogue would have started telling
+            // operators a code is producible when only a test produces it.
+            if path
+                .file_name()
+                .is_some_and(|n| n == "tests" || n == "benches" || n == "examples")
+            {
                 continue;
             }
             collect_error_sites(&path, out);

@@ -47,6 +47,16 @@ impl Splice {
 
 /// Why a query cannot be answered safely.
 #[derive(Clone, PartialEq, Eq, Debug)]
+/// A third variant, `Overlap`, was declared here and constructed by nothing.
+///
+/// It described two selected tiers claiming the same positions --- and the planner cannot
+/// produce that, deliberately: it trims each chosen tier so it abuts exactly, under a comment
+/// reading *"this is what makes the result non-overlapping **by construction** rather than by
+/// hope"*. So the variant documented a refusal the algorithm had already made unnecessary,
+/// carried a mapping onto `SNK-S0005`, and had a test built on a value only the test could
+/// construct. It is deleted rather than left, for the same reason
+/// `Unservable::NotReconciled` stopped being unconstructible: a declared case nothing can
+/// reach is a promise nothing keeps.
 pub enum SpliceError {
     /// Part of the requested span is held by no tier.
     ///
@@ -55,14 +65,6 @@ pub enum SpliceError {
     CoverageGap { from: Lsn, to: Lsn },
     /// No tier reaches the requested position.
     BeyondFrontier { requested: Lsn, available: Lsn },
-    /// Two selected tiers claim the same positions.
-    ///
-    /// Indicates a defect in whatever produced the coverage metadata; splicing anyway
-    /// would double-count.
-    Overlap {
-        left: &'static str,
-        right: &'static str,
-    },
 }
 
 impl fmt::Display for SpliceError {
@@ -80,11 +82,6 @@ impl fmt::Display for SpliceError {
                 f,
                 "requested position {requested} exceeds the frontier {available}; \
                  capture has not yet reached it"
-            ),
-            Self::Overlap { left, right } => write!(
-                f,
-                "tiers {left} and {right} both claim the same positions, which would \
-                 double-count; this is a defect in their coverage metadata"
             ),
         }
     }
@@ -120,20 +117,27 @@ impl From<SpliceError> for sankhya_error::Error {
             SpliceError::CoverageGap { from, to } => {
                 sankhya_error::Error::CoverageGap(format!("no tier covers ({from}, {to}]"))
             }
-            // Not a coverage gap. Capture has not reached the requested position, which is a
-            // freshness question and resolves by waiting --- classifying it as the fatal
-            // correctness event would page somebody for a query that was simply early.
+            // Not a coverage gap: nothing is missing from the middle. The caller asked for
+            // a position past everything on offer.
+            //
+            // This mapped to `SNK-T0003` (retryable, 500 ms) on the reading that capture
+            // had not caught up. That reading is one of two, and the splice cannot tell
+            // them apart --- the other is a caller naming a position that will **never**
+            // exist, and telling that caller the server is unavailable and to retry in half
+            // a second is a permanent retry loop, amplified by any middleware that honours
+            // a 503. The code's own message did not fit either: it says the requested
+            // *freshness* could not be met within a *deadline*, and this function consults
+            // neither.
+            //
+            // So it is a user error, and the detail carries the frontier: a caller who was
+            // merely early can see how far the data reaches and decide to wait, which is a
+            // decision they are better placed to make than a retry policy is.
             SpliceError::BeyondFrontier {
                 requested,
                 available,
-            } => sankhya_error::Error::StaleData(format!(
-                "position {requested} is beyond the frontier {available}"
-            )),
-            // A defect in the coverage metadata, not in the data. Splicing anyway would
-            // double-count, so it is refused --- and it is an invariant violation rather than
-            // a coverage gap, because the rows exist and are claimed twice.
-            SpliceError::Overlap { left, right } => sankhya_error::Error::InvariantViolated(format!(
-                "tiers {left} and {right} both claim the same positions"
+            } => sankhya_error::Error::StatementFailed(format!(
+                "position {requested} is beyond the frontier {available}, which is the \
+                 furthest any tier on offer reaches"
             )),
         }
     }

@@ -161,12 +161,29 @@ fn rejected_reference(paragraph: &str) -> Option<String> {
 fn section_reference(paragraph: &str) -> Option<String> {
     let at = paragraph.find('\u{a7}')?;
     let rest = paragraph[at + '\u{a7}'.len_utf8()..].trim_start();
-    // To the end of the citation, which a sentence or a clause ends.
-    let end = rest
-        .find(|c| c == '.' || c == ')' || c == ',' || c == ';')
-        .unwrap_or(rest.len());
+    // To the end of the citation. A sentence or a clause ends it --- but **not** a full stop
+    // inside a section number, because stopping at the first `.` turned a citation of
+    // "10.8" into the bare string "10", and a heading containing "10" resolved it.
+    let mut end = rest.len();
+    for (at, c) in rest.char_indices() {
+        let numeric = c == '.'
+            && rest[..at].chars().next_back().is_some_and(|p| p.is_ascii_digit())
+            && rest[at + 1..].chars().next().is_some_and(|n| n.is_ascii_digit());
+        if numeric {
+            continue;
+        }
+        if c == '.' || c == ')' || c == ',' || c == ';' {
+            end = at;
+            break;
+        }
+    }
     let named = rest[..end].trim();
-    (!named.is_empty()).then(|| named.to_ascii_lowercase())
+    // Four characters, because a citation shorter than that is not a section name --- it is
+    // a fragment that will match something. This is the second half of the same defect: the
+    // matcher below asks whether a heading *contains* the citation **or** the citation
+    // contains the heading, and against a document with headings like `cost` and `m9` that
+    // second direction resolves almost anything.
+    (named.chars().count() >= 4).then(|| named.to_ascii_lowercase())
 }
 
 /// Whether every published ratio names something that produced it, and it resolves.
@@ -203,7 +220,11 @@ pub fn every_figure_is_backed(root: &Path) -> bool {
                 continue;
             }
             if let Some(section) = section_reference(&context) {
-                if headings.iter().any(|h| h.contains(&section) || section.contains(h.as_str())) {
+                // One direction only. A heading may be longer than the citation --- "§A
+                // required setting that was costing 2.6x" abbreviates a longer heading --- but
+                // a *citation* longer than a heading resolving against it is how "§10.8's size
+                // decision" came to be satisfied by a heading containing "m10".
+                if headings.iter().any(|h| h.contains(&section)) {
                     backed += 1;
                 } else {
                     eprintln!("  NO SUCH SECTION {shown}:{} cites STATUS.md §{section}, which is not a heading there. The measurement it points at cannot be read", index + 1);

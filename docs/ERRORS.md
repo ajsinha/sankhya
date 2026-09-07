@@ -24,6 +24,8 @@ Correct the statement. The detail names the offending element.
 
 a source column type has no faithful representation
 
+**Mapped, and not reachable by a query.** the ingest pipeline constructs it for a source type this build cannot map, and nothing outside that crate’s own tests constructs a pipeline — the three crates depending on `sankhya-ingest` import only its digest types. It reaches a caller when the change-capture runtime does (`ING-00`). The conversion onto this code exists and is tested, so a caller that meets the condition reports it correctly --- but nothing in this build meets it. **An alert rule on this code is still permanently silent**, and it is listed separately from the codes nothing constructs because the remaining work is different: those need a subsystem, this needs a call path.
+
 Exclude the column, or convert it in the source. SANKHYA refuses an approximate mapping because a silently lossy column cannot be reconciled afterwards.
 
 ### `SNK-C0003`
@@ -128,7 +130,7 @@ the requested freshness could not be met within the deadline
 
 *Retry after 500 ms.*
 
-**Mapped, and not reachable by a query.** `SpliceError::BeyondFrontier` now maps onto this code, and the frontier it compares against is the change-capture runtime’s (`ING-00`), so nothing advances past it. The conversion onto this code exists and is tested, so a caller that meets the condition reports it correctly --- but nothing in this build meets it. **An alert rule on this code is still permanently silent**, and it is listed separately from the codes nothing constructs because the remaining work is different: those need a subsystem, this needs a call path.
+**Not produced by this build.** staleness against a freshness objective needs the replication a change-capture runtime would provide (`ING-00`). `SpliceError::BeyondFrontier` briefly mapped here and no longer does: half of what reaches it is a position that will never exist, and a retryable code tells that caller to retry for ever. Nothing in the workspace constructs it. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
 
 Retry, relax the freshness requirement, or investigate capture lag. Returning stale data silently would be worse than failing.
 

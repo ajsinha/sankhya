@@ -14,15 +14,41 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+mod common;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+
+/// A child that is killed however the test leaves.
+///
+/// # Why this type exists
+///
+/// `std::process::Child` does **not** kill on drop, and this test's assertions are between
+/// the spawn and the kill. A panic anywhere in that stretch --- a failed assertion, a scrape
+/// that cannot connect, the deadline --- unwinds straight past `child.kill()` and leaves a
+/// `sankhya-server` running for the rest of the machine's uptime, one per failed run,
+/// ticking maintenance every second.
+///
+/// Worse than a stray process: `TempDir` **is** dropped on unwind, so the warehouse, the data
+/// directory and the configuration are deleted out from under a process that still holds the
+/// warehouse lock and is still writing. That is a live writer against a warehouse that no
+/// longer exists --- the second-writer failure this repository has a build check for, arriving
+/// through a test whose own subject is a lock.
+struct Killed(Child);
+
+impl Drop for Killed {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
 
 /// Start the binary and return it alongside the metrics address it announced.
 ///
 /// The port is read from the banner rather than fixed, because a fixed port makes two tests
 /// running at once fail on `AddrInUse` --- for a reason that has nothing to do with either.
-fn started(warehouse: &std::path::Path, data: &std::path::Path) -> (Child, String) {
+fn started(warehouse: &std::path::Path, data: &std::path::Path) -> (Killed, String) {
     let config = warehouse.parent().expect("a parent").join("application.yaml");
     let mut yaml = String::new();
     yaml.push_str(&format!("warehouse:\n  path: {}\n", warehouse.display()));
@@ -49,22 +75,24 @@ fn started(warehouse: &std::path::Path, data: &std::path::Path) -> (Child, Strin
         .stderr(Stdio::piped())
         .spawn()
         .expect("the server binary starts");
+    // Wrapped before anything can fail, so every path below --- including the two panics in
+    // this function --- goes through `Drop` rather than through an explicit kill somebody has
+    // to remember at each `return`.
+    let mut child = Killed(child);
 
     // Read the banner line by line rather than to end-of-file: the server does not exit, so
     // `read_to_string` would block for ever.
-    let stdout = child.stdout.take().expect("piped stdout");
+    let stdout = child.0.stdout.take().expect("piped stdout");
     let mut lines = BufReader::new(stdout).lines();
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut banner = String::new();
     let address = loop {
         if Instant::now() >= deadline {
-            let _ = child.kill();
             panic!("the server never announced a metrics port. It printed:\n{banner}");
         }
         let Some(Ok(line)) = lines.next() else {
-            let _ = child.kill();
             let mut why = String::new();
-            if let Some(mut err) = child.stderr.take() {
+            if let Some(mut err) = child.0.stderr.take() {
                 err.read_to_string(&mut why).ok();
             }
             panic!("the server stopped before announcing a metrics port:\n{banner}\n{why}");
@@ -114,38 +142,66 @@ fn the_running_server_publishes_what_maintenance_has_done() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let warehouse = dir.path().join("warehouse");
     std::fs::create_dir_all(&warehouse).expect("a warehouse");
-    let data = dir.path().join("data");
-    let (mut child, address) = started(&warehouse, &data);
+    // Real tables, because the assertion that pins the publisher is a **count** of them.
+    // An empty warehouse leaves every maintenance number at zero, and zero is what the
+    // metrics registry renders for an unlabelled metric nothing has recorded --- so on an
+    // empty warehouse this whole test passes with the publisher deleted.
+    common::write_warehouse(&warehouse);
+    let tables = sankhya_maintenance::tables_under(&warehouse).len();
+    assert!(tables > 0, "the fixture must give maintenance something to look after");
 
-    // The counters exist from the first scrape --- they are unlabelled, so a zero series is
-    // knowable before anything has happened, and `absent()` therefore means the exporter is
-    // broken rather than that maintenance is healthy.
+    let data = dir.path().join("data");
+    let (_child, address) = started(&warehouse, &data);
+
+    // The tick counter rising proves a cycle happened. It does not prove this server
+    // published anything: the metric is unlabelled, so it reads zero from startup either
+    // way, and only the **rise** is evidence.
+    let later = until(&address, "the tick counter rose", |body| {
+        value(body, "sankhya_maintenance_ticks_total").unwrap_or(0.0) > 0.0
+    });
+
+    // And this is what pins the rest of the block. All five values are published together;
+    // four of them are legitimately zero on a healthy idle warehouse and therefore
+    // indistinguishable from the zero series, but the table count is not. A publisher that
+    // sets only the tick counter --- or none of them --- fails here.
+    assert_eq!(
+        value(&later, "sankhya_maintenance_tables"),
+        Some(tables as f64),
+        "the warehouse holds {tables} table(s) and the scrape does not say so:\n{later}"
+    );
+    assert_eq!(
+        value(&later, "sankhya_maintenance_failures_total"),
+        Some(0.0),
+        "a healthy warehouse must not fail a pass:\n{later}"
+    );
+}
+
+#[test]
+fn every_maintenance_counter_carries_a_series_before_anything_happens() {
+    // A separate test, because it is a separate claim and the one above used to make both
+    // --- badly. Asserting that the four counters carry *a* series proves the metrics are
+    // declared and scrape-visible; it says **nothing** about the publisher, because an
+    // unlabelled metric is rendered at zero from startup whether or not anything records
+    // into it. Keeping the two apart is what stops one of them quietly standing in for the
+    // other.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let warehouse = dir.path().join("warehouse");
+    std::fs::create_dir_all(&warehouse).expect("a warehouse");
+    let data = dir.path().join("data");
+    let (_child, address) = started(&warehouse, &data);
+
     let first = scrape(&address);
     for metric in [
         "sankhya_maintenance_ticks_total",
         "sankhya_maintenance_bytes_reclaimed_total",
         "sankhya_maintenance_declined_total",
         "sankhya_maintenance_failures_total",
+        "sankhya_maintenance_tables",
     ] {
         assert!(
             value(&first, metric).is_some(),
-            "{metric} carried no series at all:\n{first}"
+            "{metric} carried no series at all, so `absent()` cannot mean the exporter is \
+             broken:\n{first}"
         );
     }
-
-    // And then they move, which is the half a declaration cannot prove. A tick counter that
-    // stays at zero for ever is exactly what a maintainer that never ran looks like, and it
-    // is what this server exported before the publisher existed.
-    let later = until(&address, "the tick counter rose", |body| {
-        value(body, "sankhya_maintenance_ticks_total").unwrap_or(0.0) > 0.0
-    });
-    assert_eq!(
-        value(&later, "sankhya_maintenance_failures_total"),
-        Some(0.0),
-        "an empty warehouse must not fail a pass:\n{later}"
-    );
-
-    let _ = child.kill();
-    let _ = child.wait();
 }
-

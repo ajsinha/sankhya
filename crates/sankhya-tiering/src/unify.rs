@@ -184,7 +184,10 @@ impl fmt::Display for Unservable {
 /// published as codes this build produces, with runbooks the build requires to exist, and
 /// nothing converted either condition onto them. Both are detected here. Neither was
 /// reportable, so an alert rule on either was permanently silent while the condition it names
-/// occurred and refused queries.
+/// would occur. Neither condition has occurred in this build --- nothing runs the tiering
+/// planner --- so the alert was silent about a thing that was also not happening. That is a
+/// weaker fault than the splice's, where the condition **does** occur, and the paragraph this
+/// was adapted from said so about the splice rather than about here.
 ///
 /// The detail is the `Display` text rather than a summary, because it names the table and
 /// **every** uncovered sub-range --- and the first gap alone is what turns a systematic loss

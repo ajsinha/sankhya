@@ -223,7 +223,10 @@ fn a_purge_runs_end_to_end_and_is_rolled_back_out_of_quarantine() {
     assert!(quarantine.held().is_empty());
 
     // and the table is whole again: the whole domain is hot, and nothing is archived
-    let after = registry.reconcile(&[]).servable("entries").expect("still clean");
+    let after = registry
+        .reconcile(&[("entries".to_string(), DOMAIN)])
+        .servable("entries")
+        .expect("still clean");
     let whole = plan(DOMAIN, &[DOMAIN], &registry, &after, "snap-2", DOMAIN).expect("no gap");
     assert_eq!(whole.segments.len(), 1);
     assert_eq!(whole.segments[0].read, Read::Source);

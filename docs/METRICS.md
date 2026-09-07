@@ -149,6 +149,18 @@ Table-passes that declined to reclaim because the pin set could not be establish
 | Labels | none |
 | Pages | no |
 
+## `sankhya_maintenance_tables`
+
+Tables the maintenance thread is looking after right now. The set is discovered at the top of every cycle, so a table created after the server started appears here once it has been adopted.
+
+| | |
+|---|---|
+| Type | gauge |
+| Unit | count |
+| Group | maintenance debt |
+| Labels | none |
+| Pages | no |
+
 ## `sankhya_maintenance_failures_total`
 
 Table-passes that failed. Above zero means compaction and reclamation are not happening for at least one table, and file counts are rising unopposed. Counted per table per cycle, so it is not comparable with the tick count.

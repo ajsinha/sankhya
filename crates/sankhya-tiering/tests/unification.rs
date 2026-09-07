@@ -52,13 +52,34 @@ fn archived(from: i64, until: i64) -> ArchiveEntry {
 /// planner with the two authorities already agreeing could not reach the case the rule exists
 /// for.
 fn witness(registry: &Registry) -> Servable {
-    registry.reconcile(&[]).servable("entries").expect("nothing was found")
+    // `&[]` is the catalog saying nothing is hot, which is a real reconciliation input and
+    // not a shortcut --- the registry's own archived entries name the table, so it *is*
+    // examined. What used to be wrong is that this line also worked against an **empty**
+    // registry, where nothing names the table at all: `servable` asked only whether some
+    // conflict named it, and no conflicts means no conflict names it. A table nobody
+    // reconciled was servable, in the crate's own helper.
+    registry
+        .reconcile(&[])
+        .servable("entries")
+        .expect("the registry names this table, and nothing was found")
+}
+
+/// A witness for a table the catalog holds entirely hot and the registry has never heard of.
+///
+/// The empty-registry case, which needs the catalog to name the table because nothing else
+/// does. Separate from [`witness`] rather than folded into it, so that the two situations
+/// stay visibly different: one authority knows this table, and it is the other one.
+fn witness_for_a_hot_table(registry: &Registry) -> Servable {
+    registry
+        .reconcile(&[("entries".to_string(), DOMAIN)])
+        .servable("entries")
+        .expect("the catalog names this table, and nothing was found")
 }
 
 #[test]
 fn a_predicate_entirely_in_the_hot_tier_is_one_source_segment() {
     let registry = Registry::new();
-    let servable = witness(&registry);
+    let servable = witness_for_a_hot_table(&registry);
     let plan = plan(
         Range::new(0, 100),
         &[Range::new(0, 1_000)],
@@ -165,6 +186,30 @@ fn a_gap_reports_the_code_its_runbook_is_indexed_by() {
 }
 
 #[test]
+fn a_table_nobody_reconciled_is_refused_like_one_that_conflicts() {
+    // The half `servable` got wrong, and the half no test asked about. `all` over an empty
+    // conflict list is `true`, so a reconciliation that examined **nothing** handed out a
+    // witness for any table anybody named --- which is the forgetting the witness type
+    // exists to make impossible.
+    let registry = Registry::from_entries(vec![archived(0, 100)]).unwrap();
+    let reconciled = registry.reconcile(&[]);
+
+    // The registry names `entries`, so that one was examined and is clean.
+    assert!(reconciled.servable("entries").is_some());
+
+    // Nothing names `somewhere_else`. It has no conflicts either --- and that is exactly
+    // the state that used to grant a witness.
+    assert!(
+        reconciled.servable("somewhere_else").is_none(),
+        "a check that has not run is not evidence that it would pass"
+    );
+    let refusal = reconciled
+        .servable_or_refuse("somewhere_else")
+        .expect_err("unexamined");
+    assert!(matches!(refusal, Unservable::NotReconciled { .. }), "{refusal:?}");
+}
+
+#[test]
 fn an_unreconciled_table_is_a_different_code_from_a_gap() {
     // `SNK-S0002`, and deliberately not `SNK-S0001`. A gap is a question about one range of
     // the data; this says the catalog and the registry cannot both be believed, which makes
@@ -214,7 +259,7 @@ fn adjacent_pieces_from_the_same_place_become_one_segment() {
     // Two hot extents meeting at a boundary are one read, and a plan that says otherwise is a
     // plan somebody has to explain.
     let registry = Registry::new();
-    let servable = witness(&registry);
+    let servable = witness_for_a_hot_table(&registry);
     let plan = plan(
         Range::new(0, 200),
         &[Range::new(0, 100), Range::new(100, 200)],
@@ -234,7 +279,7 @@ fn a_predicate_covering_the_whole_domain_is_flagged() {
     // The tiering equivalent of a missing partition filter. It should surface as a warning long
     // before it surfaces as a forty-minute query.
     let registry = Registry::new();
-    let servable = witness(&registry);
+    let servable = witness_for_a_hot_table(&registry);
     let whole = plan(DOMAIN, &[DOMAIN], &registry, &servable, "s", DOMAIN).unwrap();
     assert!(whole.whole_domain);
 
@@ -248,7 +293,7 @@ fn the_plan_records_the_snapshot_both_authorities_were_read_in() {
     // Two reads at two snapshots produce a plan that reads a moving range twice or not at all,
     // depending on which way it moved.
     let registry = Registry::new();
-    let servable = witness(&registry);
+    let servable = witness_for_a_hot_table(&registry);
     let plan =
         plan(Range::new(0, 10), &[DOMAIN], &registry, &servable, "snap-77", DOMAIN).unwrap();
     assert_eq!(plan.snapshot, "snap-77");
@@ -298,7 +343,14 @@ proptest! {
         for (at, span) in &cold {
             let _ = registry.record(archived(*at, at + span));
         }
-        let servable = registry.reconcile(&[]).servable("entries").expect("nothing found");
+        // The generator may produce no archived ranges at all, in which case the registry has
+        // never heard of this table and the catalog is the authority that names it. Both
+        // arms reconcile; neither takes a witness for a table nobody looked at.
+        let servable = if registry.entries().is_empty() {
+            witness_for_a_hot_table(&registry)
+        } else {
+            witness(&registry)
+        };
 
         let predicate = Range::new(from, from + width);
         match plan(predicate, &attached, &registry, &servable, "s", DOMAIN) {

@@ -875,6 +875,14 @@ async fn main() -> std::io::Result<()> {
                         &[],
                         handle.failed() as f64,
                     );
+                    // A gauge rather than a counter, and the only one of the five that is
+                    // not zero on a healthy idle warehouse --- which is what lets a test
+                    // prove this block runs at all.
+                    metrics.set(
+                        &catalogue::MAINTENANCE_TABLES,
+                        &[],
+                        handle.maintaining() as f64,
+                    );
                 }
                 tokio::time::sleep(every).await;
             }
