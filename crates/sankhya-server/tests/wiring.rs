@@ -944,3 +944,85 @@ async fn the_columnar_door_still_refuses_an_unnamed_caller() {
     let flying = flight::Flying::new(std::sync::Arc::new(server));
     assert!(flying.caller_of(&tonic::metadata::MetadataMap::new()).is_err());
 }
+
+#[test]
+fn a_lock_clause_is_refused_rather_than_answered_with_rows() {
+    // `SELECT ... FOR UPDATE` reached this server as an ordinary projection and was answered
+    // with rows and no lock of any kind --- the one statement whose entire purpose is mutual
+    // exclusion. Appended here rather than given its own file because this binary already
+    // brings `driver.rs` in, and a `#[cfg(test)]` module inside a `#[path]`-shared file is
+    // compiled into all thirteen binaries that share it.
+    let refused = driver::run_session_statement("SELECT * FROM t FOR UPDATE")
+        .expect("a lock clause is a statement this layer answers")
+        .expect_err("and the answer is a refusal");
+    assert!(
+        format!("{}", refused.message).contains("no lock manager"),
+        "the refusal says why: {}",
+        refused.message
+    );
+}
+
+#[test]
+fn a_setting_this_build_cannot_honour_is_refused() {
+    for sql in [
+        "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+        "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ",
+        "SET ROLE analyst",
+        "SET SESSION AUTHORIZATION analyst",
+    ] {
+        let answered = driver::run_session_statement(sql).expect("this layer answers a SET");
+        assert!(answered.is_err(), "accepted quietly: {sql}");
+    }
+}
+
+#[test]
+fn an_ordinary_setting_is_still_a_no_op() {
+    // Refusing `SET` broadly would break the connection handshake of every driver, which is a
+    // worse defect than the one being fixed.
+    for sql in [
+        "SET application_name = 'psql'",
+        "SET extra_float_digits = 3",
+        "SET SESSION application_name = 'jdbc'",
+        "SET client_encoding TO 'UTF8'",
+    ] {
+        let answered = driver::run_session_statement(sql).expect("this layer answers a SET");
+        assert!(answered.is_ok(), "refused a harmless setting: {sql}");
+    }
+}
+
+#[test]
+fn a_row_that_says_for_update_is_still_selectable() {
+    // The clause is found in the statement's text, because the plan no longer carries it:
+    // `datafusion-sql` destructures `locks` away during parsing. The one way a textual check
+    // like that goes wrong is refusing a statement over data that happens to contain the
+    // words, so quoted literals are stripped before looking.
+    //
+    // Asserted through the session layer rather than against the helper directly. A plain
+    // `SELECT` is not a session statement, so `None` here is the layer saying "not mine" ---
+    // which is exactly what must happen when the words are only data.
+    for sql in [
+        "SELECT * FROM notes WHERE body = 'for update'",
+        "SELECT 'FOR SHARE' AS why FROM t",
+        "SELECT * FROM t WHERE reason = 4",
+    ] {
+        assert!(
+            driver::run_session_statement(sql).is_none(),
+            "a row containing the words was mistaken for a lock clause: {sql}"
+        );
+    }
+}
+
+#[test]
+fn every_spelling_of_a_row_lock_is_refused() {
+    for sql in [
+        "SELECT balance FROM accounts WHERE id = 42 FOR UPDATE",
+        "select * from t for share",
+        "SELECT * FROM t FOR NO KEY UPDATE",
+        "SELECT * FROM t FOR KEY SHARE",
+        "SELECT * FROM t FOR UPDATE OF t NOWAIT",
+    ] {
+        let answered = driver::run_session_statement(sql)
+            .unwrap_or_else(|| panic!("a lock clause was not seen at all: {sql}"));
+        assert!(answered.is_err(), "answered with rows and no lock: {sql}");
+    }
+}

@@ -20,21 +20,6 @@ use sankhya_api_pg::session::{QueryFailure, QueryResult};
 
 use crate::wiring::refusal;
 
-/// Answer a statement a driver sends around a query, or `None` if it is not one.
-///
-/// # Why these are answered rather than refused
-///
-/// A driver's first act on a connection is a handful of statements it does not think of as
-/// statements: a float-precision setting, an application name, a transaction it will
-/// immediately commit. Refusing them is refusing the driver, which makes this door useless
-/// to every client it was built for.
-///
-/// # Why `ROLLBACK` is not among them
-///
-/// Because it is the one whose meaning we would be faking. This server writes nothing, so
-/// `BEGIN` and `COMMIT` are true statements about a transaction of one statement --- but a
-/// client that asks to *undo* and is told it worked has been lied to about the only thing
-/// it wanted. It is refused, and the refusal says why.
 /// The row-locking clause a statement carries, if it carries one.
 ///
 /// Text rather than plan, because the plan does not have it: `datafusion-sql` destructures
@@ -73,7 +58,21 @@ fn names_a_lock(sql: &str) -> Option<&'static str> {
     None
 }
 
-
+/// Answer a statement a driver sends around a query, or `None` if it is not one.
+///
+/// # Why these are answered rather than refused
+///
+/// A driver's first act on a connection is a handful of statements it does not think of as
+/// statements: a float-precision setting, an application name, a transaction it will
+/// immediately commit. Refusing them is refusing the driver, which makes this door useless
+/// to every client it was built for.
+///
+/// # Why `ROLLBACK` is not among them
+///
+/// Because it is the one whose meaning we would be faking. This server writes nothing, so
+/// `BEGIN` and `COMMIT` are true statements about a transaction of one statement --- but a
+/// client that asks to *undo* and is told it worked has been lied to about the only thing
+/// it wanted. It is refused, and the refusal says why.
 pub(crate) fn run_session_statement(
     sql: &str,
 ) -> Option<Result<QueryResult, QueryFailure>> {
@@ -193,74 +192,4 @@ pub(crate) fn run_session_statement(
     // nothing here reads a session setting. A setting that *did* change an answer would
     // have to be refused instead, and there is none.
     Some(Ok(QueryResult { fields: Vec::new(), rows: Vec::new(), tag: tag.to_owned() }))
-}
-
-#[cfg(test)]
-mod lock_clauses {
-    #![allow(clippy::expect_used, clippy::panic)]
-    use super::{names_a_lock, run_session_statement};
-
-    #[test]
-    fn every_spelling_of_a_row_lock_is_seen() {
-        for (sql, expected) in [
-            ("SELECT balance FROM accounts WHERE id = 42 FOR UPDATE", "FOR UPDATE"),
-            ("select * from t for share", "FOR SHARE"),
-            ("SELECT * FROM t FOR NO KEY UPDATE", "FOR NO KEY UPDATE"),
-            ("SELECT * FROM t FOR KEY SHARE", "FOR KEY SHARE"),
-            ("SELECT * FROM t FOR UPDATE OF t NOWAIT", "FOR UPDATE"),
-        ] {
-            assert_eq!(names_a_lock(sql), Some(expected), "{sql}");
-        }
-    }
-
-    #[test]
-    fn a_row_that_says_for_update_is_still_selectable() {
-        // The clause is found in text because the plan no longer carries it, so the one way
-        // this can go wrong is refusing a statement over data that happens to contain the
-        // words. Literals are stripped before looking.
-        assert_eq!(names_a_lock("SELECT * FROM notes WHERE body = 'for update'"), None);
-        assert_eq!(names_a_lock("SELECT 'FOR SHARE' AS why FROM t"), None);
-        // And an ordinary `FOR` that begins nothing.
-        assert_eq!(names_a_lock("SELECT * FROM t WHERE reason = 4"), None);
-    }
-
-    #[test]
-    fn a_lock_clause_is_refused_rather_than_answered_with_rows() {
-        let refused = run_session_statement("SELECT * FROM t FOR UPDATE")
-            .expect("a lock clause is a statement this layer answers")
-            .expect_err("and the answer is a refusal");
-        assert!(
-            format!("{}", refused.message).contains("no lock manager"),
-            "the refusal says why: {}",
-            refused.message
-        );
-    }
-
-    #[test]
-    fn a_setting_this_build_cannot_honour_is_refused() {
-        for sql in [
-            "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE",
-            "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ",
-            "SET ROLE analyst",
-            "SET SESSION AUTHORIZATION analyst",
-        ] {
-            let answered = run_session_statement(sql).expect("this layer answers a SET");
-            assert!(answered.is_err(), "accepted quietly: {sql}");
-        }
-    }
-
-    #[test]
-    fn an_ordinary_setting_is_still_a_no_op() {
-        // Refusing `SET` broadly would break the handshake of every driver, which is a worse
-        // defect than the one being fixed.
-        for sql in [
-            "SET application_name = 'psql'",
-            "SET extra_float_digits = 3",
-            "SET SESSION application_name = 'jdbc'",
-            "SET client_encoding TO 'UTF8'",
-        ] {
-            let answered = run_session_statement(sql).expect("this layer answers a SET");
-            assert!(answered.is_ok(), "refused a harmless setting: {sql}");
-        }
-    }
 }
