@@ -55,9 +55,6 @@ exception will pass.
 | `BEGIN` / `COMMIT` | No-ops. There is no transaction object. Two `SELECT`s inside one `BEGIN`/`COMMIT` can be answered at two different table versions — a **demonstrable non-repeatable read** |
 | `ROLLBACK` | Refused with `25P01`. This is deliberate, and it interacts badly with the row below |
 | The `ReadyForQuery` status byte | Hardcoded to `'I'`. After an error the server reports idle rather than `'E'`, so a client's standard recovery — send `ROLLBACK` — meets the `25P01` refusal and raises a **second** exception from the error-recovery path |
-| `SELECT … FOR UPDATE` | Returns rows and takes **no lock of any kind**. The clause is discarded during planning |
-| `SET TRANSACTION ISOLATION LEVEL …` | Accepted, discarded. Also `SET SESSION CHARACTERISTICS …`, which is what JDBC's `setTransactionIsolation()` emits |
-| `SET ROLE` | Accepted, **no privilege change**. The principal is fixed at authentication |
 | `SHOW TRANSACTION ISOLATION LEVEL` | Returns an empty string |
 | `server_version` | Reports **17.0**, which tells every client library that MVCC, savepoints, `COPY` and typed prepared parameters are available |
 | Bound parameters | String-substituted. pgjdbc sends `int4` in **binary** by default, and those four bytes become a quoted text literal — a cast error on a value you never typed, or silently zero rows against a text column |
@@ -137,6 +134,8 @@ If any of these reproduces, it is a regression and worth a defect immediately.
 | The audit said `password` for unverified logins | With `require_password` and no credentials, the chain must say `unverified` |
 | Every standard error and p-value | `regress_stderr`/`regress_tstat`/`regress_pvalue` |
 | `R²` for a constant response | Now **NULL**, on both `vec_regression_r2` and `regress_r2` |
+| `SELECT … FOR UPDATE` | Now refused with `0A000`. It used to return rows and take no lock |
+| `SET TRANSACTION ISOLATION LEVEL`, `SET SESSION CHARACTERISTICS`, `SET ROLE`, `SET SESSION AUTHORIZATION` | Now refused with `0A000`. Every other `SET` is still a no-op, deliberately: refusing broadly would break the handshake of every driver |
 
 ---
 
