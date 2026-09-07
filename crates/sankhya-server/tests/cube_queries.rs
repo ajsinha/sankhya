@@ -1011,6 +1011,11 @@ async fn a_dice_is_not_answered_from_a_cuboid_that_rolled_its_dimension_away() {
         2,
         "the period breakdown survived the slice, so the cuboid that rolled it away was not used"
     );
+    assert_eq!(
+        first_column(&sliced, "materialised"),
+        vec!["t".to_string(); periods.len()],
+        "and the column says so: the base cuboid served this, which is what `from_cuboid` is for"
+    );
 }
 
 // --- §11.6's three levels of control -----------------------------------------

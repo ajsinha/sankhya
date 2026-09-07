@@ -3267,11 +3267,17 @@ CATALOGUE = [
      "                        CUBOID_ROW_BUDGET,",
      "sankhya-server"),
 
+    # Two sites, deliberately. `cube_slice` used to pass a literal `false` here while
+    # `cube_rollup` reported what happened; making the slice honest gave this entry a second
+    # site, and both are pinned --- by `cube_queries.rs`'s roll-up assertions and by
+    # `a_dice_is_not_answered_from_a_cuboid_that_rolled_its_dimension_away`, which now asserts
+    # the column rather than comparing a constant against itself.
     ("cube-sql: report the caller's materialise argument instead of what happened",
      "crates/sankhya-cube-sql/src/functions.rs",
      "        let materialised = published.from_cuboid;",
      "        let materialised = false;",
-     "sankhya-server"),
+     "sankhya-server",
+     2),
 
     ("server: serve the unrestricted cuboid to a caller whose policy withholds rows",
      "crates/sankhya-server/src/wiring.rs",
@@ -3371,8 +3377,8 @@ CATALOGUE = [
 
     ("server: never read a materialised cuboid, leaving materialisation write-only",
      "crates/sankhya-server/src/wiring.rs",
-     "                if let Some(published) = scopes\n                    .into_iter()\n                    .find_map(|under| {\n                        self.from_a_cuboid(cube, measure, under, snapshot, session, &needed)\n                    })\n                {\n                    catalog.publish(cube.name(), published.clone());\n                    self.hydrated.put(key, published);\n                    continue;\n                }",
-     "                let _ = scopes;",
+     "                if let Some(published) = scopes\n                    .into_iter()\n                    .filter(|_| may_use_a_cuboid)\n                    .find_map(|under| {\n                        self.from_a_cuboid(cube, measure, under, snapshot, session, &needed)\n                    })\n                {\n                    catalog.publish(cube.name(), published.clone());\n                    self.hydrated.put(key, published);\n                    continue;\n                }",
+     "                let _ = (scopes, may_use_a_cuboid);",
      "sankhya-server"),
 
     ("cube: let a stored cuboid claim completeness it never measured",
@@ -3563,11 +3569,15 @@ CATALOGUE = [
      "",
      "sankhya-cube"),
 
+    # Two sites: `roll_up` had this refusal and `consolidate_along` was given it when the
+    # order it demanded stopped being ignored. Both are pinned by tests in
+    # `crates/sankhya-cube/tests/navigate.rs`.
     ("cube: place a member missing from the stated order rather than refusing",
      "crates/sankhya-cube/src/navigate.rs",
      "                    return Err(Refused::MemberNotOrdered {\n                        dimension: dimension.to_string(),\n                        member: member.to_string(),\n                    })",
      "                    0",
-     "sankhya-cube"),
+     "sankhya-cube",
+     2),
 
     ("cube: treat an undeclared dimension as a refusal rather than a definition gap",
      "crates/sankhya-cube/src/navigate.rs",
@@ -3679,10 +3689,14 @@ CATALOGUE = [
      "            let _ = out.add(coarser, exact.to_f64());\n            continue;",
      "sankhya-cube"),
 
+    # Named by the map it gathers into, because `consolidate_along` now carries the same
+    # shape. Only the roll-up site is mutated here: nothing yet asserts that a partial
+    # aggregate survives a *consolidation* unrounded, so mutating that one would record a
+    # survivor rather than prove a defence.
     ("cube: roll a partial aggregate up as its rounded value",
      "crates/sankhya-cube/src/navigate.rs",
-     "        if contributions.rule_used().is_some() {\n            slot.push((at, contributions.exact_sum()));",
-     "        if contributions.rule_used().is_some() {\n            slot.push((at, Exact::of(&[contributions.exact_sum().to_f64()])));",
+     "        let slot = gathered.entry(coarser).or_default();\n        if contributions.rule_used().is_some() {\n            slot.push((at, contributions.exact_sum()));",
+     "        let slot = gathered.entry(coarser).or_default();\n        if contributions.rule_used().is_some() {\n            slot.push((at, Exact::of(&[contributions.exact_sum().to_f64()])));",
      "sankhya-cube"),
 
     ("cube: let a reduced cell answer with whatever rule is asked for",
