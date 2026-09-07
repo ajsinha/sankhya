@@ -302,10 +302,11 @@ analytical side, which is precisely this path. `Onboarded` carries no date axis,
 automatic layout selection `ARCHITECTURE` §9.8 describes is absent rather than unwired.
 
 **And there is no timestamp to derive one from.** `_sankhya_commit_ts` is declared as a
-system column on every ingested table and written as literal `0` for every row —
-`encode.rs` appends zero, and `Mutation` carries `commit_lsn` and no timestamp at all. The
-comment beside it says the value is "recorded for human reading only", which it is not: it is
-recorded for nothing. So an ingest date axis would have to come from the wall clock at write
+system column on every ingested table and is **written null**, because `Mutation` carries
+`commit_lsn` and no timestamp at all --- a commit time lives on the transaction's `BEGIN` in
+a replication stream, and nothing here reads one. It was written as a literal `0` until
+2026-09-06, which is a wrong instant a reader cannot tell from a real one; the column is
+nullable now and says nothing rather than saying 1970. So an ingest date axis would have to come from the wall clock at write
 time, and that is a decision to take deliberately rather than to discover halfway through the
 change.
 
@@ -3168,7 +3169,7 @@ published in `METRICS.md` rather than filled.
 
 **Runbooks are enforced, not aspirational.** A pageable metric's `runbook` field is not an
 `Option`, and the check requires the file to exist *and* to carry its Symptom / What is
-actually wrong / What to do sections. Eight exist. `M6`'s fifth exit criterion holds rather
+actually wrong / What to do sections. Ten exist. `M6`'s fifth exit criterion holds rather
 than being something to audit later.
 
 **A declared metric with no sample is not a metric.** The registry emitted `# HELP` and
@@ -3179,7 +3180,8 @@ started server seven of the declared metrics were in that state, including
 `sankhya_audit_unwritten_total`, the one page whose lead time is *none*. A metric whose labels
 are all closed now reads zero from startup, once per combination; one labelled by a
 deployment-scoped identifier does not, because inventing a table name is worse than silence.
-Ten of the fifteen carry a series before anything has happened, and `absent()` is now a rule
+Fifteen of the sixteen carry a series before anything has happened --- every metric but the
+one labelled by table, whose values are discovered --- and `absent()` is now a rule
 worth writing.
 
 **Four maintenance counters existed and reached nobody.** `MaintenanceHandle` has counted
@@ -3878,9 +3880,18 @@ documents is one nobody finds.
 | **The date axis** | `sank_data_date`, of type `DATE`, declared per table and never defaulted per row. Granularity declarable. Nothing yet writes partitioned directories — the declaration exists and the partitioning does not |
 | **Publishing and repair** | A library and CLI for writing an external table, a verifier that does not assume it was used, and repair that derives rather than guesses |
 
-Not built, deliberately: QR, SVD and eigendecomposition. They are where an in-house
-implementation is worse than none, because a subtly wrong SVD produces plausible singular
-values.
+**Correction, 2026-09-07.** This paragraph said *"not built, deliberately: QR, SVD and
+eigendecomposition"*, and they ship --- `crates/sankhya-math/src/decompose.rs`, registered as
+`mat_qr_q`, `mat_qr_r`, `mat_eigenvalues`, `mat_eigenvectors`, `mat_singular_values` and
+`mat_cholesky`. `FEA-05` retracted that refusal in eight documents and this was a ninth,
+3,700 lines below the entry that lists the places it corrected --- which is the defect class
+`FEA-05` is about, surviving inside its own remediation.
+
+The original reasoning was not wrong and is what shaped the scope: the eigenproblem is the
+**symmetric** one and refuses a non-symmetric matrix rather than symmetrising it, and
+singular *values* come through the Gram matrix with a stated resolution floor of about
+`1e-8` of the largest, with no singular vectors. [ADR-0005](adr/0005-array-columns-and-numeric-kernels.md)
+carries the amendment.
 
 ---
 

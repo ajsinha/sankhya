@@ -24,10 +24,13 @@ use std::fmt;
 ///
 /// # What `Mergeable` does and does not mean today
 ///
-/// It means the *source* will emit updates and deletes for this table. It does **not** select
-/// a fold. `sankhya_readpath::ResolvedTable` implements one --- `DISTINCT ON (key)` by
-/// descending position, then the deletion filter --- and it takes its key from a `Capability`
-/// the caller supplies, never from this value; nothing outside its own tests constructs one.
+/// It means the *source* **can** emit updates and deletes for this table --- `can`, not `will`,
+/// because it is decided by whether the rows are identifiable, which is what the variant's own
+/// doc below says and what an earlier version of this sentence overstated.
+///
+/// It does **not** select a fold. `sankhya_readpath::ResolvedTable` implements one ---
+/// `DISTINCT ON (key)` by descending position, then the deletion filter --- and it takes a bare
+/// slice of column names, never this value; nothing outside its own tests constructs one.
 /// So a served table holds every historical version of every row plus a tombstone per delete,
 /// and a plain scan returns all of them.
 ///

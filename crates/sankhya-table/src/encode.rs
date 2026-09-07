@@ -103,8 +103,14 @@ pub fn encode_batch(
         // `BEGIN` in a replication stream, a `Mutation` does not carry one, and nothing in
         // this build reads a replication stream (`ING-00`). This was `append_value(0)` ---
         // every captured row stamped `1970-01-01T00:00:00Z`, which a reader cannot
-        // distinguish from a real instant, and which a `WHERE _sankhya_commit_ts > ...`
-        // silently excludes. `ING-09`.
+        // distinguish from a real instant.
+        //
+        // Precisely which predicates it broke is worth stating, because the obvious example
+        // is the one where nothing improves: `> <a modern instant>` excluded every row under
+        // the epoch and excludes every row under a null. The harm was the other direction ---
+        // `< <a modern instant>` **included** every row, `= '1970-01-01'` matched all of
+        // them, and `min`, `max` and `date_trunc` answered 1970 as though it were a fact.
+        // Those are wrong values presented as values; a null is an absence. `ING-09`.
         ts.append_null();
         op.append_value(match m.op {
             sankhya_cdc_apply::Op::Insert => "I",

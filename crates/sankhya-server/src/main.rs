@@ -851,9 +851,16 @@ async fn main() -> std::io::Result<()> {
     // late is a counter; a gauge would not survive the same treatment.
     if let Some(handle) = maintenance.clone() {
         let metrics = server.metrics();
-        let every = configured_interval;
         tokio::spawn(async move {
             loop {
+                // Re-read the interval every pass rather than capturing it once. A `SIGHUP`
+                // that changes `maintenance.interval` reconfigures the maintenance thread ---
+                // it consults the shared policy at the top of every cycle --- and a publisher
+                // holding the boot value would go on refreshing at the old cadence. An
+                // operator following `compaction-debt`, dropping the interval from ten minutes
+                // to thirty seconds and watching the tick counter to confirm it, would see
+                // nothing change for ten minutes.
+                let every = handle.policy().interval;
                 // Absolute totals rather than deltas. The handle already holds the running
                 // count, and adding a delta computed here would drift the moment a publish
                 // was missed --- which is exactly what a restarted or lagging task does.

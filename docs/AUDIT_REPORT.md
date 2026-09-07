@@ -1023,13 +1023,15 @@ captured row.
 > implements the fold, as `DISTINCT ON (key)` by descending position followed by the deletion
 > filter --- in that order, because dropping tombstones first leaves the previous version to win
 > the distinct and a deleted row returns holding the values it had before it was deleted. It is
-> built, property-tested, and **constructed by nothing outside its own tests**, which is the same
+> built, covered by eleven example-based tests --- **not** property tests; `sankhya-readpath`
+> does not depend on `proptest` --- and **constructed by nothing outside those tests**, which is the same
 > shape as `SNK-S0001`: not missing, unreached. The remaining work is one wiring decision rather
 > than an algorithm, and it belongs with the capture runtime that would make a table need it.
 >
 > **The rest of the finding stands.**
 > [`ARCHITECTURE.md`](ARCHITECTURE.md) §3.8 now says it where a reader looks, rather than only
-> here: no reader folds a change log, a table receiving updates holds every version plus a
+> here --- and says it in the corrected form, which this sentence did not: **no served table**
+> folds a change log. A table receiving updates holds every version plus a
 > tombstone per delete, and this costs nothing today only because nothing captures. It is
 > written down because the day a capture runtime exists is the day a `SELECT *` silently
 > returns a whole history, and a reader who learns that from the data has already believed a

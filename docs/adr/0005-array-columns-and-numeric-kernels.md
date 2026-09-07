@@ -111,10 +111,11 @@ these operations are wanted *now* and are tractable without one. Multiplication 
 dot products and inherits their determinism directly; LU's arithmetic is a fixed sequence
 once the pivots are chosen.
 
-**Amended 2026-09-02**: QR, the symmetric eigenproblem and singular values are built,
-`crates/sankhya-math/src/decompose.rs`. The refusal above stood for six days after it stopped
-being true, restated in eight documents, and a stated refusal is the one thing a reader may
-treat as permanent --- so it is retracted here rather than quietly outgrown. `FEA-05`.
+**Amended 2026-09-06**: QR, the symmetric eigenproblem and singular values are built,
+`crates/sankhya-math/src/decompose.rs`. The refusal above stood for four days after it stopped
+being true --- the decompositions landed on 2026-09-02 and this amendment was written on the
+6th --- restated in eight documents, and a stated refusal is the one thing a reader may treat
+as permanent, so it is retracted here rather than quietly outgrown. `FEA-05`.
 
 The original reasoning was that an in-house decomposition is worse than none, because a subtly
 wrong SVD produces plausible singular values. That argument was not wrong and is what shaped

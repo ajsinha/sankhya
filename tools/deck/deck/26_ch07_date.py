@@ -29,7 +29,7 @@ h = table(sl, [
     ["", "State"],
     ["Carried by every table the publish path writes", "**held**, and refused at publication if absent"],
     ["Carried by rows arriving on the streaming path", "**not held** — `FR-STORE-20` is unmet there"],
-    ["`_sankhya_commit_ts` on ingested rows", "written as literal `0` for every row"],
+    ["`_sankhya_commit_ts` on ingested rows", "written **null** --- a mutation carries a position and no time. It was a literal `0` until 2026-09-06, which is a wrong instant rather than a missing one"],
 ], ML, top, CW, col_w=[5.6, 6.0])
 tf = txt(sl, ML, top + h + 0.26, CW, 1.8)
 runs(tf, [("The gap is in the arm that does not run. ", DEEP, True),

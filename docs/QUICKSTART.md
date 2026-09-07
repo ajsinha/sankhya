@@ -60,14 +60,21 @@ The first build compiles a large dependency graph — expect several minutes. Wh
 enforcement tooling is worth meeting, in the order you will actually use it:
 
 ```bash
-cargo xtask check-fast    # the file-scanning checks, about two seconds
+cargo xtask check-fast    # the cheap checks, about four seconds
 cargo xtask check-all     # every gate, including the full test suite — tens of minutes
 ```
 
-This section used to describe `check-all` as building *"in seconds"*. It does not, and never
-did: it opens with the test suite. `check-fast` is the one that answers in seconds — it runs
-the checks that only read files, which is where most failures are, and it exists because a
+This section used to describe `check-all` as building *"in seconds"*. It does not: it runs the
+full test suite, clippy across every target and the concurrency measurements, and that is tens
+of minutes. `check-fast` is the one that answers quickly — and it exists because a
 twenty-five-minute gate reporting a five-second failure is a gate people learn to skip.
+
+Two corrections to what an earlier version of this paragraph said about it. `check-all` does
+**not** open with the test suite — it has dispatched the cheap checks first since the ordering
+was changed, for exactly the reason above. And `check-fast` is not purely file-scanning:
+`check-attribution` shells out to `cargo metadata`, and `check-mutations` runs a Python pass
+over the whole mutation catalogue. Four seconds is the figure `xtask/src/main.rs` states, and
+it is the one to believe.
 
 That runs every repository invariant: the layer graph, the file-length ceiling, the
 domain-vocabulary prohibition, the duplicate-dependency gate, the documentation checks, the

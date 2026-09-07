@@ -79,7 +79,7 @@ Ten crates are on it, and they are the honest shape of what is designed rather t
 | `sankhya-ports` | Decided: **delete.** Nothing implements a single trait in it, and its header asserts a property the workspace does not have |
 | `sankhya-datagen`, `sankhya-testkit` | Reached only from dev-dependencies, which the traversal ignores on purpose — a *surface* reachable only from a test is the defect; a generator of test data is not one |
 
-### 2.2 `UNREACHABLE` — error codes nothing can produce
+### 2.2 `UNREACHABLE` and `MAPPED_BUT_UNREACHABLE` — codes nothing produces, and codes no query reaches
 
 `xtask/src/catalogues.rs` reads every `.rs` file under `crates/` except `sankhya-error` itself and
 asks, of every documented code, whether anything constructs it. A code that nothing constructs must
@@ -377,9 +377,11 @@ server resolves a table name to a raw `SankhyaTable`, and the caller who wants t
 assemble it, which is the sentence two paragraphs up saying nothing maps a name to a provider
 automatically.
 `WriteStrategy::Mergeable`, computed at onboarding, does not close the gap either. It records that
-the *source* will emit updates and deletes for the table — which is why onboarding warns when it
-cannot — and **nothing downstream reads it**, including the fold: `ResolvedTable::new` takes the key
-from a `Capability` the caller supplies, not from the strategy. Its own doc comment used to say the
+the *source* **can** emit updates and deletes for the table — which is why onboarding warns when
+it cannot — and **nothing downstream reads it**, including the fold: `ResolvedTable::new` takes a
+bare slice of column names, and nothing checks where the caller got them. That is a weaker guard
+than a typed one and it is the one that exists; this paragraph named a `Capability` guard on the
+constructor, and there is none. Its own doc comment used to say the
 value *"lets the storage layer skip merge machinery it will never need"*, which reads as though the
 other branch selects some. Neither branch selects anything.
 
@@ -396,6 +398,7 @@ was declared non-null and the writer stamped `1970-01-01T00:00:00Z` on every cap
 cannot tell that from a real instant, and a `WHERE _sankhya_commit_ts > …` excludes every row while
 looking like a filter that found nothing. The column is nullable and the writer writes null, which
 is what a capture runtime would later fill.
+
 ---
 
 ## 4. What bounds a query — **[Built, with a named gap]**
