@@ -24,17 +24,18 @@ use std::fmt;
 ///
 /// # What `Mergeable` does and does not mean today
 ///
-/// It means the *source* will emit updates and deletes for this table. It does **not** mean
-/// they are folded: there is no merge, no upsert and no key-based fold anywhere in this
-/// build, and no reader applies `_sankhya_op`. A table receiving updates is therefore stored
-/// as every historical version of every row plus tombstones, and `SELECT *` returns all of
-/// them.
+/// It means the *source* will emit updates and deletes for this table. It does **not** select
+/// a fold. `sankhya_readpath::ResolvedTable` implements one --- `DISTINCT ON (key)` by
+/// descending position, then the deletion filter --- and it takes its key from a `Capability`
+/// the caller supplies, never from this value; nothing outside its own tests constructs one.
+/// So a served table holds every historical version of every row plus a tombstone per delete,
+/// and a plain scan returns all of them.
 ///
 /// This doc comment used to end *"knowing that at onboarding is what lets the storage layer
-/// skip merge machinery it will never need"*, which reads as though the other branch has
-/// merge machinery. Neither does. What the value actually drives is the onboarding warning
-/// below and nothing else. `ING-09`; the fold arrives with the change-capture runtime,
-/// `ING-00`.
+/// skip merge machinery it will never need"*, which reads as though the other branch selects
+/// merge machinery. Neither branch selects anything. What the value actually drives is the
+/// onboarding warning below and nothing else. `ING-09`; the wiring arrives with the
+/// change-capture runtime, `ING-00`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WriteStrategy {
     /// Rows can be identified, so updates and deletes can be applied.

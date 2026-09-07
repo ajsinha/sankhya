@@ -1018,7 +1018,16 @@ version of every row plus tombstones, and `SELECT *` returns all of them. **Noth
 repository states this boundary.** `_sankhya_commit_ts` is hard-coded to the Unix epoch for every
 captured row.
 
-> **The boundary is stated and the timestamp is fixed; the fold is still absent.**
+> **The boundary is stated and the timestamp is fixed --- and one clause of this finding is
+> wrong.** *"No reader that applies the ops"* is not the state: `sankhya_readpath::ResolvedTable`
+> implements the fold, as `DISTINCT ON (key)` by descending position followed by the deletion
+> filter --- in that order, because dropping tombstones first leaves the previous version to win
+> the distinct and a deleted row returns holding the values it had before it was deleted. It is
+> built, property-tested, and **constructed by nothing outside its own tests**, which is the same
+> shape as `SNK-S0001`: not missing, unreached. The remaining work is one wiring decision rather
+> than an algorithm, and it belongs with the capture runtime that would make a table need it.
+>
+> **The rest of the finding stands.**
 > [`ARCHITECTURE.md`](ARCHITECTURE.md) §3.8 now says it where a reader looks, rather than only
 > here: no reader folds a change log, a table receiving updates holds every version plus a
 > tombstone per delete, and this costs nothing today only because nothing captures. It is

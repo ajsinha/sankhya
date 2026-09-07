@@ -361,21 +361,31 @@ nothing maps a table *name* to one automatically, so the caller assembles the tw
 does not exist — **its key does**, because key correctness is a security property and the right time
 to fix it is before anything caches (§6.6).
 
-**And no reader folds a change log.** This is the boundary a reader is most likely to walk into and
-the one nothing in this repository stated until `ING-09` said so. The write path appends every
-mutation with an `_sankhya_op` of `I`, `U` or `D`; there is no merge, no upsert and no key-based
-fold, and **nothing on the read side applies the operation.** A table that receives updates is
-therefore stored as every historical version of every row plus a tombstone per delete, and
-`SELECT *` returns all of them.
+**And no served table folds a change log.** This is the boundary a reader is most likely to walk
+into. The write path appends every mutation with an `_sankhya_op` of `I`, `U` or `D`, so a table
+that receives updates holds every historical version of every row plus a tombstone per delete, and
+a plain scan returns all of them.
 
-`WriteStrategy::Mergeable`, computed at onboarding, does not change this. It records that the
-*source* will emit updates and deletes for the table — which is why onboarding warns when it
-cannot — and no code downstream reads it. Its own doc comment used to imply otherwise, saying the
+The fold itself **exists and is correct**: `ResolvedTable` in `crates/sankhya-readpath/src/merge.rs`
+wraps a raw scan as `DISTINCT ON (key) … ORDER BY key, position DESC`, then filters keys whose
+latest version is a deletion — in that order, deliberately, because dropping tombstones first
+leaves the *previous* version to win the distinct and a deleted row comes back holding the values
+it had before it was deleted, which looks like data rather than like duplication. `ING-09` said
+there was *"no reader that applies the ops"*, and that is not the state: what is true is narrower
+and is the same shape as the splice above. **Nothing outside its own tests constructs one.** The
+server resolves a table name to a raw `SankhyaTable`, and the caller who wants the fold has to
+assemble it, which is the sentence two paragraphs up saying nothing maps a name to a provider
+automatically.
+`WriteStrategy::Mergeable`, computed at onboarding, does not close the gap either. It records that
+the *source* will emit updates and deletes for the table — which is why onboarding warns when it
+cannot — and **nothing downstream reads it**, including the fold: `ResolvedTable::new` takes the key
+from a `Capability` the caller supplies, not from the strategy. Its own doc comment used to say the
 value *"lets the storage layer skip merge machinery it will never need"*, which reads as though the
-other branch has some. Neither does.
+other branch selects some. Neither branch selects anything.
 
 This costs nothing today, because nothing captures (`ING-00`) so no table receives updates through
-this path. It is stated here rather than left to be discovered because the day a capture runtime
+this path — the fold is unreached rather than missing, and the work to close it is one wiring
+decision rather than an algorithm. It is stated here rather than left to be discovered because the day a capture runtime
 exists is the day a table silently returns its whole history to a `SELECT *`, and a reader who
 learned that from the data rather than from this document has already believed a wrong number. The
 fold arrives with the runtime, not before it.
