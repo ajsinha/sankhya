@@ -86,17 +86,36 @@ asks, of every documented code, whether anything constructs it. A code that noth
 be **declared unreachable with a reason**, and the reason is printed into [`ERRORS.md`](ERRORS.md) as
 *"Not produced by this build."*
 
-Thirteen codes are on it. Nine wait on a subsystem that does not exist. **Four are worse**: the
+Ten codes are on it. Seven wait on a subsystem that does not exist. **Three are worse**: the
 condition happens today and is reported through a crate-local type nothing maps onto the code, so an
-alert rule written from the catalogue is permanently silent while the failure it names occurs. Commit
-conflicts (`sankhya-publish` reports its own `CommitError`), cancellation, backup verification, and —
-found by a reviewer reading the gate rather than trusting it — `SNK-S0001`, the coverage gap, which
-had read as *produced* only because `SpliceError::CoverageGap` contains the substring
-`Error::CoverageGap`. The check requires a word boundary now.
+alert rule written from the catalogue is permanently silent while the failure it names occurs ---
+commit conflicts (`sankhya-publish` reports its own `CommitError`), cancellation, and backup
+verification.
 
-That last entry is worth reading twice, because it states a fact about the read path more precisely
-than any paragraph in this document does: *"the tier splice that would raise it is **not in the
-server's read path**, which synthesises a coverage range rather than composing one."* §3.8.
+A second list, `MAPPED_BUT_UNREACHABLE`, holds three more, and it exists because the first list
+answered the wrong question. `UNREACHABLE` asks *does anything construct this?*; an operator asks
+*can this fire?* Those were the same question until the crate-local conditions were mapped onto
+their codes --- `SpliceError::CoverageGap` onto `SNK-S0001`, `Unservable::NotReconciled` onto
+`SNK-S0002`, `SpliceError::BeyondFrontier` onto `SNK-T0003`. The conversions exist and are tested,
+so a caller that meets the condition now reports it correctly; nothing in this build meets it. The
+two lists are guarded in opposite directions: an `UNREACHABLE` entry that becomes constructible
+fails the build, and a `MAPPED_BUT_UNREACHABLE` entry that stops being constructible fails it too,
+because that entry claims a mapping exists.
+
+`SNK-S0001` is the one worth reading twice, because it states a fact about the read path more
+precisely than any paragraph in this document does: the tier splice that would raise it is **not in
+the server's read path**, which synthesises a coverage range rather than composing one. §3.8. It
+had also read as *produced* for a while, because `SpliceError::CoverageGap` contains the substring
+`Error::CoverageGap`; the check requires a word boundary now, which is what made the real state
+visible.
+
+`SNK-S0002` was the sharper find of the two. `FR-TIER-23` requires a conflict to make unified
+queries on the affected table fail **with a typed error**, and what it produced was `Option::None`
+--- which carries no code, no remediation and no name for what went wrong. `Unservable::NotReconciled`
+was declared, documented in `unify::plan`'s `# Errors` as returned *"when the witness is for another
+table"*, and constructed nowhere; `plan` takes the table *from* the witness, so it could not detect
+the case it documented. The refusal now belongs to `Registry::servable_or_refuse`, where the witness
+is obtained.
 
 ### 2.3 The enforced-by column
 
@@ -328,7 +347,10 @@ The tier splice — the mechanism §17 describes, which composes an in-memory ar
 Parquet under a proof of exact coverage — **is not in the server's read path.** The planner
 synthesises a coverage range rather than composing one, and `SNK-S0001`, the coverage-gap refusal that
 splice exists to raise, cannot be raised by this build. That is not an inference; it is the reason
-recorded against `SNK-S0001` in `xtask/src/catalogues.rs`.
+recorded against `SNK-S0001` in `xtask/src/catalogues.rs`. The *mapping* now exists — a
+`SpliceError::CoverageGap` converts to the code, with the positions in the detail — so the gap is
+one call path rather than a call path and a conversion. `SNK-S0001` moved from `UNREACHABLE` to
+`MAPPED_BUT_UNREACHABLE` accordingly, and an alert rule on it is still permanently silent.
 
 The splice itself is built and property-tested in `sankhya-plan` and `sankhya-readpath`, and is
 exercised end to end in tests. What is missing is that no capture runs, so there is no second tier to
@@ -1578,7 +1600,8 @@ values incapable of diverging and whose assertion encoded the buggy expectation.
 **What is missing**: the epoch ring, the per-epoch key digests that let a historical query skip the tier
 at no cost, per-tenant sub-caps, and any wiring into an ingest path. And, per §3.8, **the splice is not in
 the server's read path**: the planner synthesises a coverage range rather than composing one, which is why
-`SNK-S0001` is on `UNREACHABLE`.
+`SNK-S0001` is on `MAPPED_BUT_UNREACHABLE` — the conversion onto the code exists and is tested, and
+no query reaches it.
 
 ---
 

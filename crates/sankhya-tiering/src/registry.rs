@@ -505,6 +505,33 @@ impl Reconciliation {
             .then(|| Servable { table: table.to_string() })
     }
 
+    /// The same witness, and the typed refusal when there is none.
+    ///
+    /// # Why this exists beside [`Self::servable`]
+    ///
+    /// `FR-TIER-23` requires a conflict to make unified queries on the affected table fail
+    /// **with a typed error**. What it actually produced was `Option::None` --- and a `None`
+    /// is not an error: it carries no code, no remediation and no name for what went wrong,
+    /// so the caller has to invent all three or drop them. `SNK-S0002` was published as the
+    /// code for exactly this and nothing could raise it.
+    ///
+    /// `Unservable::NotReconciled` was worse than absent: it was declared, and
+    /// `unify::plan`'s `# Errors` section said it was returned "when the witness is for
+    /// another table" --- which `plan` cannot detect, because it takes the table *from* the
+    /// witness. A documented error path that the function could not take.
+    ///
+    /// # Errors
+    ///
+    /// [`Unservable::NotReconciled`] when the reconciliation found this table in both tiers,
+    /// and when nothing reconciled it at all. Those are deliberately the same refusal: a
+    /// check that has not run is not evidence that it would pass.
+    pub fn servable_or_refuse(&self, table: &str) -> Result<Servable, crate::unify::Unservable> {
+        self.servable(table)
+            .ok_or_else(|| crate::unify::Unservable::NotReconciled {
+                table: table.to_string(),
+            })
+    }
+
     /// The tables a unified query must refuse.
     #[must_use]
     pub fn refused(&self) -> BTreeSet<String> {

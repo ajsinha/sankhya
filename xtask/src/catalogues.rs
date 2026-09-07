@@ -388,7 +388,16 @@ pub fn errors_markdown() -> String {
             {
                 let _ = writeln!(
                     out,
-                    "**Not produced by this build.** {why}. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.\n"
+                    "**Not produced by this build.** {why}. Nothing in the workspace constructs it. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.\n"
+                );
+            }
+            if let Some((_, why)) = MAPPED_BUT_UNREACHABLE
+                .iter()
+                .find(|(code, _)| *code == error.code().as_str())
+            {
+                let _ = writeln!(
+                    out,
+                    "**Mapped, and not reachable by a query.** {why}. The conversion onto this code exists and is tested, so a caller that meets the condition reports it correctly --- but nothing in this build meets it. **An alert rule on this code is still permanently silent**, and it is listed separately from the codes nothing constructs because the remaining work is different: those need a subsystem, this needs a call path.\n"
                 );
             }
             if error.class().is_pageable() {
@@ -501,28 +510,46 @@ fn up_to_date(root: &Path, relative: &str, expected: &str) -> bool {
 /// Every entry names the subsystem, because that is the thing that has to exist before the
 /// code can fire. When one is built, the check below fails until its entry is removed.
 const UNREACHABLE: &[(&str, &str)] = &[
-    // Nine whose subsystem does not exist. Nothing can produce these until it does.
+    // Seven whose subsystem does not exist. Nothing can produce these until it does.
     ("SNK-C0003", "nothing carries an exactness requirement for a statement to breach"),
     ("SNK-C0004", "there is no archived tier to target: `sankhya-tiering` plans and does not run"),
     ("SNK-C0005", "the source identifiers that could collide arrive on the ingest path, and `ING-00` records that there is no change-capture runtime"),
     ("SNK-R0002", "tenant quotas are `sankhya-governor`, which is called with a zeroed request against `u64::MAX` ceilings and decides nothing"),
     ("SNK-R0003", "the arrival buffer is part of the change-capture runtime (`ING-00`)"),
     ("SNK-T0002", "a source that could be unavailable is the change-capture runtime (`ING-00`)"),
-    ("SNK-T0003", "staleness against a freshness objective needs the replication a change-capture runtime would provide (`ING-00`)"),
-    ("SNK-S0002", "an archive to conflict with is `sankhya-tiering`, which does not run"),
     ("SNK-S0004", "an endangered source is the change-capture runtime (`ING-00`)"),
     // And three whose condition happens today and is reported as a different type.
     // These are the worse half: the subsystem exists, the failure occurs, and an
     // operator alerting on the documented code sees nothing. Mapping them is what is
     // left of `OPS-25`, and `docs/REMEDIATION.md` records it rather than leaving it
-    // to be rediscovered.
+    // to be rediscovered. Three more used to be here and are now in
+    // `MAPPED_BUT_UNREACHABLE`: the mapping is written, and the condition still cannot
+    // arise, which is a different sentence and deserved a different list.
     ("SNK-F0001", "commit conflicts do occur, and `sankhya-publish` reports them as its own `CommitError`, which nothing maps onto this code"),
     ("SNK-X0001", "cancellation does occur, as `sankhya_governor::Stopped` and as a statement timeout, and nothing maps either onto this code"),
     ("SNK-S0003", "backup verification does run, and reports through `sankhya-backup`’s own types rather than raising this code"),
-    // Found by a reviewer reading the gate rather than trusting it, and it had been hiding
-    // behind a substring: `SpliceError::CoverageGap` contains `Error::CoverageGap`, so this
-    // read as produced. It pages, and a runbook was written for it.
-    ("SNK-S0001", "the coverage gap it names is detected by `sankhya-plan`’s splice and reported as its own `SpliceError::CoverageGap`, which nothing maps onto this code --- and the tier splice that would raise it is not in the server’s read path, which synthesises a coverage range rather than composing one"),
+];
+
+/// Codes something **does** construct, that no query can reach.
+///
+/// # Why this is a separate list
+///
+/// Because [`UNREACHABLE`] answered one question --- *does anything construct this?* --- and
+/// an operator asks a different one: *can this fire?* The two came apart the moment the
+/// crate-local conditions were mapped onto their codes. `SpliceError::CoverageGap` now
+/// converts to `SNK-S0001`, so the gate's question is answered yes; but the only splice in a
+/// read path is composed from a coverage range the server synthesises to span the request, so
+/// no query produces a gap. An alert rule on the code is still permanently silent, and a list
+/// that could not say so would have marked it produced and stopped there.
+///
+/// The check below guards this list in the opposite direction from [`UNREACHABLE`]: an entry
+/// here that is **not** constructed is stale, because it claims a mapping exists. Both lists
+/// fail the build when their reason expires, which is the only property that keeps either
+/// honest.
+const MAPPED_BUT_UNREACHABLE: &[(&str, &str)] = &[
+    ("SNK-S0001", "the coverage gap it names is detected by `sankhya-plan`’s splice, which now maps onto this code --- but the only splice in a read path is composed from a coverage range the server synthesises to span the request, so no query can produce a gap"),
+    ("SNK-S0002", "`Registry::servable_or_refuse` now raises `Unservable::NotReconciled` --- which was declared and constructed nowhere --- and it maps onto this code. Nothing calls it outside its tests, because nothing runs the tiering planner: there is no archive for the registry to disagree with"),
+    ("SNK-T0003", "`SpliceError::BeyondFrontier` now maps onto this code, and the frontier it compares against is the change-capture runtime’s (`ING-00`), so nothing advances past it"),
 ];
 
 /// `Error::InvalidQuery { detail: None }` becomes `InvalidQuery`.
@@ -540,7 +567,19 @@ fn every_code_is_reachable_or_declared(root: &Path) -> bool {
 
     let declared: std::collections::BTreeSet<&str> =
         UNREACHABLE.iter().map(|(code, _)| *code).collect();
+    let mapped: std::collections::BTreeSet<&str> =
+        MAPPED_BUT_UNREACHABLE.iter().map(|(code, _)| *code).collect();
     let mut ok = true;
+
+    // A code cannot be both. `UNREACHABLE` says nothing constructs it and
+    // `MAPPED_BUT_UNREACHABLE` says something does, and the two lists disagreeing is a
+    // reason for the reader to believe neither.
+    for code in declared.intersection(&mapped) {
+        eprintln!(
+            "  BOTH LISTS      {code} is declared unreachable *and* mapped-but-unreachable. Those say opposite things about whether anything constructs it"
+        );
+        ok = false;
+    }
 
     for error in Error::all() {
         let code = error.code().as_str();
@@ -549,6 +588,18 @@ fn every_code_is_reachable_or_declared(root: &Path) -> bool {
         let variant = variant_of(&error);
         let produced = constructs(&sources, &format!("Error::{variant}("))
             || constructs(&sources, &format!("Error::{variant} {{"));
+        if mapped.contains(code) {
+            // Guarded in the opposite direction: this list claims a mapping exists, so the
+            // stale case is the mapping being *removed* --- which would silently turn the
+            // entry into a claim that a construction site exists when none does.
+            if !produced {
+                eprintln!(
+                    "  STALE MAPPING   {code} is listed as mapped-but-unreachable and nothing constructs it. Either the conversion was removed --- in which case move it to UNREACHABLE --- or it never existed"
+                );
+                ok = false;
+            }
+            continue;
+        }
         match (produced, declared.contains(code)) {
             (false, false) => {
                 eprintln!(

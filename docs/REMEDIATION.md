@@ -1398,6 +1398,29 @@ workspace could raise it — a **thirteenth** unreachable code, `Class::Fatal`, 
 written for it and an alert rule on it that would never have fired. Four of the six codes that
 page cannot fire; the catalogue said three. The check built in 5.5 to find precisely this
 failed at precisely this, and a reviewer found it by reading the gate rather than trusting it.
+
+**Since closed, in the half that could be closed.** `SpliceError::CoverageGap` now converts to
+`SNK-S0001`, carrying the positions --- the remediation says to investigate capture continuity
+and retention, and neither question can be asked without them. `BeyondFrontier` converts to
+`SNK-T0003` rather than to the fatal code, because being early is a freshness question that
+resolves by waiting and paging for it would be wrong. `Overlap` converts to `SNK-S0005`: the
+rows are present twice, not missing.
+
+That exposed the gate asking the wrong question. `UNREACHABLE` asks *does anything construct
+this?*, an operator asks *can this fire?*, and the two came apart the moment the mapping
+existed --- a code with a conversion and no call path would have read as **produced**, which is
+the same documented lie in the other direction. So there are two lists now, guarded in opposite
+directions: `UNREACHABLE` fails the build when an entry becomes constructible, and
+`MAPPED_BUT_UNREACHABLE` fails it when an entry stops being constructible, because that entry
+claims a mapping exists.
+
+**And `SNK-S0002` turned out to be the sharper find.** `FR-TIER-23` requires a conflict to make
+unified queries on the affected table fail *with a typed error*. It produced `Option::None` ---
+no code, no remediation, no name for what went wrong. `Unservable::NotReconciled` was declared,
+documented in `unify::plan`'s `# Errors` as returned *"when the witness is for another table"*,
+and constructed nowhere; `plan` takes the table **from** the witness, so it could not detect the
+case its own documentation described. The refusal now belongs to `Registry::servable_or_refuse`,
+where the witness is obtained, and maps onto the code.
 It requires a word boundary now, with a test that a different type's variant of the same name
 does not count.
 

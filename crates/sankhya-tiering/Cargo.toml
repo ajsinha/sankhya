@@ -15,9 +15,11 @@ workspace = true
 
 [dependencies]
 sankhya-schema = { path = "../sankhya-schema" }
+sankhya-error  = { path = "../sankhya-error" }
 arrow-array    = { workspace = true }
 arrow-schema   = { workspace = true }
 sha2           = { workspace = true }
 
 [dev-dependencies]
+sankhya-error = { path = "../sankhya-error" }
 proptest = { workspace = true }

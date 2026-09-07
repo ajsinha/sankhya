@@ -18,6 +18,7 @@
 )]
 
 use proptest::prelude::*;
+use sankhya_error::Classify as _;
 use sankhya_plan::{is_exact_cover, plan_splice, SpliceError, TierRef};
 use sankhya_types::{Lsn, LsnRange};
 
@@ -230,4 +231,63 @@ proptest! {
             .collect();
         let _ = plan_splice(&tiers, Lsn::new(u64::from(target)));
     }
+}
+
+// --- the code an operator alerts on -------------------------------------
+
+#[test]
+fn a_coverage_gap_reports_the_code_its_runbook_is_indexed_by() {
+    // `SNK-S0001` was published as a code this build produces, with a runbook the build
+    // requires to exist, and nothing converted this condition onto it --- so an alert rule on
+    // the code was permanently silent while the exact condition it names refused queries. The
+    // gate missed it because `SpliceError::CoverageGap` contains the string `Error::CoverageGap`.
+    let tiers = [
+        tier("archive", 0, 10),
+        tier("published", 20, 30),
+    ];
+    let refusal = plan_splice(&tiers, Lsn::new(30)).expect_err("a gap between 10 and 20");
+    let reported: sankhya_error::Error = refusal.into();
+    assert_eq!(reported.code().as_str(), "SNK-S0001");
+    let rendered = reported.to_string();
+    // An `Lsn` renders in the transactional store's own notation, not in decimal, so the
+    // expectation is built from the type rather than from the numbers that made it.
+    let gap = format!("({}, {}]", Lsn::new(10), Lsn::new(20));
+    assert!(
+        rendered.contains(&gap),
+        "the remediation says to investigate capture continuity, and neither question can be \
+         asked without the positions. Wanted {gap} in: {rendered}"
+    );
+}
+
+#[test]
+fn a_position_past_the_frontier_is_not_reported_as_a_correctness_event() {
+    // The distinction that makes the conversion worth having. `SNK-S0001` is `Class::Fatal`
+    // and pages; being early is a freshness question that resolves by waiting. Mapping both
+    // onto the fatal code would page somebody for a query that simply arrived first.
+    let tiers = [tier("published", 0, 10)];
+    let refusal = plan_splice(&tiers, Lsn::new(50)).expect_err("beyond the frontier");
+    let reported: sankhya_error::Error = refusal.into();
+    assert_eq!(reported.code().as_str(), "SNK-T0003");
+}
+
+#[test]
+fn two_tiers_claiming_the_same_positions_is_an_invariant_violation() {
+    // And the third: overlapping coverage is a defect in whatever produced the metadata, not
+    // a statement about the data. `SNK-S0005` says so; `SNK-S0001` would say the rows are
+    // missing, and they are present twice.
+    //
+    // Constructed rather than planned, because the planner trims each chosen tier so it abuts
+    // exactly --- overlapping input is the ordinary case it exists to resolve, and this
+    // refusal is for coverage metadata that cannot be resolved. The subject here is the
+    // mapping, and a test that could not reach the variant would be testing nothing.
+    let overlap = SpliceError::Overlap {
+        left: "archive",
+        right: "published",
+    };
+    let reported: sankhya_error::Error = overlap.into();
+    assert_eq!(reported.code().as_str(), "SNK-S0005");
+    assert!(
+        reported.to_string().contains("archive") && reported.to_string().contains("published"),
+        "the detail must name which two tiers disagree: {reported}"
+    );
 }

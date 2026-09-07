@@ -30,7 +30,7 @@ Exclude the column, or convert it in the source. SANKHYA refuses an approximate 
 
 an approximate aggregate was used where exactness is required
 
-**Not produced by this build.** nothing carries an exactness requirement for a statement to breach. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
+**Not produced by this build.** nothing carries an exactness requirement for a statement to breach. Nothing in the workspace constructs it. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
 
 Use the exact equivalent named in the detail, or clear the exactness requirement for this session if approximation is genuinely acceptable.
 
@@ -38,7 +38,7 @@ Use the exact equivalent named in the detail, or clear the exactness requirement
 
 the statement targets a range that has been archived
 
-**Not produced by this build.** there is no archived tier to target: `sankhya-tiering` plans and does not run. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
+**Not produced by this build.** there is no archived tier to target: `sankhya-tiering` plans and does not run. Nothing in the workspace constructs it. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
 
 Archived data is immutable. Record a compensating entry in the live tier, or rehydrate the range read-only for inspection.
 
@@ -58,7 +58,7 @@ The detail names what failed --- usually a cast, a division, or a value outside 
 
 two distinct source identifiers map to the same storage path
 
-**Not produced by this build.** the source identifiers that could collide arrive on the ingest path, and `ING-00` records that there is no change-capture runtime. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
+**Not produced by this build.** the source identifiers that could collide arrive on the ingest path, and `ING-00` records that there is no change-capture runtime. Nothing in the workspace constructs it. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
 
 Rename one in the source, declare an explicit mapping, or exclude one. SANKHYA refuses to disambiguate automatically because a generated suffix destroys the naming relationship it exists to preserve.
 
@@ -76,7 +76,7 @@ Retry when load falls, narrow the predicate, or raise the tenant's limit. Refusa
 
 a tenant quota was reached
 
-**Not produced by this build.** tenant quotas are `sankhya-governor`, which is called with a zeroed request against `u64::MAX` ceilings and decides nothing. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
+**Not produced by this build.** tenant quotas are `sankhya-governor`, which is called with a zeroed request against `u64::MAX` ceilings and decides nothing. Nothing in the workspace constructs it. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
 
 The detail names the quota. Raise it or reduce consumption.
 
@@ -84,7 +84,7 @@ The detail names the quota. Raise it or reduce consumption.
 
 the arrival buffer has no room
 
-**Not produced by this build.** the arrival buffer is part of the change-capture runtime (`ING-00`). The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
+**Not produced by this build.** the arrival buffer is part of the change-capture runtime (`ING-00`). Nothing in the workspace constructs it. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
 
 Capture is ahead of publication. The system is already lengthening its commit interval; if this persists, publication throughput is the bottleneck.
 
@@ -96,7 +96,7 @@ Re-plan against the new state and retry. A blind retry loses again.
 
 a concurrent writer committed first
 
-**Not produced by this build.** commit conflicts do occur, and `sankhya-publish` reports them as its own `CommitError`, which nothing maps onto this code. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
+**Not produced by this build.** commit conflicts do occur, and `sankhya-publish` reports them as its own `CommitError`, which nothing maps onto this code. Nothing in the workspace constructs it. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
 
 Re-plan against the new snapshot and retry. Maintenance yields to the applier; the applier never yields.
 
@@ -118,7 +118,7 @@ the transactional store is unreachable
 
 *Retry after 1000 ms.*
 
-**Not produced by this build.** a source that could be unavailable is the change-capture runtime (`ING-00`). The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
+**Not produced by this build.** a source that could be unavailable is the change-capture runtime (`ING-00`). Nothing in the workspace constructs it. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
 
 Check the database is running and reachable. In managed mode the supervisor restarts it with backoff.
 
@@ -128,7 +128,7 @@ the requested freshness could not be met within the deadline
 
 *Retry after 500 ms.*
 
-**Not produced by this build.** staleness against a freshness objective needs the replication a change-capture runtime would provide (`ING-00`). The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
+**Mapped, and not reachable by a query.** `SpliceError::BeyondFrontier` now maps onto this code, and the frontier it compares against is the change-capture runtime’s (`ING-00`), so nothing advances past it. The conversion onto this code exists and is tested, so a caller that meets the condition reports it correctly --- but nothing in this build meets it. **An alert rule on this code is still permanently silent**, and it is listed separately from the codes nothing constructs because the remaining work is different: those need a subsystem, this needs a call path.
 
 Retry, relax the freshness requirement, or investigate capture lag. Returning stale data silently would be worse than failing.
 
@@ -140,7 +140,7 @@ No action. A deadline expired, a client disconnected, or the server is draining.
 
 the work was cancelled
 
-**Not produced by this build.** cancellation does occur, as `sankhya_governor::Stopped` and as a statement timeout, and nothing maps either onto this code. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
+**Not produced by this build.** cancellation does occur, as `sankhya_governor::Stopped` and as a statement timeout, and nothing maps either onto this code. Nothing in the workspace constructs it. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
 
 No action. The deadline expired, the client disconnected, or the server is draining.
 
@@ -152,7 +152,7 @@ No action. The deadline expired, the client disconnected, or the server is drain
 
 no tier covers part of the requested range
 
-**Not produced by this build.** the coverage gap it names is detected by `sankhya-plan`’s splice and reported as its own `SpliceError::CoverageGap`, which nothing maps onto this code --- and the tier splice that would raise it is not in the server’s read path, which synthesises a coverage range rather than composing one. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
+**Mapped, and not reachable by a query.** the coverage gap it names is detected by `sankhya-plan`’s splice, which now maps onto this code --- but the only splice in a read path is composed from a coverage range the server synthesises to span the request, so no query can produce a gap. The conversion onto this code exists and is tested, so a caller that meets the condition reports it correctly --- but nothing in this build meets it. **An alert rule on this code is still permanently silent**, and it is listed separately from the codes nothing constructs because the remaining work is different: those need a subsystem, this needs a call path.
 
 **Pages.** Runbook: [`snk-s0001`](runbooks/snk-s0001.md)
 
@@ -162,7 +162,7 @@ A correctness event, not a performance one. The query was refused rather than an
 
 the archival registry disagrees with the live catalogue
 
-**Not produced by this build.** an archive to conflict with is `sankhya-tiering`, which does not run. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
+**Mapped, and not reachable by a query.** `Registry::servable_or_refuse` now raises `Unservable::NotReconciled` --- which was declared and constructed nowhere --- and it maps onto this code. Nothing calls it outside its tests, because nothing runs the tiering planner: there is no archive for the registry to disagree with. The conversion onto this code exists and is tested, so a caller that meets the condition reports it correctly --- but nothing in this build meets it. **An alert rule on this code is still permanently silent**, and it is listed separately from the codes nothing constructs because the remaining work is different: those need a subsystem, this needs a call path.
 
 **Pages.** Runbook: [`snk-s0002`](runbooks/snk-s0002.md)
 
@@ -172,7 +172,7 @@ Usually a restore that resurrected purged rows. Queries on the affected table ar
 
 archive verification did not match
 
-**Not produced by this build.** backup verification does run, and reports through `sankhya-backup`’s own types rather than raising this code. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
+**Not produced by this build.** backup verification does run, and reports through `sankhya-backup`’s own types rather than raising this code. Nothing in the workspace constructs it. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
 
 **Pages.** Runbook: [`snk-s0003`](runbooks/snk-s0003.md)
 
@@ -182,7 +182,7 @@ Terminal until a human acts. There is no automatic retry: a mismatch means a def
 
 continuing would threaten the availability of the transactional store
 
-**Not produced by this build.** an endangered source is the change-capture runtime (`ING-00`). The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
+**Not produced by this build.** an endangered source is the change-capture runtime (`ING-00`). Nothing in the workspace constructs it. The code is kept because codes are permanent: removing one would break every runbook and alert rule that references it. An alert on it will not fire until the gap named above is closed.
 
 **Pages.** Runbook: [`snk-s0004`](runbooks/snk-s0004.md)
 

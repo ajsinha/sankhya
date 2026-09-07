@@ -92,6 +92,54 @@ impl fmt::Display for SpliceError {
 
 impl std::error::Error for SpliceError {}
 
+/// The catalogue code each refusal is, so a caller can report one.
+///
+/// # Why this exists
+///
+/// Because without it `SNK-S0001` was published as a code this build produces and no code
+/// path could produce it. The condition it names --- part of the requested span held by no
+/// tier --- **is** detected, right here, and was reported as this crate's own type; nothing
+/// converted it, so an alert rule written on `SNK-S0001` was permanently silent while the
+/// exact condition occurred. A catalogue entry whose construction site belongs to a different
+/// type in a different crate is a documented promise nothing keeps.
+///
+/// The detail carries the positions rather than a summary, because the remediation says to
+/// *"investigate capture continuity and retention"* and neither question can be asked without
+/// knowing which range went missing.
+///
+/// This closes the mapping. It does not by itself make the code reachable from a query: no
+/// read path in the server composes a tier splice yet, which is the other half and is tracked
+/// as such in `xtask/src/catalogues.rs`.
+/// Written as `sankhya_error::Error::...` rather than `Self::...` on purpose: the gate that
+/// decides whether a catalogue code is producible greps for a construction site, and `Self`
+/// inside this `impl` is one it cannot see. A code that is reachable and reads as
+/// unreachable is the same documented lie in the other direction.
+impl From<SpliceError> for sankhya_error::Error {
+    fn from(error: SpliceError) -> Self {
+        match error {
+            SpliceError::CoverageGap { from, to } => {
+                sankhya_error::Error::CoverageGap(format!("no tier covers ({from}, {to}]"))
+            }
+            // Not a coverage gap. Capture has not reached the requested position, which is a
+            // freshness question and resolves by waiting --- classifying it as the fatal
+            // correctness event would page somebody for a query that was simply early.
+            SpliceError::BeyondFrontier {
+                requested,
+                available,
+            } => sankhya_error::Error::StaleData(format!(
+                "position {requested} is beyond the frontier {available}"
+            )),
+            // A defect in the coverage metadata, not in the data. Splicing anyway would
+            // double-count, so it is refused --- and it is an invariant violation rather than
+            // a coverage gap, because the rows exist and are claimed twice.
+            SpliceError::Overlap { left, right } => sankhya_error::Error::InvariantViolated(format!(
+                "tiers {left} and {right} both claim the same positions"
+            )),
+        }
+    }
+}
+
+
 /// Select a set of tiers that provably covers `[0, target]` exactly once.
 ///
 /// Tiers may be supplied in any order and may overlap; the planner chooses a subset

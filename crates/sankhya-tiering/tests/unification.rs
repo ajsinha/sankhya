@@ -18,6 +18,7 @@
 )]
 
 use proptest::prelude::*;
+use sankhya_error::Classify as _;
 use sankhya_tiering::policy::Retention;
 use sankhya_tiering::registry::{Conflict, Range, Registry, Servable};
 use sankhya_tiering::unify::{mutable, plan, Read, Unservable};
@@ -140,6 +141,48 @@ fn every_hole_is_named_rather_than_the_first() {
 
     let Unservable::CoverageGap { gaps, .. } = refusal else { panic!("a gap") };
     assert_eq!(gaps, vec![Range::new(0, 100), Range::new(200, 300), Range::new(400, 500)]);
+}
+
+#[test]
+fn a_gap_reports_the_code_its_runbook_is_indexed_by() {
+    // `SNK-S0001` was published as a code this build produces, with a runbook the build
+    // requires to exist, and nothing converted this condition onto it --- so an alert rule on
+    // the code was permanently silent while the condition it names refused queries.
+    let registry = Registry::from_entries(vec![archived(100, 200), archived(300, 400)]).unwrap();
+    let servable = witness(&registry);
+    let refusal = plan(Range::new(0, 500), &[], &registry, &servable, "s", DOMAIN)
+        .expect_err("three holes");
+
+    let reported: sankhya_error::Error = refusal.into();
+    assert_eq!(reported.code().as_str(), "SNK-S0001");
+    let rendered = reported.to_string();
+    // Every hole, not the first. A systematic loss reported as one range reads as an isolated
+    // incident, and the remediation --- investigate capture continuity --- would be aimed at
+    // the wrong question.
+    for gap in ["0", "100", "200", "300", "400", "500"] {
+        assert!(rendered.contains(gap), "{gap} is missing from: {rendered}");
+    }
+}
+
+#[test]
+fn an_unreconciled_table_is_a_different_code_from_a_gap() {
+    // `SNK-S0002`, and deliberately not `SNK-S0001`. A gap is a question about one range of
+    // the data; this says the catalog and the registry cannot both be believed, which makes
+    // every answer about the table suspect --- and the remediations differ accordingly.
+    let registry = Registry::from_entries(vec![archived(0, 500)]).unwrap();
+    // The refusal happens where the witness is obtained, not inside `plan` --- `plan` takes
+    // the table from the witness, so it has nothing to disagree with. `servable` returned
+    // `Option::None` here, and a `None` is not the typed error `FR-TIER-23` asks for: it
+    // carries no code, no remediation and no name for what went wrong.
+    let conflicted = Registry::from_entries(vec![archived(0, 500)]).unwrap();
+    let reconciled = conflicted.reconcile(&[("entries".to_string(), Range::new(0, 500))]);
+    let refusal = reconciled
+        .servable_or_refuse("entries")
+        .expect_err("the reconciliation found this table in both tiers");
+
+    assert!(matches!(refusal, Unservable::NotReconciled { .. }), "{refusal:?}");
+    let reported: sankhya_error::Error = refusal.into();
+    assert_eq!(reported.code().as_str(), "SNK-S0002");
 }
 
 #[test]
