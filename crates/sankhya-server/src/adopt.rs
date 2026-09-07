@@ -69,15 +69,19 @@ pub(crate) fn new_tables(server: &Server, servable: &mut Vec<ServableTable>) -> 
         crate::warehouse::servable(&unseen, server.read_as_of(), &server.log_cache());
     let added = opened.len();
     for mut table in opened {
-        table.authorize_as = authority_for(server, &table.reference, &lineages);
+        table.authorize_as = authority_for(&table.reference, &lineages);
         servable.push(table);
     }
     added
 }
 
 /// The table a clone's read right derives from, or `None` for a table that is not one.
+///
+/// Took a `&Server` and read nothing from it, which the build said and nobody heard under
+/// fifty-nine `unreachable_pub` warnings. A parameter a function does not use is a claim that
+/// the answer depends on it --- here, that a clone's authority might vary by server --- and it
+/// does not: the answer is entirely in the lineage.
 fn authority_for(
-    server: &Server,
     reference: &TableRef,
     lineages: &sankhya_clone::Lineages,
 ) -> Option<TableRef> {

@@ -61,7 +61,7 @@ decays in silence.
 | `check-features` | a feature flag that changes behaviour nothing tests |
 | `check-invariants` | a rule naming a check that nobody runs |
 | `check-layers` | a dependency pointing the wrong way through the layer graph |
-| `check-lints` | the denied lint set, across every target |
+| `check-lints` | the denied lint set across every target, and any warning at all from the shipping build |
 | `check-loc` | a source file past the length a person reads in a sitting |
 | `check-lock-order` | a nested lock acquisition that is not declared |
 | `check-logging` | a log statement recording something a caller supplied |

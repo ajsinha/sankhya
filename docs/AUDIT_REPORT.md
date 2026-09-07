@@ -1436,6 +1436,23 @@ exists and the prerequisites install no client · the README badge says Rust 1.9
 it opens with the full test suite · `cargo build --workspace` emits **68 warnings** against a
 document emphasising clippy cleanliness.
 
+> **All five are closed.** `sankhya.egg-info/`, `build/` and `dist/` are ignored, so the
+> instruction to install the SDK editable no longer contradicts the instruction to audit a
+> clean tree. The `psql` and toolchain items were closed earlier --- `rust-toolchain.toml`
+> pins 1.97.1 and is the single source the badge and `Cargo.toml` agree with. `check-all` is
+> no longer described as running in seconds, because it does not; `check-fast` does, and the
+> QUICKSTART now names both with what each costs.
+>
+> The warnings had grown from 68 to **77** by the time they were counted again, which is the
+> point: 59 of them were one arrangement --- every module in the server binary is also
+> `#[path]`-included by an integration test, where the `pub` is how the test reaches what it
+> tests --- and the 18 that named something real were invisible underneath. Among them, a
+> function taking a `&Server` it never read, and two items nothing anywhere called. The
+> arrangement is allowed at the crate root with its reason; the real ones are fixed; the two
+> dead items are deleted rather than allowed, so the attribute does not become where unused
+> code goes to be quiet. `cargo build --workspace` now emits **zero**, and `check-lints`
+> fails on any number but zero --- a threshold is what let seventy-seven accumulate.
+
 ### The credits — and they are real
 Several were exact to the character:
 

@@ -56,12 +56,18 @@ cd sankhya
 cargo build --release -p sankhya-server -p sankhya-publish
 ```
 
-The first build compiles a large dependency graph — expect several minutes. The enforcement
-tooling builds in seconds and is worth running first:
+The first build compiles a large dependency graph — expect several minutes. While it runs, the
+enforcement tooling is worth meeting, in the order you will actually use it:
 
 ```bash
-cargo xtask check-all
+cargo xtask check-fast    # the file-scanning checks, about two seconds
+cargo xtask check-all     # every gate, including the full test suite — tens of minutes
 ```
+
+This section used to describe `check-all` as building *"in seconds"*. It does not, and never
+did: it opens with the test suite. `check-fast` is the one that answers in seconds — it runs
+the checks that only read files, which is where most failures are, and it exists because a
+twenty-five-minute gate reporting a five-second failure is a gate people learn to skip.
 
 That runs every repository invariant: the layer graph, the file-length ceiling, the
 domain-vocabulary prohibition, the duplicate-dependency gate, the documentation checks, the
@@ -676,9 +682,32 @@ Proven. 4 table(s) read back and digested.
 **It read the data back and recomputed its digest.** A file-presence check would have passed on
 a truncated Parquet, on a file whose bytes were replaced with another table's, and on
 essentially every failure that actually happens — because a *missing* file is loud, and what
-goes wrong is that a file is there and wrong. Try it: corrupt a file under
-`warehouse/sales/orders/sank_data_date=*/` and drill again. It reports which table could not be
-read and exits `1`.
+goes wrong is that a file is there and wrong. Try it --- and read the next paragraph before you
+do, because the obvious way to try it proves nothing:
+
+```console
+$ find warehouse/sales/orders -name '*.parquet' -exec sh -c 'printf X | dd of="$1" bs=1 seek=4 conv=notrunc status=none' _ {} \;
+$ SANKHYA_WAREHOUSE=./warehouse ./target/release/sankhya-server drill
+  risk.positions: verified, 12 row(s)
+  sales.orders: could not be read (warehouse/sales/orders/sank_data_date=.../part-0000-...parquet:
+    Parquet argument error: Parquet error: Required field num_values is missing)
+  sales.regions: verified, 2 row(s)
+  sank.sank_quarantine: verified, 0 row(s)
+
+NOT PROVEN. 1 of 4 table(s) did not verify --- this backup would not restore what it claims to hold.
+$ echo $?
+1
+```
+
+**Every** file, rather than one you picked. A table is the set of files its log names, not the
+set of files in its directory: compaction merges small files into a larger one and the
+originals stay on disk as orphans until the sweeper retires them, so a directory listing shows
+files the table no longer has. The drill reads the live set. Corrupt an orphan --- which is
+what picking one file at random will often do --- and the drill says `Proven`, correctly, and
+the reader concludes the drill is theatre. It is not; they corrupted a file nothing reads.
+
+This is a throwaway warehouse, so damage all of them and the ambiguity goes away. Then
+re-create it before continuing.
 
 Exit `0` proven, `1` a table did not verify, `2` could not run. **Alert on `2` as well**: a
 monitor treating "could not look" as "nothing wrong" reports a backup as proven when nothing

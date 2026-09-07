@@ -18,7 +18,6 @@
 // missing argument into a silent zero: exactly the wrong answer this catalogue is arranged
 // against, traded for a lint the wrapper has already satisfied.
 #![allow(clippy::indexing_slicing)]
-use crate::scalar::Numeric;
 use crate::series::Series;
 use datafusion::logical_expr::ScalarUDF;
 use sankhya_math::decompose;

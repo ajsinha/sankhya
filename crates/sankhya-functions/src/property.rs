@@ -4,7 +4,7 @@
 //! is it symmetric, is it positive definite, what is its rank --- reads a whole matrix and
 //! answers with a single value, and neither of the other two wrappers fits.
 
-use arrow_array::{ArrayRef, Float64Array};
+use arrow_array::Float64Array;
 use arrow_schema::DataType;
 use datafusion::common::{exec_err, Result};
 use datafusion::logical_expr::{

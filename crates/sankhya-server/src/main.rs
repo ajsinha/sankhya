@@ -21,6 +21,22 @@
 // The composition root is the one place a `main` may exist, and a binary that cannot
 // print to its own console is not much of a binary.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
+// Every module below is also compiled by the integration tests, which `#[path]`-include the
+// same files to drive the real wiring rather than a copy of it. There, the `pub` is
+// load-bearing --- it is how a test reaches the thing it is testing. Here they are leaves of
+// one binary, so the same `pub` is unreachable and the workspace lint says so, 59 times.
+//
+// Allowed at the crate root rather than per item, because the reason is one arrangement and
+// not fifty-nine decisions, and because a build that emits 77 warnings against a repository
+// whose documentation emphasises lint cleanliness is a build nobody reads the warnings of ---
+// which is how the eighteen real ones underneath them stayed invisible. `RUN-15`.
+#![allow(unreachable_pub)]
+// And the same arrangement again, for the same reason: `describe`, `intact`, `quota`,
+// `snapshot_for_test` and `hydration_counts` are each reached from an integration test that
+// includes these files, and from no line the binary runs. Two of them --- `Server::new` and
+// `snapshots::version_setting` --- were reached by nothing at all and are deleted rather than
+// allowed, because this attribute must not become the place unused code goes to be quiet.
+#![allow(dead_code)]
 
 /// The allocator, installed here because a binary is the only place that may choose one.
 ///

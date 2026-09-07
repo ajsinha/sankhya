@@ -4426,8 +4426,8 @@ CATALOGUE = [
 
     ("server: leave a newly created table out of the servable set until a restart",
      "crates/sankhya-server/src/adopt.rs",
-     "        table.authorize_as = authority_for(server, &table.reference, &lineages);\n        servable.push(table);",
-     "        table.authorize_as = authority_for(server, &table.reference, &lineages);\n        let _ = table;",
+     "        table.authorize_as = authority_for(&table.reference, &lineages);\n        servable.push(table);",
+     "        table.authorize_as = authority_for(&table.reference, &lineages);\n        let _ = table;",
      "sankhya-server"),
 
     # No entry for "resolve a clone through the ordinary path", and the absence is deliberate.

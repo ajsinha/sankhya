@@ -40,6 +40,7 @@ use arrow_schema::DataType;
 use datafusion::common::{exec_err, Result};
 
 /// A column of vectors, ready to be read row by row.
+#[derive(Debug)]
 pub enum Vectors<'a> {
     /// The contiguous case: a flat buffer and a stride.
     Strided {

@@ -79,7 +79,7 @@ fn purpose_of(name: &str) -> &'static str {
         "check-dupes" => "two versions of one heavy dependency in the graph",
         "check-docs" => "a broken link, a stale pin claim, a crate that does not exist, or a document that will not say what it claims is built",
         "check-features" => "a feature flag that changes behaviour nothing tests",
-        "check-lints" => "the denied lint set, across every target",
+        "check-lints" => "the denied lint set across every target, and any warning at all from the shipping build",
         "check-unsafety" => "a third crate writing `unsafe`, or an opt-out that outlived its reason",
         "check-attribution" => "a dependency whose licence notice did not follow it",
         "check-mutation-coverage" => "a crate that decides something and has no mutation entry",

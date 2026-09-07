@@ -1086,12 +1086,6 @@ fn version_key(table: &str) -> String {
     format!("version of {}", table.to_lowercase())
 }
 
-/// The setting name for `SET VERSION OF <table>`, for the session to record.
-#[must_use]
-pub(crate) fn version_setting(table: &str) -> String {
-    version_key(table)
-}
-
 /// The tables this session sees when it has pinned one or more of them to a version.
 ///
 /// # Why this is separate from a snapshot

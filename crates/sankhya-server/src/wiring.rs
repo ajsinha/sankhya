@@ -33,7 +33,7 @@ use std::sync::Arc;
 
 use sankhya_catalog::guard::Guard;
 use datafusion::prelude::SessionContext;
-use crate::execute::{run, session_for, session_reaching, ServableTable};
+use crate::execute::{run, session_reaching, ServableTable};
 
 /// How the server was configured.
 #[derive(Clone, Debug)]
@@ -541,15 +541,6 @@ fn asked_of_materialisation(sql: &str) -> sankhya_cube::materialise::Session {
 }
 
 impl Server {
-    /// Assemble a server.
-    ///
-    /// Must be called from inside a Tokio runtime: the synchronous protocol handler needs a
-    /// handle to reach the asynchronous query path.
-    #[must_use]
-    pub fn new(settings: Settings, policy: PolicySet, tables: Vec<CatalogTable>) -> Self {
-        Self::with_tables(settings, policy, tables, Vec::new())
-    }
-
     /// Load, validate and adopt the cubes a warehouse declares.
     ///
     /// # Why loudly, and why at startup
