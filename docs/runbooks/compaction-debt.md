@@ -5,10 +5,23 @@
 The alerting series carries **no label**, so it says that *some* table has too many files and not
 which one. That is deliberate: `/metrics` is unauthenticated by Prometheus's convention, and a
 per-table label enumerates the warehouse to anybody who can reach the port (`SEC-08`). To find the
-table, run `sankhya doctor`, which authenticates — or set `server.metrics_detail: true` where the
-metrics interface is one clients cannot reach, which restores the per-table
-`sankhya_table_live_files` series.
+table, run `sankhya-server doctor` — or set `server.metrics_detail: true` where the metrics
+interface is one clients cannot reach, which restores the per-table `sankhya_table_live_files`
+series. The diagnostic reads the warehouse off disk and takes no principal; what protects it is
+shell access to the host, not a login.
+
 **Lead time:** days, at ordinary write rates.
+
+**First, check maintenance is running at all.** This page is about a duty cycle that is too
+low, and it looks identical to a maintainer that has stopped:
+
+```promql
+rate(sankhya_maintenance_ticks_total[15m])   # zero: not running. Nothing below applies
+increase(sankhya_maintenance_failures_total[1h])  # above zero: `maintenance-stalled`, not this
+```
+
+If either says so, go to [`maintenance-stalled`](maintenance-stalled.md). The rest of this page
+assumes passes are running and succeeding.
 
 ## Symptom
 
@@ -29,9 +42,15 @@ Files accumulate because capture commits what it has when its commit interval el
 is correct behaviour — a longer interval would mean staler data — and it means file count
 rises continuously and is brought back down only by compaction.
 
-So this alert almost never means "compaction is broken". It usually means **the maintenance
-duty cycle is too low for this table's write rate.** Compaction is running; it is not running
-often enough to keep up with this particular table.
+So this alert almost never means "compaction is broken" --- **once you have checked that
+maintenance is running**, which is what the counters at the top of this page are for. It usually
+means **the maintenance duty cycle is too low for this table's write rate.** Compaction is
+running; it is not running often enough to keep up with this particular table.
+
+`sankhya_maintenance_declined_total` rising while reclaimed bytes stay flat is the other benign
+reading: passes are running and choosing not to reclaim, because a lease, a clone or a snapshot
+still reads the files. That is the sweeper honouring a reader, and the fix is to release whatever
+holds them --- not to raise the duty cycle, which will change nothing.
 
 ## What to do
 

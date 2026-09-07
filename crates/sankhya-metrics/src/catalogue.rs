@@ -220,6 +220,86 @@ pub static METRICS_REJECTED_TOTAL: Metric = Metric {
     alert: None,
 };
 
+/// How many maintenance passes have completed.
+///
+/// # Why a counter of passes is worth exporting
+///
+/// Because `sankhya_table_live_files_max` pages on the *consequence* of maintenance not
+/// keeping up, and its runbook opens by telling you the alert "almost never means compaction
+/// is broken --- it usually means the duty cycle is too low". That was a claim an operator
+/// had no way to check: the maintainer's tick, reclaim, decline and failure counts lived on
+/// `MaintenanceHandle` and were read by two tests and a soak run, and by nothing that a
+/// scrape could reach. A thread that had died and a duty cycle that was too low produced the
+/// same alert and the same evidence.
+///
+/// A rate of zero on this counter is the distinction: passes are not happening at all.
+pub static MAINTENANCE_TICKS_TOTAL: Metric = Metric {
+    name: "sankhya_maintenance_ticks_total",
+    kind: Kind::Counter,
+    unit: Unit::Count,
+    labels: &[],
+    group: Group::Maintenance,
+    help: "Maintenance passes completed since this server started. A rate of zero while \
+           tables are being written means the maintainer is not running, which is a \
+           different fault from a duty cycle that is too low.",
+    alert: None,
+};
+
+/// Space returned to the filesystem by retiring superseded files.
+pub static MAINTENANCE_BYTES_RECLAIMED_TOTAL: Metric = Metric {
+    name: "sankhya_maintenance_bytes_reclaimed_total",
+    kind: Kind::Counter,
+    unit: Unit::Bytes,
+    labels: &[],
+    group: Group::Maintenance,
+    help: "Bytes returned to the filesystem by retiring superseded files. Flat while file \
+           counts rise means compaction is running and reclaiming nothing, which is what a \
+           reader holding every version looks like.",
+    alert: None,
+};
+
+/// Passes that declined to act because something was still reading.
+///
+/// Not a fault: declining is the sweeper honouring a lease, a clone or a snapshot, and is
+/// the mechanism that stops a reader's files being reclaimed underneath it. It is here
+/// because it is the benign explanation for reclaimed bytes staying flat, and separating it
+/// from `sankhya_maintenance_failures_total` is what makes that counter mean one thing.
+pub static MAINTENANCE_DECLINED_TOTAL: Metric = Metric {
+    name: "sankhya_maintenance_declined_total",
+    kind: Kind::Counter,
+    unit: Unit::Count,
+    labels: &[],
+    group: Group::Maintenance,
+    help: "Passes that declined to reclaim because a lease, clone or snapshot still reads \
+           the files. Expected and healthy; it explains reclaimed bytes staying flat.",
+    alert: None,
+};
+
+/// Passes that failed.
+///
+/// # Why this pages and the other three do not
+///
+/// Because it is the only one of the four whose non-zero value is unambiguous. A pass that
+/// failed did not compact and did not reclaim, and nothing a user issues will report it ---
+/// maintenance runs on its own thread, so a failure surfaces only as file counts climbing
+/// until `sankhya_table_live_files_max` pages, days later, with a runbook that will send the
+/// reader to raise a duty cycle that was never the problem.
+pub static MAINTENANCE_FAILURES_TOTAL: Metric = Metric {
+    name: "sankhya_maintenance_failures_total",
+    kind: Kind::Counter,
+    unit: Unit::Count,
+    labels: &[],
+    group: Group::Maintenance,
+    help: "Maintenance passes that failed. Above zero means compaction and reclamation are \
+           not happening for at least one table, and file counts are rising unopposed.",
+    alert: Some(Alert {
+        runbook: "maintenance-stalled",
+        consequence: "files accumulate unopposed until reads slow and the disk fills; the \
+                      compaction-debt page arrives days later and blames the duty cycle",
+        lead_time: "days --- file counts climb before any read is slow enough to notice",
+    }),
+};
+
 /// The whole catalogue, in the order it is documented.
 pub static ALL: &[&Metric] = &[
     &QUERIES_TOTAL,
@@ -230,6 +310,10 @@ pub static ALL: &[&Metric] = &[
     &AUDIT_UNWRITTEN_TOTAL,
     &TABLE_LIVE_FILES_MAX,
     &TABLE_LIVE_FILES,
+    &MAINTENANCE_TICKS_TOTAL,
+    &MAINTENANCE_BYTES_RECLAIMED_TOTAL,
+    &MAINTENANCE_DECLINED_TOTAL,
+    &MAINTENANCE_FAILURES_TOTAL,
     &MEMORY_IN_USE_BYTES,
     &MEMORY_PEAK_BYTES,
     &METRICS_REJECTED_TOTAL,

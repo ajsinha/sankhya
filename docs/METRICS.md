@@ -113,6 +113,56 @@ Files a table currently consists of. A scan pays per file — opening it, readin
 | Consequence | query latency on the affected table roughly doubles as the file count passes a thousand, and keeps climbing |
 | Lead time | days, at ordinary write rates — which is why the diagnostic reports a date rather than a value |
 
+## `sankhya_maintenance_ticks_total`
+
+Maintenance passes completed since this server started. A rate of zero while tables are being written means the maintainer is not running, which is a different fault from a duty cycle that is too low.
+
+| | |
+|---|---|
+| Type | counter |
+| Unit | count |
+| Group | maintenance debt |
+| Labels | none |
+| Pages | no |
+
+## `sankhya_maintenance_bytes_reclaimed_total`
+
+Bytes returned to the filesystem by retiring superseded files. Flat while file counts rise means compaction is running and reclaiming nothing, which is what a reader holding every version looks like.
+
+| | |
+|---|---|
+| Type | counter |
+| Unit | bytes |
+| Group | maintenance debt |
+| Labels | none |
+| Pages | no |
+
+## `sankhya_maintenance_declined_total`
+
+Passes that declined to reclaim because a lease, clone or snapshot still reads the files. Expected and healthy; it explains reclaimed bytes staying flat.
+
+| | |
+|---|---|
+| Type | counter |
+| Unit | count |
+| Group | maintenance debt |
+| Labels | none |
+| Pages | no |
+
+## `sankhya_maintenance_failures_total`
+
+Maintenance passes that failed. Above zero means compaction and reclamation are not happening for at least one table, and file counts are rising unopposed.
+
+| | |
+|---|---|
+| Type | counter |
+| Unit | count |
+| Group | maintenance debt |
+| Labels | none |
+| **Pages** | yes — [`maintenance-stalled`](runbooks/maintenance-stalled.md) |
+| Consequence | files accumulate unopposed until reads slow and the disk fills; the compaction-debt page arrives days later and blames the duty cycle |
+| Lead time | days --- file counts climb before any read is slow enough to notice |
+
 ## `sankhya_memory_in_use_bytes`
 
 Bytes allocated and not yet freed, counted at the global allocator. Everything the process allocates passes through it, including what the query engine's own accounting cannot see.

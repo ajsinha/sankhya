@@ -3168,8 +3168,31 @@ published in `METRICS.md` rather than filled.
 
 **Runbooks are enforced, not aspirational.** A pageable metric's `runbook` field is not an
 `Option`, and the check requires the file to exist *and* to carry its Symptom / What is
-actually wrong / What to do sections. Seven exist. `M6`'s fifth exit criterion holds rather
+actually wrong / What to do sections. Eight exist. `M6`'s fifth exit criterion holds rather
 than being something to audit later.
+
+**A declared metric with no sample is not a metric.** The registry emitted `# HELP` and
+`# TYPE` for a metric nothing had recorded, under a comment saying this let a dashboard tell
+*"no events"* from *"not wired up"*. It does the opposite: Prometheus stores nothing for a
+metric that has never been sampled, so both states scrape identically --- and on a freshly
+started server seven of the declared metrics were in that state, including
+`sankhya_audit_unwritten_total`, the one page whose lead time is *none*. A metric whose labels
+are all closed now reads zero from startup, once per combination; one labelled by a
+deployment-scoped identifier does not, because inventing a table name is worse than silence.
+Ten of the fifteen carry a series before anything has happened, and `absent()` is now a rule
+worth writing.
+
+**Four maintenance counters existed and reached nobody.** `MaintenanceHandle` has counted
+ticks, reclaimed bytes, declines and failures since it was written, and the only things that
+read them were two unit tests and the soak. So `compaction-debt` --- which pages, on file
+counts climbing --- opened by telling the reader the alert *"almost never means compaction is
+broken, it usually means the duty cycle is too low"*, and gave them nothing to check that
+against: a maintainer that had died and a duty cycle that was too low produced the same page,
+the same evidence and the same advice. The four are now published on the maintenance cadence,
+failures page to a new `maintenance-stalled` runbook, and the compaction-debt runbook opens
+by sending the reader there when ticks are flat. Pinned by a test that starts the binary,
+reads the port off its banner and scrapes it --- because a counter that is maintained and a
+counter that is exported look identical from inside the type.
 
 **Five defects, four of them in the path a user actually takes:**
 

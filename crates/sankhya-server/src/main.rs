@@ -62,6 +62,7 @@ use std::collections::BTreeMap;
 use sankhya_authz::principal::TenantId;
 use std::sync::Arc;
 use wiring::{start, Posture, Settings, TransportSecurity, CUBOID_ROW_BUDGET};
+use sankhya_metrics::catalogue;
 
 /// Read configuration: files first, then the environment, then the command line.
 ///
@@ -813,6 +814,51 @@ async fn main() -> std::io::Result<()> {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     *held = current;
+                }
+                tokio::time::sleep(every).await;
+            }
+        });
+    }
+
+    // What maintenance has actually done, published where a scrape can see it.
+    //
+    // `MaintenanceHandle` has counted ticks, reclaimed bytes, declines and failures since it
+    // was written, and until now the only things that read those counters were two tests and
+    // a soak run. So `compaction-debt` --- which pages, on file counts climbing --- opened by
+    // telling the reader the alert "almost never means compaction is broken, it usually means
+    // the duty cycle is too low", and gave them nothing to check that against. A maintainer
+    // that had died and a duty cycle that was too low produced the same page and the same
+    // evidence, and the runbook sent both to raise the duty cycle.
+    //
+    // Published on the maintenance cadence rather than at scrape time, because the handle
+    // lives here and the scrape path holds only the `Server`. A counter mirrored one interval
+    // late is a counter; a gauge would not survive the same treatment.
+    if let Some(handle) = maintenance.clone() {
+        let metrics = server.metrics();
+        let every = configured_interval;
+        tokio::spawn(async move {
+            loop {
+                // Absolute totals rather than deltas. The handle already holds the running
+                // count, and adding a delta computed here would drift the moment a publish
+                // was missed --- which is exactly what a restarted or lagging task does.
+                #[allow(clippy::cast_precision_loss)]
+                {
+                    metrics.set(&catalogue::MAINTENANCE_TICKS_TOTAL, &[], handle.ticks() as f64);
+                    metrics.set(
+                        &catalogue::MAINTENANCE_BYTES_RECLAIMED_TOTAL,
+                        &[],
+                        handle.bytes_reclaimed() as f64,
+                    );
+                    metrics.set(
+                        &catalogue::MAINTENANCE_DECLINED_TOTAL,
+                        &[],
+                        handle.declined() as f64,
+                    );
+                    metrics.set(
+                        &catalogue::MAINTENANCE_FAILURES_TOTAL,
+                        &[],
+                        handle.failed() as f64,
+                    );
                 }
                 tokio::time::sleep(every).await;
             }

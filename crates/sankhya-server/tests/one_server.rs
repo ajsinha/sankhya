@@ -37,13 +37,20 @@ fn start_and_wait(
             // for a reason that has nothing to do with it.
             // `warehouse.path`, nested, which is the key the server reads.
             //
+            // `listen` had the same fault and outlived the fix above: it was written at the
+            // top level, the loader reads `server.listen`, so every server this helper
+            // started bound the compiled-in `127.0.0.1:5433` --- the one port these tests
+            // took care to make ephemeral. It went unnoticed because these tests want the
+            // *second* server refused, and a second server refused for the wrong reason
+            // still exits non-zero.
+            //
             // This wrote a top-level `warehouse:` --- which the loader does not read --- so
             // every server this helper started ran against the **default** warehouse,
             // `./warehouse` relative to the working directory, and created bookkeeping in the
             // repository. The tests passed anyway, because the lock they were about lived in
             // the data directory, which the test does control. Moving the lock into the
             // warehouse is what exposed it.
-            "warehouse:\n  path: {}\nlisten: 127.0.0.1:0\nserver:\n  \
+            "warehouse:\n  path: {}\nserver:\n  listen: 127.0.0.1:0\n  \
              metrics_listen: 127.0.0.1:0\n  flight_listen: 127.0.0.1:0\n",
             warehouse.display()
         ),

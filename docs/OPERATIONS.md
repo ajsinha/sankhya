@@ -354,15 +354,16 @@ There is no `counter("some_name")` in this codebase. Recording a metric takes th
 
 Two checks run, and they are different checks. That the published catalogue matches the declarations is one. That every declared metric is actually **recorded somewhere in the source** is the other — generating documentation from a catalogue proves the document matches the catalogue and says nothing about whether the catalogue matches the program. Only the second is uncomfortable, because it is the one that fails.
 
-### 8.3 The three that page
+### 8.3 The four that page
 
-A metric that may page carries an `Alert`, and that field is **not** an `Option` (`crates/sankhya-metrics/src/metric.rs`) — so a paging metric structurally cannot exist without a runbook, and the build requires the file to exist *and* carry its *Symptom* / *What is actually wrong* / *What to do* sections. Of eleven declared metrics, three page:
+A metric that may page carries an `Alert`, and that field is **not** an `Option` (`crates/sankhya-metrics/src/metric.rs`) — so a paging metric structurally cannot exist without a runbook, and the build requires the file to exist *and* carry its *Symptom* / *What is actually wrong* / *What to do* sections. Of fifteen declared metrics, four page:
 
 | Metric | Threshold | Lead time | Runbook |
 |---|---|---|---|
 | `sankhya_audit_unwritten_total` | above zero | **none** — the first failure is already a gap | [`audit-unwritten`](runbooks/audit-unwritten.md) |
 | `sankhya_table_live_files_max` | approaching 1,000 | days, at ordinary write rates | [`compaction-debt`](runbooks/compaction-debt.md) |
 | `sankhya_table_live_files` | as above, per table | as above | [`compaction-debt`](runbooks/compaction-debt.md) |
+| `sankhya_maintenance_failures_total` | above zero | days — file counts climb before a read is slow enough to notice | [`maintenance-stalled`](runbooks/maintenance-stalled.md) |
 
 The interval by which a metric precedes user-visible failure is recorded beside it, because that interval is the entire justification for paging. An alert with no lead time fires when the user notices, which makes it a notification.
 
@@ -681,6 +682,7 @@ One per alert that can page, and the relationship is enforced rather than aspira
 |---|---|---|
 | [`audit-unwritten`](runbooks/audit-unwritten.md) | `sankhya_audit_unwritten_total` above zero | Records are being made and are not reaching disk. **No lead time — the first failure is already a gap**, and nothing a user sees changes |
 | [`compaction-debt`](runbooks/compaction-debt.md) | `sankhya_table_live_files_max` near 1,000 | One table's queries get slower and nothing else on the box looks different. Lower `maintenance.compact_every` or `interval` and `SIGHUP` |
+| [`maintenance-stalled`](runbooks/maintenance-stalled.md) | `sankhya_maintenance_failures_total` above zero | Maintenance passes are running and failing, so files accumulate unopposed. Separates a dead maintainer, a failing pass, a sweeper honouring a reader, and a duty cycle that is simply too low — four states that all read as "file counts are rising" |
 | [`restore-drill`](runbooks/restore-drill.md) | `doctor` reports no passing drill, a stale one, or a drill exited `1` | Nothing is broken; what is wrong is epistemic. Distinguishes *never ran* from *ran and failed* from *the backup is not a backup*, and forbids taking a fresh backup to silence the alert |
 | [`snk-s0001`](runbooks/snk-s0001.md) | `SNK-S0001` | Coverage gap: a query is refused because no tier covers part of the range it asked for. Fatal, and intermittent-looking |
 | [`snk-s0002`](runbooks/snk-s0002.md) | `SNK-S0002` | Archive conflict: the registry says a range was purged and the catalogue says those rows are present. Every query on that table is refused until a human acts |
@@ -689,9 +691,9 @@ One per alert that can page, and the relationship is enforced rather than aspira
 | [`snk-s0005`](runbooks/snk-s0005.md) | `SNK-S0005` | An invariant does not hold. This is a defect in SANKHYA, not a misconfiguration |
 | [`snk-s0006`](runbooks/snk-s0006.md) | `SNK-S0006` | Configuration invalid; the process refuses to start, naming the key, the value and where the value came from |
 
-> **Four of those nine name a code this build cannot produce.** `SNK-S0001` through `SNK-S0004` are on `UNREACHABLE` in `xtask/src/catalogues.rs`, either because the subsystem does not run or because the condition happens and is reported through a crate-local type nothing maps onto the code. `SNK-S0001` is the sharpest case: the coverage gap it names *is* detected, by `sankhya-plan`'s splice, and reported as that crate's own error type — so the alert fires never while the condition occurs. **An alert rule written against one of them is permanently silent.** The runbooks are kept because codes are permanent — removing one breaks every rule that references it — and [`ERRORS.md`](ERRORS.md) marks each as *not produced by this build*, with the gap that has to close first.
+> **Four of those ten name a code this build cannot produce.** `SNK-S0001` through `SNK-S0004` are on `UNREACHABLE` in `xtask/src/catalogues.rs`, either because the subsystem does not run or because the condition happens and is reported through a crate-local type nothing maps onto the code. `SNK-S0001` is the sharpest case: the coverage gap it names *is* detected, by `sankhya-plan`'s splice, and reported as that crate's own error type — so the alert fires never while the condition occurs. **An alert rule written against one of them is permanently silent.** The runbooks are kept because codes are permanent — removing one breaks every rule that references it — and [`ERRORS.md`](ERRORS.md) marks each as *not produced by this build*, with the gap that has to close first.
 
-Two errors in `runbooks/compaction-debt.md` to be aware of until it is corrected: it says `sankhya doctor`, and there is no `sankhya` binary — it is `sankhya-server doctor`; and it says that command *authenticates*, which it does not. It reads the warehouse off disk with no principal.
+Both errors this section used to list against `runbooks/compaction-debt.md` are fixed: it named a `sankhya` binary that does not exist, and said the diagnostic *authenticates*, which it does not — it reads the warehouse off disk with no principal, and what protects it is shell access to the host.
 
 ---
 

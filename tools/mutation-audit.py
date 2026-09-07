@@ -2467,6 +2467,17 @@ CATALOGUE = [
      "                continue;",
      "sankhya-metrics"),
 
+    ("server: stop publishing what maintenance has done",
+     "crates/sankhya-server/src/main.rs",
+     "    if let Some(handle) = maintenance.clone() {\n        let metrics = server.metrics();",
+     "    if let Some(handle) = maintenance.clone().filter(|_| false) {\n        let metrics = server.metrics();",
+     "sankhya-server", 1, "published"),
+
+    ("server: publish the tick count once and never again",
+     "crates/sankhya-server/src/main.rs",
+     "                    metrics.set(&catalogue::MAINTENANCE_TICKS_TOTAL, &[], handle.ticks() as f64);",
+     "                    metrics.set(&catalogue::MAINTENANCE_TICKS_TOTAL, &[], 0.0);",
+     "sankhya-server", 1, "published"),
     ("metrics: emit a zero series for a label whose values are discovered",
      "crates/sankhya-metrics/src/registry.rs",
      "        let Values::Closed(values) = label.values else {\n            return Vec::new();\n        };",
