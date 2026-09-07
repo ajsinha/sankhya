@@ -21,6 +21,7 @@ mod coverage;
 mod gates;
 mod objectives;
 mod durability;
+mod benchmarks;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -1194,25 +1195,14 @@ fn check_benchmarks(root: &Path) -> bool {
         }
     }
 
-    // A crate that publishes a figure has something that produces it. Listed rather than
-    // inferred: the relationship is between a document and a directory, and nothing in the
-    // filesystem records it.
-    const MUST_MEASURE: &[&str] = &["sankhya-functions", "sankhya-math"];
-    let mut ok = true;
-    let mut found = 0usize;
-    for name in MUST_MEASURE {
-        let benches = root.join("crates").join(name).join("benches");
-        if benches.is_dir() && crate::package::files_under(&benches).iter().any(|p| p.extension().is_some_and(|e| e == "rs")) {
-            found += 1;
-        } else {
-            eprintln!("  NO BENCHMARK    {name} publishes speed figures and has no benches/ directory; a number nothing can re-run is a claim");
-            ok = false;
-        }
-    }
-    if ok {
-        println!("   {found} crate(s) that publish figures have a benchmark, and every target builds");
-    }
-    ok
+    // Two questions, and the second is the one that bites. That a crate publishing figures
+    // has benchmarks at all is necessary and proves nothing about any particular number ---
+    // a directory is not a measurement. That every published ratio names something that
+    // produced it, and that the reference resolves, is what stops a figure from being
+    // established by restatement.
+    let has_benches = crate::benchmarks::every_publisher_can_measure(root);
+    let figures_backed = crate::benchmarks::every_figure_is_backed(root);
+    has_benches && figures_backed
 }
 
 /// The `NFR-PERF-*` objectives, run as a gate.

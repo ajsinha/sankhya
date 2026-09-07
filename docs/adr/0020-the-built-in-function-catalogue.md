@@ -351,8 +351,8 @@ every width, so the ratio is about access rather than about how much data each a
 > deletions and stashes. They existed only in prose, restated in `rows.rs` and in `STATUS.md`,
 > and each restatement made them look more established.
 >
-> The tell was internal. Against a fresh run the old *copying* arm was 2.4× faster and its
-> *borrowing* arm 27× faster; a smaller dataset would have moved both together. Only the fast
+> The tell was internal. Against a fresh run ([bench: sankhya-functions/row-access]) the old
+> *copying* arm was 2.4× faster and its *borrowing* arm 27× faster; a smaller dataset would have moved both together. Only the fast
 > arm was anomalous, it was non-monotone in width, and 0.85 ms for a scalar reduction over that
 > data implies about 39 GB/s --- above this machine's memory bandwidth. **The borrowing arm was
 > almost certainly deleted by the optimiser**: its result was unused, so the loop went, while

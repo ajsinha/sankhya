@@ -1308,7 +1308,8 @@ the same build or a regression appears in one and not the other.
 a row instead of copying it, restated in `rows.rs` and again in `STATUS.md`. No code anywhere in
 this repository's history produced them --- the audit searched the working tree, every branch,
 `git log -S` on each figure, deletions and stashes. The tell was internal: against a fresh run
-the *copying* arm was 2.4× faster and the *borrowing* arm 27× faster, only the fast arm was
+([bench: sankhya-functions/row-access]) the *copying* arm was 2.4× faster and the *borrowing*
+arm 27× faster, only the fast arm was
 anomalous, it was non-monotone in width, and 0.85 ms for a scalar reduction implied about
 39 GB/s --- above memory bandwidth. **The fast arm was almost certainly deleted by the
 optimiser**, its result being unused, while the copying arm survived because allocation has

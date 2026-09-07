@@ -1730,7 +1730,7 @@ up.
 **And the reductions were the wrong shape.** Every vector function reduced through a sum that
 sorted its input by magnitude, once per row. That is fixed — see ADR-0020 Decision 3, and the
 `exact_sum` written for it, which is bit-identical, order-independent by construction, and 1.3×
-to 3.6× faster through the shipping kernels.
+to 3.6× faster through the shipping kernels ([bench: sankhya-math/deterministic-sum]).
 
 ### The work
 

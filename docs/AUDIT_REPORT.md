@@ -1218,8 +1218,8 @@ Reconstructed faithfully, best-of-9 with warm-up and `black_box`, at load 2.6:
 | 512 | 2.1× | 1.1× |
 
 The shape of the claim is right — narrow rows win most — and the magnitude is off by roughly ten.
-The tell is an internal inconsistency: against the fresh run, the ADR's *copying* arm is 2.4×
-faster, but its *borrowing* arm is 27× faster. A smaller dataset would scale both together. Only
+The tell is an internal inconsistency: against the fresh run ([bench: sankhya-functions/row-access]),
+the ADR's *copying* arm is 2.4× faster, but its *borrowing* arm is 27× faster. A smaller dataset would scale both together. Only
 the fast arm is anomalous, it is **non-monotone**, and 0.85 ms for a scalar fixed-point reduction
 implies ~39 GB/s — above memcpy bandwidth. **The borrowing arm was almost certainly optimised
 away**: its result was unused and LLVM deleted the loop, while the copying arm survived because
@@ -1268,7 +1268,8 @@ where one would do. `dot`, `norm_l1`, `norm_l2` and `euclidean` each **allocate 
 `Vec` before reducing** — so `rows.rs` removed the wrapper's per-row allocation and the kernel
 immediately makes one of the same size.
 
-Measured against an ordinary sum: **32× slower at width 8**, 6× at 4096. The tradeoff is
+Measured against an ordinary sum ([bench: sankhya-math/determinism-price], which is what that
+group exists to price): **32× slower at width 8**, 6× at 4096. The tradeoff is
 defensible and well argued. But the documentation states only that the new reduction is 1.5–2.7×
 faster **than the project's own previous code** — a reader comes away believing the kernels got
 fast. Against an owner directive for "very high performance", the absolute price of the guarantee

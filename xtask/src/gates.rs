@@ -83,7 +83,7 @@ fn purpose_of(name: &str) -> &'static str {
         "check-unsafety" => "a third crate writing `unsafe`, or an opt-out that outlived its reason",
         "check-attribution" => "a dependency whose licence notice did not follow it",
         "check-mutation-coverage" => "a crate that decides something and has no mutation entry",
-        "check-benchmarks" => "a published speed figure with no benchmark that produces it",
+        "check-benchmarks" => "a published speed figure that names nothing which produced it, or names something that does not exist",
         "check-objectives" => "a service-level objective missing from the table that reports on it",
         "check-durability" => "a durable writer that syncs its bytes and not its directory entry",
         "check-mutations" => "a catalogue entry that no longer matches the source it names",

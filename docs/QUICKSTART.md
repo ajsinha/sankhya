@@ -560,9 +560,14 @@ element count is refused **when the query is planned**, not partway through a sc
 whose order depends on how the query was partitioned returns a different number when the machine
 is busier. These use fixed-point accumulation, where integer addition *is* associative, so
 order-independence holds by construction rather than by sorting — and it is 1.3× to 3.6× faster
-than the sorted sum it replaced. Lane-parallel SIMD accumulation was rejected for this: it is
-10–15× faster and computes a different, worse number. On `1e16, 1, -1e16, 1` repeated, whose
-exact total is 18, it returns 5 — and 0 when the input is reversed.
+than the sorted sum it replaced ([bench: sankhya-math/deterministic-sum], which runs both arms
+over the same vectors).
+
+Lane-parallel SIMD accumulation was rejected for this: it is 10–15× faster and computes a
+different, worse number. On `1e16, 1, -1e16, 1` repeated, whose exact total is 18, it returns 5 —
+and 0 when the input is reversed. [rejected: the lane-parallel kernel is not in this build, so
+nothing here can reproduce the figure; it is stated because a reader who does not know it will
+propose it]
 
 Two costs worth knowing: **an array column cannot be pruned** — a minimum and maximum of a
 vector prune nothing — and **an array cannot be a key column**.
