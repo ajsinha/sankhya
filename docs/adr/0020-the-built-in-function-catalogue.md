@@ -133,7 +133,7 @@ Eight fixed lanes with per-lane compensation is **10 to 15 times faster** (an un
 figure for an implementation this system does not use --- see the retraction below) and, on
 well-behaved
 data, bit-identical. On badly-conditioned data it is neither. For a vector of `1e16, 1, -1e16, 1`
-repeated nine times, whose exact total is `18`:
+repeated nine times, whose exact total is `18`: [rejected: the lane-parallel kernel is not in this build, so nothing here can reproduce the figure; it is quoted as the shape of a retracted claim]
 
 | | Result |
 |---|---|
@@ -233,7 +233,7 @@ input, which cannot have been measured either.
 > and the same paragraph says so --- *"the whole of that 15× was never available: the fast
 > version was computing a different, worse number"*. It stays as the shape of an argument and
 > is marked here as unmeasured, because a figure attached to code that was never written reads
-> exactly like one attached to code that was.
+> exactly like one attached to code that was. [historical: quoted as one of the retracted tables, not restated as true --- nothing in this repository's history produced it]
 
 The change is made **inside `deterministic_sum`**, which takes the fixed-point route and falls
 back to the sorted one. Every caller — vector, statistics, calculus, quantile — gets this
@@ -355,7 +355,7 @@ every width, so the ratio is about access rather than about how much data each a
 > *borrowing* arm 27× faster; a smaller dataset would have moved both together. Only the fast
 > arm was anomalous, it was non-monotone in width, and 0.85 ms for a scalar reduction over that
 > data implies about 39 GB/s --- above this machine's memory bandwidth. **The borrowing arm was
-> almost certainly deleted by the optimiser**: its result was unused, so the loop went, while
+> almost certainly deleted by the optimiser** [historical: a one-off run made during the audit, against the retracted table's "before" --- the sorted-only implementation, which no longer exists. No benchmark here can reproduce a ratio whose other operand was deleted]: its result was unused, so the loop went, while
 > the copying arm survived because heap allocation has side effects.
 >
 > Rule 3 below --- *every claim about speed carries its number* --- is what let it stand: the

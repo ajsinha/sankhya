@@ -1,7 +1,5 @@
 # ============================================================ 11 · EVIDENCE
-divider("11", "Four Kinds of Evidence",
-        "Each answers a question the previous one cannot.",
-        [])
+chapter("23", "Four kinds of evidence")
 
 sl, top = content("Four questions, four mechanisms",
                   kicker="EVIDENCE · THE LADDER")

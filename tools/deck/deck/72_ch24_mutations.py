@@ -1,7 +1,5 @@
 # ============================================================ 12 · MUTATIONS
-divider("12", "Would the Tests Notice?",
-        "Nine hundred deliberate defects, and what surviving one means.",
-        [])
+chapter("24", "Would the tests notice?")
 
 sl, top = content("The only mechanism that asks the right question",
                   kicker="EVIDENCE · MUTATION")

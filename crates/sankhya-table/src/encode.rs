@@ -98,7 +98,20 @@ pub fn encode_batch(
         lsn.append_value(m.commit_lsn.get());
         // The commit position is the ordering coordinate; the timestamp is recorded
         // for human reading only and is never used for ordering.
-        ts.append_value(0);
+        //
+        // **Null, because nothing here knows it.** A commit time is on the transaction's
+        // `BEGIN` in a replication stream, a `Mutation` does not carry one, and nothing in
+        // this build reads a replication stream (`ING-00`). This was `append_value(0)` ---
+        // every captured row stamped `1970-01-01T00:00:00Z`, which a reader cannot
+        // distinguish from a real instant.
+        //
+        // Precisely which predicates it broke is worth stating, because the obvious example
+        // is the one where nothing improves: `> <a modern instant>` excluded every row under
+        // the epoch and excludes every row under a null. The harm was the other direction ---
+        // `< <a modern instant>` **included** every row, `= '1970-01-01'` matched all of
+        // them, and `min`, `max` and `date_trunc` answered 1970 as though it were a fact.
+        // Those are wrong values presented as values; a null is an absence. `ING-09`.
+        ts.append_null();
         op.append_value(match m.op {
             sankhya_cdc_apply::Op::Insert => "I",
             sankhya_cdc_apply::Op::Update => "U",

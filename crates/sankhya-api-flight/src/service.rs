@@ -88,6 +88,7 @@ pub trait Queries: Send + Sync + 'static {
 }
 
 /// The Flight service.
+#[derive(Debug)]
 pub struct SankhyaFlight<Q: Queries> {
     queries: Arc<Q>,
 }

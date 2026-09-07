@@ -22,7 +22,6 @@ use datafusion::catalog::TableProvider;
 use datafusion::common::{plan_datafusion_err, plan_err, Result};
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::Expr;
-use datafusion::prelude::*;
 use sankhya_graph::epoch::EpochRef;
 use sankhya_graph_algo::budget::{Bounded, Truncation};
 use sankhya_graph_algo::ids::{EdgeMask, VertexId};

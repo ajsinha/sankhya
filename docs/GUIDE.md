@@ -1164,7 +1164,7 @@ Jacobi is used for the eigendecomposition rather than the faster algorithms. A s
 iteration is several times faster and picks its pivots from the current iterate, so a matrix
 perturbed in its last bit can converge to eigenvalues differing in their last several. An
 eigenvalue is a figure, and a figure that moves when the machine is busier is the thing this
-system is arranged against.
+system is arranged against. [historical: a property of the algorithm rather than a measurement of this build --- no shifted-QR implementation exists here to time against]
 
 A Cholesky failure is the useful part. It succeeds exactly on the positive-definite matrices,
 so a covariance matrix that will not factor is not a numerical accident — it is one no data

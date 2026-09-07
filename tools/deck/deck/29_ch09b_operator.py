@@ -1,7 +1,5 @@
 # ============================================================ 10 · THE OPERATOR
-divider("10", "What an Operator Can Find Out",
-        "Two records, one diagnostic, and the things that cannot be seen.",
-        [])
+chapter("9", "Bounds, and what an operator can find out")
 
 sl, top = content("Two records of the same event, for two people",
                   kicker="THE SYSTEM · WHAT IS RECORDED")

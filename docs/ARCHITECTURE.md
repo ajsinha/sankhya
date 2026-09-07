@@ -79,24 +79,43 @@ Ten crates are on it, and they are the honest shape of what is designed rather t
 | `sankhya-ports` | Decided: **delete.** Nothing implements a single trait in it, and its header asserts a property the workspace does not have |
 | `sankhya-datagen`, `sankhya-testkit` | Reached only from dev-dependencies, which the traversal ignores on purpose — a *surface* reachable only from a test is the defect; a generator of test data is not one |
 
-### 2.2 `UNREACHABLE` — error codes nothing can produce
+### 2.2 `UNREACHABLE` and `MAPPED_BUT_UNREACHABLE` — codes nothing produces, and codes no query reaches
 
 `xtask/src/catalogues.rs` reads every `.rs` file under `crates/` except `sankhya-error` itself and
 asks, of every documented code, whether anything constructs it. A code that nothing constructs must
 be **declared unreachable with a reason**, and the reason is printed into [`ERRORS.md`](ERRORS.md) as
 *"Not produced by this build."*
 
-Thirteen codes are on it. Nine wait on a subsystem that does not exist. **Four are worse**: the
+Ten codes are on it. Seven wait on a subsystem that does not exist. **Three are worse**: the
 condition happens today and is reported through a crate-local type nothing maps onto the code, so an
-alert rule written from the catalogue is permanently silent while the failure it names occurs. Commit
-conflicts (`sankhya-publish` reports its own `CommitError`), cancellation, backup verification, and —
-found by a reviewer reading the gate rather than trusting it — `SNK-S0001`, the coverage gap, which
-had read as *produced* only because `SpliceError::CoverageGap` contains the substring
-`Error::CoverageGap`. The check requires a word boundary now.
+alert rule written from the catalogue is permanently silent while the failure it names occurs ---
+commit conflicts (`sankhya-publish` reports its own `CommitError`), cancellation, and backup
+verification.
 
-That last entry is worth reading twice, because it states a fact about the read path more precisely
-than any paragraph in this document does: *"the tier splice that would raise it is **not in the
-server's read path**, which synthesises a coverage range rather than composing one."* §3.8.
+A second list, `MAPPED_BUT_UNREACHABLE`, holds three more, and it exists because the first list
+answered the wrong question. `UNREACHABLE` asks *does anything construct this?*; an operator asks
+*can this fire?* Those were the same question until the crate-local conditions were mapped onto
+their codes --- `SpliceError::CoverageGap` onto `SNK-S0001`, `Unservable::NotReconciled` onto
+`SNK-S0002`, `SpliceError::BeyondFrontier` onto `SNK-T0003`. The conversions exist and are tested,
+so a caller that meets the condition now reports it correctly; nothing in this build meets it. The
+two lists are guarded in opposite directions: an `UNREACHABLE` entry that becomes constructible
+fails the build, and a `MAPPED_BUT_UNREACHABLE` entry that stops being constructible fails it too,
+because that entry claims a mapping exists.
+
+`SNK-S0001` is the one worth reading twice, because it states a fact about the read path more
+precisely than any paragraph in this document does: the tier splice that would raise it is **not in
+the server's read path**, which synthesises a coverage range rather than composing one. §3.8. It
+had also read as *produced* for a while, because `SpliceError::CoverageGap` contains the substring
+`Error::CoverageGap`; the check requires a word boundary now, which is what made the real state
+visible.
+
+`SNK-S0002` was the sharper find of the two. `FR-TIER-23` requires a conflict to make unified
+queries on the affected table fail **with a typed error**, and what it produced was `Option::None`
+--- which carries no code, no remediation and no name for what went wrong. `Unservable::NotReconciled`
+was declared, documented in `unify::plan`'s `# Errors` as returned *"when the witness is for another
+table"*, and constructed nowhere; `plan` takes the table *from* the witness, so it could not detect
+the case it documented. The refusal now belongs to `Registry::servable_or_refuse`, where the witness
+is obtained.
 
 ### 2.3 The enforced-by column
 
@@ -328,7 +347,10 @@ The tier splice — the mechanism §17 describes, which composes an in-memory ar
 Parquet under a proof of exact coverage — **is not in the server's read path.** The planner
 synthesises a coverage range rather than composing one, and `SNK-S0001`, the coverage-gap refusal that
 splice exists to raise, cannot be raised by this build. That is not an inference; it is the reason
-recorded against `SNK-S0001` in `xtask/src/catalogues.rs`.
+recorded against `SNK-S0001` in `xtask/src/catalogues.rs`. The *mapping* now exists — a
+`SpliceError::CoverageGap` converts to the code, with the positions in the detail — so the gap is
+one call path rather than a call path and a conversion. `SNK-S0001` moved from `UNREACHABLE` to
+`MAPPED_BUT_UNREACHABLE` accordingly, and an alert rule on it is still permanently silent.
 
 The splice itself is built and property-tested in `sankhya-plan` and `sankhya-readpath`, and is
 exercised end to end in tests. What is missing is that no capture runs, so there is no second tier to
@@ -338,6 +360,44 @@ Also not in the read path: a catalogue proper. The provider resolves mutable tab
 nothing maps a table *name* to one automatically, so the caller assembles the two. The result cache
 does not exist — **its key does**, because key correctness is a security property and the right time
 to fix it is before anything caches (§6.6).
+
+**And no served table folds a change log.** This is the boundary a reader is most likely to walk
+into. The write path appends every mutation with an `_sankhya_op` of `I`, `U` or `D`, so a table
+that receives updates holds every historical version of every row plus a tombstone per delete, and
+a plain scan returns all of them.
+
+The fold itself **exists and is correct**: `ResolvedTable` in `crates/sankhya-readpath/src/merge.rs`
+wraps a raw scan as `DISTINCT ON (key) … ORDER BY key, position DESC`, then filters keys whose
+latest version is a deletion — in that order, deliberately, because dropping tombstones first
+leaves the *previous* version to win the distinct and a deleted row comes back holding the values
+it had before it was deleted, which looks like data rather than like duplication. `ING-09` said
+there was *"no reader that applies the ops"*, and that is not the state: what is true is narrower
+and is the same shape as the splice above. **Nothing outside its own tests constructs one.** The
+server resolves a table name to a raw `SankhyaTable`, and the caller who wants the fold has to
+assemble it, which is the sentence two paragraphs up saying nothing maps a name to a provider
+automatically.
+`WriteStrategy::Mergeable`, computed at onboarding, does not close the gap either. It records that
+the *source* **can** emit updates and deletes for the table — which is why onboarding warns when
+it cannot — and **nothing downstream reads it**, including the fold: `ResolvedTable::new` takes a
+bare slice of column names, and nothing checks where the caller got them. That is a weaker guard
+than a typed one and it is the one that exists; this paragraph named a `Capability` guard on the
+constructor, and there is none. Its own doc comment used to say the
+value *"lets the storage layer skip merge machinery it will never need"*, which reads as though the
+other branch selects some. Neither branch selects anything.
+
+This costs nothing today, because nothing captures (`ING-00`) so no table receives updates through
+this path — the fold is unreached rather than missing, and the work to close it is one wiring
+decision rather than an algorithm. It is stated here rather than left to be discovered because the day a capture runtime
+exists is the day a table silently returns its whole history to a `SELECT *`, and a reader who
+learned that from the data rather than from this document has already believed a wrong number. The
+fold arrives with the runtime, not before it.
+
+One related value is now **null rather than wrong**: `_sankhya_commit_ts`. A commit time lives on
+the transaction's `BEGIN` in a replication stream and a mutation does not carry one, so the column
+was declared non-null and the writer stamped `1970-01-01T00:00:00Z` on every captured row. A reader
+cannot tell that from a real instant, and a `WHERE _sankhya_commit_ts > …` excludes every row while
+looking like a filter that found nothing. The column is nullable and the writer writes null, which
+is what a capture runtime would later fill.
 
 ---
 
@@ -853,7 +913,7 @@ through better compression across a larger block. (Recorded in [`STATUS.md`](STA
 That required scaling the fixture before it was a real test: an earlier run over 1,000,000 rows showed
 4.43× and 3.77× — apparently uniform, and it would have been read as *"more files are slower"*. The
 long query simply was not long enough for planning to amortise against. **A measurement that cannot
-distinguish the hypothesis from its negation is not evidence.**
+distinguish the hypothesis from its negation is not evidence.** §Measurements.
 
 ### 8.2 Compaction adds; a separate operation removes
 
@@ -1578,7 +1638,8 @@ values incapable of diverging and whose assertion encoded the buggy expectation.
 **What is missing**: the epoch ring, the per-epoch key digests that let a historical query skip the tier
 at no cost, per-tenant sub-caps, and any wiring into an ingest path. And, per §3.8, **the splice is not in
 the server's read path**: the planner synthesises a coverage range rather than composing one, which is why
-`SNK-S0001` is on `UNREACHABLE`.
+`SNK-S0001` is on `MAPPED_BUT_UNREACHABLE` — the conversion onto the code exists and is tested, and
+no query reaches it.
 
 ---
 

@@ -1,7 +1,5 @@
 # ============================================================ 9 · WHAT IT MAY SEE
-divider("9", "What a Statement Is Allowed to See",
-        "Rows, columns, and the catalogue — one mechanism, three surfaces.",
-        [])
+chapter("8", "What a statement may see")
 
 sl, top = content("Three things a policy governs",
                   kicker="THE SYSTEM · POLICY")

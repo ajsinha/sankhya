@@ -8,6 +8,8 @@ Every metric this build exports. A metric absent from this document is not merel
 
 **No label may carry tenant data.** A label is either restricted to a named set of values, in which case anything else is refused, or it holds a deployment-scoped identifier under a cap. There is no third kind, so a label that varies per row has no way to be declared.
 
+**A metric with no labels, or with only restricted ones, reads zero from startup.** Prometheus stores nothing for a metric that has never been sampled, so a declaration alone leaves *healthy*, *never started* and *the exporter is broken* looking identical — which matters most for the one page that has no lead time. A metric labelled by a deployment-scoped identifier has no such zero, because its label values are discovered rather than declared; for those, and only those, `absent()` is the healthy state.
+
 ## `sankhya_queries_total`
 
 Statements that reached execution, by how they ended.
@@ -110,6 +112,68 @@ Files a table currently consists of. A scan pays per file — opening it, readin
 | **Pages** | yes — [`compaction-debt`](runbooks/compaction-debt.md) |
 | Consequence | query latency on the affected table roughly doubles as the file count passes a thousand, and keeps climbing |
 | Lead time | days, at ordinary write rates — which is why the diagnostic reports a date rather than a value |
+
+## `sankhya_maintenance_ticks_total`
+
+Maintenance cycles completed since this server started, one per interval regardless of how many tables it visited. A rate of zero while tables are being written means the maintainer is not running, which is a different fault from a duty cycle that is too low --- and reads the same as maintenance being configured off, which is a supported deployment.
+
+| | |
+|---|---|
+| Type | counter |
+| Unit | count |
+| Group | maintenance debt |
+| Labels | none |
+| Pages | no |
+
+## `sankhya_maintenance_bytes_reclaimed_total`
+
+Bytes returned to the filesystem by retiring superseded files. Flat while file counts rise means compaction is running and reclaiming nothing, which is what a reader holding every version looks like.
+
+| | |
+|---|---|
+| Type | counter |
+| Unit | bytes |
+| Group | maintenance debt |
+| Labels | none |
+| Pages | no |
+
+## `sankhya_maintenance_declined_total`
+
+Table-passes that declined to reclaim because the pin set could not be established --- a snapshot or clone document that cannot be read, or a pinned version whose files cannot be resolved. **Not** a lease legitimately holding files, which resolves and retires nothing. Rising means the warehouse is deliberately not shrinking, which is the safe direction and not a free one. Counted per table per cycle, so it is not comparable with the tick count.
+
+| | |
+|---|---|
+| Type | counter |
+| Unit | count |
+| Group | maintenance debt |
+| Labels | none |
+| Pages | no |
+
+## `sankhya_maintenance_tables`
+
+Tables the maintenance thread is looking after right now. The set is discovered at the top of every cycle, so a table created after the server started appears here once it has been adopted.
+
+| | |
+|---|---|
+| Type | gauge |
+| Unit | count |
+| Group | maintenance debt |
+| Labels | none |
+| Pages | no |
+
+## `sankhya_maintenance_failures_total`
+
+Table-passes that failed. Above zero means compaction and reclamation are not happening for at least one table, and file counts are rising unopposed. Counted per table per cycle, so it is not comparable with the tick count.
+
+| | |
+|---|---|
+| Type | counter |
+| Unit | count |
+| Group | maintenance debt |
+| Labels | none |
+| **Pages** | yes — [`maintenance-stalled`](runbooks/maintenance-stalled.md) |
+| Consequence | files accumulate unopposed until reads slow and the disk fills; the compaction-debt page arrives days later and blames the duty cycle |
+| Lead time | days --- file counts climb before any read is slow enough to notice |
 
 ## `sankhya_memory_in_use_bytes`
 

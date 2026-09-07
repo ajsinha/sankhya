@@ -56,12 +56,25 @@ cd sankhya
 cargo build --release -p sankhya-server -p sankhya-publish
 ```
 
-The first build compiles a large dependency graph — expect several minutes. The enforcement
-tooling builds in seconds and is worth running first:
+The first build compiles a large dependency graph — expect several minutes. While it runs, the
+enforcement tooling is worth meeting, in the order you will actually use it:
 
 ```bash
-cargo xtask check-all
+cargo xtask check-fast    # the cheap checks, about four seconds
+cargo xtask check-all     # every gate, including the full test suite — tens of minutes
 ```
+
+This section used to describe `check-all` as building *"in seconds"*. It does not: it runs the
+full test suite, clippy across every target and the concurrency measurements, and that is tens
+of minutes. `check-fast` is the one that answers quickly — and it exists because a
+twenty-five-minute gate reporting a five-second failure is a gate people learn to skip.
+
+Two corrections to what an earlier version of this paragraph said about it. `check-all` does
+**not** open with the test suite — it has dispatched the cheap checks first since the ordering
+was changed, for exactly the reason above. And `check-fast` is not purely file-scanning:
+`check-attribution` shells out to `cargo metadata`, and `check-mutations` runs a Python pass
+over the whole mutation catalogue. Four seconds is the figure `xtask/src/main.rs` states, and
+it is the one to believe.
 
 That runs every repository invariant: the layer graph, the file-length ceiling, the
 domain-vocabulary prohibition, the duplicate-dependency gate, the documentation checks, the
@@ -73,13 +86,13 @@ Two gates are **not** in `check-all`, deliberately, and are worth knowing about:
 
 ```bash
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 912 deliberate defects, applied one at a time
+python3 tools/mutation-audit.py  # 921 deliberate defects, applied one at a time
 ```
 
 `check-performance` needs a TPC-H dataset and takes long enough that putting it in the default
 gate would make people stop running the default gate — which also means **the performance
 budgets do not run in CI**, since CI runs `check-all`. The mutation audit is the answer to
-*"the tests pass, but do they test anything?"*: it applies 912 specific defects one at a time
+*"the tests pass, but do they test anything?"*: it applies 921 specific defects one at a time
 and requires the suite to fail on each. It edits your source files as it goes, restoring each
 one after, so run it on a clean tree.
 
@@ -559,10 +572,22 @@ element count is refused **when the query is planned**, not partway through a sc
 **Every reducing kernel is bit-deterministic.** A dot product is a floating-point sum, and a sum
 whose order depends on how the query was partitioned returns a different number when the machine
 is busier. These use fixed-point accumulation, where integer addition *is* associative, so
-order-independence holds by construction rather than by sorting — and it is 1.3× to 3.6× faster
-than the sorted sum it replaced. Lane-parallel SIMD accumulation was rejected for this: it is
-10–15× faster and computes a different, worse number. On `1e16, 1, -1e16, 1` repeated, whose
-exact total is 18, it returns 5 — and 0 when the input is reversed.
+order-independence holds by construction rather than by sorting.
+
+The route costs **3.3×, 3.0× and 3.0×** less than the sorted-expansion fallback at 64, 512 and
+4,096 values ([bench: sankhya-math/deterministic-sum]). Read that as a *cost of route* and not
+as a speedup on one input: the fallback runs only where the fixed-point route **declines**, so
+the two arms sum different numbers by construction and the benchmark asserts that each reaches
+the route it is named after. An earlier version of this sentence said "1.3× to 3.6× faster than
+the sorted sum it replaced", which is a figure [ADR-0020](adr/0020-the-built-in-function-catalogue.md)
+retracts: its "before" is the sorted-only implementation, which no longer exists, so nothing
+can re-run it.
+
+Lane-parallel SIMD accumulation was rejected for this: it is 10–15× faster and computes a
+different, worse number. On `1e16, 1, -1e16, 1` repeated, whose exact total is 18, it returns 5 —
+and 0 when the input is reversed. [rejected: the lane-parallel kernel is not in this build, so
+nothing here can reproduce the figure; it is stated because a reader who does not know it will
+propose it]
 
 Two costs worth knowing: **an array column cannot be pruned** — a minimum and maximum of a
 vector prune nothing — and **an array cannot be a key column**.
@@ -671,9 +696,32 @@ Proven. 4 table(s) read back and digested.
 **It read the data back and recomputed its digest.** A file-presence check would have passed on
 a truncated Parquet, on a file whose bytes were replaced with another table's, and on
 essentially every failure that actually happens — because a *missing* file is loud, and what
-goes wrong is that a file is there and wrong. Try it: corrupt a file under
-`warehouse/sales/orders/sank_data_date=*/` and drill again. It reports which table could not be
-read and exits `1`.
+goes wrong is that a file is there and wrong. Try it --- and read the next paragraph before you
+do, because the obvious way to try it proves nothing:
+
+```console
+$ find warehouse/sales/orders -name '*.parquet' -exec sh -c 'printf X | dd of="$1" bs=1 seek=4 conv=notrunc status=none' _ {} \;
+$ SANKHYA_WAREHOUSE=./warehouse ./target/release/sankhya-server drill
+  risk.positions: verified, 12 row(s)
+  sales.orders: could not be read (warehouse/sales/orders/sank_data_date=.../part-0000-...parquet:
+    Parquet argument error: Parquet error: Required field num_values is missing)
+  sales.regions: verified, 2 row(s)
+  sank.sank_quarantine: verified, 0 row(s)
+
+NOT PROVEN. 1 of 4 table(s) did not verify --- this backup would not restore what it claims to hold.
+$ echo $?
+1
+```
+
+**Every** file, rather than one you picked. A table is the set of files its log names, not the
+set of files in its directory: compaction merges small files into a larger one and the
+originals stay on disk as orphans until the sweeper retires them, so a directory listing shows
+files the table no longer has. The drill reads the live set. Corrupt an orphan --- which is
+what picking one file at random will often do --- and the drill says `Proven`, correctly, and
+the reader concludes the drill is theatre. It is not; they corrupted a file nothing reads.
+
+This is a throwaway warehouse, so damage all of them and the ambiguity goes away. Then
+re-create it before continuing.
 
 Exit `0` proven, `1` a table did not verify, `2` could not run. **Alert on `2` as well**: a
 monitor treating "could not look" as "nothing wrong" reports a backup as proven when nothing

@@ -47,6 +47,16 @@ impl Splice {
 
 /// Why a query cannot be answered safely.
 #[derive(Clone, PartialEq, Eq, Debug)]
+/// A third variant, `Overlap`, was declared here and constructed by nothing.
+///
+/// It described two selected tiers claiming the same positions --- and the planner cannot
+/// produce that, deliberately: it trims each chosen tier so it abuts exactly, under a comment
+/// reading *"this is what makes the result non-overlapping **by construction** rather than by
+/// hope"*. So the variant documented a refusal the algorithm had already made unnecessary,
+/// carried a mapping onto `SNK-S0005`, and had a test built on a value only the test could
+/// construct. It is deleted rather than left, for the same reason
+/// `Unservable::NotReconciled` stopped being unconstructible: a declared case nothing can
+/// reach is a promise nothing keeps.
 pub enum SpliceError {
     /// Part of the requested span is held by no tier.
     ///
@@ -55,14 +65,6 @@ pub enum SpliceError {
     CoverageGap { from: Lsn, to: Lsn },
     /// No tier reaches the requested position.
     BeyondFrontier { requested: Lsn, available: Lsn },
-    /// Two selected tiers claim the same positions.
-    ///
-    /// Indicates a defect in whatever produced the coverage metadata; splicing anyway
-    /// would double-count.
-    Overlap {
-        left: &'static str,
-        right: &'static str,
-    },
 }
 
 impl fmt::Display for SpliceError {
@@ -81,16 +83,66 @@ impl fmt::Display for SpliceError {
                 "requested position {requested} exceeds the frontier {available}; \
                  capture has not yet reached it"
             ),
-            Self::Overlap { left, right } => write!(
-                f,
-                "tiers {left} and {right} both claim the same positions, which would \
-                 double-count; this is a defect in their coverage metadata"
-            ),
         }
     }
 }
 
 impl std::error::Error for SpliceError {}
+
+/// The catalogue code each refusal is, so a caller can report one.
+///
+/// # Why this exists
+///
+/// Because without it `SNK-S0001` was published as a code this build produces and no code
+/// path could produce it. The condition it names --- part of the requested span held by no
+/// tier --- **is** detected, right here, and was reported as this crate's own type; nothing
+/// converted it, so an alert rule written on `SNK-S0001` was permanently silent while the
+/// exact condition occurred. A catalogue entry whose construction site belongs to a different
+/// type in a different crate is a documented promise nothing keeps.
+///
+/// The detail carries the positions rather than a summary, because the remediation says to
+/// *"investigate capture continuity and retention"* and neither question can be asked without
+/// knowing which range went missing.
+///
+/// This closes the mapping. It does not by itself make the code reachable from a query: no
+/// read path in the server composes a tier splice yet, which is the other half and is tracked
+/// as such in `xtask/src/catalogues.rs`.
+/// Written as `sankhya_error::Error::...` rather than `Self::...` on purpose: the gate that
+/// decides whether a catalogue code is producible greps for a construction site, and `Self`
+/// inside this `impl` is one it cannot see. A code that is reachable and reads as
+/// unreachable is the same documented lie in the other direction.
+impl From<SpliceError> for sankhya_error::Error {
+    fn from(error: SpliceError) -> Self {
+        match error {
+            SpliceError::CoverageGap { from, to } => {
+                sankhya_error::Error::CoverageGap(format!("no tier covers ({from}, {to}]"))
+            }
+            // Not a coverage gap: nothing is missing from the middle. The caller asked for
+            // a position past everything on offer.
+            //
+            // This mapped to `SNK-T0003` (retryable, 500 ms) on the reading that capture
+            // had not caught up. That reading is one of two, and the splice cannot tell
+            // them apart --- the other is a caller naming a position that will **never**
+            // exist, and telling that caller the server is unavailable and to retry in half
+            // a second is a permanent retry loop, amplified by any middleware that honours
+            // a 503. The code's own message did not fit either: it says the requested
+            // *freshness* could not be met within a *deadline*, and this function consults
+            // neither.
+            //
+            // So it is a user error, and the detail carries the frontier: a caller who was
+            // merely early can see how far the data reaches and decide to wait, which is a
+            // decision they are better placed to make than a retry policy is.
+            SpliceError::BeyondFrontier {
+                requested,
+                available,
+            } => sankhya_error::Error::StatementFailed(format!(
+                "position {requested} is beyond the frontier {available}, which is the \
+                 furthest any tier on offer reaches"
+            )),
+        }
+    }
+}
+
 
 /// Select a set of tiers that provably covers `[0, target]` exactly once.
 ///

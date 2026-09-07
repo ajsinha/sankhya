@@ -24,7 +24,7 @@ use sankhya_feed::validate::{validate, Feed};
 use sankhya_feed::{quarantine, Declaration};
 use sankhya_publish::Publication;
 
-use crate::wiring::{acknowledged, refusal, Server};
+use crate::wiring::{refusal, Server};
 use sankhya_authz::policy::{Action, TableRef};
 use sankhya_authz::principal::Principal;
 use std::path::{Path, PathBuf};

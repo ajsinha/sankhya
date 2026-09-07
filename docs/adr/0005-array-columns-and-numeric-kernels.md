@@ -97,11 +97,12 @@ is the right side of the trade.
 
 | Built | Deferred, deliberately |
 |---|---|
-| Elementwise: add, subtract, multiply, divide, scale | **QR, SVD, eigendecomposition** — a different discipline, where a specialist library genuinely earns its dependency, and where doing it adequately in-house is worse than not doing it |
-| Reductions: dot, L1 and L2 norm, sum, mean | Sparse vectors and matrices — a real need and a separate representation decision |
+| Elementwise: add, subtract, multiply, divide, scale | Sparse vectors and matrices — a real need and a separate representation decision |
+| Reductions: dot, L1 and L2 norm, sum, mean | |
 | Distances: euclidean, cosine | |
 | Matrix: multiply, transpose, trace, identity, `matvec` | |
 | **LU with partial pivoting**, and determinant, inverse and solve on top of it | |
+| **QR, the symmetric eigenproblem, and singular values** — see the second amendment below | |
 
 **Amended 2026-08-27** (owner directive): matrix multiplication and the LU-based operations
 are built rather than deferred. The earlier reasoning — that a native backend should wait
@@ -110,9 +111,30 @@ these operations are wanted *now* and are tractable without one. Multiplication 
 dot products and inherits their determinism directly; LU's arithmetic is a fixed sequence
 once the pivots are chosen.
 
-QR, SVD and eigendecomposition remain deferred, and for a different reason than matmul was:
-not that they are unwanted, but that they are where an in-house implementation is genuinely
-worse than none. A subtly wrong SVD produces plausible singular values.
+**Amended 2026-09-06**: QR, the symmetric eigenproblem and singular values are built,
+`crates/sankhya-math/src/decompose.rs`. The refusal above stood for four days after it stopped
+being true --- the decompositions landed on 2026-09-02 and this amendment was written on the
+6th --- restated in eight documents, and a stated refusal is the one thing a reader may treat
+as permanent, so it is retracted here rather than quietly outgrown. `FEA-05`.
+
+The original reasoning was that an in-house decomposition is worse than none, because a subtly
+wrong SVD produces plausible singular values. That argument was not wrong and is what shaped
+what shipped:
+
+- **The scope is narrower than the refusal implied.** `eigen_symmetric` is Jacobi rotation on
+  symmetric input and **refuses** a non-symmetric matrix rather than symmetrising it, which is
+  the failure mode the refusal was about. The general non-symmetric eigenproblem is still not
+  offered.
+- **Singular values are computed through the Gram matrix**, so the resolution floor is about
+  `1e-8` of the largest --- stated in the function's own documentation, because a floor a
+  caller cannot see is the plausible-wrong-answer failure arriving by another route. This is
+  not a full SVD: there are no singular *vectors*.
+- **What is still true and is the live gap**: the decomposition family is order-fixed and
+  reproducible but *uncompensated* --- it does not route through `deterministic_sum` --- and
+  that is the family a risk calculation uses.
+
+Sparse vectors and matrices remain deferred, unchanged: a real need and a separate
+representation decision.
 
 ### The pivot tie-break
 

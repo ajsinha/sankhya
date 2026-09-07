@@ -21,6 +21,22 @@
 // The composition root is the one place a `main` may exist, and a binary that cannot
 // print to its own console is not much of a binary.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
+// Every module below is also compiled by the integration tests, which `#[path]`-include the
+// same files to drive the real wiring rather than a copy of it. There, the `pub` is
+// load-bearing --- it is how a test reaches the thing it is testing. Here they are leaves of
+// one binary, so the same `pub` is unreachable and the workspace lint says so, 59 times.
+//
+// Allowed at the crate root rather than per item, because the reason is one arrangement and
+// not fifty-nine decisions, and because a build that emits 77 warnings against a repository
+// whose documentation emphasises lint cleanliness is a build nobody reads the warnings of ---
+// which is how the eighteen real ones underneath them stayed invisible. `RUN-15`.
+#![allow(unreachable_pub)]
+// And the same arrangement again, for the same reason: `describe`, `intact`, `quota`,
+// `snapshot_for_test` and `hydration_counts` are each reached from an integration test that
+// includes these files, and from no line the binary runs. Two of them --- `Server::new` and
+// `snapshots::version_setting` --- were reached by nothing at all and are deleted rather than
+// allowed, because this attribute must not become the place unused code goes to be quiet.
+#![allow(dead_code)]
 
 /// The allocator, installed here because a binary is the only place that may choose one.
 ///
@@ -62,6 +78,7 @@ use std::collections::BTreeMap;
 use sankhya_authz::principal::TenantId;
 use std::sync::Arc;
 use wiring::{start, Posture, Settings, TransportSecurity, CUBOID_ROW_BUDGET};
+use sankhya_metrics::catalogue;
 
 /// Read configuration: files first, then the environment, then the command line.
 ///
@@ -813,6 +830,66 @@ async fn main() -> std::io::Result<()> {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     *held = current;
+                }
+                tokio::time::sleep(every).await;
+            }
+        });
+    }
+
+    // What maintenance has actually done, published where a scrape can see it.
+    //
+    // `MaintenanceHandle` has counted ticks, reclaimed bytes, declines and failures since it
+    // was written, and until now the only things that read those counters were two tests and
+    // a soak run. So `compaction-debt` --- which pages, on file counts climbing --- opened by
+    // telling the reader the alert "almost never means compaction is broken, it usually means
+    // the duty cycle is too low", and gave them nothing to check that against. A maintainer
+    // that had died and a duty cycle that was too low produced the same page and the same
+    // evidence, and the runbook sent both to raise the duty cycle.
+    //
+    // Published on the maintenance cadence rather than at scrape time, because the handle
+    // lives here and the scrape path holds only the `Server`. A counter mirrored one interval
+    // late is a counter; a gauge would not survive the same treatment.
+    if let Some(handle) = maintenance.clone() {
+        let metrics = server.metrics();
+        tokio::spawn(async move {
+            loop {
+                // Re-read the interval every pass rather than capturing it once. A `SIGHUP`
+                // that changes `maintenance.interval` reconfigures the maintenance thread ---
+                // it consults the shared policy at the top of every cycle --- and a publisher
+                // holding the boot value would go on refreshing at the old cadence. An
+                // operator following `compaction-debt`, dropping the interval from ten minutes
+                // to thirty seconds and watching the tick counter to confirm it, would see
+                // nothing change for ten minutes.
+                let every = handle.policy().interval;
+                // Absolute totals rather than deltas. The handle already holds the running
+                // count, and adding a delta computed here would drift the moment a publish
+                // was missed --- which is exactly what a restarted or lagging task does.
+                #[allow(clippy::cast_precision_loss)]
+                {
+                    metrics.set(&catalogue::MAINTENANCE_TICKS_TOTAL, &[], handle.ticks() as f64);
+                    metrics.set(
+                        &catalogue::MAINTENANCE_BYTES_RECLAIMED_TOTAL,
+                        &[],
+                        handle.bytes_reclaimed() as f64,
+                    );
+                    metrics.set(
+                        &catalogue::MAINTENANCE_DECLINED_TOTAL,
+                        &[],
+                        handle.declined() as f64,
+                    );
+                    metrics.set(
+                        &catalogue::MAINTENANCE_FAILURES_TOTAL,
+                        &[],
+                        handle.failed() as f64,
+                    );
+                    // A gauge rather than a counter, and the only one of the five that is
+                    // not zero on a healthy idle warehouse --- which is what lets a test
+                    // prove this block runs at all.
+                    metrics.set(
+                        &catalogue::MAINTENANCE_TABLES,
+                        &[],
+                        handle.maintaining() as f64,
+                    );
                 }
                 tokio::time::sleep(every).await;
             }

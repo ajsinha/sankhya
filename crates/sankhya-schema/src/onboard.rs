@@ -20,8 +20,25 @@ use std::fmt;
 /// How a table may be written, determined by what identifies its rows.
 ///
 /// This is not a preference. Without row identity the source itself rejects updates
-/// and deletes, so an append-only strategy is the only possible one — and knowing that
-/// at onboarding is what lets the storage layer skip merge machinery it will never need.
+/// and deletes, so an append-only strategy is the only possible one.
+///
+/// # What `Mergeable` does and does not mean today
+///
+/// It means the *source* **can** emit updates and deletes for this table --- `can`, not `will`,
+/// because it is decided by whether the rows are identifiable, which is what the variant's own
+/// doc below says and what an earlier version of this sentence overstated.
+///
+/// It does **not** select a fold. `sankhya_readpath::ResolvedTable` implements one ---
+/// `DISTINCT ON (key)` by descending position, then the deletion filter --- and it takes a bare
+/// slice of column names, never this value; nothing outside its own tests constructs one.
+/// So a served table holds every historical version of every row plus a tombstone per delete,
+/// and a plain scan returns all of them.
+///
+/// This doc comment used to end *"knowing that at onboarding is what lets the storage layer
+/// skip merge machinery it will never need"*, which reads as though the other branch selects
+/// merge machinery. Neither branch selects anything. What the value actually drives is the
+/// onboarding warning below and nothing else. `ING-09`; the wiring arrives with the
+/// change-capture runtime, `ING-00`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WriteStrategy {
     /// Rows can be identified, so updates and deletes can be applied.

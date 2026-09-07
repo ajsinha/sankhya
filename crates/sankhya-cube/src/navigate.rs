@@ -449,9 +449,34 @@ pub fn consolidate_along(
     // Two passes, because merged cells must reduce once over the union rather than combine
     // two partial answers. For a sum the two agree; for a mean, a maximum or a closing
     // balance they do not.
-    let mut gathered: BTreeMap<Address, Vec<Exact>> = BTreeMap::new();
+    // Tagged with where the child sits along the dimension, for the same reason `roll_up`
+    // tags: a positional rule must reduce along the dimension and not along the order the
+    // addresses happened to be visited in.
+    //
+    // The guard above demanded an order and the body then ignored it, reducing over
+    // `BTreeMap` address order --- which is lexicographic by member name. That is verbatim
+    // the trap this module's header opens with: `"feb" < "jan"`, so the closing balance of
+    // the first quarter was January's. `roll_up` was given the tagging fix; this function was
+    // given the guard clause and not the fix, so it demanded the one piece of information it
+    // needed and then threw it away.
+    let positional = matches!(rule, Rule::First | Rule::Last);
+    let mut gathered: BTreeMap<Address, Vec<(usize, Exact)>> = BTreeMap::new();
     for address in cells.addresses() {
         let mut moved = address.clone();
+        let member = address.get(axis).map_or("", String::as_str);
+        let at = if positional {
+            match order.position(member) {
+                Some(at) => at,
+                None => {
+                    return Err(Refused::MemberNotOrdered {
+                        dimension: dimension.to_string(),
+                        member: member.to_string(),
+                    })
+                }
+            }
+        } else {
+            0
+        };
         if let Some(member) = address.get(axis) {
             if let Some(parent) = parents(member) {
                 if let Some(slot) = moved.get_mut(axis) {
@@ -464,26 +489,31 @@ pub fn consolidate_along(
         };
         let slot = gathered.entry(moved).or_default();
         if contributions.rule_used().is_some() {
-            slot.push(contributions.exact_sum());
+            slot.push((at, contributions.exact_sum()));
         } else {
             for value in contributions.values() {
-                slot.push(Exact::of(&[*value]));
+                slot.push((at, Exact::of(&[*value])));
             }
         }
     }
 
     let mut out = Cells::over(cells.dimensions().to_vec());
-    for (moved, partials) in gathered {
+    for (moved, mut partials) in gathered {
         if rule == Rule::Sum {
             let mut exact = Exact::zero();
-            for partial in &partials {
+            for (_, partial) in &partials {
                 exact.combine(partial);
             }
             let _ = out.add_reduced(moved, rule, exact);
             continue;
         }
+        // Along the dimension, not along the map. `sort_by_key` is stable, so contributions
+        // sharing a position keep the order they were gathered in.
+        if positional {
+            partials.sort_by_key(|(at, _)| *at);
+        }
         let mut contributions = Contributions::none();
-        for partial in partials {
+        for (_, partial) in partials {
             contributions.push(partial.to_f64());
         }
         if let Some(reduced) = contributions.reduce(rule) {

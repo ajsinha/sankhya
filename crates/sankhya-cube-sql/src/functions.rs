@@ -4,7 +4,7 @@
 //! ask, and returns the rows with everything that qualifies the numbers attached to every
 //! one of them.
 //!
-//! The common columns are the point. `completeness` and `withheld` make a policy-filtered
+//! The common columns are the point. `completeness` and `withheld` make a partial
 //! total impossible to project away accidentally; `overlay` names the scenario a what-if
 //! came from; `definition_version` and `snapshot` let a cube figure be reconciled with a
 //! relational one taken at a different moment; `materialised` and `from_cuboid` answer "why
@@ -357,6 +357,13 @@ pub fn reduction_for(measure: &Measure, kept: &[String]) -> Result<Rule> {
         applying
     };
 
+    // Whether anything was actually rolled away, which decides what the refusal below may
+    // truthfully say. At the base grain the fallback above substituted the measure's own
+    // rules, and the message then told a caller their measure "combines by sum and last along
+    // the dimensions being rolled away" for a query that rolls nothing away at all --- the
+    // finest grain the cube has. A refusal that misdescribes what it refused sends the reader
+    // to look at the wrong half of their model.
+    let rolling_away = measure.rules.iter().any(|along| !kept.contains(&along.dimension));
     let mut distinct: Vec<Rule> = Vec::new();
     for along in &applying {
         if !distinct.contains(&along.rule) {
@@ -371,17 +378,32 @@ pub fn reduction_for(measure: &Measure, kept: &[String]) -> Result<Rule> {
             measure.name
         ),
         [only] => Ok(*only),
-        several => plan_err!(
-            "the measure `{}` combines by {} along the dimensions being rolled away, and \
-             those disagree. Refused rather than resolved: the answer would depend on the \
-             order the planner chose, and would look plausible whichever it picked",
-            measure.name,
-            several
+        several => {
+            let rules = several
                 .iter()
                 .map(|rule| rule.as_str())
                 .collect::<Vec<&str>>()
-                .join(" and ")
-        ),
+                .join(" and ");
+            if rolling_away {
+                plan_err!(
+                    "the measure `{}` combines by {rules} along the dimensions being rolled \
+                     away, and those disagree. Refused rather than resolved: the answer would \
+                     depend on the order the planner chose, and would look plausible whichever \
+                     it picked",
+                    measure.name
+                )
+            } else {
+                plan_err!(
+                    "this query keeps every dimension, so nothing is rolled away --- but two \
+                     facts can still share one address, and the measure `{}` combines by \
+                     {rules} depending on which dimension you ask about, so there is no single \
+                     way to fold them. Refused rather than resolved: the answer would depend on \
+                     the order the planner chose. Roll up along one dimension, or declare one \
+                     rule for this measure",
+                    measure.name
+                )
+            }
+        }
     }
 }
 
@@ -596,13 +618,18 @@ impl TableFunctionImpl for Slice {
         let completeness = published.completeness;
         check_completeness(&completeness, &args)?;
 
+        // **What happened, not a constant.** This was the literal `false`, so a slice served
+        // from a cuboid reported that it was not --- the same echo-your-own-input defect
+        // `RollUp` above had fixed, surviving in the other navigation because only one of the
+        // two was repaired.
+        let materialised = published.from_cuboid;
         batch(
             &published,
             &sliced,
             &measure,
             overlay.as_deref(),
             &completeness,
-            false,
+            materialised,
             self.2.as_ref(),
         )
     }

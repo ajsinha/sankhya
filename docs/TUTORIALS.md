@@ -475,7 +475,11 @@ expensive half is written down.
 - Roll up rolls a dimension *away*; slice *removes* an axis rather than filtering it.
 - Roll up and slice are the two navigations that exist.
 - Every answer states its snapshot, its completeness and where it came from.
-- A measure that cannot compose is refused at planning time, not approximated.
+- A measure that cannot compose is refused rather than approximated, and *where* it is refused
+  differs by kind: a measure declared with no rule is refused when the cube is declared, a
+  ratio or a mean when the roll-up is planned, and a semi-additive measure across time is not
+  refused at all because it cannot be written --- the reduction operator belongs to the
+  measure and is never the caller's. Tutorial 4 works through all four.
 
 ---
 

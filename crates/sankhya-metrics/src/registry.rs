@@ -293,22 +293,73 @@ impl Registry {
                 .iter()
                 .filter(|((name, _), _)| *name == metric.name)
                 .collect();
-            if series.is_empty() {
-                // Nothing recorded. The `# HELP` line is still emitted, so a scrape shows
-                // the metric exists and is at zero rather than leaving a dashboard unable to
-                // tell "no events" from "not wired up".
-                let _ = writeln!(out, "# HELP {} {}", metric.name, metric.help);
-                let _ = writeln!(out, "# TYPE {} {}", metric.name, metric.kind.as_str());
-                continue;
-            }
             let _ = writeln!(out, "# HELP {} {}", metric.name, metric.help);
             let _ = writeln!(out, "# TYPE {} {}", metric.name, metric.kind.as_str());
+
+            // `# HELP` and `# TYPE` are not a sample, and Prometheus stores nothing for a
+            // metric that has never been sampled --- so a declaration alone leaves *healthy*,
+            // *never started* and *the collector is broken* byte-identical to anything
+            // scraping. On a freshly started server, seven of the declared metrics were in
+            // that state, including `sankhya_audit_unwritten_total`, the only page whose lead
+            // time is *none*.
+            //
+            // So every combination a metric **can** be emitted at is emitted, at zero, unless
+            // something has been recorded at it. Not "unless something has been recorded at
+            // the metric": the first version branched on the whole metric being empty, and
+            // that is a different rule with a much shorter life. One successful query records
+            // `outcome="ok"`, the metric stops being empty, and `error`, `refused` and
+            // `cancelled` **vanish from the scrape** --- so the panel a dashboard draws on the
+            // error rate went blank on the first success and stayed blank until the first
+            // failure, which is precisely when it is being read.
+            //
+            // A metric with a bounded label gets no zeros: its values are discovered from the
+            // deployment, and inventing a table name is worse than saying nothing.
+            let recorded: std::collections::BTreeSet<&Vec<(String, String)>> =
+                series.iter().map(|((_, labels), _)| labels).collect();
+            for labels in zero_combinations(metric) {
+                if !recorded.contains(&labels) {
+                    render_series(&mut out, metric, &labels, &Series::default());
+                }
+            }
             for ((_, labels), value) in series {
                 render_series(&mut out, metric, labels, value);
             }
         }
         out
     }
+}
+
+/// Every label combination a metric can be emitted at before anything has happened.
+///
+/// One empty combination for a metric with no labels, the full cross-product for one whose
+/// labels are all closed, and **none** for one with a bounded label --- whose values are
+/// discovered from the deployment, so a zero series would be a name this server invented.
+fn zero_combinations(metric: &Metric) -> Vec<Vec<(String, String)>> {
+    let mut combinations: Vec<Vec<(String, String)>> = vec![Vec::new()];
+    for label in metric.labels {
+        let Values::Closed(values) = label.values else {
+            return Vec::new();
+        };
+        combinations = combinations
+            .into_iter()
+            .flat_map(|so_far| {
+                values.iter().map(move |value| {
+                    let mut next = so_far.clone();
+                    next.push((label.name.to_string(), (*value).to_string()));
+                    next
+                })
+            })
+            .collect();
+    }
+    // Sorted by name, because `record` sorts and the two sets are compared for equality: a
+    // metric with two closed labels would otherwise emit its zero in declaration order and its
+    // recorded value in sorted order, and every zero would survive alongside the real series it
+    // was supposed to be replaced by. No metric declares two closed labels today, which is
+    // exactly why this would have been found late.
+    for combination in &mut combinations {
+        combination.sort_by(|(left, _), (right, _)| left.cmp(right));
+    }
+    combinations
 }
 
 /// One series, in whichever shape its kind requires.

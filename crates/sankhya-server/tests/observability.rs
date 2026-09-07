@@ -40,8 +40,8 @@ mod wiring;
 
 use arrow_schema::{DataType, Field, Schema};
 use sankhya_metrics::catalogue::{
-    ALL, AUDIT_RECORDS_TOTAL, CONNECTIONS_ACTIVE, QUERIES_TOTAL, QUERY_DURATION_SECONDS,
-    ROWS_RETURNED_TOTAL, TABLE_LIVE_FILES_MAX,
+    ALL, AUDIT_RECORDS_TOTAL, CONNECTIONS_ACTIVE, PUBLISHED_BY_MAINTENANCE, QUERIES_TOTAL,
+    QUERY_DURATION_SECONDS, ROWS_RETURNED_TOTAL, TABLE_LIVE_FILES_MAX,
 };
 use sankhya_publish::Publication;
 use sankhya_types::Lsn;
@@ -496,14 +496,26 @@ async fn the_registrys_own_refusals_are_exported() {
 async fn every_declared_metric_appears_in_a_scrape_even_at_zero() {
     // A dashboard must be able to tell "no events" from "not wired up", and an absent metric
     // looks like the second while usually being the first.
+    //
+    // With one exception, and it is the same argument rather than a hole in it. This server
+    // runs no maintenance thread --- an in-process test server never does --- so the five
+    // metrics only that thread produces are **deliberately** not exported. A flat zero there
+    // is what a maintenance thread that died on its first cycle reads, and `absent()` cannot
+    // separate the two while the series is present. `tests/published.rs` asserts both halves
+    // against the real binary, with maintenance on and off.
     let (server, _warehouse) = server();
     let (address, _stop) = endpoint(server).await;
     let response = get(address, "/metrics").await;
     for metric in ALL {
-        assert!(
-            response.contains(&format!("# TYPE {} ", metric.name)),
-            "{} never appeared in a scrape",
-            metric.name
+        let by_maintenance = PUBLISHED_BY_MAINTENANCE
+            .iter()
+            .any(|off| off.name == metric.name);
+        let present = response.contains(&format!("# TYPE {} ", metric.name));
+        assert_eq!(
+            present, !by_maintenance,
+            "{} is {} in a scrape from a server that maintains nothing",
+            metric.name,
+            if present { "present" } else { "absent" }
         );
     }
 }

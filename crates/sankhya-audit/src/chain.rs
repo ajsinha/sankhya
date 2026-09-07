@@ -493,6 +493,7 @@ fn describe_authentication(method: Authentication) -> String {
         Authentication::MutualTls => "mutual-tls",
         Authentication::Password => "password",
         Authentication::Internal => "internal",
+        Authentication::Unverified => "unverified",
     }
     .to_string()
 }

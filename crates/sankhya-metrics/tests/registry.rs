@@ -246,6 +246,105 @@ fn a_metric_with_nothing_recorded_still_declares_itself() {
 }
 
 #[test]
+fn the_page_with_no_lead_time_reads_zero_before_it_ever_fires() {
+    // `# HELP` and `# TYPE` alone store nothing: Prometheus keeps a metric only when a
+    // sample arrives. So the declaration the test above checks does *not* make the two
+    // states distinguishable, and this is the metric where that matters most --- its
+    // declared lead time is "none", so an alert on `> 0` has to be armed from startup.
+    let registry = Registry::new();
+    let text = registry.render(ALL);
+    assert!(
+        text.lines().any(|line| line == "sankhya_audit_unwritten_total 0"),
+        "no zero sample before the first failure, so `absent()` and healthy look alike:\n{text}"
+    );
+}
+
+#[test]
+fn a_closed_label_is_emitted_at_zero_for_every_value_it_can_take() {
+    // A rate on `outcome="error"` is undefined until the first error, which is exactly when
+    // the dashboard is being read. The permitted values are known at compile time.
+    let registry = Registry::new();
+    let text = registry.render(&[&QUERIES_TOTAL]);
+    let Values::Closed(outcomes) = QUERIES_TOTAL.labels[0].values else {
+        panic!("outcome stopped being a closed label");
+    };
+    for outcome in outcomes {
+        let expected = format!("sankhya_queries_total{{outcome=\"{outcome}\"}} 0");
+        assert!(text.lines().any(|line| line == expected), "missing {expected}:\n{text}");
+    }
+}
+
+#[test]
+fn a_bounded_label_invents_no_series_it_has_not_seen() {
+    // The counterpart, and the reason the zero is not applied everywhere: a table label
+    // holds names discovered from the deployment. A zero series here would assert that
+    // some table exists, named by nothing.
+    let registry = Registry::new();
+    let text = registry.render(&[&TABLE_LIVE_FILES]);
+    assert!(text.contains("# TYPE sankhya_table_live_files gauge"));
+    assert!(
+        !text.lines().any(|line| line.starts_with("sankhya_table_live_files")),
+        "a table name was invented:\n{text}"
+    );
+}
+
+#[test]
+fn a_zero_series_is_replaced_rather_than_added_to_once_something_is_recorded() {
+    // The zero must not survive alongside the real value, or a counter reads twice.
+    let registry = Registry::new();
+    registry.increment(&QUERIES_TOTAL, &[("outcome", "ok")], 3.0);
+    let text = registry.render(&[&QUERIES_TOTAL]);
+    let ok: Vec<&str> = text
+        .lines()
+        .filter(|line| line.starts_with("sankhya_queries_total{outcome=\"ok\"}"))
+        .collect();
+    assert_eq!(ok, vec!["sankhya_queries_total{outcome=\"ok\"} 3"], "{text}");
+}
+
+#[test]
+fn the_other_values_of_a_closed_label_survive_the_first_recording() {
+    // The test above filters to `ok`, and that filter is what hid this: the first version of
+    // the zero series was emitted only when the **metric** had nothing recorded at all. One
+    // successful query records `outcome="ok"`, the metric stops being empty, and `error`,
+    // `refused` and `cancelled` disappear from the scrape entirely.
+    //
+    // Which is worse than never having emitted them. A dashboard panel on the error rate is
+    // drawn at startup, goes blank on the first *successful* query, and stays blank until the
+    // first failure --- so the panel is empty for exactly as long as nothing is wrong, and
+    // fills in at the moment somebody is already looking at it for another reason.
+    let registry = Registry::new();
+    registry.increment(&QUERIES_TOTAL, &[("outcome", "ok")], 1.0);
+    let text = registry.render(&[&QUERIES_TOTAL]);
+    for outcome in ["error", "refused", "cancelled"] {
+        let expected = format!("sankhya_queries_total{{outcome=\"{outcome}\"}} 0");
+        assert!(
+            text.lines().any(|line| line == expected),
+            "{expected} vanished once another outcome was recorded:\n{text}"
+        );
+    }
+}
+
+#[test]
+fn a_histogram_keeps_its_unobserved_outcomes_after_the_first_observation() {
+    // The same rule, for the shape where it costs more to get wrong: a quantile over
+    // `outcome="error"` needs the bucket series to exist, and a histogram that drops three of
+    // its four outcomes on the first observation leaves three quantiles undefined.
+    let registry = Registry::new();
+    registry.observe(&QUERY_DURATION_SECONDS, &[("outcome", "ok")], 0.01);
+    let text = registry.render(&[&QUERY_DURATION_SECONDS]);
+    for outcome in ["error", "refused", "cancelled"] {
+        let count = format!("sankhya_query_duration_seconds_count{{outcome=\"{outcome}\"}} 0");
+        let infinity =
+            format!("sankhya_query_duration_seconds_bucket{{outcome=\"{outcome}\",le=\"+Inf\"}} 0");
+        assert!(text.lines().any(|line| line == count), "missing {count}:\n{text}");
+        assert!(
+            text.lines().any(|line| line == infinity),
+            "a histogram without its +Inf bucket cannot be used for a quantile: {infinity}"
+        );
+    }
+}
+
+#[test]
 fn a_table_name_carrying_a_quote_does_not_break_the_whole_scrape() {
     // An unescaped quote produces a scrape the collector rejects wholesale, so one awkward
     // table name would take away every metric rather than only its own.

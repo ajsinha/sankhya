@@ -1,7 +1,5 @@
 # ============================================================ 13 · THE GAPS
-divider("13", "What None of It Catches",
-        "The section to read if you are deciding how much to trust the rest.",
-        [])
+chapter("26", "What none of it catches")
 
 sl, top = content("Where the evidence does not reach",
                   kicker="EVIDENCE · THE HONEST LIST")

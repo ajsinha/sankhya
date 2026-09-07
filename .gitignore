@@ -54,6 +54,14 @@ lcov.info
 # Python bytecode from the tooling in tools/
 __pycache__/
 *.pyc
+
+# `pip install -e sdk/python` writes this beside the package. Ignored because several
+# documents tell a reader to install the SDK that way and then to run an audit on a clean
+# tree, and an untracked directory that the instructions themselves create makes the second
+# instruction impossible to follow.
+*.egg-info/
+build/
+dist/
 config/application.local.*
 
 # Criterion writes its reports into target/, which is already ignored; this is for a

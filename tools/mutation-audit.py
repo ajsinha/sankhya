@@ -1616,11 +1616,51 @@ CATALOGUE = [
      "                .filter(|_entry| true)",
      "sankhya-tiering"),
 
+    ("plan: report a coverage gap as a freshness problem",
+     "crates/sankhya-plan/src/splice.rs",
+     "            SpliceError::CoverageGap { from, to } => {\n                sankhya_error::Error::CoverageGap(",
+     "            SpliceError::CoverageGap { from, to } => {\n                sankhya_error::Error::StatementFailed(",
+     "sankhya-plan", 1, "splice"),
+
+    ("plan: answer a position past the frontier with a retry delay",
+     "crates/sankhya-plan/src/splice.rs",
+     "            } => sankhya_error::Error::StatementFailed(format!(",
+     "            } => sankhya_error::Error::StaleData(format!(",
+     "sankhya-plan", 1, "splice"),
+
+    ("tiering: report an unreconciled table as a coverage gap",
+     "crates/sankhya-tiering/src/unify.rs",
+     "            Unservable::NotReconciled { .. } => sankhya_error::Error::ArchiveConflict(detail),",
+     "            Unservable::NotReconciled { .. } => sankhya_error::Error::CoverageGap(detail),",
+     "sankhya-tiering", 1, "unification"),
+
+    ("server: export a flat zero from a server that maintains nothing",
+     "crates/sankhya-server/src/scrape.rs",
+     "    let exported: Vec<&'static Metric> = if server.maintains() {",
+     "    let exported: Vec<&'static Metric> = if true {",
+     "sankhya-server", 1, "published"),
+    ("server: stop publishing what maintenance has done",
+     "crates/sankhya-server/src/main.rs",
+     "    if let Some(handle) = maintenance.clone() {\n        let metrics = server.metrics();",
+     "    if let Some(handle) = maintenance.clone().filter(|_| false) {\n        let metrics = server.metrics();",
+     "sankhya-server", 1, "published"),
+
+    ("server: publish the table count once and never again",
+     "crates/sankhya-server/src/main.rs",
+     "                        handle.maintaining() as f64,",
+     "                        0.0,",
+     "sankhya-server", 1, "published"),
     ("tiering: serve a table a reconciliation conflict names",
      "crates/sankhya-tiering/src/registry.rs",
-     "                Conflict::InBothTiers { table: affected, .. } => affected != table,",
-     "                Conflict::InBothTiers { table: affected, .. } => affected == table,",
-     "sankhya-tiering"),
+     "            Conflict::InBothTiers { table: affected, .. } => affected != table,",
+     "            Conflict::InBothTiers { table: affected, .. } => affected == table,",
+     "sankhya-tiering", 1, "unification"),
+
+    ("tiering: hand out a witness for a table nobody reconciled",
+     "crates/sankhya-tiering/src/registry.rs",
+     "        (looked && clean).then(|| Servable { table: table.to_string() })",
+     "        clean.then(|| Servable { table: table.to_string() })",
+     "sankhya-tiering", 1, "unification"),
 
     ("tiering: lose an archival entry across a restore without reporting it",
      "crates/sankhya-tiering/src/registry.rs",
@@ -2463,8 +2503,19 @@ CATALOGUE = [
 
     ("metrics: omit a metric that has recorded nothing",
      "crates/sankhya-metrics/src/registry.rs",
-     '                let _ = writeln!(out, "# TYPE {} {}", metric.name, metric.kind.as_str());\n                continue;',
-     "                continue;",
+     "            for labels in zero_combinations(metric) {\n                if !recorded.contains(&labels) {",
+     "            for labels in Vec::<Vec<(String, String)>>::new() {\n                if !recorded.contains(&labels) {",
+     "sankhya-metrics"),
+
+    ("metrics: drop a closed label's other values once one of them is recorded",
+     "crates/sankhya-metrics/src/registry.rs",
+     "            for labels in zero_combinations(metric) {",
+     "            for labels in if series.is_empty() { zero_combinations(metric) } else { Vec::new() } {",
+     "sankhya-metrics"),
+    ("metrics: emit a zero series for a label whose values are discovered",
+     "crates/sankhya-metrics/src/registry.rs",
+     "        let Values::Closed(values) = label.values else {\n            return Vec::new();\n        };",
+     "        let Values::Closed(values) = label.values else {\n            continue;\n        };",
      "sankhya-metrics"),
 
     ("server: count a refusal as an error",
@@ -3216,11 +3267,17 @@ CATALOGUE = [
      "                        CUBOID_ROW_BUDGET,",
      "sankhya-server"),
 
+    # Two sites, deliberately. `cube_slice` used to pass a literal `false` here while
+    # `cube_rollup` reported what happened; making the slice honest gave this entry a second
+    # site, and both are pinned --- by `cube_queries.rs`'s roll-up assertions and by
+    # `a_dice_is_not_answered_from_a_cuboid_that_rolled_its_dimension_away`, which now asserts
+    # the column rather than comparing a constant against itself.
     ("cube-sql: report the caller's materialise argument instead of what happened",
      "crates/sankhya-cube-sql/src/functions.rs",
      "        let materialised = published.from_cuboid;",
      "        let materialised = false;",
-     "sankhya-server"),
+     "sankhya-server",
+     2),
 
     ("server: serve the unrestricted cuboid to a caller whose policy withholds rows",
      "crates/sankhya-server/src/wiring.rs",
@@ -3320,8 +3377,8 @@ CATALOGUE = [
 
     ("server: never read a materialised cuboid, leaving materialisation write-only",
      "crates/sankhya-server/src/wiring.rs",
-     "                if let Some(published) = scopes\n                    .into_iter()\n                    .find_map(|under| {\n                        self.from_a_cuboid(cube, measure, under, snapshot, session, &needed)\n                    })\n                {\n                    catalog.publish(cube.name(), published.clone());\n                    self.hydrated.put(key, published);\n                    continue;\n                }",
-     "                let _ = scopes;",
+     "                if let Some(published) = scopes\n                    .into_iter()\n                    .filter(|_| may_use_a_cuboid)\n                    .find_map(|under| {\n                        self.from_a_cuboid(cube, measure, under, snapshot, session, &needed)\n                    })\n                {\n                    catalog.publish(cube.name(), published.clone());\n                    self.hydrated.put(key, published);\n                    continue;\n                }",
+     "                let _ = (scopes, may_use_a_cuboid);",
      "sankhya-server"),
 
     ("cube: let a stored cuboid claim completeness it never measured",
@@ -3332,12 +3389,12 @@ CATALOGUE = [
 
     ("server: store base cells under a coarser cuboid's key, at a grain it does not have",
      "crates/sankhya-server/src/wiring.rs",
-     "                let Some(cells) = roll_to(&base_cells, shape, measure) else {\n                    continue;\n                };",
+     "                let Some(cells) = crate::cubes::roll_to(&base_cells, shape, measure) else {\n                    continue;\n                };",
      "                let cells = base_cells.clone();",
      "sankhya-server"),
 
     ("server: cost every cuboid the same, so selection can never choose one",
-     "crates/sankhya-server/src/wiring.rs",
+     "crates/sankhya-server/src/cubes.rs",
      "        ASSUMED_MEMBERS.saturating_pow(u32::try_from(cuboid.width()).unwrap_or(u32::MAX))",
      "        let _ = cuboid;\n        ASSUMED_MEMBERS",
      "sankhya-server"),
@@ -3512,11 +3569,15 @@ CATALOGUE = [
      "",
      "sankhya-cube"),
 
+    # Two sites: `roll_up` had this refusal and `consolidate_along` was given it when the
+    # order it demanded stopped being ignored. Both are pinned by tests in
+    # `crates/sankhya-cube/tests/navigate.rs`.
     ("cube: place a member missing from the stated order rather than refusing",
      "crates/sankhya-cube/src/navigate.rs",
      "                    return Err(Refused::MemberNotOrdered {\n                        dimension: dimension.to_string(),\n                        member: member.to_string(),\n                    })",
      "                    0",
-     "sankhya-cube"),
+     "sankhya-cube",
+     2),
 
     ("cube: treat an undeclared dimension as a refusal rather than a definition gap",
      "crates/sankhya-cube/src/navigate.rs",
@@ -3628,10 +3689,14 @@ CATALOGUE = [
      "            let _ = out.add(coarser, exact.to_f64());\n            continue;",
      "sankhya-cube"),
 
+    # Named by the map it gathers into, because `consolidate_along` now carries the same
+    # shape. Only the roll-up site is mutated here: nothing yet asserts that a partial
+    # aggregate survives a *consolidation* unrounded, so mutating that one would record a
+    # survivor rather than prove a defence.
     ("cube: roll a partial aggregate up as its rounded value",
      "crates/sankhya-cube/src/navigate.rs",
-     "        if contributions.rule_used().is_some() {\n            slot.push((at, contributions.exact_sum()));",
-     "        if contributions.rule_used().is_some() {\n            slot.push((at, Exact::of(&[contributions.exact_sum().to_f64()])));",
+     "        let slot = gathered.entry(coarser).or_default();\n        if contributions.rule_used().is_some() {\n            slot.push((at, contributions.exact_sum()));",
+     "        let slot = gathered.entry(coarser).or_default();\n        if contributions.rule_used().is_some() {\n            slot.push((at, Exact::of(&[contributions.exact_sum().to_f64()])));",
      "sankhya-cube"),
 
     ("cube: let a reduced cell answer with whatever rule is asked for",
@@ -4386,8 +4451,8 @@ CATALOGUE = [
 
     ("server: leave a newly created table out of the servable set until a restart",
      "crates/sankhya-server/src/adopt.rs",
-     "        table.authorize_as = authority_for(server, &table.reference, &lineages);\n        servable.push(table);",
-     "        table.authorize_as = authority_for(server, &table.reference, &lineages);\n        let _ = table;",
+     "        table.authorize_as = authority_for(&table.reference, &lineages);\n        servable.push(table);",
+     "        table.authorize_as = authority_for(&table.reference, &lineages);\n        let _ = table;",
      "sankhya-server"),
 
     # No entry for "resolve a clone through the ordinary path", and the absence is deliberate.

@@ -11,7 +11,6 @@
 //! both — so a factor feeds straight back into another matrix function.
 
 use arrow_array::builder::{Float64Builder, ListBuilder};
-use arrow_array::ArrayRef;
 use arrow_schema::{DataType, Field};
 use datafusion::common::{exec_err, Result};
 use datafusion::logical_expr::{

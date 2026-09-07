@@ -18,6 +18,7 @@
 )]
 
 use proptest::prelude::*;
+use sankhya_error::Classify as _;
 use sankhya_plan::{is_exact_cover, plan_splice, SpliceError, TierRef};
 use sankhya_types::{Lsn, LsnRange};
 
@@ -231,3 +232,55 @@ proptest! {
         let _ = plan_splice(&tiers, Lsn::new(u64::from(target)));
     }
 }
+
+// --- the code an operator alerts on -------------------------------------
+
+#[test]
+fn a_coverage_gap_reports_the_code_its_runbook_is_indexed_by() {
+    // `SNK-S0001` was published as a code this build produces, with a runbook the build
+    // requires to exist, and nothing converted this condition onto it --- so an alert rule on
+    // the code was permanently silent while the exact condition it names refused queries. The
+    // gate missed it because `SpliceError::CoverageGap` contains the string `Error::CoverageGap`.
+    let tiers = [
+        tier("archive", 0, 10),
+        tier("published", 20, 30),
+    ];
+    let refusal = plan_splice(&tiers, Lsn::new(30)).expect_err("a gap between 10 and 20");
+    let reported: sankhya_error::Error = refusal.into();
+    assert_eq!(reported.code().as_str(), "SNK-S0001");
+    let rendered = reported.to_string();
+    // An `Lsn` renders in the transactional store's own notation, not in decimal, so the
+    // expectation is built from the type rather than from the numbers that made it.
+    let gap = format!("({}, {}]", Lsn::new(10), Lsn::new(20));
+    assert!(
+        rendered.contains(&gap),
+        "the remediation says to investigate capture continuity, and neither question can be \
+         asked without the positions. Wanted {gap} in: {rendered}"
+    );
+}
+
+#[test]
+fn a_position_past_the_frontier_is_not_reported_as_a_correctness_event() {
+    // The distinction that makes the conversion worth having. `SNK-S0001` is `Class::Fatal`
+    // and pages; asking for a position nothing reaches is the caller's mistake, and paging
+    // for it would page somebody for a typo.
+    //
+    // It is also not `SNK-T0003`, which is where this pointed first. That code is retryable
+    // with a delay, and half of what reaches here is a position that will never exist --- so
+    // the honest half of the mapping would have told those callers to retry for ever, and
+    // any middleware honouring a 503 would have done it for them.
+    let tiers = [tier("published", 0, 10)];
+    let refusal = plan_splice(&tiers, Lsn::new(50)).expect_err("beyond the frontier");
+    let reported: sankhya_error::Error = refusal.into();
+    assert_eq!(reported.code().as_str(), "SNK-C0007");
+    assert!(
+        !matches!(reported.class(), sankhya_error::Class::Retryable { .. }),
+        "a position that will never exist must not be answered with a retry delay"
+    );
+    assert!(
+        reported.to_string().contains(&Lsn::new(10).to_string()),
+        "the frontier has to be in the detail, or a caller who was merely early cannot \
+         tell how long to wait: {reported}"
+    );
+}
+

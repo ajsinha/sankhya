@@ -51,17 +51,31 @@ pub struct Completeness {
 }
 
 impl Completeness {
-    /// Rows that contributed, and rows policy withheld.
+    /// Rows that contributed, and rows that did not reach the aggregate.
     ///
-    /// The second number has to come from whatever applied the policy. Nothing downstream
-    /// can recover it: a withheld row leaves no trace, so an aggregate that counts only what
+    /// The second number has to come from whatever dropped them. Nothing downstream can
+    /// recover it: a dropped row leaves no trace, so an aggregate that counts only what
     /// arrived reports itself complete however much was removed.
+    ///
+    /// # What the second number is, and is not
+    ///
+    /// It is **every** row the aggregate did not see, whatever removed it. On the served path
+    /// today the only supplier is hydration, which counts a null dimension key or a null
+    /// measure --- so in practice the figure a caller sees is a data-quality one.
+    ///
+    /// It used to be documented, and reported to callers, as *rows policy withheld*. Nothing
+    /// anywhere supplies a policy count: cube authorization is table-level and
+    /// all-or-nothing, so a principal either hydrates the cube or does not. An operator shown
+    /// `withheld: 333` was being told a policy had hidden 333 rows whose region was null.
+    ///
+    /// Naming it for the mechanism rather than for one possible cause is also what lets a row
+    /// filter start supplying it later without the meaning shifting underneath a reader.
     #[must_use]
     pub const fn of(contributed: u64, withheld: u64) -> Self {
         Self { contributed, withheld }
     }
 
-    /// Nothing was withheld.
+    /// Nothing was dropped.
     ///
     /// Named, so that claiming completeness is a positive act. A `Default` here would let
     /// every value that nobody thought about report itself complete.
@@ -76,13 +90,13 @@ impl Completeness {
         self.contributed
     }
 
-    /// How many rows policy withheld.
+    /// How many rows did not reach the aggregate, for any reason. See [`Completeness::of`].
     #[must_use]
     pub const fn withheld(&self) -> u64 {
         self.withheld
     }
 
-    /// How many rows the aggregate would have seen without policy.
+    /// How many rows the aggregate would have seen had none been dropped.
     #[must_use]
     pub const fn considered(&self) -> u64 {
         self.contributed.saturating_add(self.withheld)
@@ -250,7 +264,7 @@ pub struct Insufficient {
     pub required: f64,
     /// The fraction seen, or `None` when there was nothing to see.
     pub seen: Option<f64>,
-    /// How many rows policy withheld.
+    /// How many rows did not reach the aggregate, for any reason. See [`Completeness::of`].
     pub withheld: u64,
 }
 
@@ -260,9 +274,9 @@ impl fmt::Display for Insufficient {
             Some(seen) => write!(
                 f,
                 "this aggregate saw {:.1}% of its input where {:.1}% was required, {} row(s) \
-                 having been withheld by policy — it is refused rather than returned, \
-                 because a partial total is indistinguishable from a complete one once it \
-                 is a number on a page",
+                 not having reached it — it is refused rather than returned, because a \
+                 partial total is indistinguishable from a complete one once it is a number \
+                 on a page",
                 seen * 100.0,
                 self.required * 100.0,
                 self.withheld

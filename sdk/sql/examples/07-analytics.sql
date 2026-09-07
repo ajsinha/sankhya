@@ -77,6 +77,32 @@ FROM sales.orders
 GROUP BY region
 ORDER BY region;
 
--- What is deliberately NOT here: QR, SVD and eigendecomposition. They are where an in-house
--- implementation is worse than none -- a subtly wrong SVD produces plausible singular values,
--- and nothing downstream can tell.
+\echo ''
+\echo '== decompositions =='
+-- This file used to end by saying QR, SVD and eigendecomposition were deliberately absent,
+-- and quoting the reason: an in-house implementation is worse than none, because a subtly
+-- wrong SVD produces plausible singular values. They had shipped. `FEA-05`.
+--
+-- The reasoning was not wrong, and it is what shaped the scope. Read the two limits below
+-- before using these for anything that matters.
+SELECT mat_cholesky(mat_of(2, 2, 4.0, 2.0, 2.0, 3.0))     AS lower_triangular;
+SELECT mat_qr_q(mat_of(2, 2, 1.0, 2.0, 3.0, 4.0))         AS orthogonal_factor;
+SELECT mat_qr_r(mat_of(2, 2, 1.0, 2.0, 3.0, 4.0))         AS upper_triangular_factor;
+
+-- Limit one: the eigenproblem is the **symmetric** one. A non-symmetric matrix is refused
+-- rather than symmetrised, which is the failure the original refusal was about -- an answer
+-- that looks like an answer.
+SELECT mat_eigenvalues(mat_of(2, 2, 2.0, 1.0, 1.0, 2.0))  AS eigenvalues_of_a_symmetric_matrix;
+SELECT mat_eigenvectors(mat_of(2, 2, 2.0, 1.0, 1.0, 2.0)) AS eigenvectors;
+
+-- And the refusal itself, run rather than described. A comment claiming a matrix is refused
+-- is the same class of statement as the retracted one above: true when written, and nothing
+-- notices when it stops being.
+-- REFUSES
+SELECT mat_eigenvalues(mat_of(2, 2, 1.0, 2.0, 3.0, 4.0))  AS not_symmetric;
+
+-- Limit two: these are singular *values* and not a full SVD -- there are no singular
+-- vectors. They are computed through the Gram matrix, so a singular value below about 1e-8
+-- of the largest is not resolved. That floor is stated because a floor a caller cannot see
+-- is the plausible-wrong-answer failure arriving by another route.
+SELECT mat_singular_values(mat_of(2, 2, 3.0, 0.0, 0.0, 1.0)) AS singular_values;

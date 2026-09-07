@@ -339,7 +339,12 @@ impl Registry {
                 }
             }
         }
-        Reconciliation { conflicts }
+        // The union of what each authority named: the archived entries, and the hot ranges
+        // the catalog supplied. A table in neither was not examined, and saying so is the
+        // whole of the fix above.
+        let mut examined: BTreeSet<String> = self.entries.iter().map(|e| e.table.clone()).collect();
+        examined.extend(attached.iter().map(|(table, _)| table.clone()));
+        Reconciliation { conflicts, examined }
     }
 
     /// What changed between two registries.
@@ -484,6 +489,21 @@ impl fmt::Display for Conflict {
 pub struct Reconciliation {
     /// Every disagreement found.
     pub conflicts: Vec<Conflict>,
+    /// Every table this reconciliation actually looked at.
+    ///
+    /// # Why an absence of conflicts was not enough
+    ///
+    /// Without this, `servable` was `conflicts.iter().all(...)` --- and `all` over an empty
+    /// vector is `true`. So a `Reconciliation` produced by a run that examined **nothing**
+    /// handed out a witness for every table anybody asked about, which is precisely the
+    /// forgetting the witness type exists to make impossible. A planner on a process that had
+    /// never reconciled would get `Ok`, union both tiers, and serve the plausible wrong answer
+    /// `FR-TIER-23` is written to prevent.
+    ///
+    /// Both docs said otherwise --- *"a table nobody reconciled is not servable either"* ---
+    /// and the crate's own test helper proved it false in one line: `reconcile(&[])` followed
+    /// by `.servable("entries").expect("nothing was found")`.
+    pub examined: BTreeSet<String>,
 }
 
 impl Reconciliation {
@@ -492,17 +512,47 @@ impl Reconciliation {
     /// `FR-TIER-23` requires a conflict to make unified queries on the affected table fail with
     /// a typed error **rather than serving a plausible wrong answer**. So this is a witness
     /// rather than a boolean: a planner that wants to union the two tiers has to hold a
-    /// [`Servable`], and the only source of one is a reconciliation with nothing to say about
-    /// that table. A table nobody reconciled is not servable either, which is the correct
-    /// answer for a process that has not run the check yet.
+    /// [`Servable`], and the only source of one is a reconciliation that **examined** this
+    /// table and had nothing to say about it. A table nobody reconciled is not servable
+    /// either, which is the correct answer for a process that has not run the check yet ---
+    /// and which this returned the opposite of until [`Reconciliation::examined`] existed.
     #[must_use]
     pub fn servable(&self, table: &str) -> Option<Servable> {
-        self.conflicts
-            .iter()
-            .all(|conflict| match conflict {
-                Conflict::InBothTiers { table: affected, .. } => affected != table,
+        // Examined **and** unconflicted. A check that has not run is not evidence that it
+        // would pass, and `all` over an empty conflict list says nothing at all.
+        let looked = self.examined.contains(table);
+        let clean = self.conflicts.iter().all(|conflict| match conflict {
+            Conflict::InBothTiers { table: affected, .. } => affected != table,
+        });
+        (looked && clean).then(|| Servable { table: table.to_string() })
+    }
+
+    /// The same witness, and the typed refusal when there is none.
+    ///
+    /// # Why this exists beside [`Self::servable`]
+    ///
+    /// `FR-TIER-23` requires a conflict to make unified queries on the affected table fail
+    /// **with a typed error**. What it actually produced was `Option::None` --- and a `None`
+    /// is not an error: it carries no code, no remediation and no name for what went wrong,
+    /// so the caller has to invent all three or drop them. `SNK-S0002` was published as the
+    /// code for exactly this and nothing could raise it.
+    ///
+    /// `Unservable::NotReconciled` was worse than absent: it was declared, and
+    /// `unify::plan`'s `# Errors` section said it was returned "when the witness is for
+    /// another table" --- which `plan` cannot detect, because it takes the table *from* the
+    /// witness. A documented error path that the function could not take.
+    ///
+    /// # Errors
+    ///
+    /// [`Unservable::NotReconciled`] when the reconciliation found this table in both tiers,
+    /// and when nothing reconciled it at all. Those are deliberately the same refusal: a
+    /// check that has not run is not evidence that it would pass. Both arms are exercised ---
+    /// the second one only became reachable when `servable` started requiring examination.
+    pub fn servable_or_refuse(&self, table: &str) -> Result<Servable, crate::unify::Unservable> {
+        self.servable(table)
+            .ok_or_else(|| crate::unify::Unservable::NotReconciled {
+                table: table.to_string(),
             })
-            .then(|| Servable { table: table.to_string() })
     }
 
     /// The tables a unified query must refuse.

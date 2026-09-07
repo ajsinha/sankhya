@@ -1312,7 +1312,7 @@ the *copying* arm was 2.4× faster and the *borrowing* arm 27× faster, only the
 anomalous, it was non-monotone in width, and 0.85 ms for a scalar reduction implied about
 39 GB/s --- above memory bandwidth. **The fast arm was almost certainly deleted by the
 optimiser**, its result being unused, while the copying arm survived because allocation has
-side effects.
+side effects. [historical: a one-off run made during the audit, against the retracted table's "before" --- the sorted-only implementation, which no longer exists. No benchmark here can reproduce a ratio whose other operand was deleted]
 
 **Measured now, by a benchmark that is a build target and whose arms consume their results:**
 14.3× at width 8, 5.1× at 64, 1.5× at 512. Two runs agreed within 6%. That is neither the
@@ -1327,7 +1327,7 @@ whose "before" has been deleted cannot be re-run by anybody. *"10 to 15 times fa
 a lane-parallel loop this system does not use, and the same paragraph already said the 15× was
 never available; it is marked unmeasured where it stands. The *"agreement on 200,000 randomized
 vectors"* row named a one-off experiment nobody can repeat, and is replaced by the two property
-tests that check the same properties on every build.
+tests that check the same properties on every build. [historical: quoted as one of the retracted tables, not restated as true --- nothing in this repository's history produced it]
 
 **The reduction table is replaced with a measurement, and with what the measurement is not.**
 `3.3× / 3.0× / 3.0×` at 64 / 512 / 4096, against the published `1.5× / 2.0× / 2.7×`. The
@@ -1398,6 +1398,29 @@ workspace could raise it — a **thirteenth** unreachable code, `Class::Fatal`, 
 written for it and an alert rule on it that would never have fired. Four of the six codes that
 page cannot fire; the catalogue said three. The check built in 5.5 to find precisely this
 failed at precisely this, and a reviewer found it by reading the gate rather than trusting it.
+
+**Since closed, in the half that could be closed.** `SpliceError::CoverageGap` now converts to
+`SNK-S0001`, carrying the positions --- the remediation says to investigate capture continuity
+and retention, and neither question can be asked without them. `BeyondFrontier` converts to
+`SNK-T0003` rather than to the fatal code, because being early is a freshness question that
+resolves by waiting and paging for it would be wrong. `Overlap` converts to `SNK-S0005`: the
+rows are present twice, not missing.
+
+That exposed the gate asking the wrong question. `UNREACHABLE` asks *does anything construct
+this?*, an operator asks *can this fire?*, and the two came apart the moment the mapping
+existed --- a code with a conversion and no call path would have read as **produced**, which is
+the same documented lie in the other direction. So there are two lists now, guarded in opposite
+directions: `UNREACHABLE` fails the build when an entry becomes constructible, and
+`MAPPED_BUT_UNREACHABLE` fails it when an entry stops being constructible, because that entry
+claims a mapping exists.
+
+**And `SNK-S0002` turned out to be the sharper find.** `FR-TIER-23` requires a conflict to make
+unified queries on the affected table fail *with a typed error*. It produced `Option::None` ---
+no code, no remediation, no name for what went wrong. `Unservable::NotReconciled` was declared,
+documented in `unify::plan`'s `# Errors` as returned *"when the witness is for another table"*,
+and constructed nowhere; `plan` takes the table **from** the witness, so it could not detect the
+case its own documentation described. The refusal now belongs to `Registry::servable_or_refuse`,
+where the witness is obtained, and maps onto the code.
 It requires a word boundary now, with a test that a different type's variant of the same name
 does not count.
 
@@ -1632,8 +1655,8 @@ directories are non-empty and associates no figure with any benchmark.
 | 6.4 | `PERF-07` | State the absolute price of determinism — 6× to 32× against an ordinary sum — not only the ratio against our own previous code |
 | 6.5 | `FEA-01`–`FEA-05` | No write path; the graph engine can never answer; packs cannot load; cube hierarchies are validated and ignored; QR/SVD/eigen shipped while six documents call them deliberately absent |
 | 6.6 | `FMT-02`–`FMT-09` | Protocol versions written and never read; unknown actions killing a table; no migration mechanism |
-| 6.7 | `ING-00` `ING-08` `ING-09` | There is no change-capture runtime; reconciliation compares nothing |
-| 6.8 | `RUN-08` `RUN-09` `RUN-15` | The stale transcripts, the corruption demo that proves nothing, and the small stumbles |
+| 6.7 | `ING-00` `ING-08` `ING-09` | ~~There is no change-capture runtime; reconciliation compares nothing~~ — **closed as far as it can be, 2026-09-06.** `ING-00` stands and is not closable here: a capture runtime is a PostgreSQL replication client and a milestone, not a remediation, and it is named as the reason behind eleven other entries rather than left implicit. `ING-08`'s self-comparison is gone — the soak's expectation comes from the writer as rows are written, and it flushes the accumulator first, because absorbed rows sit in a buffer until a partition is worth a file. `ING-09` is stated where a reader looks ([`ARCHITECTURE.md`](ARCHITECTURE.md) §3.8) rather than only in the audit --- and stating it found that one clause of the finding was wrong: `ResolvedTable` **does** apply the ops, correctly and with the deletion filter after the distinct rather than before it, and is constructed by nothing outside its own tests. Unreached, not missing, `WriteStrategy`'s doc comment stopped implying a merge path exists, and `_sankhya_commit_ts` is **null instead of `1970-01-01`** — a wrong instant a reader cannot tell from a real one is worse than a missing one |
+| 6.8 | `RUN-08` `RUN-09` `RUN-15` | ~~The stale transcripts, the corruption demo that proves nothing, and the small stumbles~~ — **closed 2026-09-06** |
 
 ---
 

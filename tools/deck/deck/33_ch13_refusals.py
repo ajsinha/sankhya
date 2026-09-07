@@ -1,7 +1,5 @@
 # ============================================================ 6 · WHAT A CUBE REFUSES
-divider("6", "What a Cube Refuses",
-        "Additivity is declared, never inferred — and a partial total says so.",
-        [])
+chapter("13", "Completeness, and cubes under policy")
 
 sl, top = content("Three measures, three answers",
                   kicker="FOUNDATIONS · ADDITIVITY")

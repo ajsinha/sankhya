@@ -176,6 +176,41 @@ impl fmt::Display for Unservable {
     }
 }
 
+/// The catalogue code each refusal is, so a caller can report one.
+///
+/// # Why this exists
+///
+/// The same reason as `sankhya_plan::splice`'s conversion: `SNK-S0001` and `SNK-S0002` were
+/// published as codes this build produces, with runbooks the build requires to exist, and
+/// nothing converted either condition onto them. Both are detected here. Neither was
+/// reportable, so an alert rule on either was permanently silent while the condition it names
+/// would occur. Neither condition has occurred in this build --- nothing runs the tiering
+/// planner --- so the alert was silent about a thing that was also not happening. That is a
+/// weaker fault than the splice's, where the condition **does** occur, and the paragraph this
+/// was adapted from said so about the splice rather than about here.
+///
+/// The detail is the `Display` text rather than a summary, because it names the table and
+/// **every** uncovered sub-range --- and the first gap alone is what turns a systematic loss
+/// into what reads as an isolated one.
+/// Written as `sankhya_error::Error::...` rather than `Self::...` on purpose: the gate that
+/// decides whether a catalogue code is producible greps for a construction site, and `Self`
+/// inside this `impl` is one it cannot see. A code that is reachable and reads as
+/// unreachable is the same documented lie in the other direction.
+impl From<Unservable> for sankhya_error::Error {
+    fn from(refusal: Unservable) -> Self {
+        let detail = refusal.to_string();
+        match refusal {
+            Unservable::CoverageGap { .. } => sankhya_error::Error::CoverageGap(detail),
+            // `SNK-S0002`, and deliberately not the same code. A gap is a question about one
+            // range of the data; this is a statement that the catalog and the registry cannot
+            // both be believed, which makes every answer about the table suspect. The
+            // remediation differs accordingly --- re-purge or re-adopt, rather than
+            // investigate capture continuity.
+            Unservable::NotReconciled { .. } => sankhya_error::Error::ArchiveConflict(detail),
+        }
+    }
+}
+
 /// Plan a predicate across both tiers.
 ///
 /// `attached` is what the catalog says is still hot, `registry` is authority for the cold side,
@@ -185,8 +220,13 @@ impl fmt::Display for Unservable {
 ///
 /// # Errors
 ///
-/// [`Unservable::NotReconciled`] when the witness is for another table, and
-/// [`Unservable::CoverageGap`] listing **every** uncovered sub-range.
+/// [`Unservable::CoverageGap`], listing **every** uncovered sub-range.
+///
+/// **Not** `NotReconciled`. This used to say so, and it was not something this function could
+/// do: it takes the table *from* the witness, so there is no second table for the witness to
+/// disagree with. That refusal belongs where the witness is obtained ---
+/// `Registry::servable_or_refuse` --- and it was `Option::None` there, which `FR-TIER-23` calls
+/// a typed error.
 pub fn plan(
     predicate: Range,
     attached: &[Range],

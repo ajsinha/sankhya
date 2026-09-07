@@ -1,7 +1,5 @@
 # ============================================================ 14 · THE AUDIT
-divider("14", "What Twelve Reviewers Found",
-        "129 findings, in a repository whose gate was green.",
-        [])
+chapter("25", "What twelve reviewers found")
 
 sl, top = content("The number, and how to read it",
                   kicker="THE AUDIT · THE FINDING")

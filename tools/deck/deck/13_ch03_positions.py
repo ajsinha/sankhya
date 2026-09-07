@@ -1,7 +1,5 @@
 # ============================================================ 3 · POSITIONS
-divider("3", "Four Positions, and What Each One Costs",
-        "Each is a choice with a price, and the price is stated.",
-        [])
+chapter("3", "Four positions, and what each costs")
 
 sl, top = content("Four positions, and their cost",
                   kicker="THE STANCE · WHAT IS CHOSEN")
@@ -12,7 +10,7 @@ table(sl, [
      "Statements fail that other engines would answer. Every refusal has to be worth reading, or it becomes a thing people route around."],
     ["Determinism over speed",
      "A reduction is order-independent by construction, so two runs of the same query agree bit for bit however the rows arrived.",
-     "**57× against an ordinary sum at eight values**, 12× at four thousand. Measured, and published beside the claim rather than instead of it."],
+     "**57× against an ordinary sum at eight values**, 12.2× at four thousand. Measured, and published beside the claim rather than instead of it."],
     ["Open storage, no exception for the fast path",
      "Tables are Delta. Any engine that reads Delta reads them with no SANKHYA process in the path, including the materialised cuboids.",
      "The format bounds what can be expressed, and a protocol version this build cannot honour is refused rather than read approximately."],

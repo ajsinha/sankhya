@@ -21,6 +21,8 @@ mod coverage;
 mod gates;
 mod objectives;
 mod durability;
+mod benchmarks;
+mod lints;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -218,7 +220,7 @@ fn main() -> ExitCode {
         failed |= !concurrency::check(&root);
     }
     if run_all || task == "check-lints" {
-        failed |= !check_lints(&root);
+        failed |= !crate::lints::check_lints(&root);
     }
     if task == "write-attribution" {
         match attribution::write(&root) {
@@ -1182,37 +1184,33 @@ fn check_dev_only(root: &Path) -> bool {
 /// the retracted tables were in. So the targets are built here, on every run.
 fn check_benchmarks(root: &Path) -> bool {
     println!("== check-benchmarks ==");
+
+    // The text half first, and unconditionally. It costs milliseconds and needs no build ---
+    // and running it after the compile meant a single broken benchmark target suppressed every
+    // provenance diagnostic, so the half that finds unbacked figures could not be run at all
+    // without a full workspace build succeeding first.
+    let has_benches = crate::benchmarks::every_publisher_can_measure(root);
+    let figures_backed = crate::benchmarks::every_figure_is_backed(root);
+
     let status = Command::new(env!("CARGO"))
         .current_dir(root)
         .args(["build", "--workspace", "--benches", "--quiet"])
         .status();
-    match status {
-        Ok(status) if status.success() => {}
+    let builds = match status {
+        Ok(status) if status.success() => true,
         _ => {
-            eprintln!("   FAILED: a benchmark target no longer builds");
-            return false;
+            eprintln!("   FAILED: a benchmark target no longer builds, so a figure citing one has quietly stopped being reproducible");
+            false
         }
-    }
+    };
 
-    // A crate that publishes a figure has something that produces it. Listed rather than
-    // inferred: the relationship is between a document and a directory, and nothing in the
-    // filesystem records it.
-    const MUST_MEASURE: &[&str] = &["sankhya-functions", "sankhya-math"];
-    let mut ok = true;
-    let mut found = 0usize;
-    for name in MUST_MEASURE {
-        let benches = root.join("crates").join(name).join("benches");
-        if benches.is_dir() && crate::package::files_under(&benches).iter().any(|p| p.extension().is_some_and(|e| e == "rs")) {
-            found += 1;
-        } else {
-            eprintln!("  NO BENCHMARK    {name} publishes speed figures and has no benches/ directory; a number nothing can re-run is a claim");
-            ok = false;
-        }
-    }
-    if ok {
-        println!("   {found} crate(s) that publish figures have a benchmark, and every target builds");
-    }
-    ok
+    // Three questions, and the middle one is the one that bites. That a crate publishing
+    // figures has benchmarks at all is necessary and proves nothing about any particular
+    // number --- a directory is not a measurement. That every published ratio names something
+    // that produced it, and that the reference resolves, is what stops a figure from being
+    // established by restatement. That the targets still compile is what stops a cited
+    // benchmark from quietly ceasing to be re-runnable.
+    has_benches && figures_backed && builds
 }
 
 /// The `NFR-PERF-*` objectives, run as a gate.
@@ -1260,59 +1258,26 @@ fn check_performance(root: &Path) -> bool {
     }
 }
 
-/// Clippy across every target, with the workspace's denied lints.
-///
-/// In `check-all` because the denied set is a safety policy, not a style preference:
-/// `unwrap`, `expect`, `panic` and unchecked indexing are refused in library code
-/// because a server must not abort on data it did not choose. A policy that does not
-/// run is not a policy — this was declared in `Cargo.toml` from the start and had never
-/// been enforced by anything, and the library code had accumulated violations in six
-/// crates, including a wire decoder indexing attacker-supplied bytes.
-///
-/// Test targets allow the same lints, stated file by file rather than globally, because
-/// a test panicking is how a test fails.
-fn check_lints(root: &Path) -> bool {
-    println!("== check-lints");
-    let output = Command::new(env!("CARGO"))
-        .current_dir(root)
-        // **A target directory of its own**, and it is not tidiness.
-        //
-        // `cargo clippy` substitutes its own driver for `rustc` and writes different
-        // fingerprints for the same crate. Sharing one directory with `cargo test` therefore
-        // means each invalidates everything the other built --- so a `check-all` compiled the
-        // whole workspace once for the tests and again for the lints, and whichever ran last
-        // left the tree poisoned for the next thing anybody ran. Three full builds where one
-        // would do, on a workspace whose `deps` directory is ninety-six gigabytes.
-        //
-        // Measured on 2026-09-05: this is the single largest cost in the gate, and it is
-        // entirely an artefact of the two tools sharing a directory.
-        .env("CARGO_TARGET_DIR", root.join("target").join("lints"))
-        .args(["clippy", "--workspace", "--all-targets", "--keep-going"])
-        .output();
-
-    match output {
-        Ok(output) if output.status.success() => {
-            println!("   clean across every target");
-            true
-        }
-        Ok(output) => {
-            let text = String::from_utf8_lossy(&output.stderr);
-            let count = text.lines().filter(|l| l.starts_with("error")).count();
-            eprintln!("   FAILED: {count} clippy error(s)");
-            for line in text.lines().filter(|l| l.starts_with("error")).take(10) {
-                eprintln!("     {line}");
-            }
-            false
-        }
-        Err(error) => {
-            eprintln!("   FAILED: could not run clippy: {error}");
-            false
-        }
-    }
-}
-
 /// Enumerate tests without running them.
 pub(crate) fn list_tests(root: &Path, ignored_only: bool) -> Option<usize> {
+    // Build first, and refuse to count if the build fails.
+    //
+    // `cargo test -- --list` enumerates only the binaries it managed to produce, and it does
+    // not stop when one does not compile --- so the count silently shrinks by however many
+    // tests were in the binary that failed. That is a number which disagrees with itself
+    // depending on the state of `target/`, and it disagreed by **thirty-one** across two runs
+    // an hour apart, sending a document back and forth between two figures that were both
+    // reported as the truth.
+    let built = Command::new(env!("CARGO"))
+        .current_dir(root)
+        .args(["test", "--workspace", "--no-run", "--quiet"])
+        .status()
+        .ok()?;
+    if !built.success() {
+        eprintln!("   FAILED: the test binaries do not all build, so any count of them is short by however many are in the one that did not");
+        return None;
+    }
+
     let mut arguments = vec!["test", "--workspace", "--", "--list"];
     if ignored_only {
         arguments.push("--ignored");
@@ -1322,6 +1287,11 @@ pub(crate) fn list_tests(root: &Path, ignored_only: bool) -> Option<usize> {
         .args(&arguments)
         .output()
         .ok()?;
+    if !output.status.success() {
+        eprintln!("   FAILED: enumerating the tests exited {}, so the list stops at whichever binary refused and the count is short by the rest", output.status);
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        return None;
+    }
     let text = String::from_utf8_lossy(&output.stdout);
     Some(text.lines().filter(|line| line.ends_with(": test")).count())
 }

@@ -4,6 +4,12 @@
 
 **Lead time:** none. The first failure is already a gap.
 
+
+**Before you start: check the counter is there at all.** It reads `0` from server startup,
+so `absent(sankhya_audit_unwritten_total)` means the metrics endpoint is not being scraped —
+not that the audit is healthy. That case is [`OPERATIONS.md` §8.3](../OPERATIONS.md), not this
+runbook, and until it is fixed this alert cannot fire.
+
 ## Symptom
 
 Nothing that a user sees. Queries are answered normally, refusals are refused normally, and

@@ -86,6 +86,19 @@ pub enum Authentication {
     /// Deliberately its own variant rather than a synthetic principal, so a policy or an
     /// audit reader can tell internal work from a request that arrived over a wire.
     Internal,
+    /// Arrived over a wire and presented nothing this build could check.
+    ///
+    /// The two states it exists to stop being recorded as something else. A server with
+    /// `require_password` set and an empty credential map accepts any password, and stamping
+    /// that `Password` puts a login in the durable record that never happened. A server with
+    /// passwords off accepts anyone, and stamping *that* `Internal` records a remote peer as
+    /// the process doing its own maintenance --- the one distinction `Internal` exists to
+    /// draw.
+    ///
+    /// Both are configurations an operator may legitimately choose. Neither is a state the
+    /// audit may describe as a credential having been verified: an investigator reading the
+    /// chain has no other source for how somebody got in.
+    Unverified,
 }
 
 /// Who is asking, established once at the edge.

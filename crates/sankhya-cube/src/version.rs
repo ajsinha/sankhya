@@ -76,6 +76,17 @@ pub fn fingerprint(definition: &Definition) -> u64 {
         for rule in &measure.rules {
             feed(&mut h, rule.dimension.as_bytes());
             feed(&mut h, rule.rule.as_str().as_bytes());
+            // Which aggregation, not merely that there is one.
+            //
+            // `Rule::as_str` returns the constant `"an aggregation of your own"` for every
+            // supplied rule, because the name lives beside the rule rather than inside it (see
+            // `Along::supplied`). Without this, two cubes differing only in which declared
+            // function a measure calls fingerprint identically --- and this fingerprint is the
+            // invalidation key for both the cuboid store and the hydration cache, so one
+            // cube's cells are served under the other's name.
+            if let Some(supplied) = &rule.supplied {
+                feed(&mut h, supplied.as_bytes());
+            }
         }
     }
     h

@@ -43,7 +43,7 @@ Inside it, and this is the whole of it:
 
 And, so it is not discovered by disappointment, **what is not running**: there is no change capture (no replication slot, no applier, no arrival buffer wired to ingest), no archival tiering, no REST gateway, no `/health` or `/ready` endpoint, no supervised PostgreSQL, and no working `sankhya-cli` — that binary prints one line and exits `2` (`crates/sankhya-cli/src/main.rs`).
 
-The workspace keeps that list machine-readable rather than in prose. `UNREACHED` in `xtask/src/surfaces.rs` names every crate no binary reaches, each with the milestone that will change it, and the build fails both when an unlisted crate becomes unreachable *and* when a listed one becomes reachable and is not removed. `UNREACHABLE` in `xtask/src/catalogues.rs` does the same for error codes nothing can produce — which matters here, because **an alert rule written against one of those codes is permanently silent**. [`ARCHITECTURE.md`](ARCHITECTURE.md) §2 reads both lists.
+The workspace keeps that list machine-readable rather than in prose. `UNREACHED` in `xtask/src/surfaces.rs` names every crate no binary reaches, each with the milestone that will change it, and the build fails both when an unlisted crate becomes unreachable *and* when a listed one becomes reachable and is not removed. `xtask/src/catalogues.rs` keeps two such lists for error codes: `UNREACHABLE` for codes nothing constructs, and `MAPPED_BUT_UNREACHABLE` for codes something does construct that no query can reach. They are guarded in opposite directions — the first fails when an entry becomes constructible, the second when one stops being — and both matter here, because **an alert rule written against a code on either list is permanently silent**. [`ARCHITECTURE.md`](ARCHITECTURE.md) §2 reads both lists.
 
 ---
 
@@ -354,17 +354,31 @@ There is no `counter("some_name")` in this codebase. Recording a metric takes th
 
 Two checks run, and they are different checks. That the published catalogue matches the declarations is one. That every declared metric is actually **recorded somewhere in the source** is the other — generating documentation from a catalogue proves the document matches the catalogue and says nothing about whether the catalogue matches the program. Only the second is uncomfortable, because it is the one that fails.
 
-### 8.3 The three that page
+### 8.3 The four that page
 
-A metric that may page carries an `Alert`, and that field is **not** an `Option` (`crates/sankhya-metrics/src/metric.rs`) — so a paging metric structurally cannot exist without a runbook, and the build requires the file to exist *and* carry its *Symptom* / *What is actually wrong* / *What to do* sections. Of eleven declared metrics, three page:
+A metric that may page carries an `Alert`, and that field is **not** an `Option` (`crates/sankhya-metrics/src/metric.rs`) — so a paging metric structurally cannot exist without a runbook, and the build requires the file to exist *and* carry its *Symptom* / *What is actually wrong* / *What to do* sections. Of fifteen declared metrics, four page:
 
 | Metric | Threshold | Lead time | Runbook |
 |---|---|---|---|
 | `sankhya_audit_unwritten_total` | above zero | **none** — the first failure is already a gap | [`audit-unwritten`](runbooks/audit-unwritten.md) |
 | `sankhya_table_live_files_max` | approaching 1,000 | days, at ordinary write rates | [`compaction-debt`](runbooks/compaction-debt.md) |
 | `sankhya_table_live_files` | as above, per table | as above | [`compaction-debt`](runbooks/compaction-debt.md) |
+| `sankhya_maintenance_failures_total` | `increase(…[1h]) > 0` | days — file counts climb before a read is slow enough to notice | [`maintenance-stalled`](runbooks/maintenance-stalled.md) |
 
 The interval by which a metric precedes user-visible failure is recorded beside it, because that interval is the entire justification for paging. An alert with no lead time fires when the user notices, which makes it a notification.
+
+**Write the audit rule as two rules.** `sankhya_audit_unwritten_total` reads `0` from the moment the server starts — it has no labels, so the zero series exists before anything has failed, and that is deliberate: a metric that has never been sampled is stored nowhere, and a rule on `> 0` alone would treat *healthy*, *not started yet* and *the scrape is broken* as the same silence. So pair it:
+
+```yaml
+- alert: SankhyaAuditUnwritten
+  expr: sankhya_audit_unwritten_total > 0
+  for: 0m                     # no lead time; the first failure is already a gap
+- alert: SankhyaMetricsGone
+  expr: absent(sankhya_audit_unwritten_total)
+  for: 5m                     # the exporter stopped, so the rule above cannot fire
+```
+
+The second rule is what makes the first trustworthy: without it, a server whose metrics endpoint has failed is indistinguishable from one whose audit is healthy. This works for every metric that is unlabelled or carries only restricted labels; `sankhya_table_live_files` is labelled by table, its values are discovered rather than declared, and for it an absent series is the ordinary state of a warehouse with no tables.
 
 ### 8.4 The three that are deliberately absent
 
@@ -443,7 +457,7 @@ There is deliberately **no command that compacts by hand.** The server holds the
 
 ### 10.3 What you can see of it
 
-Very little, and that is a gap worth naming. The maintenance handle carries counters — ticks, bytes reclaimed, ticks that declined to reclaim, failures, tables being maintained, merges awaiting retirement — and **the server reads none of them.** They are neither exported as metrics nor logged.
+Four of the six are now exported. The maintenance handle carries counters — ticks, bytes reclaimed, ticks that declined to reclaim, failures, tables being maintained, merges awaiting retirement — and until 2026-09-06 **the server read none of them**: they were neither exported as metrics nor logged, which is why the compaction-debt page could tell you the duty cycle was too low with nothing to check that against. Ticks, bytes reclaimed, declines, failures **and the table count** are published on the maintenance cadence (§8.3) --- the last of those because it is the one an operator asks for by name, *"is my new table being maintained?"*, and because it is the only maintenance number that is not zero on a healthy idle warehouse, which is what lets a test prove the publisher runs at all. **Merges awaiting retirement is still not exported.** The cadence follows a `SIGHUP`: the interval is re-read each pass rather than captured at boot, so lowering it and watching the tick counter confirms the change at the new rate rather than the old one. A server configured with `maintenance.interval: 0` exports **none** of the five rather than exporting them at zero: a flat zero is what a maintenance thread that died on its first cycle also reads, and `absent()` cannot separate them while the series is present. `sankhya_table_live_files_max` stays, because it is computed from the servable set at the moment of the scrape and is meaningful either way.
 
 The observable surface is `sankhya_table_live_files_max` and, behind `server.metrics_detail`, the per-table `sankhya_table_live_files`; plus `sankhya-server doctor`, and the structured events the maintenance crate emits when a table is adopted, released, or starts and stops failing. A table whose compaction failed every thirty seconds used to be invisible while the aggregate reclaimed-bytes figure climbed from the other tables; failures are counted and reported on change now — once when they start and once when they stop.
 
@@ -668,6 +682,7 @@ One per alert that can page, and the relationship is enforced rather than aspira
 |---|---|---|
 | [`audit-unwritten`](runbooks/audit-unwritten.md) | `sankhya_audit_unwritten_total` above zero | Records are being made and are not reaching disk. **No lead time — the first failure is already a gap**, and nothing a user sees changes |
 | [`compaction-debt`](runbooks/compaction-debt.md) | `sankhya_table_live_files_max` near 1,000 | One table's queries get slower and nothing else on the box looks different. Lower `maintenance.compact_every` or `interval` and `SIGHUP` |
+| [`maintenance-stalled`](runbooks/maintenance-stalled.md) | `increase(sankhya_maintenance_failures_total[1h]) > 0` | Cycles are running and at least one table is failing, so files accumulate unopposed. Separates a dead maintainer, a failing pass, a sweeper that cannot establish the pin set, and a duty cycle that is simply too low — four states that all read as "file counts are rising" |
 | [`restore-drill`](runbooks/restore-drill.md) | `doctor` reports no passing drill, a stale one, or a drill exited `1` | Nothing is broken; what is wrong is epistemic. Distinguishes *never ran* from *ran and failed* from *the backup is not a backup*, and forbids taking a fresh backup to silence the alert |
 | [`snk-s0001`](runbooks/snk-s0001.md) | `SNK-S0001` | Coverage gap: a query is refused because no tier covers part of the range it asked for. Fatal, and intermittent-looking |
 | [`snk-s0002`](runbooks/snk-s0002.md) | `SNK-S0002` | Archive conflict: the registry says a range was purged and the catalogue says those rows are present. Every query on that table is refused until a human acts |
@@ -676,9 +691,9 @@ One per alert that can page, and the relationship is enforced rather than aspira
 | [`snk-s0005`](runbooks/snk-s0005.md) | `SNK-S0005` | An invariant does not hold. This is a defect in SANKHYA, not a misconfiguration |
 | [`snk-s0006`](runbooks/snk-s0006.md) | `SNK-S0006` | Configuration invalid; the process refuses to start, naming the key, the value and where the value came from |
 
-> **Four of those nine name a code this build cannot produce.** `SNK-S0001` through `SNK-S0004` are on `UNREACHABLE` in `xtask/src/catalogues.rs`, either because the subsystem does not run or because the condition happens and is reported through a crate-local type nothing maps onto the code. `SNK-S0001` is the sharpest case: the coverage gap it names *is* detected, by `sankhya-plan`'s splice, and reported as that crate's own error type — so the alert fires never while the condition occurs. **An alert rule written against one of them is permanently silent.** The runbooks are kept because codes are permanent — removing one breaks every rule that references it — and [`ERRORS.md`](ERRORS.md) marks each as *not produced by this build*, with the gap that has to close first.
+> **Four of those ten name a code no query in this build can raise.** `SNK-S0001` through `SNK-S0004`, and the reason differs by code. `SNK-S0003` and `SNK-S0004` are on `UNREACHABLE` in `xtask/src/catalogues.rs`: nothing constructs them, because backup verification reports through its own types and an endangered source is the change-capture runtime. `SNK-S0001` and `SNK-S0002` are on `MAPPED_BUT_UNREACHABLE`, which is a different statement — the conversion onto the code exists and is tested (a `SpliceError::CoverageGap` reports as `SNK-S0001`, a refused reconciliation as `SNK-S0002`) and no call path in this build meets the condition. **An alert rule written against any of the four is permanently silent either way**, which is why they are listed rather than left to be discovered from an alert that never fires. The runbooks are kept because codes are permanent — removing one breaks every rule that references it — and [`ERRORS.md`](ERRORS.md) marks each, with the gap that has to close first.
 
-Two errors in `runbooks/compaction-debt.md` to be aware of until it is corrected: it says `sankhya doctor`, and there is no `sankhya` binary — it is `sankhya-server doctor`; and it says that command *authenticates*, which it does not. It reads the warehouse off disk with no principal.
+Both errors this section used to list against `runbooks/compaction-debt.md` are fixed: it named a `sankhya` binary that does not exist, and said the diagnostic *authenticates*, which it does not — it reads the warehouse off disk with no principal, and what protects it is shell access to the host.
 
 ---
 
