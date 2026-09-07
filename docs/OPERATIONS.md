@@ -366,6 +366,19 @@ A metric that may page carries an `Alert`, and that field is **not** an `Option`
 
 The interval by which a metric precedes user-visible failure is recorded beside it, because that interval is the entire justification for paging. An alert with no lead time fires when the user notices, which makes it a notification.
 
+**Write the audit rule as two rules.** `sankhya_audit_unwritten_total` reads `0` from the moment the server starts — it has no labels, so the zero series exists before anything has failed, and that is deliberate: a metric that has never been sampled is stored nowhere, and a rule on `> 0` alone would treat *healthy*, *not started yet* and *the scrape is broken* as the same silence. So pair it:
+
+```yaml
+- alert: SankhyaAuditUnwritten
+  expr: sankhya_audit_unwritten_total > 0
+  for: 0m                     # no lead time; the first failure is already a gap
+- alert: SankhyaMetricsGone
+  expr: absent(sankhya_audit_unwritten_total)
+  for: 5m                     # the exporter stopped, so the rule above cannot fire
+```
+
+The second rule is what makes the first trustworthy: without it, a server whose metrics endpoint has failed is indistinguishable from one whose audit is healthy. This works for every metric that is unlabelled or carries only restricted labels; `sankhya_table_live_files` is labelled by table, its values are discovered rather than declared, and for it an absent series is the ordinary state of a warehouse with no tables.
+
 ### 8.4 The three that are deliberately absent
 
 [`ARCHITECTURE.md`](ARCHITECTURE.md) names four metrics that receive paging alerts. `NOT_YET_EMITTED` in `crates/sankhya-metrics/src/catalogue.rs` records why three of them are not exported: retained log volume (no ingest runs in this process, so no slot retains anything), transaction-identifier freeze age (a property of PostgreSQL, read by a supervisor that is not wired in), and archive jobs awaiting attention (archival is gated).

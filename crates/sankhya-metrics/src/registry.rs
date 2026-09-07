@@ -294,11 +294,28 @@ impl Registry {
                 .filter(|((name, _), _)| *name == metric.name)
                 .collect();
             if series.is_empty() {
-                // Nothing recorded. The `# HELP` line is still emitted, so a scrape shows
-                // the metric exists and is at zero rather than leaving a dashboard unable to
-                // tell "no events" from "not wired up".
+                // Nothing recorded yet --- and this used to stop here, emitting `# HELP` and
+                // `# TYPE` and **no sample**.
+                //
+                // The comment said that let a dashboard tell "no events" from "not wired up".
+                // It did the opposite: Prometheus stores nothing for a metric with no samples,
+                // so the two states are byte-identical to anything scraping it. On a freshly
+                // started server, seven of the eleven declared metrics had no series at all.
+                //
+                // The one that matters is `sankhya_audit_unwritten_total`. It is the only page
+                // with no lead time --- the audit has stopped reaching disk, right now --- and
+                // an alert on `> 0` could not distinguish *healthy*, *never started* and *the
+                // collector is broken*. All three were silence.
+                //
+                // So a metric whose labels are all **closed** is emitted at zero, once per
+                // combination, because that set is known at compile time and finite. A metric
+                // with a bounded label --- a table name, a tenant --- is not: its values are
+                // discovered, and inventing them would be worse than saying nothing.
                 let _ = writeln!(out, "# HELP {} {}", metric.name, metric.help);
                 let _ = writeln!(out, "# TYPE {} {}", metric.name, metric.kind.as_str());
+                for labels in zero_combinations(metric) {
+                    render_series(&mut out, metric, &labels, &Series::default());
+                }
                 continue;
             }
             let _ = writeln!(out, "# HELP {} {}", metric.name, metric.help);
@@ -312,6 +329,31 @@ impl Registry {
 }
 
 /// One series, in whichever shape its kind requires.
+/// Every label combination a metric can be emitted at before anything has happened.
+///
+/// One empty combination for a metric with no labels, the full cross-product for one whose
+/// labels are all closed, and **none** for one with a bounded label --- whose values are
+/// discovered from the deployment, so a zero series would be a name this server invented.
+fn zero_combinations(metric: &Metric) -> Vec<Vec<(String, String)>> {
+    let mut combinations: Vec<Vec<(String, String)>> = vec![Vec::new()];
+    for label in metric.labels {
+        let Values::Closed(values) = label.values else {
+            return Vec::new();
+        };
+        combinations = combinations
+            .into_iter()
+            .flat_map(|so_far| {
+                values.iter().map(move |value| {
+                    let mut next = so_far.clone();
+                    next.push((label.name.to_string(), (*value).to_string()));
+                    next
+                })
+            })
+            .collect();
+    }
+    combinations
+}
+
 fn render_series(out: &mut String, metric: &Metric, labels: &[(String, String)], series: &Series) {
     let rendered = render_labels(labels, None);
     match metric.kind {

@@ -63,6 +63,12 @@ pub fn metrics_markdown() -> String {
          deployment-scoped identifier under a cap. There is no third kind, so a label that \
          varies per row has no way to be declared.\n\n",
     );
+    out.push_str("**A metric with no labels, or with only restricted ones, reads zero from startup.** ");
+    out.push_str("Prometheus stores nothing for a metric that has never been sampled, so a declaration ");
+    out.push_str("alone leaves *healthy*, *never started* and *the exporter is broken* looking identical ");
+    out.push_str("\u{2014} which matters most for the one page that has no lead time. A metric labelled by a ");
+    out.push_str("deployment-scoped identifier has no such zero, because its label values are discovered ");
+    out.push_str("rather than declared; for those, and only those, `absent()` is the healthy state.\n\n");
 
     for metric in ALL {
         let _ = writeln!(out, "## `{}`\n", metric.name);

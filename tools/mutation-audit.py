@@ -2463,8 +2463,14 @@ CATALOGUE = [
 
     ("metrics: omit a metric that has recorded nothing",
      "crates/sankhya-metrics/src/registry.rs",
-     '                let _ = writeln!(out, "# TYPE {} {}", metric.name, metric.kind.as_str());\n                continue;',
+     '                let _ = writeln!(out, "# TYPE {} {}", metric.name, metric.kind.as_str());\n                for labels in zero_combinations(metric) {\n                    render_series(&mut out, metric, &labels, &Series::default());\n                }\n                continue;',
      "                continue;",
+     "sankhya-metrics"),
+
+    ("metrics: emit a zero series for a label whose values are discovered",
+     "crates/sankhya-metrics/src/registry.rs",
+     "        let Values::Closed(values) = label.values else {\n            return Vec::new();\n        };",
+     "        let Values::Closed(values) = label.values else {\n            continue;\n        };",
      "sankhya-metrics"),
 
     ("server: count a refusal as an error",

@@ -8,6 +8,8 @@ Every metric this build exports. A metric absent from this document is not merel
 
 **No label may carry tenant data.** A label is either restricted to a named set of values, in which case anything else is refused, or it holds a deployment-scoped identifier under a cap. There is no third kind, so a label that varies per row has no way to be declared.
 
+**A metric with no labels, or with only restricted ones, reads zero from startup.** Prometheus stores nothing for a metric that has never been sampled, so a declaration alone leaves *healthy*, *never started* and *the exporter is broken* looking identical — which matters most for the one page that has no lead time. A metric labelled by a deployment-scoped identifier has no such zero, because its label values are discovered rather than declared; for those, and only those, `absent()` is the healthy state.
+
 ## `sankhya_queries_total`
 
 Statements that reached execution, by how they ended.
