@@ -58,7 +58,6 @@ exception will pass.
 | `SHOW TRANSACTION ISOLATION LEVEL` | Returns an empty string |
 | `server_version` | Reports **17.0**, which tells every client library that MVCC, savepoints, `COPY` and typed prepared parameters are available |
 | Bound parameters | String-substituted. pgjdbc sends `int4` in **binary** by default, and those four bytes become a quoted text literal — a cast error on a value you never typed, or silently zero rows against a text column |
-| A suspended portal | Has no cursor position. `setFetchSize(10)` over 1,000 rows returns rows 1–10 **forever** |
 | `Flush` (protocol message `H`) | Not decoded. Kills the connection with `08P01`. psycopg3 pipeline mode hits this |
 | `PRIMARY KEY` / `UNIQUE` | Declarable, **never enforced**. Nothing checks for a duplicate |
 | `FOREIGN KEY`, `CHECK`, `DEFAULT`, sequences | Do not exist |
@@ -136,6 +135,7 @@ If any of these reproduces, it is a regression and worth a defect immediately.
 | `R²` for a constant response | Now **NULL**, on both `vec_regression_r2` and `regress_r2` |
 | `SELECT … FOR UPDATE` | Now refused with `0A000`. It used to return rows and take no lock |
 | `SET TRANSACTION ISOLATION LEVEL`, `SET SESSION CHARACTERISTICS`, `SET ROLE`, `SET SESSION AUTHORIZATION` | Now refused with `0A000`. Every other `SET` is still a no-op, deliberately: refusing broadly would break the handshake of every driver |
+| A suspended portal | Now resumes where it stopped. `setFetchSize(n)` over a large result used to return the first page for ever |
 
 ---
 

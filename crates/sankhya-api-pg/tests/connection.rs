@@ -951,3 +951,66 @@ async fn the_catalogue_split_holds_on_the_extended_protocol_too() {
     );
     assert!(!ordinary.is_empty(), "the catalogue answered nothing");
 }
+
+#[tokio::test]
+async fn a_suspended_portal_resumes_where_it_stopped() {
+    // A portal is a cursor, and it had no position.
+    //
+    // `Execute` sent the first `max_rows` rows and answered `PortalSuspended`; the next
+    // `Execute` sent **the same rows again**, and said `PortalSuspended` again. A client
+    // streaming a large result with a fetch size --- `setFetchSize` in JDBC, a server-side
+    // cursor in psycopg --- looped forever over its first page. Nothing errored, and every
+    // individual message was correct.
+    let address = start(Fixture::open()).await;
+    let mut client = Client::connect(address).await;
+    client.startup("ana").await;
+    client.read_until(b'Z').await;
+
+    let mut parse = b"\0".to_vec();
+    parse.extend_from_slice(b"SELECT id, note FROM t\0");
+    parse.extend_from_slice(&0i16.to_be_bytes());
+    client.send(b'P', &parse).await;
+
+    let mut bind = b"\0\0".to_vec();
+    bind.extend_from_slice(&0i16.to_be_bytes());
+    bind.extend_from_slice(&0i16.to_be_bytes());
+    bind.extend_from_slice(&0i16.to_be_bytes());
+    client.send(b'B', &bind).await;
+
+    // One row at a time, over a result of two.
+    let mut fetch = || {
+        let mut execute = b"\0".to_vec();
+        execute.extend_from_slice(&1i32.to_be_bytes());
+        execute
+    };
+
+    client.send(b'E', &fetch()).await;
+    client.send(b'S', &[]).await;
+    let first = client.read_until(b'Z').await;
+    let first_rows: Vec<String> = first
+        .iter()
+        .filter(|(tag, _)| *tag == b'D')
+        .map(|(_, body)| String::from_utf8_lossy(body).to_string())
+        .collect();
+    assert_eq!(first_rows.len(), 1, "one row was asked for: {:?}", tags(&first));
+    assert!(tags(&first).contains(&'s'), "there is more, so it suspends: {:?}", tags(&first));
+
+    client.send(b'E', &fetch()).await;
+    client.send(b'S', &[]).await;
+    let second = client.read_until(b'Z').await;
+    let second_rows: Vec<String> = second
+        .iter()
+        .filter(|(tag, _)| *tag == b'D')
+        .map(|(_, body)| String::from_utf8_lossy(body).to_string())
+        .collect();
+    assert_eq!(second_rows.len(), 1, "the second page holds the second row");
+    assert_ne!(
+        first_rows[0], second_rows[0],
+        "the portal resent its first row instead of advancing --- this is the infinite loop"
+    );
+    assert!(
+        tags(&second).contains(&'C'),
+        "the result is exhausted, so it completes rather than suspending: {:?}",
+        tags(&second)
+    );
+}
