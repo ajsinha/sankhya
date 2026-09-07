@@ -953,10 +953,20 @@ impl Server {
             user,
             self.settings.tenant,
             held,
-            if self.settings.require_password {
+            // What was checked, not what was configured.
+            //
+            // This read `require_password`, which is a setting rather than an event. With
+            // passwords required and no credentials written down, `authenticate` returns `Ok`
+            // for any non-empty password (see `Settings::credentials`) and the record then
+            // said `password` --- a login the chain asserts and nothing performed. With
+            // passwords off it said `internal`, which names a caller that did not exist.
+            //
+            // The startup banner already prints `PASSWORD UNVERIFIED` for the first case. The
+            // banner scrolls away; the chain is what an investigator reads months later.
+            if self.settings.require_password && !self.settings.credentials.is_empty() {
                 Authentication::Password
             } else {
-                Authentication::Internal
+                Authentication::Unverified
             },
         )
         .ok()
