@@ -770,3 +770,40 @@ pub fn skipped(test: &str, reason: &str) {
         file.write_all(line.as_bytes()).ok();
     }
 }
+
+/// The Python this repository runs, resolved the same way everywhere.
+///
+/// # Why this is not the string `"python3"`
+///
+/// Four Rust call sites spawned `python3` --- the SDK examples, the TLS binding test, the
+/// parity soak, and the mutation audit --- and each of them got whatever the machine's `PATH`
+/// offered. That is the shape `rust-toolchain.toml` exists to prevent for the compiler: a
+/// version that behaves differently on one machine turns a green run into a property of
+/// whoever ran it, and the deck's renderer is a wheel that is not installed system-wide at all.
+///
+/// So: the project's own `.venv` when it is there, and `python3` when it is not. The version
+/// is pinned in `.python-version` and the packages in `requirements.txt`, so a rebuilt
+/// environment is the same environment.
+///
+/// `SANKHYA_PYTHON` overrides both, for a machine that keeps its interpreter somewhere else.
+/// Named rather than inferred: a fallback nobody can point at is a fallback nobody can debug.
+///
+/// # What it does not do
+///
+/// It does not create the venv, and it does not refuse when one is absent. Everything this
+/// repository runs in Python except the deck imports only the standard library, so an ordinary
+/// `python3` genuinely does answer --- and a test that refuses to run on a machine without a
+/// venv is a test that reports nothing on the machine most likely to be a stranger's.
+#[must_use]
+pub fn python(root: &std::path::Path) -> std::path::PathBuf {
+    if let Ok(named) = std::env::var("SANKHYA_PYTHON") {
+        if !named.trim().is_empty() {
+            return std::path::PathBuf::from(named);
+        }
+    }
+    let venv = root.join(".venv").join("bin").join("python");
+    if venv.exists() {
+        return venv;
+    }
+    std::path::PathBuf::from("python3")
+}

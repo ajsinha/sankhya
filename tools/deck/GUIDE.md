@@ -4,10 +4,16 @@ Regenerates `docs/SANKHYA-Architecture-and-Evidence.pptx` from source, so the de
 reproducible rather than a binary nobody can edit safely.
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install python-pptx
+cargo run -p xtask -- venv                         # 3.13.15 + requirements.txt, once
 .venv/bin/python tools/deck/slides.py              # -> docs/SANKHYA-Architecture-and-Evidence.pptx
 .venv/bin/python tools/deck/audit.py <deck>        # must report no geometry issues
 ```
+
+The interpreter is pinned in `.python-version` and the packages in `requirements.txt`, for the
+reason `rust-toolchain.toml` pins the compiler: a renderer that lays a slide out differently on
+one machine makes the deck a property of whoever built it. `python-pptx` is the only
+third-party package this repository needs at all --- everything else it runs in Python imports
+the standard library and nothing else.
 
 | File | Purpose |
 |---|---|

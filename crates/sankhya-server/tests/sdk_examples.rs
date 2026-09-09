@@ -63,13 +63,15 @@ fn every_python_example_runs_against_a_real_server() {
     // Python is what these are written in. Absent, this cannot report a pass --- an
     // environment that cannot run the examples has not checked them, and saying otherwise is
     // the failure this whole file exists to prevent.
-    let interpreter = "python3";
+    // The project's own interpreter, not whatever `PATH` offers. See `testkit::python`.
+    let interpreter = sankhya_testkit::python(&root);
     assert!(
-        std::process::Command::new(interpreter)
+        std::process::Command::new(&interpreter)
             .arg("--version")
             .output()
             .is_ok_and(|output| output.status.success()),
-        "`{interpreter}` is not available, so the shipped examples cannot be checked"
+        "`{}` is not available, so the shipped examples cannot be checked",
+        interpreter.display()
     );
 
     let dir = tempfile::tempdir().expect("a directory");
@@ -84,7 +86,7 @@ fn every_python_example_runs_against_a_real_server() {
 
     let mut broken: Vec<String> = Vec::new();
     for script in &scripts {
-        let outcome = std::process::Command::new(interpreter)
+        let outcome = std::process::Command::new(&interpreter)
             .arg(script)
             .current_dir(&examples)
             .env("SANKHYA_HOST", "127.0.0.1")
@@ -132,7 +134,7 @@ fn the_bindings_own_unit_tests_pass() {
     // Run from here rather than left to a Python test runner nobody invokes, because the rule
     // this repository keeps arriving at is that a check nothing runs is not a check.
     let root = repository();
-    let outcome = std::process::Command::new("python3")
+    let outcome = std::process::Command::new(sankhya_testkit::python(&root))
         .args(["-m", "unittest", "discover", "-s", "sdk/python/tests", "-v"])
         .current_dir(&root)
         .output()

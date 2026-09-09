@@ -44,6 +44,28 @@ into a run — three times in one sitting. Cheapest-first does not make the gate
 the loop faster, which is the thing that was slow. The answer now arrives while the person who
 caused it is still looking at what they changed.
 
+**Python is pinned the same way, and for the same reason.**
+
+```bash
+cargo run -p xtask -- venv     # 3.13.15 + requirements.txt, once
+```
+
+`.python-version` names the interpreter and `requirements.txt` names the packages, so the
+environment is rebuildable rather than whatever a machine's `PATH` happened to offer. The task
+refuses if the pinned version is not installed rather than falling back to another one --- a
+fallback would rebuild the environment the pin exists to fix. `uv python install 3.13.15` is
+how to get it.
+
+Everything this repository runs in Python imports only the standard library, with one
+exception: the deck's renderer, `python-pptx`. That is why the venv exists at all, and why
+`requirements.txt` is four lines.
+
+Every Rust call site --- the mutation audit, the SDK examples, the TLS binding test, the parity
+soak --- resolves the interpreter through one rule: `SANKHYA_PYTHON` if it is set, then
+`.venv/bin/python` if it is there, then `python3`. It does not refuse when the venv is absent,
+because a test that will not run on a stranger's machine reports nothing on the machine most
+likely to be a stranger's.
+
 The linker is `rust-lld`, configured in `.cargo/config.toml`. It ships inside the toolchain
 directory, so nothing has to be installed and `rust-toolchain.toml` pins it along with the
 compiler — which matters more than the speed does, because a linker installed separately is a

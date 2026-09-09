@@ -159,6 +159,11 @@ load-bearing for the static half. Know its limits before treating a green gate a
 
 ## 6. Setting up
 
+- Python is pinned to **3.13.15**. `cargo run -p xtask -- venv` builds `.venv` from
+  `.python-version` and `requirements.txt`; the SDK examples, the parity soak and the TLS
+  binding test all run through it when it exists. Without it they fall back to `python3`, which
+  works --- everything but the deck's renderer is standard library --- but is not the pinned
+  environment.
 - Port **5433**, not 5432. `sdk/python/examples/README.md` says 5432 and is wrong.
 - `SANKHYA_CONFIG` must be set explicitly. If it is unset the server looks for
   `config/application.yaml` relative to its working directory and **silently continues** if it
