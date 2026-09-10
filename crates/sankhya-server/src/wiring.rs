@@ -396,7 +396,7 @@ pub const CUBOID_ROW_BUDGET: u64 = 10_000_000;
 /// whether it mentions a cube function and once to run it --- and a false positive here costs
 /// a cache lookup while a false negative costs a query that cannot resolve a cube it named.
 fn mentions_a_cube_function(sql: &str) -> bool {
-    sql.contains("cube_rollup") || sql.contains("cube_slice")
+    sql.contains("cube_rollup") || sql.contains("cube_slice") || sql.contains("cube_consolidate")
 }
 
 /// The finest grain this statement needs from a cube.
@@ -424,7 +424,15 @@ fn mentions_a_cube_function(sql: &str) -> bool {
 /// coarser cuboid is passed over and a finer one used, which costs a scan and not an answer.
 fn grain_needed(sql: &str) -> Vec<String> {
     let mut wanted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for (option, take_dimension) in [("by=", false), ("where=", true)] {
+    // `along=` counts, and for the reason `where=` does rather than the reason `by=` does.
+    //
+    // A consolidation replaces each member of one dimension with its parent, so that dimension
+    // has to still **be there** --- and it does not appear in `by=`, because a consolidation
+    // keeps every axis rather than naming the ones it keeps. Left out, a cuboid that had
+    // already rolled `region` away would be judged able to answer `along=region`, and the
+    // consolidation would find no axis to walk. That is the same shape as the dice defect:
+    // an option whose dimension never reaches the grain calculation.
+    for (option, take_dimension) in [("by=", false), ("where=", true), ("along=", false)] {
         let mut rest = sql;
         while let Some(at) = rest.find(option) {
             let after = &rest[at + option.len()..];

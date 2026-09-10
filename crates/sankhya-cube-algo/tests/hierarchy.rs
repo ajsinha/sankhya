@@ -216,3 +216,20 @@ fn roots_and_leaves_are_what_they_sound_like() {
         ["cc_a", "cc_b", "cc_shared"].into_iter().collect()
     );
 }
+
+#[test]
+fn a_shared_member_reports_every_parent_it_rolls_into() {
+    // Plural on purpose. A consolidation that can carry only one parent has to be able to see
+    // that a member has two, or it silently adds that member's facts under both and
+    // double-counts it in any total spanning them.
+    let mut h = Hierarchy::new();
+    h.rolls_up("north", "west");
+    h.rolls_up("north", "coastal");
+    h.rolls_up("south", "west");
+
+    let shared: Vec<&str> = h.parents_of("north").into_iter().collect();
+    assert_eq!(shared, vec!["coastal", "west"], "both parents, in a stable order");
+    assert_eq!(h.parents_of("south").len(), 1, "and one where there is one");
+    assert!(h.parents_of("west").is_empty(), "a root rolls into nothing");
+    assert!(h.parents_of("nowhere").is_empty(), "and an unknown member is not an error");
+}

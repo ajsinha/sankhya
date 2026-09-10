@@ -29,7 +29,7 @@ use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::Expr;
 use sankhya_cube::cells::Cells;
 use sankhya_cube::complete::{Assessed, Completeness, Threshold};
-use sankhya_cube::navigate::{dice, roll_up, slice, Ordered};
+use sankhya_cube::navigate::{consolidate_along, dice, roll_up, slice, Ordered};
 use sankhya_cube::overlay::{Allocation, Applied};
 use sankhya_cube_algo::measure::{Along, Measure, Rule};
 use std::sync::Arc;
@@ -57,7 +57,157 @@ pub fn register(
         "cube_rollup",
         Arc::new(RollUp(Arc::clone(&catalog), Arc::clone(&log), supplied.clone())),
     );
+    context.register_udtf(
+        "cube_consolidate",
+        Arc::new(Consolidate(Arc::clone(&catalog), Arc::clone(&log), supplied.clone())),
+    );
     context.register_udtf("cube_slice", Arc::new(Slice(catalog, log, supplied)));
+}
+
+/// One consolidation step along a declared hierarchy: every member replaced by its parent.
+///
+/// # Why the hierarchy had to become reachable before anything else about it
+///
+/// `Dimension::rollups` was parsed, validated for cycles, and fed into the definition
+/// fingerprint --- and then read by nothing but `describe`, which reports `parent_child: true`
+/// to clients. A cube declaring `world -> emea -> fr` answered only at leaf grain, so a client
+/// that built a drill-down control from `cube_dimensions` got a control the engine could not
+/// serve. `FEA-04` called that *"declared, validated, and ignored"*, and it was the sharpest
+/// thing the 2026-09-07 review said about the differentiator.
+///
+/// The algebra was never the missing part. `Hierarchy` validates and walks, `consolidate`
+/// returns a **set** so a member reached two ways counts once, and `consolidate_along` reduces
+/// along the dimension rather than along the alphabet. What was missing was a way to call it.
+///
+/// # What this refuses, and why refusing is the feature
+///
+/// A **shared member** --- one that rolls up into two parents --- is refused by name.
+/// `consolidate_along` carries one parent per member, so consolidating a shared member would
+/// add its facts under both, and any total spanning both parents would count it twice. That is
+/// a wrong number of exactly the shape this system is arranged against: plausible, unlabelled,
+/// and found in a reconciliation months later. The set-valued walk that handles it correctly
+/// is `consolidate`, and using it here is `M22b`.
+///
+/// A **positional rule** without a stated order is refused by `consolidate_along` itself, and
+/// deliberately not second-guessed here: `LAST ALONG period` over `oct, nov, dec` reduced in
+/// map order closes the quarter on October. The caller states `order=` or gets a refusal
+/// naming the measure and the dimension.
+struct Consolidate(Arc<CubeCatalog>, Arc<sankhya_cube::querylog::QueryLog>, Option<Supplied>);
+
+impl std::fmt::Debug for Consolidate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Consolidate").field("supplied", &self.2.is_some()).finish()
+    }
+}
+
+impl TableFunctionImpl for Consolidate {
+    fn call(&self, exprs: &[Expr]) -> Result<Arc<dyn TableProvider>> {
+        let args = Arguments::parse(exprs, 2)?;
+        let published = cube_of(&self.0, &args)?;
+        let measure = measure_of(&published, &args)?;
+
+        let applied = overlaid(&self.0, &published, &args)?;
+        let overlay = applied.overlay().map(str::to_string);
+        let narrowed = narrowed(applied.regardless(), &args)?;
+
+        let completeness = published.completeness;
+        check_completeness(&completeness, &args)?;
+
+        let consolidated = consolidated(&narrowed, &published.cube, &measure, &args)?;
+        check_materialise(&args)?;
+        let materialised = published.from_cuboid;
+        batch(
+            &published,
+            &consolidated,
+            &measure,
+            overlay.as_deref(),
+            &completeness,
+            materialised,
+            self.2.as_ref(),
+        )
+    }
+}
+
+/// Consolidate one dimension's members into their declared parents.
+fn consolidated(
+    cells: &Cells,
+    cube: &sankhya_cube::model::Cube,
+    measure: &Measure,
+    args: &Arguments,
+) -> Result<Cells> {
+    let asked = args.list("along");
+    let [wanted] = asked.as_slice() else {
+        return plan_err!(
+            "`cube_consolidate` takes exactly one dimension in its 'along' option, and this \
+             names {}. One step, one axis: consolidating two at once has an order, and an \
+             order nobody stated is one this would have to invent",
+            asked.len()
+        );
+    };
+
+    // Resolved against the cells case-insensitively, as `by` is.
+    let available = cells.dimensions();
+    let Some(dimension) = available
+        .iter()
+        .find(|held| held.eq_ignore_ascii_case(wanted))
+        .cloned()
+    else {
+        return plan_err!(
+            "cube has no dimension `{wanted}`, named in the 'along' option. It has {available:?}"
+        );
+    };
+
+    let Some(declared) = cube
+        .dimensions()
+        .iter()
+        .find(|d| d.name.eq_ignore_ascii_case(&dimension))
+    else {
+        return plan_err!("the cube's definition has no dimension `{dimension}`");
+    };
+    let Some(hierarchy) = declared.rollups.as_ref() else {
+        return plan_err!(
+            "no hierarchy is declared for `{dimension}`, so there is nothing to consolidate \
+             into. Declare one with `ROLLUP` on the dimension --- a consolidation invented \
+             from the data would be this system choosing a shape nobody wrote down"
+        );
+    };
+
+    // A member with two parents cannot be carried by a single-parent walk.
+    //
+    // Checked before anything is moved, and named in full: a caller told only that the
+    // hierarchy is non-strict has to go and find which member, and the definition may hold
+    // thousands.
+    for member in hierarchy.members() {
+        let parents = hierarchy.parents_of(member);
+        if parents.len() > 1 {
+            let named: Vec<&str> = parents.into_iter().collect();
+            return plan_err!(
+                "`{member}` rolls up into {named:?}, and `cube_consolidate` carries one parent \
+                 per member --- so consolidating it would add its facts under both, and any \
+                 total spanning them would count it twice. Refused rather than counted twice: \
+                 a shared member needs the set-valued walk, which is not this function"
+            );
+        }
+    }
+
+    let parents = |member: &str| {
+        hierarchy
+            .parents_of(member)
+            .into_iter()
+            .next()
+            .map(ToOwned::to_owned)
+    };
+
+    let stated = args.list("order");
+    let order: Vec<&str> = stated.iter().map(String::as_str).collect();
+    let ordered = if order.is_empty() {
+        Ordered::Unstated
+    } else {
+        Ordered::By(&order)
+    };
+
+    consolidate_along(cells, &dimension, &parents, measure, ordered)
+        .map_err(|refused| plan_datafusion_err!("{refused}"))
 }
 
 /// Record the shape a query asked for, so selection has something to read.

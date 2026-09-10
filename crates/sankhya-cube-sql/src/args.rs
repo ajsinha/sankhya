@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 /// total labelled as a breakdown, and nobody reviewing the SQL would catch it.
 const KNOWN_OPTIONS: &[&str] = &[
     "by",
+    "along",
     "where",
     "order",
     "overlay",
