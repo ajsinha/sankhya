@@ -76,7 +76,6 @@ Ten crates are on it, and they are the honest shape of what is designed rather t
 | `sankhya-api-rest` | The route table and the size decision are built and tested; serving them needs an HTTP listener, HTTP authentication and a pre-materialisation row estimate |
 | `sankhya-mv` | Undecided by [ADR-0014](adr/0014-materialized-views-and-the-cube-lifetime.md); listed rather than deleted because the design question is open |
 | `sankhya-pack` | M4's remainder — the declarative pack tier is built; the loader that reads a bundle directory into a running process was never finished |
-| `sankhya-ports` | Decided: **delete.** Nothing implements a single trait in it, and its header asserts a property the workspace does not have |
 | `sankhya-datagen`, `sankhya-testkit` | Reached only from dev-dependencies, which the traversal ignores on purpose — a *surface* reachable only from a test is the defect; a generator of test data is not one |
 
 ### 2.2 `UNREACHABLE` and `MAPPED_BUT_UNREACHABLE` — codes nothing produces, and codes no query reaches

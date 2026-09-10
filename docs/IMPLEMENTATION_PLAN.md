@@ -646,7 +646,6 @@ scale rather than function scale, and one gate away from being impossible.
 | `sankhya-pack` | 1,438 | The whole declarative pack tier: TOML bundles, an expression parser, validation, hot reload. No server depends on it, so a bundle cannot be loaded. The reference packs use `sankhya-ext`, the *compiled* API — the two are not duplicates, and only one is wired |
 | `sankhya-api-rest` | 416 | A REST surface nothing depends on |
 | `sankhya-cdc-pg` | 368 | A PostgreSQL capture source nothing depends on |
-| `sankhya-ports` | 222 | Port traits nothing implements or calls |
 | `sankhya-alloc` | 165 | A counting `GlobalAlloc` **never installed** — no `#[global_allocator]` anywhere, so every allocation figure it exists to provide is unavailable |
 
 **Ten crates hold one line of source each** — a doc comment and nothing else:
@@ -686,8 +685,9 @@ that cannot be decided yet.
    extension API as dead code.
 2. **Wired or decided, one per stranded crate, recorded.** `sankhya-alloc` is now the server's
    global allocator and emits `sankhya_memory_in_use_bytes` and `sankhya_memory_peak_bytes`.
-   `sankhya-ports` is decided: **delete** — nothing implements a trait in it and its header
-   asserts a property the workspace does not have. The other three are not M8's work and say
+   The port-trait crate was decided **delete** — nothing implemented a trait in it and its
+   header asserted a property the workspace does not have — and was removed on 2026-09-09.
+   The other three are not M8's work and say
    so: `sankhya-pack` is **M4 §8.6's** loader, `sankhya-cdc-pg` is **M2's** slot-lifecycle
    driver, and `sankhya-api-rest` is **M8 §12.2** beside the rest of criterion 7.
 3. **The empty crates were adopted or deleted**, above.

@@ -27,7 +27,6 @@ const DECLARATIVE: &[(&str, &str)] = &[
     ("sankhya-cli", "a binary that forwards to the server crate; it decides nothing"),
     ("sankhya-mv", "a placeholder for materialised views; the logic is in sankhya-cube"),
     ("sankhya-objectstore", "a re-export of the object-store types the workspace pins"),
-    ("sankhya-ports", "trait definitions; every implementation lives elsewhere"),
 ];
 
 /// Every crate the mutation catalogue names.

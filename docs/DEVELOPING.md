@@ -80,7 +80,7 @@ maintained here.
 
 | Layer | Crates |
 |---|---|
-| 0 | `sankhya-accept`, `sankhya-alloc`, `sankhya-atomicfs`, `sankhya-cdc-model`, `sankhya-error`, `sankhya-leases`, `sankhya-ports`, `sankhya-sandbox`, `sankhya-schema`, `sankhya-types`, `sankhya-version` |
+| 0 | `sankhya-accept`, `sankhya-alloc`, `sankhya-atomicfs`, `sankhya-cdc-model`, `sankhya-error`, `sankhya-leases`, `sankhya-sandbox`, `sankhya-schema`, `sankhya-types`, `sankhya-version` |
 | 1 | `sankhya-cdc-apply`, `sankhya-config`, `sankhya-credential`, `sankhya-cube-algo`, `sankhya-governor`, `sankhya-graph-algo`, `sankhya-math`, `sankhya-metrics`, `sankhya-plan`, `sankhya-stats`, `sankhya-testkit`, `sankhya-tls`, `sankhya-udf` |
 | 2 | `sankhya-audit`, `sankhya-authz`, `sankhya-catalog`, `sankhya-cdc-pg`, `sankhya-clone`, `sankhya-objectstore`, `sankhya-oltp-pg`, `sankhya-readpath`, `sankhya-session`, `sankhya-snapshot`, `sankhya-table`, `sankhya-table-delta`, `sankhya-table-memory` |
 | 3 | `sankhya-backup`, `sankhya-cube`, `sankhya-datagen`, `sankhya-diagnostic`, `sankhya-feed`, `sankhya-functions`, `sankhya-graph`, `sankhya-ingest`, `sankhya-maintenance`, `sankhya-mv`, `sankhya-olap`, `sankhya-publish`, `sankhya-tiering` |
@@ -158,8 +158,8 @@ one and not the other.
 
 ## 7. Where things are
 
-- `crates/` — 60 crates. `sankhya-server` is the composition root; `sankhya-types`,
-  `sankhya-error` and `sankhya-ports` are the bottom.
+- `crates/` — 59 crates. `sankhya-server` is the composition root; `sankhya-types` and
+  `sankhya-error` are the bottom.
 - `packs/` — reference extension packs.
 - `xtask/` — the gates.
 - `tools/` — the mutation catalogue, the logo generator, the deck generator.

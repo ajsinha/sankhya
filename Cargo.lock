@@ -4064,15 +4064,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sankhya-ports"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "sankhya-error",
- "sankhya-types",
-]
-
-[[package]]
 name = "sankhya-publish"
 version = "0.1.0"
 dependencies = [

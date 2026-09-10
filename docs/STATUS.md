@@ -132,7 +132,7 @@ door. They are listed separately from §1 because the work remaining is *wiring*
 - **The catalog.** The table provider resolves mutable tables correctly, and nothing maps a table *name* to a provider — the caller still assembles the two.
 - **Per-tenant graph epochs and envelope encryption.** Built and tested; no path through the front door.
 - **`sankhya-mv`** — materialized views, left undecided by [ADR-0014](adr/0014-materialized-views-and-the-cube-lifetime.md) and listed rather than deleted because the design question is open.
-- **`sankhya-ports`** — decided in M8 §12.1f: **delete**. Its own header asserts a property the workspace does not have, which is worse than an empty crate. It survives only because the deletion needs an owner's hand.
+- **The port-trait crate** — decided in M8 §12.1f as **delete**, and deleted on 2026-09-09. Its own header asserted a property the workspace does not have, which is worse than an empty crate. It had survived only because the deletion needed an owner's hand.
 
 ### 3. Storage, format and read path
 
@@ -628,10 +628,10 @@ about a test binary, and better than a zero that reads like a measurement.
 The other four are decisions rather than code, and the distinction matters: two of them are
 **not M8's work**, and recording them as M8 decisions is how they would have stayed lost.
 
-- **`sankhya-ports` --- delete.** Nothing implements a single trait in it, and its own header
-  claims `Clock` and `IdGen` are injected everywhere and enforced by lint, neither of which is
-  true. A crate whose documentation asserts a property the workspace does not have is worse
-  than an empty one.
+- **The port-trait crate --- delete, and deleted 2026-09-09.** Nothing implemented a single
+  trait in it, and its own header claimed `Clock` and `IdGen` were injected everywhere and
+  enforced by lint, neither of which was true. A crate whose documentation asserts a property
+  the workspace does not have is worse than an empty one.
 - **`sankhya-pack` --- M4 §8.6.** The declarative tier is a *planned* tier, and `ARCHITECTURE`
   expects it to express the substantial majority of a real pack. It is built; the loader that
   reads a bundle directory into a running server is what was never finished. That is M4's
