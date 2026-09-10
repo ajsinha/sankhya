@@ -42,3 +42,10 @@ libc = { workspace = true }
 # A dependency rather than a dev-dependency: the jail's root is a temporary directory the
 # parent owns and the child pivots onto, so it is part of the mechanism and not of its tests.
 tempfile = { workspace = true }
+
+[dev-dependencies]
+# For `python_interpreter`, which resolves the version `.python-version` pins rather than
+# assuming `/usr/bin/python3`. A dev-dependency: the boundary itself takes the interpreter as
+# an argument and has no opinion about which one, which is the right shape --- it is the tests
+# that need to name one.
+sankhya-testkit = { path = "../sankhya-testkit" }

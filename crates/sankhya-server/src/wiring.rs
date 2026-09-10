@@ -125,6 +125,20 @@ pub struct Settings {
     /// A switch rather than silence, so an operator who wants user functions turns them on and
     /// knows they did.
     pub user_functions: bool,
+    /// The interpreter a user-supplied aggregation runs behind the boundary.
+    ///
+    /// Configured rather than assumed. This was the constant `/usr/bin/python3` inside
+    /// `worker()`, which is a guess about the machine --- and on a host whose Python is managed
+    /// by `uv` or `pyenv`, or a distribution that moved it, the guess is wrong and the refusal
+    /// names a path nobody chose.
+    ///
+    /// `server.python` sets it, `SANKHYA_PYTHON_INTERPRETER` overrides that, and the default is
+    /// what it always was, so a deployment that says nothing behaves as it did.
+    ///
+    /// It is the **base** interpreter, not a virtual environment's shim: a venv's `python` is a
+    /// stub whose standard library lives under the base prefix, and binding only the stub into
+    /// the jail produces a process with no `encodings` module and an error naming neither.
+    pub python: std::path::PathBuf,
     /// The policy an operator configured, or `None` where they configured none.
     ///
     /// `None` is not "no policy": it is `permissive_policy`, which grants `reader` read on
@@ -643,8 +657,17 @@ impl Server {
     /// is already known.
     pub(crate) fn worker(&self) -> Result<Arc<sankhya_udf::Worker>, sankhya_udf::Refused> {
         let outcome = self.udf_worker.get_or_init(|| {
-            let python = std::path::Path::new("/usr/bin/python3");
-            sankhya_udf::Worker::start(python)
+            // Which interpreter, said rather than assumed.
+            //
+            // This was the constant `/usr/bin/python3`, which is a guess about the machine ---
+            // and on a host whose Python is managed by `uv`, `pyenv` or a distribution that
+            // moved it, the guess is simply wrong and the refusal names a path nobody chose.
+            //
+            // `server.python` is the operator's answer; `SANKHYA_PYTHON_INTERPRETER` is the
+            // one for a shell that is running the tests. The default stays what it was, so a
+            // deployment that never says anything behaves exactly as before.
+            let python = self.settings.python.clone();
+            sankhya_udf::Worker::start(&python)
                 .map(Arc::new)
                 .map_err(|refused| refused.to_string())
         });

@@ -22,7 +22,26 @@ fn vendored() -> Option<Binaries> {
         .parent()?
         .parent()?
         .join(".build/pg-install/bin");
-    Binaries::at(root)
+    let binaries = Binaries::at(root)?;
+    // Present is not the same as runnable, and this test suite is where the difference shows.
+    //
+    // A vendored PostgreSQL is linked against the ICU that was installed when it was built. On
+    // a machine that has since moved from ICU 74 to 78 all four files are still there, so the
+    // presence check passed --- and then `initdb` failed with `libicuuc.so.74: cannot open
+    // shared object file`, four times, as a red suite naming a shared library rather than the
+    // situation. The vendored build is stale, which is an operator's rebuild and not a defect
+    // in this code, and a test suite that cannot tell those apart wastes the time of whoever
+    // reads it.
+    match binaries.usable() {
+        Ok(()) => Some(binaries),
+        Err(why) => {
+            sankhya_testkit::skipped(
+                "supervision",
+                &format!("the vendored PostgreSQL is present and will not run: {why}"),
+            );
+            None
+        }
+    }
 }
 
 /// Report the skip rather than passing quietly.
@@ -31,9 +50,9 @@ macro_rules! binaries_or_skip {
         match vendored() {
             Some(binaries) => binaries,
             None => {
-                eprintln!(
-                    "SKIPPED: the vendored PostgreSQL is not built. \
-                     Run the build step in QUICKSTART.md §2 to exercise this."
+                sankhya_testkit::skipped(
+                    "supervision",
+                    "the vendored PostgreSQL is not built; see QUICKSTART.md §2",
                 );
                 return;
             }

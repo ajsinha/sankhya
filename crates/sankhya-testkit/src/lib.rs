@@ -807,3 +807,61 @@ pub fn python(root: &std::path::Path) -> std::path::PathBuf {
     }
     std::path::PathBuf::from("python3")
 }
+
+/// A **real** Python interpreter, for the sandbox to bind-mount and execute.
+///
+/// # Why this is not [`python`]
+///
+/// [`python`] prefers `.venv/bin/python`, which is correct for running a script: it is where
+/// `python-pptx` lives. It is the wrong answer for the jail. A venv's `python` is a shim whose
+/// real interpreter and standard library sit under the base prefix, so binding only the shim
+/// into the sandbox produces a process with no `encodings` module and an error that names
+/// neither.
+///
+/// This returns the base interpreter instead --- the uv-managed one named in
+/// `.python-version` when it is installed, and `/usr/bin/python3` otherwise. Nothing the jail
+/// runs needs a third-party package: the worker harness is standard library by design, which
+/// is what makes binding one file and one library directory enough.
+///
+/// `SANKHYA_PYTHON_INTERPRETER` overrides it, named separately from `SANKHYA_PYTHON` because
+/// they answer different questions and a machine may need to say different things about them.
+#[must_use]
+pub fn python_interpreter(root: &std::path::Path) -> std::path::PathBuf {
+    if let Ok(named) = std::env::var("SANKHYA_PYTHON_INTERPRETER") {
+        if !named.trim().is_empty() {
+            return std::path::PathBuf::from(named);
+        }
+    }
+    if let Some(pinned) = uv_interpreter(root) {
+        return pinned;
+    }
+    std::path::PathBuf::from("/usr/bin/python3")
+}
+
+/// The uv-managed interpreter matching `.python-version`, if this machine has it.
+///
+/// The directory uv names after a version is confirmed by asking the binary, because a
+/// directory name is a claim and `--version` is the answer.
+fn uv_interpreter(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    let pinned = std::fs::read_to_string(root.join(".python-version")).ok()?;
+    let pinned = pinned.trim();
+    if pinned.is_empty() {
+        return None;
+    }
+    let home = std::env::var("HOME").ok()?;
+    let uv = std::path::Path::new(&home).join(".local/share/uv/python");
+    let entries = std::fs::read_dir(uv).ok()?;
+    for entry in entries.flatten() {
+        let candidate = entry.path().join("bin").join("python3");
+        let reports = std::process::Command::new(&candidate)
+            .arg("--version")
+            .output()
+            .is_ok_and(|out| {
+                String::from_utf8_lossy(&out.stdout).trim() == format!("Python {pinned}")
+            });
+        if reports {
+            return Some(candidate);
+        }
+    }
+    None
+}

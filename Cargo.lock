@@ -4041,6 +4041,7 @@ dependencies = [
 name = "sankhya-oltp-pg"
 version = "0.1.0"
 dependencies = [
+ "sankhya-testkit",
  "tempfile",
 ]
 
@@ -4112,6 +4113,7 @@ name = "sankhya-sandbox"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "sankhya-testkit",
  "tempfile",
 ]
 
@@ -4316,6 +4318,7 @@ version = "0.1.0"
 dependencies = [
  "sankhya-atomicfs",
  "sankhya-sandbox",
+ "sankhya-testkit",
  "tempfile",
 ]
 

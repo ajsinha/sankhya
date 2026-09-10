@@ -141,6 +141,7 @@ fn settings(require_password: bool, warehouse: &std::path::Path) -> Settings {
         maintenance: None,
         require_password,
         user_functions: false,
+        python: std::path::PathBuf::from("/usr/bin/python3"),
         metrics_detail: false,
         policy: None,
         metrics_listen: None,
