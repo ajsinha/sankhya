@@ -1903,6 +1903,97 @@ logic the server does not enforce.
 
 ---
 
+## 13k. M22–M26 — What the fourteen-lens review found absent
+
+**Added 2026-09-09.** The review of 2026-09-07 read this system through fourteen specialist
+lenses and separated two kinds of finding: things that are *wrong*, which
+[`REMEDIATION.md`](REMEDIATION.md) tracks and four waves have now repaired, and things that are
+*absent* while a document, a slide or a `describe` call says otherwise. This section is the
+second kind, sequenced.
+
+The numbering continues from M21. It is deliberately not folded into the milestones above:
+those were planned before the system existed, and these are known from reading the one that
+does.
+
+### M22 — A declared hierarchy drives a roll-up
+
+`FEA-04`. The algebra exists and is proven: `Hierarchy` has `consolidates`, `validate` and
+`children_of`; `consolidate` returns a **set**, so a member reachable two ways is counted once;
+`navigate::consolidate_along` takes exactly the parent function this needs and, since
+2026-09-07, reduces along the dimension rather than along the alphabet.
+
+**None of it is reachable from SQL.** `PARENT` and `ROLLUP` are parsed, validated for cycles,
+fingerprinted — and read by nothing except `describe`, which advertises `parent_child: true` to
+clients. A cube declaring `world → emea → fr` answers only at leaf grain, and a client that
+builds a drill-down control from `cube_dimensions` gets a control the engine cannot serve.
+
+- **22a.** Strict hierarchies. A member with more than one parent is **refused**, not silently
+  consolidated into both — double counting is the failure this whole area exists to avoid, and
+  `Hierarchy::parents` is already plural because shared members are the normal case.
+- **22b.** Non-strict and shared members, through `consolidate`'s set semantics rather than
+  `consolidate_along`'s single-parent function. Depends on M23.
+
+**Exit criteria.** A declared hierarchy consolidates from SQL; a non-strict one is refused with
+a message naming the member and both parents; the refusal has a test that fails without it.
+
+### M23 — The dimension table is opened
+
+Hydration reads member keys from the **fact table's** `joins_on` column
+(`hydrate.rs:99-114`). `Level::column` and `Dimension::table` are never read for data, so
+`DIMENSION region FROM sales.regions ON region (LEVEL area = region)` never opens
+`sales.regions`. There is therefore no referential check either: a fact-table key absent from
+the dimension table becomes a member anyway.
+
+This is what makes ragged and alternate hierarchies expressible, which is why M22b depends on
+it and M22a does not.
+
+### M24 — Pruning, and statistics for the types a warehouse filters on
+
+`table/stats.rs` records bounds for `Int16/32/64`, `UInt64`, `Float32/64` and `Utf8`, and for
+nothing else — no `Date32`, no `Timestamp`, no `Decimal128`. A date-filtered query therefore
+prunes nothing, and `provider.rs` returns `new_unknown()` for a whole column when any file
+lacks bounds. Separately, partition values are recorded in the log and **discarded** on the way
+into the scan: `LoggedFile` has no partition field and `table_partition_cols` is never set.
+
+`NFR-PERF-03` is currently reported **Met** for a "multi-dimensional pivot, warm, pruned"
+against a query that cannot satisfy its own precondition. So this is a correctness-of-claims
+milestone as much as a performance one, and its first exit criterion is that the objective
+either measures pruning or stops saying it does.
+
+### M25 — The graph engine answers
+
+`GraphCatalog` is constructed as a **temporary** inside `session_reaching`: the `Arc` is not
+bound, not stored on `Server`, and the function runs per session — so every session gets a
+fresh empty map with no handle by which anything could populate it. `register` and `publish`
+have zero call sites anywhere, tests included, and `sankhya-graph` is not a runtime dependency
+of the server at all.
+
+Every `graph_*` call on every startable server returns *"no graph named '…' is registered;
+known graphs are []"*, under every configuration. One of the three engines in the product's
+name does not run.
+
+The smallest honest step is one graph hydrated from a published table at startup, with the
+catalogue bound to `Server` — not the algorithms, which are built and tested.
+
+### M26 — The write path
+
+The largest, and everything above is independent of it. `INSERT`, `UPDATE`, `DELETE`, `COPY`
+and DDL are refused with `0A000`; the CDC library is built and no runtime drives it;
+merge-on-read is implemented, correct-looking, and constructed by nothing outside its own
+tests.
+
+No estimate is offered here. This is the milestone the product rests on, and a number invented
+for it would be the kind of claim two days of remediation have been spent removing.
+
+### Carried, and not scheduled
+
+Named so they are not mistaken for oversights: the `ReadyForQuery` transaction state,
+`check-writers` and `check-lock-order` (both structurally unable to fail today), Arrow Flight
+parity — no lease pin, no metrics, no audit record — the Kubernetes manifest that mounts no
+configuration, and the storage findings recorded in [`QA-BRIEF.md`](QA-BRIEF.md) §3.
+
+---
+
 ## 14. Parallelisation and critical path
 
 ```

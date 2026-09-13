@@ -3242,8 +3242,18 @@ CATALOGUE = [
 
     ("server: forget that a dice needs the dimension it restricts",
      "crates/sankhya-server/src/wiring.rs",
-     "    for (option, take_dimension) in [(\"by=\", false), (\"where=\", true)] {",
+     "    for (option, take_dimension) in [(\"by=\", false), (\"where=\", true), (\"along=\", false)] {",
      "    for (option, take_dimension) in [(\"by=\", false)] {",
+     "sankhya-server"),
+
+    # The same defect for the option `M22a` added. A consolidation names its dimension in
+    # neither `by=` nor `where=` --- it keeps every axis rather than listing the ones it keeps
+    # --- so dropping it from the grain lets a cuboid that has already rolled that dimension
+    # away be judged able to answer, and the walk then finds no axis.
+    ("server: forget that a consolidation needs the dimension it walks",
+     "crates/sankhya-server/src/wiring.rs",
+     "    for (option, take_dimension) in [(\"by=\", false), (\"where=\", true), (\"along=\", false)] {",
+     "    for (option, take_dimension) in [(\"by=\", false), (\"where=\", true)] {",
      "sankhya-server"),
 
     ("server: read a cuboid at the cube's grain rather than the one its key names",
@@ -3270,17 +3280,20 @@ CATALOGUE = [
      "                        CUBOID_ROW_BUDGET,",
      "sankhya-server"),
 
-    # Two sites, deliberately. `cube_slice` used to pass a literal `false` here while
-    # `cube_rollup` reported what happened; making the slice honest gave this entry a second
-    # site, and both are pinned --- by `cube_queries.rs`'s roll-up assertions and by
-    # `a_dice_is_not_answered_from_a_cuboid_that_rolled_its_dimension_away`, which now asserts
-    # the column rather than comparing a constant against itself.
+    # Three sites now, and every one of them pinned. `cube_slice` used to pass a literal
+    # `false` here while `cube_rollup` reported what happened; making the slice honest gave
+    # this entry a second site, and `cube_consolidate` (M22a) a third. A navigation that
+    # reports provenance is a navigation that can report it wrongly, so each is covered:
+    # the roll-up assertions, `a_dice_is_not_answered_from_a_cuboid_that_rolled_its_dimension_away`
+    # --- which now asserts the column rather than comparing a constant against itself --- and
+    # `a_consolidation_says_whether_it_was_served_from_a_cuboid`, which is served from a real
+    # cuboid so that `false` is a wrong answer rather than an accidentally right one.
     ("cube-sql: report the caller's materialise argument instead of what happened",
      "crates/sankhya-cube-sql/src/functions.rs",
      "        let materialised = published.from_cuboid;",
      "        let materialised = false;",
      "sankhya-server",
-     2),
+     3),
 
     ("server: serve the unrestricted cuboid to a caller whose policy withholds rows",
      "crates/sankhya-server/src/wiring.rs",

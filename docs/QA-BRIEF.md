@@ -87,9 +87,12 @@ will reproduce them; that is expected.
   valid, well-formed, **zero-row** table.
 
 **Correctness**
-- Cube hierarchies are declared, validated and **ignored**. `LEVEL` reaches the query path;
-  `PARENT` and `ROLLUP` do not. There is no dimension-table join — member keys come from the
-  fact table.
+- Cube hierarchies are **half wired**, as of 2026-09-09. `cube_consolidate(cube, measure,
+  'along=<dimension>')` walks a declared `ROLLUP`, and a member that rolls up two ways is
+  refused by name rather than counted under both parents. What is still absent: the
+  **dimension-table join** — member keys come from the fact table, so `DIMENSION region FROM
+  sales.regions` never opens `sales.regions` and nothing checks referential integrity — and
+  therefore shared and ragged hierarchies, which need it. `LEVEL` still does not navigate.
 - A row with a NULL key on **any** dimension is excluded from **every** cell, so a cube's
   breakdown along one dimension can silently omit rows because a different dimension was null.
   The `completeness` column is the only signal.

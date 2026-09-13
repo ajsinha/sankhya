@@ -1765,6 +1765,38 @@ async fn a_declared_hierarchy_consolidates_its_members_into_their_parent() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_consolidation_says_whether_it_was_served_from_a_cuboid() {
+    // **What happened, not a constant.** `cube_slice` shipped this column as a literal `false`
+    // and the test that should have caught it compared that constant against itself; making it
+    // honest is what exposed the assertion. A third navigation is a third chance to repeat the
+    // same defect, so it is pinned here rather than left to be noticed later.
+    let dir = warehouse_with_a_fact_table();
+    catalogue::save(
+        dir.path(),
+        &sales_rolling_up(&[("north", "west"), ("south", "west")]).maintained_within(5),
+    )
+    .expect("a maintained cube with a hierarchy");
+
+    let server = server_over(&dir, policy("reader", None));
+    server.refresh_maintained_cubes();
+    connect(&server, "ana");
+
+    let consolidated = server
+        .query(
+            "SELECT * FROM cube_consolidate('sales', 'amount', 'along=region')",
+            &Caller::new(&anyone()),
+        )
+        .expect("the cube answers");
+
+    let said = first_column(&consolidated, "materialised");
+    assert!(!said.is_empty(), "the result carries a provenance column");
+    assert!(
+        said.iter().all(|value| value == "t"),
+        "the base cuboid was built and can express this, so the column must say so: {said:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_that_rolls_up_two_ways_is_refused_by_name() {
     // A shared member is the normal case in a real chart of accounts, and it is exactly what a
     // single-parent walk cannot carry: adding its facts under both parents double-counts it in

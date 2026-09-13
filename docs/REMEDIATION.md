@@ -1508,7 +1508,8 @@ is no write path from SQL; there is no change-capture runtime, so the CDC crate 
 client dependency and cannot open a connection; the graph is registered against a freshly
 constructed empty catalogue on every session and can never answer; the pack loader is not wired,
 and the two "flagship packs" the README described never existed — `packs/` holds telemetry,
-logistics and an adversarial fixture. Cube hierarchies are validated and ignored.
+logistics and an adversarial fixture. Cube hierarchies were validated and ignored; `M22a`
+closed the strict half on 2026-09-09 and `IMPLEMENTATION_PLAN.md` §13k sequences the rest.
 
 ### The adversarial review
 
