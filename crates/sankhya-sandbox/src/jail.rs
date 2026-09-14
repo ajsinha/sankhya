@@ -521,6 +521,52 @@ unsafe fn establish(plan: &Blueprint) -> Result<(), (Step, i32)> {
     // 8. The allowed tree, read-only. Two calls: a bind cannot be made read-only in the same
     //    `mount` that creates it, and a bind that is only *created* is as writable as its
     //    source.
+    //
+    // # Why neither call is recursive, and why that is stronger rather than weaker
+    //
+    // Both carried `MS_REC` until 2026-09-13, and on the remount it was never anything but a
+    // no-op: `MS_REC` composes with `MS_BIND` to make a bind recursive, and there is no such
+    // thing as a recursive *remount*. Older kernels ignored the flag. This machine's 7.0
+    // validates the combination and returns `EPERM` --- so the boundary stopped being enterable
+    // at all, with an error naming a shared errno and no step, four tests red and the user
+    // aggregation path unreachable. The mechanism had not changed; the kernel had stopped
+    // accepting a flag that never did anything.
+    //
+    // Removing it from the remount alone would leave the thing the flag *looked* like it was
+    // doing still undone: a recursive bind copies the source's submounts, the remount makes
+    // only the top mount read-only, and every submount stays as writable as its source. That
+    // gap existed on every kernel this has ever run on, hidden behind a flag that read as
+    // though it closed it.
+    //
+    // So the bind is not recursive either, and the guarantee becomes true instead of apparent:
+    // one mount in, one mount made read-only, nothing underneath it to be missed. A bound path
+    // whose content lives on a submount now presents the top filesystem only --- the function
+    // sees a missing file and fails saying so, rather than quietly reading through a writable
+    // mount nobody intended to grant. For a boundary, absent and loud beats present and
+    // unnoticed.
+    //
+    // Making a subtree read-only for real needs `mount_setattr(2)` with `AT_RECURSIVE`, which
+    // is a syscall this file does not make and a change with its own reasoning to write.
+    //
+    // # Why `MS_NOSUID | MS_NODEV` is on the remount and not only on the tmpfs
+    //
+    // Because the kernel will not let them be dropped, and a remount states the **whole** flag
+    // set rather than adding to it. A mount inherited from outside the user namespace carries
+    // its flags *locked*: `/tmp` on this machine is `nosuid,nodev`, so a bind of anything under
+    // it is locked `nosuid,nodev` too, and asking for `MS_RDONLY` alone is asking to clear both.
+    // The kernel answers `EPERM`, which is how this read as "the sandbox could not be entered"
+    // --- a message about the boundary for what was really a flag arithmetic error.
+    //
+    // `util-linux` gets this right by reading the mount's current flags out of
+    // `/proc/self/mountinfo` and re-applying them, which is why `mount -o remount,bind,ro`
+    // succeeds by hand where this failed. That is not available here: this runs after `fork`
+    // in a child that may not allocate.
+    //
+    // Naming them unconditionally is the better answer anyway. They are what the jail's own
+    // tmpfs already asks for, they are what a boundary wants of every mount in it, and adding a
+    // flag is always permitted --- it is only removing one that is refused. A source mount
+    // carrying a locked flag beyond these two would still refuse, and would deserve to: this
+    // jail has no business making a `noexec` tree executable.
     for (source, destination) in &plan.binds {
         if unsafe {
             libc::mount(
@@ -539,7 +585,11 @@ unsafe fn establish(plan: &Blueprint) -> Result<(), (Step, i32)> {
                 std::ptr::null(),
                 destination.as_ptr(),
                 std::ptr::null(),
-                libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_REC,
+                libc::MS_BIND
+                    | libc::MS_REMOUNT
+                    | libc::MS_RDONLY
+                    | libc::MS_NOSUID
+                    | libc::MS_NODEV,
                 std::ptr::null(),
             )
         } != 0

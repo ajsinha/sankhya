@@ -59,7 +59,7 @@ pub fn register(
     );
     context.register_udtf(
         "cube_consolidate",
-        Arc::new(Consolidate(Arc::clone(&catalog), Arc::clone(&log), supplied.clone())),
+        Arc::new(Consolidate(Arc::clone(&catalog), supplied.clone())),
     );
     context.register_udtf("cube_slice", Arc::new(Slice(catalog, log, supplied)));
 }
@@ -92,11 +92,20 @@ pub fn register(
 /// deliberately not second-guessed here: `LAST ALONG period` over `oct, nov, dec` reduced in
 /// map order closes the quarter on October. The caller states `order=` or gets a refusal
 /// naming the measure and the dimension.
-struct Consolidate(Arc<CubeCatalog>, Arc<sankhya_cube::querylog::QueryLog>, Option<Supplied>);
+///
+/// # Why it does not hold the query log
+///
+/// `RollUp` records the shape it was asked for, so cuboid selection has something to read. A
+/// consolidation has no shape to record: it keeps every axis rather than naming the ones it
+/// keeps, so `by` is empty --- and `note_the_shape` would file that as the **empty** cuboid,
+/// the coarsest in the lattice, telling selection that a query wanted a grand total when it
+/// wanted the base grain. A log entry that is wrong is worse than one that is absent, because
+/// selection acts on it.
+struct Consolidate(Arc<CubeCatalog>, Option<Supplied>);
 
 impl std::fmt::Debug for Consolidate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Consolidate").field("supplied", &self.2.is_some()).finish()
+        f.debug_struct("Consolidate").field("supplied", &self.1.is_some()).finish()
     }
 }
 
@@ -123,7 +132,7 @@ impl TableFunctionImpl for Consolidate {
             overlay.as_deref(),
             &completeness,
             materialised,
-            self.2.as_ref(),
+            self.1.as_ref(),
         )
     }
 }

@@ -6323,8 +6323,20 @@ CATALOGUE = [
 
     ("sandbox: bind the allowed tree writable rather than read-only",
      "crates/sankhya-sandbox/src/jail.rs",
-     "                libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_REC,",
-     "                libc::MS_BIND | libc::MS_REMOUNT | libc::MS_REC,",
+     "                libc::MS_BIND\n                    | libc::MS_REMOUNT\n                    | libc::MS_RDONLY\n                    | libc::MS_NOSUID\n                    | libc::MS_NODEV,",
+     "                libc::MS_BIND | libc::MS_REMOUNT | libc::MS_NOSUID | libc::MS_NODEV,",
+     "sankhya-sandbox"),
+
+    # The flags the kernel will not let a remount drop, which is why they are named at all.
+    # `/tmp` is `nosuid,nodev` on a modern desktop, those flags are locked for a mount inherited
+    # into a user namespace, and a remount states the whole set rather than adding to it --- so
+    # asking for `MS_RDONLY` alone is asking to clear both, and the answer is `EPERM`. Dropping
+    # them does not make the jail writable; it makes the jail unenterable, which is a failure
+    # that reads as "this machine cannot host the boundary".
+    ("sandbox: drop the mount flags a user namespace will not let a remount clear",
+     "crates/sankhya-sandbox/src/jail.rs",
+     "                    | libc::MS_RDONLY\n                    | libc::MS_NOSUID\n                    | libc::MS_NODEV,",
+     "                    | libc::MS_RDONLY,",
      "sankhya-sandbox"),
 
     ("sandbox: let a function that never returns keep running",

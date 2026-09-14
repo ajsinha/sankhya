@@ -245,6 +245,8 @@ pub fn elsewhere() -> Vec<Entry> {
             "A cube's measures and how each composes along each dimension"),
         Entry::new("cube_rollup", "cube", 2, Takes::Numbers, Gives::Number,
             "Aggregate a dimension away, reporting completeness and what was withheld"),
+        Entry::new("cube_consolidate", "cube", 3, Takes::Numbers, Gives::Number,
+            "Replace each member of one dimension with its parent, along a declared hierarchy"),
         Entry::new("cube_slice", "cube", 3, Takes::Numbers, Gives::Number,
             "Fix one member and look at the rest of a cube"),
         Entry::new("cubes", "cube", 1, Takes::Numbers, Gives::Number,

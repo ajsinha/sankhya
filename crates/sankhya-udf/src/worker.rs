@@ -345,6 +345,26 @@ pub fn interpreter_needs(python: &Path) -> Vec<PathBuf> {
     // The interpreter itself, **as a file**. Pushing its parent is what admitted `/usr/bin`.
     out.push(python.to_path_buf());
 
+    // And its prefix, when the interpreter lives outside the system tree.
+    //
+    // Python finds its standard library by walking up from `sys.executable` looking for a
+    // landmark, so the *layout* has to survive the jail and not merely the directories. The
+    // `sysconfig` answer above names `lib/python3.13` and friends, which is enough for a
+    // `/usr/bin/python3` whose prefix is `/usr` --- already readable for the dynamic linker's
+    // sake --- and not enough for an interpreter under `~/.local`, where nothing else in the
+    // list covers the prefix. That interpreter started and then said
+    // `Could not find platform independent libraries <prefix>`, which reads like a broken
+    // sandbox and is a missing bind.
+    //
+    // Guarded on being outside `/usr`: the common case is already covered by the linker
+    // directories, and granting a whole prefix that is `/usr` would hand the jail the system
+    // tree it exists to keep out.
+    if let Some(prefix) = python.parent().and_then(Path::parent) {
+        if !prefix.starts_with("/usr") && prefix.is_dir() {
+            out.push(prefix.to_path_buf());
+        }
+    }
+
     out.sort();
     out.dedup();
     // Last, and deliberately last: whatever the interpreter said and whatever the linker

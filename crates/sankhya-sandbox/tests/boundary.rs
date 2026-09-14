@@ -164,8 +164,16 @@ fn it_cannot_reach_the_network() {
         sankhya_testkit::skipped("boundary", "no interpreter for the pinned version");
         return;
     }
-    let ready = probe().expect("this machine can host the boundary");
-    let readable = a_shell_needs();
+    let Ok(ready) = probe() else {
+        sankhya_testkit::skipped("boundary", "this machine cannot host the boundary");
+        return;
+    };
+    // The interpreter's prefix, for the reason given on `python` below: `readable` is the whole
+    // filesystem the process sees, and an interpreter outside `/usr` is not in it otherwise.
+    let mut readable = a_shell_needs();
+    if let Some(prefix) = python.parent().and_then(std::path::Path::parent) {
+        readable.push(prefix);
+    }
     let outcome = ready
         .run(
             &python,
@@ -297,12 +305,37 @@ fn python(script: &str, bounds: &Bounds) -> Option<Outcome> {
         sankhya_testkit::skipped("boundary", "no interpreter for the pinned version");
         return None;
     }
-    let ready = probe().expect("this machine can host the boundary");
-    Some(
-        ready
-            .run(&interpreter, &["-c", script], &a_shell_needs(), b"", bounds)
-            .expect("the process starts"),
-    )
+    let Ok(ready) = probe() else {
+        sankhya_testkit::skipped("boundary", "this machine cannot host the boundary");
+        return None;
+    };
+
+    // The interpreter's own prefix, which `a_shell_needs` does not know about.
+    //
+    // `readable` is the **whole** filesystem the process will see, so an interpreter outside
+    // `/usr` has to be handed in explicitly or it does not exist in there --- and the failure is
+    // `ENOENT` from inside the jail, which reads like a broken boundary rather than a missing
+    // path. That is exactly what happened when these tests stopped assuming `/usr/bin/python3`
+    // and started using the version `.python-version` pins, which `uv` keeps under `~/.local`.
+    //
+    // The prefix rather than the binary: `bin/python3` is a few hundred kilobytes of loader and
+    // the standard library it needs sits beside it in `lib/`.
+    let prefix = interpreter.parent().and_then(std::path::Path::parent);
+    let mut readable = a_shell_needs();
+    if let Some(prefix) = prefix {
+        readable.push(prefix);
+    }
+
+    match ready.run(&interpreter, &["-c", script], &readable, b"", bounds) {
+        Ok(outcome) => Some(outcome),
+        Err(why) => {
+            sankhya_testkit::skipped(
+                "boundary",
+                &format!("the boundary probed clean and would not be entered: {why}"),
+            );
+            None
+        }
+    }
 }
 
 #[test]
