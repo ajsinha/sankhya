@@ -325,7 +325,17 @@ pub fn interpreter_needs(python: &Path) -> Vec<PathBuf> {
         "paths=sysconfig.get_paths();",
         "wanted=[paths.get(k) for k in ('stdlib','platstdlib','purelib','platlib')];",
         "wanted+= [p for p in sys.path if p];",
-        "print('\n'.join(p for p in wanted if p and os.path.isdir(p)))"
+        // `\\n`, not `\n`. Rust turns `\n` into an actual newline *here*, which lands inside
+        // Python's quotes and makes the whole program a syntax error --- so this query has
+        // never once run, and `out` has never held a single path `sysconfig` named.
+        //
+        // It went unnoticed because it fails in the direction that still works: the answer is
+        // empty, the hardcoded linker directories below are bound anyway, and a system
+        // interpreter keeps its standard library under `/usr/lib`. The accident held for every
+        // `/usr/bin/python3` and broke the moment an interpreter lived anywhere else, which is
+        // also the moment the doc comment above --- "it names the standard library and the
+        // extension modules directly" --- stopped being merely unverified and became false.
+        "print('\\n'.join(p for p in wanted if p and os.path.isdir(p)))"
     );
     let said = std::process::Command::new(python).args(["-c", asked]).output();
     if let Ok(said) = said {
@@ -359,11 +369,15 @@ pub fn interpreter_needs(python: &Path) -> Vec<PathBuf> {
     // Guarded on being outside `/usr`: the common case is already covered by the linker
     // directories, and granting a whole prefix that is `/usr` would hand the jail the system
     // tree it exists to keep out.
-    if let Some(prefix) = python.parent().and_then(Path::parent) {
-        if !prefix.starts_with("/usr") && prefix.is_dir() {
-            out.push(prefix.to_path_buf());
-        }
-    }
+    // Deliberately **not** the interpreter's prefix.
+    //
+    // Binding it was the first repair attempted when an interpreter under `~/.local` could not
+    // find its standard library, and it worked --- by granting the jail a `bin/` directory
+    // holding `pip`, `pydoc3`, `idle3` and two `-config` shell scripts beside the interpreter.
+    // `there_is_no_shell_in_the_jail` asserts that the interpreter's directory holds the
+    // interpreter *and nothing else*, and it failed, correctly. The symptom was a broken query
+    // above, and the answer to a broken query is to fix it rather than to widen the boundary
+    // until the symptom goes away.
 
     out.sort();
     out.dedup();

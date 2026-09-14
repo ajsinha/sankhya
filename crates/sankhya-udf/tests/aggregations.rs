@@ -355,11 +355,18 @@ fn there_is_no_shell_in_the_jail() {
             &interpreter,
             &[
                 "-c",
-                "import os,subprocess\n\
+                // `os.path.dirname(sys.executable)` rather than a hardcoded `/usr/bin`.
+                //
+                // The property is *the interpreter's directory holds the interpreter and
+                // nothing else*, and naming `/usr/bin` asserted it only of an interpreter that
+                // happens to live there. Against one under `~/.local` it read an empty
+                // `/usr/bin` and failed --- which looks like the boundary leaking and is the
+                // test asking about the wrong directory.
+                "import os,subprocess,sys\n\
                  for d in ('/bin','/sbin','/usr/sbin'):\n    \
                  print(d, 'PRESENT' if os.path.isdir(d) else 'ABSENT')\n\
-                 print('HOLDS', sorted(os.listdir('/usr/bin')) if os.path.isdir('/usr/bin') \
-                 else [])\n\
+                 here = os.path.dirname(os.path.realpath(sys.executable))\n\
+                 print('HOLDS', sorted(os.listdir(here)) if os.path.isdir(here) else [])\n\
                  try:\n    subprocess.run(['/bin/sh','-c','echo ESCAPED'],check=True)\n\
                  except Exception as e:\n    print('REFUSED', type(e).__name__)",
             ],
