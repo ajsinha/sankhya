@@ -26,7 +26,7 @@
 )]
 
 use sankhya_cdc_apply::{BatchPolicy, Batcher, Op};
-use sankhya_cdc_model::{Decoder, Message};
+use sankhya_cdc_model::Decoder;
 use std::process::Command;
 
 struct Pg {
