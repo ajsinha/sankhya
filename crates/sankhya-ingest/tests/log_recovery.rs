@@ -369,7 +369,7 @@ fn a_published_file_is_prunable_from_the_moment_it_is_committed() {
         let statistics = file
             .statistics()
             .unwrap_or_else(|| panic!("{} was published without statistics", file.path));
-        let columns = sankhya_table_delta::to_column_stats(&statistics);
+        let columns = sankhya_table_delta::to_column_stats(&statistics, None);
 
         let id = columns
             .get("id")
@@ -404,7 +404,7 @@ fn published_bounds_do_not_claim_more_than_the_file_holds() {
 
     let root = table_root(dir.path());
     for file in &live_files(&root).expect("log").files {
-        let columns = sankhya_table_delta::to_column_stats(&file.statistics().expect("statistics"));
+        let columns = sankhya_table_delta::to_column_stats(&file.statistics().expect("statistics"), None);
         let id = &columns["id"];
         let Some(Bound::Int(min)) = id.min else {
             panic!("expected an integer bound for id, got {:?}", id.min);

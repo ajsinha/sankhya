@@ -15,6 +15,69 @@ pub enum Bound {
     Float(f64),
     /// Lexicographic, matching how the column is sorted.
     Bytes(Vec<u8>),
+    /// Days since 1970-01-01.
+    ///
+    /// **Its own variant rather than an `Int`**, and that is the whole point of the type.
+    /// A date column's values are days and a timestamp column's are microseconds, and both
+    /// are `i64` underneath --- so recording either as `Int` makes the number comparable
+    /// with anything else that happens to be a number. `2026-09-14` is then 20,710, which
+    /// compares perfectly well against a literal that meant microseconds, and the file it
+    /// skips held rows the query wanted.
+    Date(i32),
+    /// An instant, as a count of `unit` since the Unix epoch.
+    ///
+    /// The unit travels with the value because Arrow has four of them and a filter written
+    /// in one may reach a column stored in another. Compared exactly, by splitting both into
+    /// whole seconds and sub-second nanoseconds --- which no representable value can
+    /// overflow, unlike normalising a second-resolution bound to nanoseconds.
+    Timestamp {
+        /// The count.
+        value: i64,
+        /// What it counts.
+        unit: TimeUnit,
+    },
+    /// An exact decimal: `unscaled` × 10⁻ˢᶜᵃˡᵉ.
+    ///
+    /// Not a float. A decimal converted to `f64` for comparison is a decimal that has
+    /// stopped being exact, and this crate's rule is that a bound may cost a scan and may
+    /// never cost an answer.
+    Decimal {
+        /// The value, scaled by 10^`scale`.
+        unscaled: i128,
+        /// How many digits of the unscaled value are fractional.
+        scale: i8,
+    },
+}
+
+/// What a [`Bound::Timestamp`] counts.
+///
+/// Arrow's four, named the same way. Held here rather than taken from `arrow-schema`
+/// because this crate has no dependencies, deliberately --- see the crate header.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum TimeUnit {
+    Second,
+    Millisecond,
+    Microsecond,
+    Nanosecond,
+}
+
+impl TimeUnit {
+    /// How many of this unit make a second.
+    #[must_use]
+    pub const fn per_second(self) -> i64 {
+        match self {
+            Self::Second => 1,
+            Self::Millisecond => 1_000,
+            Self::Microsecond => 1_000_000,
+            Self::Nanosecond => 1_000_000_000,
+        }
+    }
+
+    /// One of this unit, in nanoseconds.
+    #[must_use]
+    pub const fn nanos_each(self) -> i64 {
+        1_000_000_000 / self.per_second()
+    }
 }
 
 impl Bound {
@@ -28,6 +91,15 @@ impl Bound {
             (Self::Int(a), Self::Int(b)) => Some(a.cmp(b)),
             (Self::Float(a), Self::Float(b)) => a.partial_cmp(b),
             (Self::Bytes(a), Self::Bytes(b)) => Some(a.cmp(b)),
+            (Self::Date(a), Self::Date(b)) => Some(a.cmp(b)),
+            (
+                Self::Timestamp { value: a, unit: ua },
+                Self::Timestamp { value: b, unit: ub },
+            ) => Some(seconds_and_nanos(*a, *ua).cmp(&seconds_and_nanos(*b, *ub))),
+            (
+                Self::Decimal { unscaled: a, scale: sa },
+                Self::Decimal { unscaled: b, scale: sb },
+            ) => aligned(*a, *sa, *b, *sb),
             _ => None,
         }
     }
@@ -45,6 +117,38 @@ impl Bound {
             _ => Some(a.clone()),
         }
     }
+}
+
+/// An instant as whole seconds and sub-second nanoseconds, which orders lexicographically.
+///
+/// # Why not normalise to nanoseconds
+///
+/// Because a second-resolution bound can name an instant a nanosecond count cannot hold.
+/// `i64` nanoseconds run out in 2262, and a warehouse with a `TIMESTAMP` column holding a
+/// contract end date in 2300 would have its bound silently wrapped --- which is not a bound
+/// at all. Splitting is exact for every representable value of every unit.
+///
+/// Euclidean division rather than truncating, so an instant before the epoch has a
+/// non-negative sub-second part and the pair still orders correctly.
+const fn seconds_and_nanos(value: i64, unit: TimeUnit) -> (i64, i64) {
+    let per_second = unit.per_second();
+    (
+        value.div_euclid(per_second),
+        value.rem_euclid(per_second) * unit.nanos_each(),
+    )
+}
+
+/// Two decimals compared at a common scale, or `None` when aligning them would overflow.
+///
+/// `None` costs a scan. Saturating would cost an answer: a bound pinned at `i128::MAX`
+/// compares as larger than every value in the file, and a `>` predicate then skips it.
+fn aligned(a: i128, scale_a: i8, b: i128, scale_b: i8) -> Option<std::cmp::Ordering> {
+    let widest = scale_a.max(scale_b);
+    let lift = |value: i128, scale: i8| -> Option<i128> {
+        let steps = u32::try_from(widest.checked_sub(scale)?).ok()?;
+        value.checked_mul(10_i128.checked_pow(steps)?)
+    };
+    Some(lift(a, scale_a)?.cmp(&lift(b, scale_b)?))
 }
 
 /// Why two statistics could not be merged.

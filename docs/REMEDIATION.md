@@ -1548,7 +1548,7 @@ entries were passing on that, and **both survive their real suite**. This is `R3
 report green when they measure nothing* — inside the mechanism built to detect exactly that. A
 verdict now requires libtest to print `test result: FAILED`; `--check` validates that a named
 target exists and that no two entries name one site; a hang is its own verdict rather than an
-exception thirty minutes in. The catalogue is **928 distinct defects**.
+exception thirty minutes in. The catalogue is **938 distinct defects**.
 
 Writing the tests those two entries needed, the first fixture used `- image:` where the parser
 requires `image:` at the start of the line — so both rejecting tests passed *vacuously*, through

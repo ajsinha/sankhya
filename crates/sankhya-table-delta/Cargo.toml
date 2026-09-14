@@ -18,6 +18,7 @@ sankhya-atomicfs = { path = "../sankhya-atomicfs" }
 sankhya-types = { path = "../sankhya-types" }
 sankhya-error = { path = "../sankhya-error" }
 sankhya-stats = { path = "../sankhya-stats" }
+sankhya-schema = { path = "../sankhya-schema" }
 serde         = { workspace = true, features = ["derive"] }
 serde_json    = { workspace = true }
 arrow-schema  = { workspace = true }
@@ -35,6 +36,7 @@ parquet       = { workspace = true }
 [dev-dependencies]
 sankhya-testkit             = { path = "../sankhya-testkit" }
 serde_json = { workspace = true }
+proptest   = { workspace = true }
 delta_kernel                = { workspace = true }
 delta_kernel_default_engine = { workspace = true }
 tempfile                    = { workspace = true }

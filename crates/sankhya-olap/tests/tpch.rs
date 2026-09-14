@@ -81,7 +81,6 @@ where
 {
     use arrow_array::UInt64Array;
     use arrow_schema::{DataType, Field, Schema};
-    use sankhya_table::column_stats;
     use sankhya_publish::Publication;
     use std::sync::Arc;
 
@@ -244,6 +243,44 @@ async fn register(ctx: &SessionContext, dir: &Path, tables: &[(String, usize)]) 
         ctx.register_table(name, Arc::new(provider))
             .expect("registering");
     }
+}
+
+/// How many of `orders`'s files the date predicate in Q3 proves irrelevant, and how many
+/// there are.
+///
+/// # Why the gate measures this at all
+///
+/// `NFR-PERF-03` says *pruned*, and a budget met is not evidence that anything was pruned.
+/// Until `M24a` nothing was: `Date32` had no bounds, so `o_orderdate < …` skipped no files and
+/// the objective's own adjective did no work. A number that would have been **zero** for the
+/// whole life of the objective is the only thing that distinguishes the two states, so the
+/// gate prints it beside the timing rather than leaving the reader to take the word on trust.
+///
+/// `prunable` exists for exactly this: *"a pruning mechanism nobody can observe is one nobody
+/// notices has stopped working."*
+fn pruning_over_orders(dir: &Path, rows: usize) -> (usize, usize) {
+    use datafusion::prelude::{col, lit};
+    use sankhya_readpath::resolve;
+    use sankhya_types::LsnRange;
+
+    let table_root = dir.join("orders");
+    let target = Lsn::new(u64::try_from(rows).expect("a sane row count"));
+    let live = sankhya_table_delta::live_files(&table_root).expect("the log");
+    let first = table_root.join(&live.files[0].path);
+    let file = std::fs::File::open(&first).expect("opening");
+    let schema = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)
+        .expect("reader")
+        .schema()
+        .clone();
+    let provider = resolve(schema, &table_root, Some(LsnRange::up_to(target)), None, target)
+        .expect("resolving");
+
+    // The same date Q3 names: 1995-03-15, as days since the epoch.
+    let cutoff = sankhya_schema::days_from_civil(1995, 3, 15).expect("a real date");
+    let filters = vec![col("o_orderdate").lt(lit(
+        datafusion::scalar::ScalarValue::Date32(Some(cutoff)),
+    ))];
+    (provider.prunable(&filters), live.files.len())
 }
 
 /// The queries, by their number in the specification.
@@ -1043,6 +1080,18 @@ async fn measure_a_needle_lookup() {
 ///   satisfy the objective's stated precondition that a partition predicate be present.
 ///   Partitioning is not built, so no query can currently satisfy it. That is recorded
 ///   as an open item in `docs/STATUS.md`, not hidden by a passing test.
+///
+///   And until `M24a`, on 2026-09-14, Q3 did not prune **either** — no `Date32` column had
+///   bounds, so `o_orderdate < …`, the predicate that makes this the *pruned* shape, skipped
+///   no files whatever. The budget was met with the word doing no work.
+///
+///   So the gate prints how many files that predicate proves irrelevant, beside the timing.
+///   On this fixture it is **zero of twenty-three**: the bounds exist now and exclude
+///   nothing, because TPC-H generates `orders` in orderkey order and every file's dates span
+///   the whole range. The mechanism is real — `pruning_types.rs` prunes nine files of ten,
+///   and `NFR-PERF-02` is met by statistics pruning on the ordered `l_orderkey` — and this
+///   query has no layout to use it on. Clustering the fixture, and the partition predicate
+///   the objective actually names, are both `M24b`.
 /// - **`NFR-PERF-04`** says *wide scan, warm, local cache*. Q1 is that shape.
 ///
 /// The margins are wide enough that this should not be flaky. If it starts failing
@@ -1084,6 +1133,19 @@ async fn the_performance_objectives_are_met() {
         ("NFR-PERF-03", "multi-dimensional pivot", pivot, 8, 1_000),
         ("NFR-PERF-04", "wide scan", scan, 4, 3_000),
     ];
+
+    // What "pruned" is worth on this data, before any timing. Printed rather than asserted:
+    // how much a date predicate prunes depends on how the generator happened to lay the rows
+    // out, and gating on that would be gating on the fixture. Zero would mean the mechanism
+    // is gone, which is what this is here to make visible.
+    let (skipped, total) = pruning_over_orders(dir.path(), tables
+        .iter()
+        .find(|(name, _)| name == "orders")
+        .map_or(0, |(_, rows)| *rows));
+    println!(
+        "NFR-PERF-03  the date predicate proves {skipped} of {total} `orders` file(s) \
+         irrelevant before the scan"
+    );
 
     let mut over = Vec::new();
     for (id, what, sql, clients, budget_ms) in cases {

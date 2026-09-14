@@ -21,7 +21,7 @@
 
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator};
 use datafusion::scalar::ScalarValue;
-use sankhya_stats::{Bound, Predicate};
+use sankhya_stats::{Bound, Predicate, TimeUnit};
 
 /// Predicates on named columns, extracted from a query's filters.
 ///
@@ -135,6 +135,34 @@ fn literal(expr: &Expr) -> Option<Bound> {
         ScalarValue::Utf8(Some(v)) | ScalarValue::LargeUtf8(Some(v)) => {
             Bound::Bytes(v.as_bytes().to_vec())
         }
+        // The types `M24` added. A date filter is the commonest filter a warehouse runs and
+        // until these existed it produced no predicate at all, so every file was read --- and
+        // `NFR-PERF-03` was reported met for a "pruned" query that could not prune.
+        ScalarValue::Date32(Some(v)) => Bound::Date(*v),
+        ScalarValue::TimestampSecond(Some(v), _) => Bound::Timestamp {
+            value: *v,
+            unit: TimeUnit::Second,
+        },
+        ScalarValue::TimestampMillisecond(Some(v), _) => Bound::Timestamp {
+            value: *v,
+            unit: TimeUnit::Millisecond,
+        },
+        ScalarValue::TimestampMicrosecond(Some(v), _) => Bound::Timestamp {
+            value: *v,
+            unit: TimeUnit::Microsecond,
+        },
+        ScalarValue::TimestampNanosecond(Some(v), _) => Bound::Timestamp {
+            value: *v,
+            unit: TimeUnit::Nanosecond,
+        },
+        // The scale travels with it, and comparison aligns the two rather than converting
+        // either to a float. A `DECIMAL(18,2)` literal against a `DECIMAL(38,6)` column is
+        // an ordinary thing to write and the two are exactly comparable; going through `f64`
+        // to find that out is how a bound on money stops being exact.
+        ScalarValue::Decimal128(Some(v), _, scale) => Bound::Decimal {
+            unscaled: *v,
+            scale: *scale,
+        },
         _ => return None,
     })
 }

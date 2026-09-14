@@ -187,7 +187,7 @@ async fn statistics_round_trip_through_the_log_unchanged() {
         .find(|f| f.path.starts_with("compacted-"))
         .expect("merged");
 
-    let recovered = sankhya_table_delta::to_column_stats(&merged.statistics().expect("statistics"));
+    let recovered = sankhya_table_delta::to_column_stats(&merged.statistics().expect("statistics"), None);
 
     let amount = recovered.get("amount").expect("amount is catalogued");
     assert_eq!(amount.min, Some(Bound::Int(1)));

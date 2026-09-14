@@ -376,7 +376,7 @@ fn parse_decimal_units(text: &str, scale: u8) -> Option<i128> {
 /// Days since the Unix epoch, from `YYYY-MM-DD`.
 fn parse_date(text: &str) -> Option<i32> {
     let (y, m, d) = split_ymd(text.trim())?;
-    Some(days_from_civil(y, m, d))
+    sankhya_schema::days_from_civil(i32::try_from(y).ok()?, m, d)
 }
 
 /// Microseconds since the Unix epoch.
@@ -403,7 +403,11 @@ fn parse_timestamp_micros(text: &str) -> Option<i64> {
 
     let (time_part, offset_micros) = split_offset(rest)?;
     let micros_of_day = parse_time_micros(time_part)?;
-    let days = i64::from(days_from_civil(y, m, d));
+    let days = i64::from(sankhya_schema::days_from_civil(
+        i32::try_from(y).ok()?,
+        m,
+        d,
+    )?);
 
     days.checked_mul(86_400_000_000)?
         .checked_add(micros_of_day)?
@@ -477,14 +481,3 @@ fn split_ymd(text: &str) -> Option<(i64, u32, u32)> {
     Some((y, m, d))
 }
 
-/// Days from the civil epoch, per Howard Hinnant's algorithm.
-#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-fn days_from_civil(y: i64, m: u32, d: u32) -> i32 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = if m > 2 { m - 3 } else { m + 9 } as i64;
-    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    (era * 146_097 + doe - 719_468) as i32
-}

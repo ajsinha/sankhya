@@ -239,8 +239,10 @@ rather than per table, and it is written in the Hive convention
 (`sank_data_date=2024-03-01`) that external readers already parse.
 
 > **Not built:** the declaration exists and directory partitioning does not — the streaming
-> arrival path writes flat. This is why `NFR-PERF-03`'s partition-predicate precondition
-> cannot be satisfied by any query today. See [`STATUS.md`](STATUS.md).
+> arrival path writes flat, and the read path discards partition values on the way into the
+> scan. This is why `NFR-PERF-03`'s partition-predicate precondition cannot be satisfied by
+> any query today. Pruning by **file statistics** is a different mechanism and does work —
+> since `M24a` it works for dates, instants and decimals too. See [`STATUS.md`](STATUS.md).
 
 ### shape
 

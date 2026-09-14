@@ -34,6 +34,7 @@ arrow-schema = { workspace = true }
 sankhya-table = { path = "../sankhya-table" }
 sankhya-table-delta = { path = "../sankhya-table-delta" }
 sankhya-readpath = { path = "../sankhya-readpath" }
+sankhya-schema = { path = "../sankhya-schema" }
 parquet = { workspace = true }
 tpchgen       = { workspace = true }
 tpchgen-arrow = { workspace = true }
