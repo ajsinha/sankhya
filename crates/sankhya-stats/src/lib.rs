@@ -32,7 +32,7 @@ mod overflow;
 mod prune;
 mod sketch;
 
-pub use column::{Bound, ColumnStats, MergeError};
+pub use column::{Bound, ColumnStats, MergeError, TimeUnit};
 pub use overflow::{decimal_sum_risk, integer_sum_risk, SumRisk};
 pub use prune::{can_skip, Predicate};
 pub use sketch::DistinctSketch;

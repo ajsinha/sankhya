@@ -33,10 +33,14 @@
 //! recognising a type is a scan. Recognising one incorrectly would cost an answer.
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, UInt64Type};
+use arrow_array::types::{
+    Date32Type, Decimal128Type, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type,
+    Int8Type, TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
+    TimestampSecondType, UInt16Type, UInt32Type, UInt64Type, UInt8Type,
+};
 use arrow_array::{Array, RecordBatch};
 use arrow_schema::DataType;
-use sankhya_stats::{Bound, ColumnStats};
+use sankhya_stats::{Bound, ColumnStats, TimeUnit};
 use std::collections::BTreeMap;
 
 /// Per-column statistics for a batch.
@@ -112,14 +116,63 @@ fn observe(array: &dyn Array, data_type: &DataType, stats: &mut ColumnStats) {
     }
 
     match data_type {
+        DataType::Int8 => primitive!(Int8Type, |v| Bound::Int(i64::from(v)), 1),
         DataType::Int16 => primitive!(Int16Type, |v| Bound::Int(i64::from(v)), 2),
         DataType::Int32 => primitive!(Int32Type, |v| Bound::Int(i64::from(v)), 4),
         DataType::Int64 => primitive!(Int64Type, Bound::Int, 8),
-        DataType::UInt64 => primitive!(
-            UInt64Type,
-            |v: u64| Bound::Int(i64::try_from(v).unwrap_or(i64::MAX)),
-            8
-        ),
+        DataType::UInt8 => primitive!(UInt8Type, |v| Bound::Int(i64::from(v)), 1),
+        DataType::UInt16 => primitive!(UInt16Type, |v| Bound::Int(i64::from(v)), 2),
+        DataType::UInt32 => primitive!(UInt32Type, |v| Bound::Int(i64::from(v)), 4),
+        DataType::UInt64 => {
+            primitive!(
+                UInt64Type,
+                |v: u64| Bound::Int(i64::try_from(v).unwrap_or(i64::MAX)),
+                8
+            );
+            // **A saturated maximum is a maximum narrower than the truth**, and this is the
+            // one place it can happen. Bounds are kept in a signed space; a `u64` past
+            // `i64::MAX` saturates to it, and the file then claims a maximum that a value it
+            // holds exceeds. `x > 9223372036854775807` is the predicate that skips it, and
+            // the rows it hides are real.
+            //
+            // A genuine maximum of exactly `i64::MAX` is indistinguishable from a saturated
+            // one, so it is treated as saturated: the column becomes unbounded, which costs
+            // a scan. Distinguishing them means a second pass over the array to find out,
+            // and the answer would change nothing anybody wants.
+            if stats.max == Some(Bound::Int(i64::MAX)) {
+                stats.min = None;
+                stats.max = None;
+            }
+        }
+        // **The type a warehouse filters on more than any other.** Until `M24` it was in
+        // the list below --- unhandled, no bounds, every file read --- so a date-ranged
+        // query, which is most of them, pruned nothing at all.
+        DataType::Date32 => primitive!(Date32Type, Bound::Date, 4),
+        DataType::Timestamp(unit, _) => {
+            // The zone is deliberately not carried. Arrow stores every timestamp as a count
+            // since the Unix epoch and a zone annotation changes how it is *displayed*, not
+            // what it counts, so two bounds differing only in zone bound the same instants.
+            let of = |unit: TimeUnit| move |value: i64| Bound::Timestamp { value, unit };
+            match unit {
+                arrow_schema::TimeUnit::Second => {
+                    primitive!(TimestampSecondType, of(TimeUnit::Second), 8)
+                }
+                arrow_schema::TimeUnit::Millisecond => {
+                    primitive!(TimestampMillisecondType, of(TimeUnit::Millisecond), 8)
+                }
+                arrow_schema::TimeUnit::Microsecond => {
+                    primitive!(TimestampMicrosecondType, of(TimeUnit::Microsecond), 8)
+                }
+                arrow_schema::TimeUnit::Nanosecond => {
+                    primitive!(TimestampNanosecondType, of(TimeUnit::Nanosecond), 8)
+                }
+            }
+        }
+        // Exact, and compared at a common scale rather than through `f64`. Money is the
+        // reason this type exists and a bound that rounds it is a bound on something else.
+        &DataType::Decimal128(_, scale) => {
+            primitive!(Decimal128Type, |unscaled| Bound::Decimal { unscaled, scale }, 16)
+        }
         DataType::Float32 => primitive!(Float32Type, |v| Bound::Float(f64::from(v)), 4),
         DataType::Float64 => primitive!(Float64Type, Bound::Float, 8),
         DataType::Utf8 => {
@@ -149,6 +202,13 @@ fn observe(array: &dyn Array, data_type: &DataType, stats: &mut ColumnStats) {
         }
         // Deliberately unhandled: no bounds, no sketch, and the file is always read.
         // Adding a type here is an optimisation; getting one wrong is a lost row.
+        //
+        // `Date64` is named because its absence looks like an oversight beside `Date32` and
+        // is not. It counts **milliseconds** while a date is a day, and Arrow does not
+        // enforce that the milliseconds land on a midnight --- so folding one into a
+        // `Bound::Date` has to round, and rounding a maximum *down* narrows the bound, which
+        // is the one direction that skips a file holding rows. Nothing in this system writes
+        // `Date64`; a reader that meets one pays a scan.
         _ => {}
     }
 }

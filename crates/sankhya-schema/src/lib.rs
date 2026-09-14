@@ -24,7 +24,7 @@ mod naming;
 mod onboard;
 
 pub use datedate::{
-    civil_from_days, is_reserved, AxisError, DateAxis, DateSource, Granularity, DATA_DATE_COLUMN,
+    civil_from_days, days_from_civil, is_reserved, AxisError, DateAxis, DateSource, Granularity, DATA_DATE_COLUMN,
     GRANULARITY_KEY, RESERVED_PREFIX, SOURCE_KEY,
 };
 pub use evolve::{apply_compatible, classify_change, widened_decimal, Compatibility, SchemaChange};

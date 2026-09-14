@@ -405,15 +405,86 @@ fn scalar_of(
                 .map_or(Precision::Absent, |n| Precision::Exact(ScalarValue::UInt64(Some(n)))),
             DataType::UInt32 => u32::try_from(*v)
                 .map_or(Precision::Absent, |n| Precision::Exact(ScalarValue::UInt32(Some(n)))),
+            // The narrower widths, which `M24` started recording. Absent before, so a
+            // `SMALLINT` column had bounds in the log and none in the plan.
+            DataType::Int16 => i16::try_from(*v)
+                .map_or(Precision::Absent, |n| Precision::Exact(ScalarValue::Int16(Some(n)))),
+            DataType::Int8 => i8::try_from(*v)
+                .map_or(Precision::Absent, |n| Precision::Exact(ScalarValue::Int8(Some(n)))),
+            DataType::UInt16 => u16::try_from(*v)
+                .map_or(Precision::Absent, |n| Precision::Exact(ScalarValue::UInt16(Some(n)))),
+            DataType::UInt8 => u8::try_from(*v)
+                .map_or(Precision::Absent, |n| Precision::Exact(ScalarValue::UInt8(Some(n)))),
             _ => Precision::Absent,
         },
-        Some(Bound::Float(v)) if v.is_finite() => Precision::Exact(ScalarValue::Float64(Some(*v))),
-        Some(Bound::Bytes(v)) => match std::str::from_utf8(v) {
-            Ok(text) => Precision::Exact(ScalarValue::Utf8(Some(text.to_string()))),
-            Err(_) => Precision::Absent,
+        // Narrowed the same way, and for the same reason the integers are. This returned
+        // `Float64` whatever the column was, so a `Float32` column reported statistics the
+        // interval analysis refuses to compare --- verbatim the `UInt64` defect described
+        // above, in the arm immediately below it, surviving the fix that named it.
+        Some(Bound::Float(v)) if v.is_finite() => match data_type {
+            DataType::Float64 => Precision::Exact(ScalarValue::Float64(Some(*v))),
+            DataType::Float32 => {
+                narrowed_to_f32(*v).map_or(Precision::Absent, |n| {
+                    Precision::Exact(ScalarValue::Float32(Some(n)))
+                })
+            }
+            _ => Precision::Absent,
+        },
+        Some(Bound::Bytes(v)) => match (std::str::from_utf8(v), data_type) {
+            (Ok(text), DataType::Utf8) => Precision::Exact(ScalarValue::Utf8(Some(text.to_string()))),
+            (Ok(text), DataType::LargeUtf8) => {
+                Precision::Exact(ScalarValue::LargeUtf8(Some(text.to_string())))
+            }
+            _ => Precision::Absent,
+        },
+        Some(Bound::Date(v)) if matches!(data_type, DataType::Date32) => {
+            Precision::Exact(ScalarValue::Date32(Some(*v)))
+        }
+        // The unit must be the column's own. A bound recorded in microseconds handed to a
+        // nanosecond column is a number a thousand times too small, and the optimizer would
+        // take it at face value --- so a unit that does not match is absent rather than
+        // converted, which would be this function inventing precision the bound never had.
+        //
+        // The zone comes from the **column**, not the bound: Arrow stores every timestamp as
+        // a count since the epoch and the zone annotates how it is rendered, so carrying one
+        // in the statistics would be recording a display choice as a fact about the data.
+        Some(Bound::Timestamp { value, unit }) => match (data_type, unit) {
+            (DataType::Timestamp(arrow_schema::TimeUnit::Second, zone), sankhya_stats::TimeUnit::Second) => {
+                Precision::Exact(ScalarValue::TimestampSecond(Some(*value), zone.clone()))
+            }
+            (DataType::Timestamp(arrow_schema::TimeUnit::Millisecond, zone), sankhya_stats::TimeUnit::Millisecond) => {
+                Precision::Exact(ScalarValue::TimestampMillisecond(Some(*value), zone.clone()))
+            }
+            (DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, zone), sankhya_stats::TimeUnit::Microsecond) => {
+                Precision::Exact(ScalarValue::TimestampMicrosecond(Some(*value), zone.clone()))
+            }
+            (DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, zone), sankhya_stats::TimeUnit::Nanosecond) => {
+                Precision::Exact(ScalarValue::TimestampNanosecond(Some(*value), zone.clone()))
+            }
+            _ => Precision::Absent,
+        },
+        // Same scale or nothing. A `DECIMAL(38,6)` bound presented as the column's
+        // `DECIMAL(18,2)` is the same digits meaning a different amount of money.
+        Some(Bound::Decimal { unscaled, scale }) => match data_type {
+            &DataType::Decimal128(precision, column_scale) if column_scale == *scale => {
+                Precision::Exact(ScalarValue::Decimal128(Some(*unscaled), precision, column_scale))
+            }
+            _ => Precision::Absent,
         },
         _ => Precision::Absent,
     }
+}
+
+/// The same number as an `f32`, or `None` if narrowing moved it.
+///
+/// An exact comparison, which is the point: a bound that does not survive the round trip has
+/// moved, and it moves *inward* half the time --- the direction that skips a file holding
+/// rows. `clippy::float_cmp` is right about almost every other comparison and wrong about this
+/// one, so the exemption is here, on four lines, rather than on anything larger.
+#[allow(clippy::float_cmp, clippy::cast_possible_truncation)]
+fn narrowed_to_f32(value: f64) -> Option<f32> {
+    let narrow = value as f32;
+    (f64::from(narrow) == value).then_some(narrow)
 }
 
 /// Per-column statistics for the whole table, merged across its live files.
@@ -939,7 +1010,7 @@ fn resolve_with(
                     // one planned by a warm one.
                     let catalogue = file
                         .statistics()
-                        .map(|s| sankhya_table_delta::to_column_stats(&s))
+                        .map(|s| sankhya_table_delta::to_column_stats(&s, Some(&schema)))
                         .unwrap_or_default();
 
                     files.push(

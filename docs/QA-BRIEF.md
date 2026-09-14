@@ -103,6 +103,17 @@ will reproduce them; that is expected.
     alternative tells a filtered principal which members exist — and it is a refusal rather
     than a wrong number. What would be a defect is a member you may **not** see appearing in
     one.
+- File pruning reaches **dates, instants and decimals** as of 2026-09-14 (`M24a`), and did not
+  before: those types had no bounds at all, so a date-ranged query — most of them — read every
+  file. The single property worth attacking is the one the whole mechanism rests on: **a skip
+  must never lose a row.** Write a filter whose literal is a different width, scale or time
+  unit from the column, and check the answer against the same query with the filter applied
+  after a full scan. A wrong skip is silent: fewer rows come back and nothing in the result
+  says so.
+  - The units are the sharp edge. `Timestamp(Second)` against a `Timestamp(Nanosecond)`
+    column, a `DECIMAL(18,2)` literal against a `DECIMAL(38,6)` column, an integer literal
+    against a `DATE`. Each is meant to compare correctly or not at all, never approximately.
+  - `Date64` has no bounds on purpose and must simply be scanned.
 - A row with a NULL key on **any** dimension is excluded from **every** cell, so a cube's
   breakdown along one dimension can silently omit rows because a different dimension was null.
   The `completeness` column is the only signal.

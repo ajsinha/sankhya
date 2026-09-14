@@ -1995,6 +1995,67 @@ against a query that cannot satisfy its own precondition. So this is a correctne
 milestone as much as a performance one, and its first exit criterion is that the objective
 either measures pruning or stops saying it does.
 
+> **`M24a` complete, 2026-09-14 — the types.** `Date32`, all four `Timestamp` units,
+> `Decimal128` and the narrow integer widths are recorded, written to the log, read back and
+> compared. A date-ranged query prunes: nine files of ten, in
+> `pruning_types.rs`, where before the change the answer was zero.
+>
+> **The unit is part of the bound**, and that is the design decision the rest follows from. A
+> date's days and an instant's microseconds are both `i64` underneath, so folding either into
+> `Bound::Int` makes it comparable with any other number that happens to be around. The same
+> instant written in seconds is then a million times smaller than in microseconds, every file
+> is proved irrelevant, and the query answers zero rows out of a table that has thirty. So
+> dates, instants and decimals carry their own variants, instants carry their unit, decimals
+> carry their scale, and a comparison across kinds is **incomparable** rather than coerced.
+>
+> Instants compare as whole seconds plus sub-second nanoseconds rather than normalising to
+> nanoseconds: `i64` nanoseconds run out in 2262 and a contract ending in 2300 is an ordinary
+> thing for a warehouse to hold. Decimals compare at a common scale, refusing on overflow,
+> because saturating produces a bound larger than every value in the file and a `>` predicate
+> then skips it.
+>
+> **The log carries them as the protocol spells them** — `2026-09-14`, an ISO-8601 instant, a
+> JSON number for a decimal — and not as the day or microsecond count. The count would
+> round-trip perfectly through this system's own reader and be meaningless to every other one,
+> which `stats.rs`'s header already names as the worse failure because it cannot be fixed from
+> here. Reading back therefore needs the column's declared type: the statistics document is
+> schemaless, and `"2026-09-14"` and `"paris"` are the same shape.
+>
+> Three defects found on the way, none of them the milestone's subject:
+>
+> - `scalar_of` reported **every** float bound as `Float64` whatever the column held, so a
+>   `Float32` column's statistics were ones DataFusion's interval analysis refuses to compare
+>   — which fails the query outright. That is verbatim the `UInt64` defect the function's own
+>   doc comment describes, surviving in the arm below the fix that named it.
+> - A `u64` past `i64::MAX` saturated, so the file claimed a maximum a value it holds exceeds.
+>   The column is now unbounded instead, which costs a scan.
+> - `days_from_civil` existed **twice**, privately, in `sankhya-table` and `sankhya-publish`,
+>   each copy carrying a comment explaining that computing it two different ways splits a
+>   table in half. It is now one function beside its inverse.
+>
+**The objective now measures pruning**, which was this milestone's first exit criterion. The
+gate prints, beside the timing, how many `orders` files Q3's date predicate proves irrelevant.
+It is **0 of 23** — and that number is the useful part. The bounds exist and exclude nothing,
+because TPC-H generates `orders` in orderkey order so every file's dates span the whole range.
+The mechanism is not in doubt: `pruning_types.rs` prunes nine files of ten, and `NFR-PERF-02`
+is met by statistics pruning on the ordered `l_orderkey`. What Q3 lacks is a **layout**.
+
+> **`M24b` remains**, and the measurement sharpened what is in it:
+>
+> - **Partition values** are recorded in the log and discarded on the way into the scan —
+>   `LoggedFile` has no partition field and `table_partition_cols` is never set — so
+>   `NFR-PERF-03`'s stated precondition is still unsatisfiable by any query.
+> - **Clustering the fixture.** This system has clustering and measured it at 7.8× on a range
+>   scan; `orders` clustered by `o_orderdate` is what would turn 0 of 23 into a real figure.
+>   That is a change to the benchmark's data layout, not to the engine, and it belongs with
+>   the partition work rather than smuggled into a claims edit.
+> - `column_statistics` makes a whole column unknown when any one file lacks bounds, which is
+>   conservative in the right direction and throws away the null and distinct counts with it.
+> - `Definition::reads` holds only a cube's fact table, so **dimension tables are outside a
+>   cube's authorization and snapshot set** while `GUIDE.md` says a cube whose dimension tables
+>   you cannot read is refused. Found during `M23`; it is the same family of defect — a claim
+>   the code does not make good — and it is small.
+
 ### M25 — The graph engine answers
 
 `GraphCatalog` is constructed as a **temporary** inside `session_reaching`: the `Arc` is not

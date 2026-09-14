@@ -268,7 +268,7 @@ fn the_kernel_accepts_bounds_and_null_counts() {
     // Our own reader.
     let ours = live_files(root).expect("our reader");
     let recovered =
-        sankhya_table_delta::to_column_stats(&ours.files[0].statistics().expect("statistics"));
+        sankhya_table_delta::to_column_stats(&ours.files[0].statistics().expect("statistics"), None);
     assert_eq!(recovered["id"].min, Some(Bound::Int(-5)));
     assert_eq!(recovered["id"].nulls, 3);
     assert_eq!(recovered["amount"].max, Some(Bound::Float(99.25)));

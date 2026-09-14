@@ -1316,27 +1316,13 @@ fn days_of_partition(partition: &str, granularity: Granularity) -> Result<i32, P
         Granularity::Month => (read(0, 1970), read(1, 1), 1),
         Granularity::Year => (read(0, 1970), 1, 1),
     };
-    days_from_civil(year, month, day).ok_or_else(|| PublishError::DateColumn {
-        detail: format!("'{partition}' is not a date this granularity can represent"),
-    })
-}
-
-/// Howard Hinnant's civil-to-days, the inverse of the one in `sankhya-schema`.
-///
-/// Written out rather than pulled from a dependency for the same reason as its inverse: a
-/// partition key computed slightly differently by two components is a table whose rows do
-/// not agree with the directories they sit in.
-fn days_from_civil(year: i32, month: i32, day: i32) -> Option<i32> {
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = (month + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    Some(era * 146_097 + doe - 719_468)
+    u32::try_from(month)
+        .ok()
+        .zip(u32::try_from(day).ok())
+        .and_then(|(month, day)| sankhya_schema::days_from_civil(year, month, day))
+        .ok_or_else(|| PublishError::DateColumn {
+            detail: format!("'{partition}' is not a date this granularity can represent"),
+        })
 }
 
 /// Writes made by this process, so no two of them can choose one name.

@@ -260,6 +260,33 @@ pub const fn civil_from_days(days: i32) -> (i32, u32, u32) {
     (year as i32, month, day)
 }
 
+/// Convert a civil date into days since the Unix epoch.
+///
+/// The inverse of [`civil_from_days`], and here beside it for the reason that function's own
+/// comment gives: *a partition key computed slightly differently by two components is a table
+/// that splits in half.* It was written out **three times** --- here in spirit, in
+/// `sankhya-table`'s Parquet encoder and in `sankhya-publish`'s date-column reader --- each
+/// copy carrying a comment warning against the thing the copies were. `M24` needed a fourth,
+/// to read a date bound back out of the table log, and made it one instead.
+///
+/// `None` for a month or day outside the calendar. Everything else, including dates before
+/// the epoch and the leap-day irregularity, is exact: the algorithm shifts the era so the
+/// irregularity falls at the end of a cycle, and goes nowhere near a floating-point step.
+#[must_use]
+pub fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i32> {
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let year = i64::from(year);
+    let shifted = if month <= 2 { year - 1 } else { year };
+    let era = shifted.div_euclid(400);
+    let year_of_era = shifted - era * 400;
+    let month_prime = i64::from(if month > 2 { month - 3 } else { month + 9 });
+    let day_of_year = (153 * month_prime + 2) / 5 + i64::from(day) - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    i32::try_from(era * 146_097 + day_of_era - 719_468).ok()
+}
+
 /// Whether a column name is reserved by this system.
 ///
 /// A source column so named is a collision, refused at onboarding rather than shadowed. A

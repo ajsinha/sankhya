@@ -271,3 +271,147 @@ fn infinities_are_ordered_normally() {
     assert_eq!(f.max, Some(Bound::Float(f64::INFINITY)));
     assert!(!can_skip(f, &Predicate::GreaterThan(Bound::Float(1e300))));
 }
+
+// --- the types a warehouse filters on (`M24`) -------------------------------------------
+
+#[test]
+fn a_date_column_gets_bounds_and_they_prune() {
+    // Until `M24` this type was in the unhandled list: no bounds, every file read, and a
+    // date-ranged query --- which is most of them --- pruned nothing at all.
+    let batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("d", DataType::Date32, true)])),
+        vec![Arc::new(arrow_array::Date32Array::from(vec![
+            Some(20_700),
+            Some(20_705),
+            Some(20_710),
+        ]))],
+    )
+    .expect("building");
+
+    let stats = &column_stats(&batch)["d"];
+    assert_eq!(stats.min, Some(Bound::Date(20_700)));
+    assert_eq!(stats.max, Some(Bound::Date(20_710)));
+    assert!(can_skip(stats, &Predicate::LessThan(Bound::Date(20_700))));
+    assert!(!can_skip(stats, &Predicate::Equals(Bound::Date(20_705))));
+    // And an integer of the same magnitude proves nothing, because a day count and a
+    // number are not the same kind of thing.
+    assert!(!can_skip(stats, &Predicate::LessThan(Bound::Int(20_700))));
+}
+
+#[test]
+fn a_timestamp_column_records_the_unit_it_counts_in() {
+    let batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new(
+            "t",
+            DataType::Timestamp(arrow_schema::TimeUnit::Millisecond, None),
+            true,
+        )])),
+        vec![Arc::new(arrow_array::TimestampMillisecondArray::from(vec![
+            Some(1_000),
+            Some(9_000),
+        ]))],
+    )
+    .expect("building");
+
+    let stats = &column_stats(&batch)["t"];
+    assert_eq!(
+        stats.min,
+        Some(Bound::Timestamp {
+            value: 1_000,
+            unit: sankhya_stats::TimeUnit::Millisecond
+        })
+    );
+    // One second past the epoch, asked in seconds, is the same instant --- so a file whose
+    // earliest value *is* that instant cannot be skipped by `< it`... but it can by `<`
+    // anything earlier. Both directions, because the unit is what makes either true.
+    assert!(can_skip(
+        stats,
+        &Predicate::LessThan(Bound::Timestamp {
+            value: 1,
+            unit: sankhya_stats::TimeUnit::Second
+        })
+    ));
+    assert!(!can_skip(
+        stats,
+        &Predicate::LessThan(Bound::Timestamp {
+            value: 5,
+            unit: sankhya_stats::TimeUnit::Second
+        })
+    ));
+}
+
+#[test]
+fn a_decimal_column_keeps_its_scale() {
+    // Money. `1234.56` is an unscaled 123,456 at scale 2, and a bound that dropped the
+    // scale would be a hundred times the amount.
+    let values = arrow_array::Decimal128Array::from(vec![Some(123_456_i128), Some(999_999)])
+        .with_precision_and_scale(18, 2)
+        .expect("a declared decimal");
+    let batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new(
+            "m",
+            DataType::Decimal128(18, 2),
+            true,
+        )])),
+        vec![Arc::new(values)],
+    )
+    .expect("building");
+
+    let stats = &column_stats(&batch)["m"];
+    assert_eq!(
+        stats.min,
+        Some(Bound::Decimal {
+            unscaled: 123_456,
+            scale: 2
+        })
+    );
+    // The same amount written at a different scale is the same amount.
+    assert!(can_skip(
+        stats,
+        &Predicate::LessThan(Bound::Decimal {
+            unscaled: 12_345_6,
+            scale: 2
+        })
+    ));
+    assert!(!can_skip(
+        stats,
+        &Predicate::LessThan(Bound::Decimal {
+            unscaled: 1_234_570,
+            scale: 3
+        })
+    ));
+}
+
+#[test]
+fn a_u64_past_the_signed_range_leaves_the_column_unbounded() {
+    // Bounds are kept in a signed space, and a `u64` past `i64::MAX` saturates to it --- so
+    // the file would claim a maximum that a value it holds exceeds, and
+    // `n > 9223372036854775807` would skip it. The rows that predicate hides are real.
+    //
+    // Unbounded instead, which costs a scan of a column nothing in this warehouse writes.
+    let batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("n", DataType::UInt64, true)])),
+        vec![Arc::new(arrow_array::UInt64Array::from(vec![
+            Some(1_u64),
+            Some(u64::MAX),
+        ]))],
+    )
+    .expect("building");
+
+    let stats = &column_stats(&batch)["n"];
+    assert_eq!(stats.min, None, "a saturated maximum invalidates both bounds");
+    assert_eq!(stats.max, None);
+    assert!(!can_skip(stats, &Predicate::GreaterThan(Bound::Int(i64::MAX))));
+
+    // And a column that stays inside the range keeps its bounds, so the guard above is not
+    // simply switching the type off.
+    let ordinary = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("n", DataType::UInt64, true)])),
+        vec![Arc::new(arrow_array::UInt64Array::from(vec![
+            Some(1_u64),
+            Some(9_u64),
+        ]))],
+    )
+    .expect("building");
+    assert_eq!(column_stats(&ordinary)["n"].max, Some(Bound::Int(9)));
+}

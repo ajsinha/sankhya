@@ -1214,6 +1214,17 @@ Timestamps round-trip correctly but the **zone is lost on read-back**, and naive
 mapped to the protocol's UTC-adjusted `timestamp` rather than `timestamp_ntz` — harmless only
 because SANKHYA happens to store UTC, which STATUS records as a *finding*, not a guarantee.
 
+> **The statistics half is closed, 2026-09-14 (`M24a`).** A `u64` past `i64::MAX` no longer
+> saturates: it makes the column **unbounded**, which costs a scan and cannot cost a row. A
+> genuine maximum of exactly `i64::MAX` is indistinguishable from a saturated one and is
+> treated as saturated, deliberately — telling them apart needs a second pass and the answer
+> changes nothing anybody wants. `a_u64_past_the_signed_range_leaves_the_column_unbounded`
+> pins it, and a catalogue entry proves the guard is what does the work.
+>
+> The three **type mapping** failures above are untouched, and so is the lost zone. The
+> sentence stays as it was written; it was true of the system that was audited, and the
+> statistics sentence is the only part of it that has stopped being true.
+
 ### `CNF-04` Checkpoints are not partition-aware — armed, not yet wired
 Corroborates and sharpens `FMT-03`. Reproduced: after a checkpoint, partition pruning is silently
 lost for every external reader, and `configuration` — table class, key columns, **clone lineage**,

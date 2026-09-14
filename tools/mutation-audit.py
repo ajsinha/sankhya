@@ -2304,11 +2304,13 @@ CATALOGUE = [
      "                let Some(stats) = file.stats.get(field.name()) else {\n                    continue;\n                };",
      "sankhya-readpath"),
 
+    # The finiteness guard, which `M24` moved but did not change: an infinity has no exact
+    # `ScalarValue`, and a bound the optimizer is handed is a bound it trusts.
     ("optimizer: hand it a bound it cannot represent exactly",
      "crates/sankhya-readpath/src/provider.rs",
-     "        Some(Bound::Float(v)) if v.is_finite() => Precision::Exact(ScalarValue::Float64(Some(*v))),",
-     "        Some(Bound::Float(v)) => Precision::Exact(ScalarValue::Float64(Some(*v))),",
-     "sankhya-readpath"),
+     "        Some(Bound::Float(v)) if v.is_finite() => match data_type {",
+     "        Some(Bound::Float(v)) => match data_type {",
+     "sankhya-readpath", 1, "pruning"),
 
     ("provider: put every file in one group, so the scan uses one core",
      "crates/sankhya-readpath/src/provider.rs",
@@ -6692,6 +6694,99 @@ CATALOGUE = [
      "        if !orphans.is_empty() {",
      "        if false {",
      "sankhya-cube-sql", 1, "dimension_table"),
+
+    # ------------------------------------------------------------------------------------
+    # `M24` --- the types a warehouse filters on. Every entry here removes one link in the
+    # chain a date bound travels: recorded by the producer, written into the table log as the
+    # protocol spells it, read back against the column's declared type, and compared against a
+    # literal that knows what it counts. Break any link and the bound is recorded and never
+    # matches, which is a scan; break the unit and it matches the wrong thing, which is rows.
+
+    # The type itself. Without the arm it falls into the unhandled list, which is exactly
+    # where it was until `M24`.
+    ("stats: stop recording bounds for dates, the type most queries filter on",
+     "crates/sankhya-table/src/stats.rs",
+     "        DataType::Date32 => primitive!(Date32Type, Bound::Date, 4),",
+     "",
+     "sankhya-readpath", 1, "pruning_types"),
+
+    # The scale. Dropped, `1234.56` is recorded as 123,456 --- a hundred times the amount,
+    # in the direction that makes a maximum look larger than it is.
+    ("stats: record a decimal's digits without the scale that places the point",
+     "crates/sankhya-table/src/stats.rs",
+     "            primitive!(Decimal128Type, |unscaled| Bound::Decimal { unscaled, scale }, 16)",
+     "            primitive!(Decimal128Type, |unscaled| Bound::Decimal { unscaled, scale: 0 }, 16)",
+     "sankhya-readpath", 1, "pruning_types"),
+
+    # A `u64` past `i64::MAX` saturates, and the file then claims a maximum a value it holds
+    # exceeds. This guard is the difference between a scan and a lost row.
+    ("stats: let a saturated maximum stand as if it were the real one",
+     "crates/sankhya-table/src/stats.rs",
+     "            if stats.max == Some(Bound::Int(i64::MAX)) {",
+     "            if false {",
+     "sankhya-table", 1, "stats"),
+
+    # The unit. Ignored, every instant is compared as a bare count --- so a second-resolution
+    # literal is a million times smaller than the same instant in microseconds, `at < it` is
+    # true of nothing, and every file is proved irrelevant.
+    ("stats: compare two instants without asking what either one counts",
+     "crates/sankhya-stats/src/column.rs",
+     "    (\n        value.div_euclid(per_second),\n        value.rem_euclid(per_second) * unit.nanos_each(),\n    )",
+     "    (value, 0)",
+     "sankhya-stats", 1, "typed_bounds"),
+
+    # Decimals at a common scale. Comparing the unscaled integers directly says 15 < 150 for
+    # two bounds that are the same amount.
+    ("stats: compare two decimals by their digits rather than their value",
+     "crates/sankhya-stats/src/column.rs",
+     "    Some(lift(a, scale_a)?.cmp(&lift(b, scale_b)?))",
+     "    Some(a.cmp(&b))",
+     "sankhya-stats", 1, "typed_bounds"),
+
+    # What the log carries. The day count round-trips perfectly through this system's own
+    # reader and is meaningless to every other one --- the failure `stats.rs`'s header calls
+    # the worse kind, because it cannot be fixed from here.
+    ("delta: write a date bound as its day count rather than as the protocol spells it",
+     "crates/sankhya-table-delta/src/stats.rs",
+     "        Bound::Date(days) => Some(serde_json::Value::from(render_date(*days))),",
+     "        Bound::Date(days) => Some(serde_json::Value::from(i64::from(*days))),",
+     "sankhya-table-delta", 1, "bounds"),
+
+    # And reading it back. The statistics document is schemaless: decoded by JSON shape
+    # alone a date is a byte string, incomparable with the bound a query's literal produces,
+    # so the bound is written, read, and never matches anything.
+    ("delta: read a bound by its JSON shape rather than against the column's type",
+     "crates/sankhya-table-delta/src/stats.rs",
+     "        (serde_json::Value::String(text), Some(DataType::Date32)) => {\n            parse_date(text).map(Bound::Date)\n        }",
+     "",
+     "sankhya-readpath", 1, "pruning_types"),
+
+    # A fraction finer than the unit holds. Truncating moves a maximum **down**, which is the
+    # one direction that skips a file holding rows.
+    ("delta: truncate a timestamp bound to the unit instead of refusing it",
+     "crates/sankhya-table-delta/src/stats.rs",
+     "    if fraction.len() > digits || !fraction.bytes().all(|b| b.is_ascii_digit()) {",
+     "    if !fraction.bytes().all(|b| b.is_ascii_digit()) {",
+     "sankhya-table-delta", 1, "bounds"),
+
+    # An offset the document is not specified to carry. Refused by the field checks rather
+    # than by a guard of its own --- there was one, and this catalogue proved it could not
+    # fail, so it is gone. What is left is the check that does the work: the offset's digits
+    # land in the fractional part, which must be digits and no longer than the unit holds.
+    ("delta: accept a fractional part that is not digits, which is how an offset gets in",
+     "crates/sankhya-table-delta/src/stats.rs",
+     "    if fraction.len() > digits || !fraction.bytes().all(|b| b.is_ascii_digit()) {",
+     "    if fraction.len() > digits {",
+     "sankhya-table-delta", 1, "bounds"),
+
+    # The read path's half of the type check. Reported as `Float64` whatever the column is,
+    # a `Float32` column's statistics are ones DataFusion's interval analysis refuses to
+    # compare --- which fails the query outright rather than slowing it.
+    ("readpath: report every float bound as `Float64` whatever the column holds",
+     "crates/sankhya-readpath/src/provider.rs",
+     "        Some(Bound::Float(v)) if v.is_finite() => match data_type {\n            DataType::Float64 => Precision::Exact(ScalarValue::Float64(Some(*v))),",
+     "        Some(Bound::Float(v)) if v.is_finite() => match DataType::Float64 {\n            DataType::Float64 => Precision::Exact(ScalarValue::Float64(Some(*v))),",
+     "sankhya-readpath", 1, "pruning"),
 
 ]
 

@@ -434,6 +434,16 @@ async fn a_bound_the_optimizer_cannot_represent_exactly_is_withheld() {
     use datafusion::common::stats::Precision;
     use sankhya_stats::ColumnStats;
 
+    // **Against a float column.** An infinity is only reachable as a float bound, and the
+    // fixture asserted it against `amount`, which is `Int64` --- so after `M24` narrowed
+    // float bounds to the column's own width, this half was `Absent` for the wrong reason
+    // and the finiteness guard could be deleted with the test still passing. The mutation
+    // catalogue is what said so.
+    let floating = Arc::new(Schema::new(vec![
+        Field::new("amount", DataType::Float64, false),
+        Field::new("_sankhya_commit_lsn", DataType::UInt64, false),
+    ]));
+
     let dir = tempfile::tempdir().expect("a temp dir");
     let (files, _) = table(dir.path());
 
@@ -457,7 +467,7 @@ async fn a_bound_the_optimizer_cannot_represent_exactly_is_withheld() {
     let splice = plan_splice(&[TierRef::new("published", coverage)], Lsn::new(1_000))
         .expect("a single tier");
     let provider = SankhyaTable::new(
-        schema(),
+        Arc::clone(&floating),
         with_infinity,
         Vec::new(),
         Lsn::new(1_000),
@@ -470,7 +480,7 @@ async fn a_bound_the_optimizer_cannot_represent_exactly_is_withheld() {
     assert_eq!(stats.column_statistics[index].min_value, Precision::Absent);
     assert_eq!(stats.column_statistics[index].max_value, Precision::Absent);
 
-    // A finite float, by contrast, goes through.
+    // A finite float on the same column, by contrast, goes through.
     let mut finite = (0..1u64)
         .map(|_| {
             let mut catalogue = BTreeMap::new();
@@ -491,10 +501,44 @@ async fn a_bound_the_optimizer_cannot_represent_exactly_is_withheld() {
 
     let splice = plan_splice(&[TierRef::new("published", coverage)], Lsn::new(1_000))
         .expect("a single tier");
-    let provider = SankhyaTable::new(schema(), finite, Vec::new(), Lsn::new(1_000), splice, true);
+    let provider = SankhyaTable::new(
+        Arc::clone(&floating),
+        finite,
+        Vec::new(),
+        Lsn::new(1_000),
+        splice,
+        true,
+    );
     let stats = provider.statistics().expect("statistics");
     assert_eq!(
         stats.column_statistics[index].min_value,
         Precision::Exact(datafusion::scalar::ScalarValue::Float64(Some(1.5)))
     );
+
+    // And the same bound on the integer column it was previously asserted against is
+    // withheld, which is the half that was missing.
+    let provider = SankhyaTable::new(
+        schema(),
+        vec![LoggedFile::new("x.parquet".to_string(), 1, 10).with_stats({
+            let mut catalogue = BTreeMap::new();
+            catalogue.insert(
+                "amount".to_string(),
+                ColumnStats {
+                    rows: 10,
+                    nulls: 0,
+                    min: Some(Bound::Float(1.5)),
+                    max: Some(Bound::Float(9.5)),
+                    ..ColumnStats::default()
+                },
+            );
+            catalogue
+        })],
+        Vec::new(),
+        Lsn::new(1_000),
+        plan_splice(&[TierRef::new("published", coverage)], Lsn::new(1_000))
+            .expect("a single tier"),
+        true,
+    );
+    let stats = provider.statistics().expect("statistics");
+    assert_eq!(stats.column_statistics[index].min_value, Precision::Absent);
 }
