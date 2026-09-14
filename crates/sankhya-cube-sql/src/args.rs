@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 const KNOWN_OPTIONS: &[&str] = &[
     "by",
     "along",
+    "to",
     "where",
     "order",
     "overlay",

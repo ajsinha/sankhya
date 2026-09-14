@@ -44,8 +44,21 @@
 /// dependency on the algebra crate directly --- which exists to have **no** dependencies, and
 /// whose consumers should not have to know that to use it.
 pub mod algo {
+    pub use sankhya_cube_algo::hierarchy::Hierarchy;
     pub use sankhya_cube_algo::lattice::{select, Cost, Cuboid, Lattice};
     pub use sankhya_cube_algo::measure::{Along, Measure, Rule};
+}
+
+/// What [`consolidate`](crate::consolidate::consolidate) needs to be *called*.
+///
+/// Its signature names a graph, a vertex, an edge mask and a budget, and until this existed a
+/// caller could not spell any of them without taking a direct dependency on the graph crate.
+/// An API whose types are unreachable is an API only its own tests can use --- which is what
+/// `consolidate` was: two callers, both tests, for a walk the query path needed.
+pub mod graph {
+    pub use sankhya_graph_algo::budget::Budget;
+    pub use sankhya_graph_algo::csr::{Adjacency, AdjacencyBuilder, Edge, Validity};
+    pub use sankhya_graph_algo::ids::{EdgeMask, EdgeType, VertexId};
 }
 
 pub mod catalogue;

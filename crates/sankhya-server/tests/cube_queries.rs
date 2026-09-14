@@ -1797,6 +1797,101 @@ async fn a_consolidation_says_whether_it_was_served_from_a_cuboid() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shared_member_is_totalled_once_and_not_once_per_route() {
+    // `M22b`, and the arithmetic `exit_criteria.rs`'s first criterion holds: a member reporting
+    // into two parents must contribute **once** to a total spanning both.
+    //
+    // The shape matters, and the obvious one tests nothing. `north -> west` and `south -> west`
+    // gives every member a single parent, so no walk can double-count it. The bug needs a
+    // member reachable from the root by **two routes**:
+    //
+    //     west --+-- north              `north` reports into `west` directly *and*
+    //            +-- coastal -- north    through `coastal`, so it is reachable twice
+    //
+    // Walking *up* from each member and adding it wherever it reaches is the natural
+    // implementation and the wrong one. Walking **down** from `west` and collecting a *set*
+    // counts it once, which is why `to=` uses `consolidate` rather than the one-step parent
+    // function `along=` uses.
+    //
+    // Asserted as an identity: the total for `west` is `north`'s own total, because `north` is
+    // the only member under `west` carrying facts. Counted once per route it would be exactly
+    // double.
+    let dir = warehouse_with_a_fact_table();
+    catalogue::save(
+        dir.path(),
+        &sales_rolling_up(&[("north", "west"), ("north", "coastal"), ("coastal", "west")]),
+    )
+    .expect("a hierarchy where one member reports two ways");
+
+    let server = server_over(&dir, policy("reader", None));
+    connect(&server, "ana");
+
+    let just_north = server
+        .query(
+            "SELECT * FROM cube_slice('sales', 'amount', 'where=region:north')",
+            &Caller::new(&anyone()),
+        )
+        .expect("north on its own");
+    let totalled = server
+        .query(
+            "SELECT * FROM cube_consolidate('sales', 'amount', 'along=region', 'to=west')",
+            &Caller::new(&anyone()),
+        )
+        .expect("and the subtree totals");
+
+    // **The `west` row, not the whole result.** `to=` moves one subtree and leaves every other
+    // member where it is, so `south` is still in the answer under its own name --- summing the
+    // result compares a subtree total against the cube and fails while the arithmetic is right.
+    let regions = first_column(&totalled, "region");
+    let amounts = first_column(&totalled, "amount");
+    // Every `west` row, summed. A consolidation keeps the other axes, so the root appears once
+    // per remaining member --- here once per period. Taking the first row compares one period
+    // against a figure that spans them all, which is a third wrong in a way that reads like a
+    // double-count bug.
+    let west: f64 = regions
+        .iter()
+        .zip(amounts.iter())
+        .filter(|(region, _)| region.as_str() == "west")
+        .map(|(_, amount)| amount.parse::<f64>().expect("a number"))
+        .sum();
+    assert!(west > 0.0, "the root is in the answer: {regions:?}");
+
+    let alone = total_from(&just_north);
+    assert!(alone > 0.0, "the fixture has facts under north: {alone}");
+    assert_eq!(
+        west, alone,
+        "`north` reaches `west` two ways and must contribute once --- twice would be {}",
+        alone * 2.0
+    );
+    assert!(
+        regions.iter().any(|region| region == "south"),
+        "and a member outside the subtree is untouched, not swept in: {regions:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn totalling_to_a_member_the_hierarchy_does_not_have_is_refused() {
+    let dir = warehouse_with_a_fact_table();
+    catalogue::save(dir.path(), &sales_rolling_up(&[("north", "west")]))
+        .expect("a hierarchy");
+
+    let server = server_over(&dir, policy("reader", None));
+    connect(&server, "ana");
+
+    let refused = server
+        .query(
+            "SELECT * FROM cube_consolidate('sales', 'amount', 'along=region', 'to=atlantis')",
+            &Caller::new(&anyone()),
+        )
+        .expect_err("there is no such member");
+    assert!(
+        format!("{}", refused.message).contains("atlantis"),
+        "the refusal names what was asked for: {}",
+        refused.message
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_that_rolls_up_two_ways_is_refused_by_name() {
     // A shared member is the normal case in a real chart of accounts, and it is exactly what a
     // single-parent walk cannot carry: adding its facts under both parents double-counts it in
