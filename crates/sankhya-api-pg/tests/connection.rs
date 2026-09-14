@@ -978,7 +978,7 @@ async fn a_suspended_portal_resumes_where_it_stopped() {
     client.send(b'B', &bind).await;
 
     // One row at a time, over a result of two.
-    let mut fetch = || {
+    let fetch = || {
         let mut execute = b"\0".to_vec();
         execute.extend_from_slice(&1i32.to_be_bytes());
         execute

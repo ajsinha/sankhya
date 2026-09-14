@@ -137,6 +137,106 @@ impl TableFunctionImpl for Consolidate {
     }
 }
 
+/// Everything that rolls into one member, each contributor counted once.
+///
+/// # Why a graph and not a walk up the parent links
+///
+/// Because a member may have more than one parent, and the two answers differ. Walking *up*
+/// from each member and adding it to whatever it reaches counts a shared member once per
+/// route; walking **down** from the root and collecting a *set* counts it once. Over the
+/// hierarchy in `exit_criteria.rs` --- where `b` reports into both `north` and `south` --- the
+/// set gives 105 and the paths give 125, and only one of those is the total.
+///
+/// [`consolidate`] is the walk that returns the set, and it refuses rather than reporting a
+/// lower bound: a truncated traversal or a member that consolidates into itself both make the
+/// answer smaller than the truth, and a lower bound labelled as a total is what an operator
+/// acts on.
+///
+/// # Errors
+///
+/// When the member is not in the hierarchy, when the hierarchy runs through a cycle, or when
+/// the traversal exceeded its budget.
+fn to_one_member(
+    cells: &Cells,
+    hierarchy: &sankhya_cube::algo::Hierarchy,
+    dimension: &str,
+    target: &str,
+    measure: &Measure,
+    args: &Arguments,
+) -> Result<Cells> {
+    use sankhya_cube::graph::{AdjacencyBuilder, Budget, Edge, EdgeMask, EdgeType, VertexId, Validity};
+
+    const ROLLS_UP: EdgeType = EdgeType(0);
+
+    // One index over the members, so a name and a vertex are the same thing said two ways.
+    let names: Vec<&str> = hierarchy.members().into_iter().collect();
+    let Some(root) = names.iter().position(|held| held.eq_ignore_ascii_case(target)) else {
+        return plan_err!(
+            "`{target}` is not a member of the hierarchy declared for `{dimension}`. It has \
+             {names:?}"
+        );
+    };
+
+    // Edges point **parent to child**, because consolidation asks what contributes to a
+    // member rather than what it contributes to.
+    let mut builder = AdjacencyBuilder::new(names.len());
+    for (at, parent) in names.iter().enumerate() {
+        for child in hierarchy.children_of(parent) {
+            let Some(to) = names.iter().position(|held| *held == child) else {
+                continue;
+            };
+            let pushed = builder.push(Edge {
+                source: VertexId(at as u32),
+                target: VertexId(to as u32),
+                edge_type: ROLLS_UP,
+                validity: Validity::always(),
+                weight: 1.0,
+            });
+            if pushed.is_err() {
+                return plan_err!(
+                    "the hierarchy declared for `{dimension}` is larger than this walk can \
+                     index"
+                );
+            }
+        }
+    }
+
+    let walked = sankhya_cube::consolidate::consolidate(
+        &builder.build(),
+        VertexId(root as u32),
+        &EdgeMask::of([ROLLS_UP]),
+        &Budget::generous(),
+    );
+    let members = walked.members().map_err(|why| {
+        plan_datafusion_err!(
+            "`{target}` cannot be totalled from the hierarchy declared for `{dimension}`: \
+             {why}. Refused rather than answered: what the walk found is a lower bound, and a \
+             lower bound labelled as a total is what somebody acts on"
+        )
+    })?;
+
+    // Every member of the set collapses onto the root. `consolidate_along` does the moving,
+    // because cells are multi-dimensional and it already moves addresses correctly --- and
+    // because the set has each contributor once, so does the result.
+    let contributing: std::collections::BTreeSet<&str> = members
+        .iter()
+        .filter_map(|vertex| names.get(vertex.0 as usize).copied())
+        .collect();
+    let parents = |member: &str| {
+        contributing
+            .iter()
+            .find(|held| held.eq_ignore_ascii_case(member))
+            .map(|_| target.to_string())
+    };
+
+    let stated = args.list("order");
+    let order: Vec<&str> = stated.iter().map(String::as_str).collect();
+    let ordered = if order.is_empty() { Ordered::Unstated } else { Ordered::By(&order) };
+
+    consolidate_along(cells, dimension, &parents, measure, ordered)
+        .map_err(|refused| plan_datafusion_err!("{refused}"))
+}
+
 /// Consolidate one dimension's members into their declared parents.
 fn consolidated(
     cells: &Cells,
@@ -181,11 +281,37 @@ fn consolidated(
         );
     };
 
+    // `to=<member>`: the whole subtree, each descendant counted once.
+    //
+    // A different question from `along=` alone, and worth being a different option rather than
+    // a mode. `along=` walks **one step**: every member is replaced by its parent, which is
+    // what a drill-up does. `to=` asks for a *total* --- everything that rolls into one named
+    // member, however deep --- and it is the question a shared member makes interesting.
+    //
+    // Which is why it uses the set-valued walk. `consolidate` returns the members contributing
+    // to a root **each exactly once**, so a member that reports into two parents is counted
+    // once in a subtree containing both routes to it. Summing along paths instead gives it once
+    // per route: `exit_criteria.rs`'s first criterion holds the arithmetic --- 105 over a
+    // ragged hierarchy with an alternate roll-up, where by-paths gives 125.
+    //
+    // The reduction is still `consolidate_along`, with a parent function that maps every member
+    // of the set to the root. Cells are multi-dimensional and that function already moves
+    // addresses correctly; reimplementing the fold here would be a second answer to a question
+    // this crate has already answered once.
+    if let [target] = args.list("to").as_slice() {
+        return to_one_member(cells, hierarchy, &dimension, target, measure, args);
+    }
+
     // A member with two parents cannot be carried by a single-parent walk.
     //
-    // Checked before anything is moved, and named in full: a caller told only that the
-    // hierarchy is non-strict has to go and find which member, and the definition may hold
-    // thousands.
+    // **Below the `to=` dispatch, and that ordering is the point.** This refusal is about the
+    // one-step walk `along=` performs, not about the hierarchy: a shared member is a perfectly
+    // ordinary thing for a definition to declare, and `to=` exists to total one. Checked first,
+    // it refused the exact case the set-valued walk was written to handle --- the feature
+    // rejecting its own reason for existing, which is how it was found.
+    //
+    // Named in full: a caller told only that the hierarchy is non-strict has to go and find
+    // which member, and the definition may hold thousands.
     for member in hierarchy.members() {
         let parents = hierarchy.parents_of(member);
         if parents.len() > 1 {
