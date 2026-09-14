@@ -70,6 +70,7 @@ fn session() -> (SessionContext, Arc<CubeCatalog>) {
         Published {
             // A fixture builds its own cells, which is the opposite of reading a cuboid.
             from_cuboid: false,
+            members: std::sync::Arc::default(),
             cube: Arc::clone(&cube),
             cells: Arc::new(cells),
             // Stated, because cells hold one measure's values and the query names a
@@ -100,6 +101,7 @@ fn session() -> (SessionContext, Arc<CubeCatalog>) {
         Published {
             // A fixture builds its own cells, which is the opposite of reading a cuboid.
             from_cuboid: false,
+            members: std::sync::Arc::default(),
             cube: Arc::clone(&cube),
             cells: Arc::new(ratio_cells),
             measure: "ratio".to_string(),
@@ -349,6 +351,7 @@ async fn two_measures_of_one_cube_are_both_available_at_once() {
         Published {
             // A fixture builds its own cells, which is the opposite of reading a cuboid.
             from_cuboid: false,
+            members: std::sync::Arc::default(),
             cube: Arc::clone(&published.cube),
             cells: Arc::clone(&published.cells),
             measure: "ratio".to_string(),

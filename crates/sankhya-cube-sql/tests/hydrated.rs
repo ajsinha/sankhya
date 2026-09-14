@@ -40,6 +40,7 @@ fn published(measure: &str, snapshot: u64) -> Published {
     Published {
         // A fixture builds its own cells, which is the opposite of reading a cuboid.
         from_cuboid: false,
+        members: std::sync::Arc::default(),
         cube: cube(),
         cells: Arc::new(Cells::over(vec!["region".to_string()])),
         measure: measure.to_string(),

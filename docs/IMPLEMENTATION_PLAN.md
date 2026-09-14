@@ -1947,6 +1947,41 @@ the dimension table becomes a member anyway.
 This is what makes ragged and alternate hierarchies expressible, which is why M22b depends on
 it and M22a does not.
 
+> **Complete, 2026-09-14.** `dimensions.rs` opens the table through the **same session** that
+> will query the cube, so a principal sees the members of the rows they may read and a
+> referential check cannot call their own facts orphans. Both declared forms are read:
+>
+> - `PARENT <child> TO <parent>` — the ragged form, one row per member, a null parent meaning
+>   a root;
+> - `LEVEL … = <column>`, coarse to fine — the star-schema form, one row per leaf carrying its
+>   ancestors. A **null at some level is a ragged branch, not a broken row**: the edge to that
+>   level is absent and the one below joins to the next non-null ancestor. Padding it with a
+>   placeholder is the flattening `FR-QUERY-11` forbids.
+>
+> A `ROLLUP` in the `CREATE CUBE` still wins where both exist. It is the more deliberate
+> statement and the only way to express an alternate roll-up at all, since a dimension table
+> has one parent column and can say one thing per member.
+>
+> **The referential check refuses at consolidation and not at hydration**, because that is
+> where it changes an answer. At base grain an orphan is a member like any other and the money
+> against it is real; the moment anything consolidates it has no parent, so it stays where it
+> is and sits at leaf grain *beside* the parents, in a result whose other rows are totals and
+> which says nothing about the difference. It is refused naming the member and the table,
+> because the fix is to load the missing dimension row.
+>
+> The tables are read **once per cube**, not per measure, and the same map is handed to the
+> cuboid path and the fact-table path — materialisation must not change the answer, and
+> leaving the cuboid path empty would make a cube consolidate until a maintenance tick built a
+> cuboid for it and refuse afterwards.
+>
+> One defect the work produced, worth recording because it was invisible from the code:
+> `hydrate::member_at` renders whatever the array holds and does **not** test for null — its
+> only caller checked first, in `address_of`. The second caller did not, and filed every
+> ragged gap under the empty string: a member named `""` in no dimension table, with real
+> money against it, which is the exact invention `members.rs`'s own header forbids. Caught by
+> `a_ragged_branch_joins_to_the_next_ancestor_it_actually_has`, the one fixture in which a
+> null reaches that path at all.
+
 ### M24 — Pruning, and statistics for the types a warehouse filters on
 
 `table/stats.rs` records bounds for `Int16/32/64`, `UInt64`, `Float32/64` and `Utf8`, and for

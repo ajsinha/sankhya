@@ -1203,6 +1203,25 @@ impl Server {
             // which is the shape of defect this warehouse keeps finding: a guard that is
             // correct and never reached.
             let snapshot = self.snapshot_across(cube.reads());
+            // What the dimension tables say, read once for the cube rather than once per
+            // measure: members do not vary by measure, and a cube with four of them would
+            // otherwise scan every dimension table four times to build cells differing in
+            // one column.
+            //
+            // Through *this* session, so a principal sees the members of the rows they may
+            // read --- see `dimensions.rs`. A dimension table that will not read leaves the
+            // map without that entry and the cube hydrates anyway: the hierarchy and the
+            // referential check are then absent and say so, which is better than refusing to
+            // serve a fact table that is perfectly readable.
+            let members: Arc<
+                std::collections::BTreeMap<String, sankhya_cube::members::Members>,
+            > = Arc::new(
+                tokio::task::block_in_place(|| {
+                    self.runtime
+                        .block_on(sankhya_cube_sql::dimensions::read_members(context, cube))
+                })
+                .unwrap_or_default(),
+            );
             for measure in cube.measures() {
                 let key = sankhya_cube_sql::hydrated::Key {
                     cube: cube.name().to_string(),
@@ -1291,7 +1310,7 @@ impl Server {
                     .into_iter()
                     .filter(|_| may_use_a_cuboid)
                     .find_map(|under| {
-                        self.from_a_cuboid(cube, measure, under, snapshot, session, &needed)
+                        self.from_a_cuboid(cube, measure, under, snapshot, session, &needed, &members)
                     })
                 {
                     catalog.publish(cube.name(), published.clone());
@@ -1306,6 +1325,7 @@ impl Server {
                         Arc::new(cube.clone()),
                         measure,
                         snapshot,
+                        Arc::clone(&members),
                     ))
                 });
                 // A cube that will not hydrate is left unpublished rather than reported here.
@@ -1573,6 +1593,11 @@ impl Server {
                     Arc::new(cube.clone()),
                     measure,
                     self.snapshot_across(cube.reads()),
+                    // Nothing is read from this `Published` but its cells and completeness,
+                    // so no dimension table is opened for it. Stated rather than assumed: an
+                    // empty map means "not checked", and a cuboid built here inherits the
+                    // referential check of whoever serves it, not of this hydration.
+                    Arc::default(),
                 ))
         });
         hydrated.ok()?;
@@ -1776,6 +1801,9 @@ impl Server {
         snapshot: u64,
         session: sankhya_cube::materialise::Session,
         needed: &sankhya_cube::algo::Cuboid,
+        members: &Arc<
+            std::collections::BTreeMap<String, sankhya_cube::members::Members>,
+        >,
     ) -> Option<sankhya_cube_sql::catalog::Published> {
         let base = sankhya_cube::algo::Cuboid::of(
             &cube.dimensions().iter().map(|d| d.name.as_str()).collect::<Vec<&str>>(),
@@ -1826,6 +1854,14 @@ impl Server {
             // precisely so that serving it does not have to invent this.
             completeness,
             from_cuboid: true,
+            // The same dimension tables the fact-table path was given.
+            //
+            // **Materialisation must not change the answer**, and leaving this empty on the
+            // cuboid path would do exactly that: a cube whose hierarchy lives in its
+            // dimension table would consolidate until a cuboid was built for it and refuse
+            // afterwards, with the refusal depending on a maintenance tick nobody ran on
+            // purpose. Read once per cube in the loop above and handed to both paths.
+            members: Arc::clone(members),
         })
     }
 

@@ -325,6 +325,27 @@ impl Cells {
     pub fn axis(&self, dimension: &str) -> Option<usize> {
         self.dimensions.iter().position(|d| d == dimension)
     }
+
+    /// Every member appearing along one dimension.
+    ///
+    /// The set the data produced, which is not the set the dimension table declares --- and
+    /// the difference in each direction means something different. A declared member with no
+    /// facts is an ordinary quiet month; a member here that the dimension table lacks is a
+    /// broken join. [`Members::against`](crate::members::Members::against) is given this and
+    /// keeps only the second.
+    ///
+    /// Empty for a dimension the cells are not over, rather than an error: a caller asking
+    /// what a missing axis holds is asking about nothing, and nothing is the honest answer.
+    #[must_use]
+    pub fn members_along(&self, dimension: &str) -> std::collections::BTreeSet<&str> {
+        let Some(axis) = self.axis(dimension) else {
+            return std::collections::BTreeSet::new();
+        };
+        self.cells
+            .keys()
+            .filter_map(|address| address.get(axis).map(String::as_str))
+            .collect()
+    }
 }
 
 /// An address that does not name one member per dimension.

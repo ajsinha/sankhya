@@ -744,6 +744,13 @@ what native cubing gives you.
 > (`M23`), because member keys still come from the fact table. The sentence above stays as it
 > was written --- it was true of the system that was audited.
 
+> **Closed, 2026-09-14 (`M22b` and `M23`).** `cube_consolidate` gained `to=<member>`, which
+> totals a whole subtree through the set-valued walk and so counts a shared member once rather
+> than once per route; and the dimension table is now opened, in both the `PARENT` and the
+> `LEVEL` form, through the session that will query the cube. `FR-CUBE-06` and `FR-CUBE-08`
+> are met. The referential check the finding did not ask for came with it: a fact key no
+> dimension row has is refused at consolidation, by name.
+
 ### `FEA-05` QR, SVD and eigendecomposition shipped while six documents say they are deliberately absent
 Including the maths crate's own header, which argues that *"a subtly wrong SVD produces plausible
 singular values"* as the reason not to have one. `mat_singular_values` forms the Gram matrix,

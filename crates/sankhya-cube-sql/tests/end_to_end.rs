@@ -94,7 +94,7 @@ async fn a_cube_is_built_from_the_table_its_definition_names_and_then_queried() 
         None,
     );
 
-    let absorbed = publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 11)
+    let absorbed = publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 11, Default::default())
         .await
         .expect("hydrated");
     assert_eq!(absorbed.placed, 3);
@@ -135,7 +135,7 @@ async fn rows_that_could_not_be_placed_reach_the_completeness_column() {
         None,
     );
 
-    let absorbed = publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 11)
+    let absorbed = publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 11, Default::default())
         .await
         .expect("hydrated");
     assert_eq!(absorbed.rows, 4);
@@ -172,7 +172,7 @@ async fn a_completeness_threshold_refuses_a_cube_that_lost_rows() {
         Arc::new(sankhya_cube::querylog::QueryLog::new()),
         None,
     );
-    publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 11)
+    publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 11, Default::default())
         .await
         .expect("hydrated");
 
@@ -204,7 +204,7 @@ async fn a_fact_table_missing_a_dimension_column_is_refused_at_hydration() {
     context.register_batch("fact_figures", batch).expect("registered");
     let catalog = Arc::new(CubeCatalog::new());
 
-    let refused = publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 1)
+    let refused = publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 1, Default::default())
         .await
         .expect_err("hydrated a table missing a dimension");
     assert!(refused.to_string().contains("period_key"), "{refused}");
@@ -217,7 +217,7 @@ async fn a_definition_naming_a_table_that_does_not_exist_is_refused() {
     let context = SessionContext::new();
     let catalog = Arc::new(CubeCatalog::new());
     assert!(
-        publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 1)
+        publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 1, Default::default())
             .await
             .is_err()
     );
@@ -278,7 +278,7 @@ async fn the_cubes_totals_agree_with_plain_sql_over_the_same_table() {
         None,
     );
 
-    let absorbed = publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 1)
+    let absorbed = publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 1, Default::default())
         .await
         .expect("hydrated");
     assert_eq!(absorbed.placed as usize, ROWS, "every row reached the cube");
@@ -329,7 +329,7 @@ async fn a_two_dimensional_breakdown_agrees_with_the_equivalent_group_by() {
         Arc::new(sankhya_cube::querylog::QueryLog::new()),
         None,
     );
-    publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 1)
+    publish_from_fact_table(&context, &catalog, "figures", cube(), &amount(), 1, Default::default())
         .await
         .expect("hydrated");
 

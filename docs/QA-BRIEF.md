@@ -87,12 +87,22 @@ will reproduce them; that is expected.
   valid, well-formed, **zero-row** table.
 
 **Correctness**
-- Cube hierarchies are **half wired**, as of 2026-09-09. `cube_consolidate(cube, measure,
-  'along=<dimension>')` walks a declared `ROLLUP`, and a member that rolls up two ways is
-  refused by name rather than counted under both parents. What is still absent: the
-  **dimension-table join** — member keys come from the fact table, so `DIMENSION region FROM
-  sales.regions` never opens `sales.regions` and nothing checks referential integrity — and
-  therefore shared and ragged hierarchies, which need it. `LEVEL` still does not navigate.
+- Cube hierarchies are **wired**, as of 2026-09-14. `cube_consolidate(cube, measure,
+  'along=<dimension>')` walks one step up; adding `'to=<member>'` totals a whole subtree,
+  counting anything shared once rather than once per route. The hierarchy comes from a
+  declared `ROLLUP` if there is one, and otherwise from the **dimension table**, which is now
+  opened in both its forms — `PARENT child TO parent`, and `LEVEL` columns coarse to fine.
+  A null at some level is a ragged branch and joins to the next ancestor it actually has,
+  rather than being padded.
+  - Worth attacking: a **fact key with no dimension row** is refused at consolidation, naming
+    the member and the table, and is *not* refused at base grain — where the figure against it
+    is real. Check both halves.
+  - Also worth attacking: the dimension table is read through your own session, so a policy
+    that hides dimension rows will make your own facts look like orphans. That is the
+    consequence of reading the table through your session rather than around it — the
+    alternative tells a filtered principal which members exist — and it is a refusal rather
+    than a wrong number. What would be a defect is a member you may **not** see appearing in
+    one.
 - A row with a NULL key on **any** dimension is excluded from **every** cell, so a cube's
   breakdown along one dimension can silently omit rows because a different dimension was null.
   The `completeness` column is the only signal.

@@ -25,11 +25,19 @@ use datafusion::execution::context::SessionContext;
 use futures::StreamExt;
 use sankhya_cube::complete::Completeness;
 use sankhya_cube::hydrate::{absorb, empty_for, Absorbed};
+use sankhya_cube::members::Members;
 use sankhya_cube::model::Cube;
 use sankhya_cube_algo::measure::Measure;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// Read a cube's fact table and publish it under `name`.
+///
+/// `members` is what the dimension tables said, from
+/// [`read_members`](crate::dimensions::read_members). It is a parameter rather than read here
+/// because it does not depend on the measure and a cube usually has several: reading every
+/// dimension table once per measure would scan the small tables *n* times to build cells that
+/// differ only in one column.
 ///
 /// # Errors
 /// The table cannot be read, or a batch cannot be absorbed --- a dimension's join column
@@ -42,6 +50,7 @@ pub async fn publish_from_fact_table(
     cube: Arc<Cube>,
     measure: &Measure,
     snapshot: u64,
+    members: Arc<BTreeMap<String, Members>>,
 ) -> Result<Absorbed> {
     // A named table, or a declared query. Both arrive as a `DataFrame` read through *this*
     // session, which is what makes the authorization story one story: the query is planned
@@ -94,6 +103,7 @@ pub async fn publish_from_fact_table(
             measure: measure.name.clone(),
             snapshot,
             completeness: absorbed.completeness(),
+            members,
         },
     );
     Ok(absorbed)
@@ -123,6 +133,10 @@ pub fn publish_cells(
             measure: measure.to_string(),
             snapshot,
             completeness,
+            // No dimension table was read, and an empty map says exactly that. A caller who
+            // shaped the cells themselves checked no referential integrity, and claiming the
+            // check passed would be the cube asserting a property nobody established.
+            members: Arc::default(),
         },
     );
 }

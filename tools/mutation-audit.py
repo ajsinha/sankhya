@@ -3393,8 +3393,8 @@ CATALOGUE = [
 
     ("server: never read a materialised cuboid, leaving materialisation write-only",
      "crates/sankhya-server/src/wiring.rs",
-     "                if let Some(published) = scopes\n                    .into_iter()\n                    .filter(|_| may_use_a_cuboid)\n                    .find_map(|under| {\n                        self.from_a_cuboid(cube, measure, under, snapshot, session, &needed)\n                    })\n                {\n                    catalog.publish(cube.name(), published.clone());\n                    self.hydrated.put(key, published);\n                    continue;\n                }",
-     "                let _ = (scopes, may_use_a_cuboid);",
+     "                if let Some(published) = scopes\n                    .into_iter()\n                    .filter(|_| may_use_a_cuboid)\n                    .find_map(|under| {\n                        self.from_a_cuboid(cube, measure, under, snapshot, session, &needed, &members)\n                    })\n                {\n                    catalog.publish(cube.name(), published.clone());\n                    self.hydrated.put(key, published);\n                    continue;\n                }",
+     "                let _ = (scopes, may_use_a_cuboid, &members);",
      "sankhya-server"),
 
     ("cube: let a stored cuboid claim completeness it never measured",
@@ -6641,6 +6641,57 @@ CATALOGUE = [
      "            Err(refusal @ CommitError::Unsupported { .. }) => return Err(refusal),",
      "            Err(CommitError::Unsupported { .. }) => {}",
      "sankhya-table-delta", 1, "checkpoint"),
+
+    # ------------------------------------------------------------------------------------
+    # `M23` --- the dimension table is opened. Every entry here removes one thing the read
+    # does, and each is pinned by a fixture in `dimension_table.rs` that registers a real
+    # dimension table alongside the facts: none of these is decidable without reading it.
+
+    # The defect the work actually produced, kept as an entry because it was invisible from
+    # the code. `hydrate::member_at` renders whatever the array holds and does **not** test
+    # for null --- its first caller checks in `address_of`. The second did not, and filed
+    # every ragged gap under `""`: a member in no dimension table, with real money against it.
+    ("cube: file a ragged dimension row's gap under the empty string",
+     "crates/sankhya-cube/src/members.rs",
+     "    if column.is_null(row) {\n        return None;\n    }\n",
+     "",
+     "sankhya-cube-sql", 1, "dimension_table"),
+
+    # Edges run child to parent. Reversed, `parents_of` answers for the wrong end and the
+    # consolidation moves nothing --- a result identical in shape to the cells it started
+    # from, which is what a consolidation that silently did nothing looks like.
+    ("cube: read a level hierarchy upside down, parent rolling up into child",
+     "crates/sankhya-cube/src/members.rs",
+     "                            into.rollups.rolls_up(child, here.clone());",
+     "                            into.rollups.rolls_up(here.clone(), child);",
+     "sankhya-cube-sql", 1, "dimension_table"),
+
+    # A cycle found during a query is an unbounded walk and a timeout that names nothing.
+    # Found while reading the table, it names the members.
+    ("cube: take a dimension table's word that its hierarchy is acyclic",
+     "crates/sankhya-cube/src/members.rs",
+     "        self.rollups.validate()",
+     "        Ok(())",
+     "sankhya-cube-sql", 1, "dimension_table"),
+
+    # A dimension table that was read and gave no parent link is a legitimate table and an
+    # unusable hierarchy. Without the filter the empty hierarchy is used, every member has no
+    # parent, and the cells come back unchanged --- a result that looks like a consolidation
+    # and is not one, which is the exact thing the refusal exists to prevent.
+    ("cube-sql: consolidate along a hierarchy the dimension table did not give",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "        None => match read.filter(|members| members.describes_a_hierarchy()) {",
+     "        None => match read {",
+     "sankhya-cube-sql", 1, "dimension_table"),
+
+    # The referential check. An orphan has no parent, so it stays at leaf grain beside the
+    # parents in a result whose other rows are totals, and nothing in the output says which
+    # is which.
+    ("cube-sql: consolidate a member the dimension table has never heard of",
+     "crates/sankhya-cube-sql/src/functions.rs",
+     "        if !orphans.is_empty() {",
+     "        if false {",
+     "sankhya-cube-sql", 1, "dimension_table"),
 
 ]
 
