@@ -240,11 +240,16 @@ fn write_the_dimension_table(root: &std::path::Path) {
     let publication = Publication::external(&table_root, "regions");
     publication.create(&schema).expect("creating the dimension table");
 
+    // **The area must not be the region's own name.** It was, until `M23` opened the table:
+    // `north -> north` is a self-edge, which the hierarchy reader drops, so the fixture
+    // described a roll-up with nothing above anything. Every consolidation example in the book
+    // was then refused for the right reason against a fixture that was wrong, which is the
+    // hardest kind of red to read.
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
         vec![
             Arc::new(StringArray::from(vec!["north", "south"])),
-            Arc::new(StringArray::from(vec!["north", "south"])),
+            Arc::new(StringArray::from(vec!["west", "east"])),
         ],
     )
     .expect("a valid batch");
@@ -267,11 +272,17 @@ fn declare_the_sample_cube(root: &std::path::Path) {
         "sales",
         "orders",
         vec![
+            // **Its own table, with two levels.** The dimension pointed at `orders` and took
+            // its one level from the fact table's own `region` column --- which is a legal
+            // cube and is not the shape the documentation describes three paragraphs before
+            // showing it. Since `M23` the table is actually opened, so the fixture now has the
+            // shape it always claimed: members and their area live in `regions`, coarse to
+            // fine, and `region -> area` is a roll-up a consolidation can walk.
             Dimension {
                 name: "region".to_string(),
-                table: "orders".to_string(),
+                table: "regions".to_string(),
                 joins_on: "region".to_string(),
-                levels: vec![Level::new("area", "region")],
+                levels: vec![Level::new("area", "area"), Level::new("region", "region")],
                 rollups: None,
                 parent_child: None,
             },

@@ -370,7 +370,7 @@ async fn six_dimensional() -> SessionContext {
         Arc::new(sankhya_cube::querylog::QueryLog::new()),
         None,
     );
-    let absorbed = publish_from_fact_table(&context, &catalog, "wide", cube, &wide(), 7)
+    let absorbed = publish_from_fact_table(&context, &catalog, "wide", cube, &wide(), 7, Default::default())
         .await
         .expect("hydrated from the table its definition names");
     assert_eq!(absorbed.placed, 4, "every fact reached the cube");

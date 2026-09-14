@@ -122,7 +122,7 @@ impl TableFunctionImpl for Consolidate {
         let completeness = published.completeness;
         check_completeness(&completeness, &args)?;
 
-        let consolidated = consolidated(&narrowed, &published.cube, &measure, &args)?;
+        let consolidated = consolidated(&narrowed, &published, &measure, &args)?;
         check_materialise(&args)?;
         let materialised = published.from_cuboid;
         batch(
@@ -237,13 +237,26 @@ fn to_one_member(
         .map_err(|refused| plan_datafusion_err!("{refused}"))
 }
 
-/// Consolidate one dimension's members into their declared parents.
+/// Consolidate one dimension's members into their parents.
+///
+/// # Two places a hierarchy can come from, and the order between them
+///
+/// A `ROLLUP` written into the `CREATE CUBE` wins over the dimension table. It is the more
+/// deliberate statement --- somebody typed those edges --- and it is how alternate roll-ups
+/// and shared members get expressed at all, since a dimension table has one parent column and
+/// can say only one thing per member.
+///
+/// The dimension table is the fallback and the common case. A star schema keeps the roll-up
+/// in the data, one row per leaf carrying its ancestors, and until `M23` that shape could not
+/// consolidate at all: `Dimension::table` and `Level::column` were parsed, fingerprinted and
+/// read by nothing.
 fn consolidated(
     cells: &Cells,
-    cube: &sankhya_cube::model::Cube,
+    published: &crate::catalog::Published,
     measure: &Measure,
     args: &Arguments,
 ) -> Result<Cells> {
+    let cube = &published.cube;
     let asked = args.list("along");
     let [wanted] = asked.as_slice() else {
         return plan_err!(
@@ -273,13 +286,57 @@ fn consolidated(
     else {
         return plan_err!("the cube's definition has no dimension `{dimension}`");
     };
-    let Some(hierarchy) = declared.rollups.as_ref() else {
-        return plan_err!(
-            "no hierarchy is declared for `{dimension}`, so there is nothing to consolidate \
-             into. Declare one with `ROLLUP` on the dimension --- a consolidation invented \
-             from the data would be this system choosing a shape nobody wrote down"
-        );
+    // Declared first, then what the dimension table holds.
+    let read = published.members.get(&declared.name);
+    let hierarchy = match declared.rollups.as_ref() {
+        Some(declared) => declared,
+        None => match read.filter(|members| members.describes_a_hierarchy()) {
+            Some(members) => members.rollups(),
+            None => {
+                return plan_err!(
+                    "no hierarchy is available for `{dimension}`. Its definition declares no \
+                     `ROLLUP`, and `{}` {}. Refused rather than invented: a consolidation \
+                     inferred from the facts would be this system choosing a shape nobody \
+                     wrote down",
+                    declared.table,
+                    match read {
+                        Some(members) if members.rows() == 0 =>
+                            "was read and had no rows".to_string(),
+                        Some(_) => "gave no parent link --- every member is a root, so there \
+                                    is nothing above them to consolidate into"
+                            .to_string(),
+                        None => "was not read, because the dimension declares neither `LEVEL` \
+                                 nor `PARENT` and so names no column members could come from"
+                            .to_string(),
+                    }
+                );
+            }
+        },
     };
+
+    // **A fact key the dimension table does not have.**
+    //
+    // Checked here rather than at hydration because here is where it changes an answer. At
+    // base grain an orphan is a member like any other and the figure against it is real; the
+    // moment anything consolidates, it has no parent, so `consolidate_along` leaves it where
+    // it is and it sits *beside* the parents --- a row at leaf grain in a result whose other
+    // rows are totals. Nothing in the output says which is which, and a consumer grouping by
+    // level silently gains a level of its own.
+    //
+    // Named in full, because the fix is to load the missing dimension rows and the person
+    // doing that needs to know which.
+    if let Some(members) = read {
+        let orphans = members.orphans_among(cells.members_along(&dimension));
+        if !orphans.is_empty() {
+            let named: Vec<&str> = orphans.into_iter().collect();
+            return plan_err!(
+                "these members of `{dimension}` have facts but no row in `{}`: {named:?}. \
+                 Consolidating would leave them at leaf grain beside the parents, in a result \
+                 whose other rows are totals and which says nothing about the difference",
+                declared.table
+            );
+        }
+    }
 
     // `to=<member>`: the whole subtree, each descendant counted once.
     //

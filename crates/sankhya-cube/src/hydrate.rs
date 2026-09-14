@@ -161,7 +161,7 @@ pub fn empty_for(cube: &Cube) -> Cells {
 }
 
 /// Whether member keys can be read from this type.
-fn readable_key(data_type: &DataType) -> bool {
+pub(crate) fn readable_key(data_type: &DataType) -> bool {
     matches!(
         data_type,
         DataType::Utf8 | DataType::LargeUtf8 | DataType::Int64 | DataType::Int32
@@ -184,7 +184,7 @@ fn address_of(keys: &[&dyn Array], row: usize) -> Option<Address> {
 }
 
 /// One member key, rendered.
-fn member_at(column: &dyn Array, row: usize) -> Option<String> {
+pub(crate) fn member_at(column: &dyn Array, row: usize) -> Option<String> {
     match column.data_type() {
         DataType::Utf8 => Some(column.as_string::<i32>().value(row).to_string()),
         DataType::LargeUtf8 => Some(column.as_string::<i64>().value(row).to_string()),
@@ -231,6 +231,21 @@ pub enum NotHydratable {
         /// The columns that are there, so a rename is one glance from being found.
         found: Vec<String>,
     },
+    /// A column the dimension's own table does not have.
+    ///
+    /// Separate from [`NotHydratable::MissingColumn`], which is about the *fact* table. The
+    /// two are fixed in different places --- one is a wrong `ON`, the other a wrong `LEVEL`
+    /// or `PARENT` --- and a message that named only "a column" sent people to the wrong one.
+    MissingMemberColumn {
+        /// The dimension.
+        dimension: String,
+        /// The table its members were read from.
+        table: String,
+        /// The column that is not there.
+        column: String,
+        /// The columns that are.
+        found: Vec<String>,
+    },
     /// A join column holds a type no member key can be read from.
     UnreadableKey {
         /// The column.
@@ -263,6 +278,12 @@ impl fmt::Display for NotHydratable {
                  it has {:?}. Refused rather than skipped: a missing dimension column groups \
                  every row under one member, and the total is then untraceable",
                 dimension, column, found
+            ),
+            Self::MissingMemberColumn { dimension, table, column, found } => write!(
+                f,
+                "dimension '{dimension}' names column '{column}', which its table '{table}' \
+                 does not have — it has {found:?}. Refused rather than skipped: a dimension \
+                 table read as empty makes every fact an orphan"
             ),
             Self::UnreadableKey { column, found } => write!(
                 f,

@@ -947,6 +947,7 @@ fn navigate_the_cube(runtime: &tokio::runtime::Runtime, table_root: &Path) -> bo
             Arc::new(cube),
             &measure,
             1,
+            Default::default(),
         )
         .await
         .is_err()

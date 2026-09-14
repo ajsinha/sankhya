@@ -62,6 +62,22 @@ pub struct Published {
     /// A diagnostic that reports its own input is worse than an absent one, because it looks
     /// like evidence.
     pub from_cuboid: bool,
+    /// **What each dimension table said**, by dimension name.
+    ///
+    /// Read at hydration by [`read_members`](crate::dimensions::read_members), because it is
+    /// the only moment a session, a snapshot and a policy scope are all in hand at once. It
+    /// carries two things a query needs and cannot recover from cells:
+    ///
+    /// - the **hierarchy in the data**, so a star schema's roll-up is usable without anybody
+    ///   retyping it into the `CREATE CUBE`;
+    /// - the **orphans**, the fact keys no dimension row has --- a broken join, which at base
+    ///   grain is a member nobody can explain and under a consolidation is a member with no
+    ///   parent sitting beside the parents.
+    ///
+    /// Empty for cells published by a caller that shaped them itself, which is honest: such a
+    /// caller read no dimension table, and an empty map says "not checked" rather than
+    /// "checked and clean".
+    pub members: Arc<BTreeMap<String, sankhya_cube::members::Members>>,
 }
 
 /// Every cube a session can navigate, and every overlay it may apply.

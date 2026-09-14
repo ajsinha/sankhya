@@ -45,6 +45,7 @@ mod args;
 pub mod catalog;
 pub mod ddl;
 pub mod describe;
+pub mod dimensions;
 pub mod functions;
 pub mod hydrated;
 pub mod publish;
@@ -52,5 +53,6 @@ mod result;
 
 pub use catalog::{CubeCatalog, Published, Unresolved};
 pub use ddl::{parse as parse_ddl, DdlError, Statement};
+pub use dimensions::read_members;
 pub use functions::register;
 pub use publish::{publish_cells, publish_from_fact_table};

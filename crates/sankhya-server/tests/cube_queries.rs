@@ -1923,6 +1923,13 @@ async fn a_member_that_rolls_up_two_ways_is_refused_by_name() {
 async fn consolidating_a_dimension_that_declares_no_hierarchy_is_refused() {
     // Rather than answering with the cells unchanged, which is a result that looks like a
     // consolidation and is not one.
+    //
+    // The refusal has to say **which** of the two sources came up empty, because they are
+    // fixed in different files. `sales()` declares `FROM orders` with one level, so since
+    // `M23` the dimension table is genuinely read --- and what it gives back is member keys
+    // and no parent link, which is a legitimate table and an unusable hierarchy. Saying
+    // "declare a `ROLLUP`" for that sends the reader to the cube definition when the roll-up
+    // they want belongs in the table.
     let dir = warehouse_with_a_fact_table();
     catalogue::save(dir.path(), &sales()).expect("a cube with no hierarchy declared");
 
@@ -1936,8 +1943,9 @@ async fn consolidating_a_dimension_that_declares_no_hierarchy_is_refused() {
         )
         .expect_err("there is nothing to consolidate into");
     assert!(
-        format!("{}", refused.message).contains("no hierarchy is declared"),
-        "the refusal says what is missing: {}",
+        format!("{}", refused.message).contains("no hierarchy is available")
+            && format!("{}", refused.message).contains("every member is a root"),
+        "the refusal says what is missing and which source was empty: {}",
         refused.message
     );
 }

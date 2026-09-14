@@ -701,15 +701,18 @@ That last one is why this is not a convenience over `GROUP BY`. Summing a closin
 across twelve months gives a number of the right magnitude, the right sign, and no meaning. A
 cube refuses it.
 
-### Two navigations, not four or five
+### Three navigations, not four or five
 
-`cube_rollup` and `cube_slice` are the whole navigation surface, registered at
-`crates/sankhya-cube-sql/src/functions.rs:56-60`. `FR-CUBE-14` asks for slice, dice, roll-up,
-drill-down and pivot, and `crates/sankhya-cube-sql/src/lib.rs:5` says so. `dice` and `pivot`
-exist as kernels — `crates/sankhya-cube/src/lib.rs:71` exports them — and `dice` is reachable
-only from *inside* `cube_slice`'s implementation
-(`crates/sankhya-cube-sql/src/functions.rs:237`). **`cube_pivot` and a drill-down have no SQL
-registration anywhere in `crates/`.**
+`cube_rollup`, `cube_consolidate` and `cube_slice` are the whole navigation surface, registered
+in `register` at the top of `crates/sankhya-cube-sql/src/functions.rs`. `FR-CUBE-14` asks for
+slice, dice, roll-up, drill-down and pivot, and that crate's own header says so. `dice` and
+`pivot` exist as kernels — `crates/sankhya-cube/src/lib.rs` exports them — and `dice` is
+reachable only from *inside* `cube_slice`'s implementation. **`cube_pivot` and a drill-down
+have no SQL registration anywhere in `crates/`.**
+
+`cube_consolidate` was the third, added on 2026-09-13. This heading said *two* for a day after
+it existed, which is the same rot the obituary further down this section is about: a count is
+the easiest claim to write and the easiest to leave behind.
 
 That correction is the reason this heading exists. Several documents said four navigations and
 one said five; the README said two and was right. A count is the easiest kind of claim to write
@@ -778,11 +781,20 @@ rather than as levels, because flattening it forces padding:
   )
 ```
 
+`FROM employees` is read, not merely recorded: `employee_id` and `manager_id` are the columns
+the hierarchy is built from, and `employees` is the table a fact's `employee_id` must appear in.
+The `LEVEL` columns are read the same way where there is no `PARENT` — coarse to fine, which is
+the star-schema shape.
+
 And an alternate roll-up that lives in the definition rather than in the data:
 
 ```text
       ROLLUP emea TO world
 ```
+
+A `ROLLUP` wins where both exist. It is the more deliberate statement, and it is the only way
+to say that one member rolls into **two** parents — a dimension table has one parent column and
+can say one thing per member.
 
 > **A defect that lived here, and what leaving it documented cost.** Until 2026-09-01 a measure
 > declared `MEAN ALONG region` or `MAX ALONG region` returned the **sum**: 15,687 where the
@@ -861,6 +873,39 @@ SELECT region, amount FROM cube_slice('sales', 'amount', 'where=period:q1');
 
 A slice narrows to one member. It is a restriction on the question, not a loss of data — which
 is why it does not change the completeness reported below.
+
+### Consolidating
+
+```sql
+SELECT region, amount FROM cube_consolidate('sales', 'amount', 'along=region');
+```
+
+Consolidation walks **up a hierarchy**, which is the opposite of rolling a dimension away: it
+keeps every axis and replaces each member along one of them with its parent. `along=` is one
+step — what a drill-up control does. Adding `to=` asks a different question:
+
+```sql
+SELECT region, amount FROM cube_consolidate('sales', 'amount', 'along=region, to=west');
+```
+
+That is the **total** of everything rolling into `west`, however deep, and it counts a member
+that reports into two parents **once** rather than once per route. The two are different
+questions and so are different options rather than a mode: over a ragged hierarchy with an
+alternate roll-up, the set-valued answer is 105 and summing along paths gives 125.
+
+`along=` alone refuses a shared member by name, because it carries one parent per member and
+would otherwise add that member's facts under both. Use `to=` for those.
+
+**Where the hierarchy comes from.** A `ROLLUP` written into the `CREATE CUBE` if there is one;
+otherwise the **dimension table**, read through your own session — `PARENT child TO parent` for
+the ragged form, or the `LEVEL` columns coarse to fine for a star schema. A null at some level
+is a ragged branch: the member below it joins to the next ancestor it actually has, rather than
+to a padded placeholder that would then appear in your results.
+
+**And a fact key with no dimension row is refused here, by name.** It has no parent, so a
+consolidation leaves it at leaf grain *beside* the parents — one raw member in a result whose
+other rows are totals, with nothing in the output to say which is which. At base grain it is
+not refused: the money against it is real, and `cube_rollup` will show it to you.
 
 ### The options string
 
@@ -2393,7 +2438,7 @@ less. [`STATUS.md`](STATUS.md) is the authoritative version.
 | **The graph's population path** | Not built, and the surface is unreachable rather than merely unhydrated — §11 has the two lines of code that make it so |
 | **The gRPC transport, and every write path on the control plane** | Not built. The gateway's route table and the size decision `FR-API-06` turns on both exist and are tested; wiring them to tonic and to an audited write path is the remainder. Jobs and archive operations are absent on purpose — with no scheduler, a jobs endpoint would list nothing forever and a client could not tell that from a system with nothing to list |
 | **A REST/JSON surface** | Refused by design rather than pending. §1 |
-| **`cube_dice`, `cube_pivot`, a drill-down** | Not registered. `dice` and `pivot` exist as kernels; only `cube_rollup` and `cube_slice` reach SQL. §7 |
+| **`cube_dice`, `cube_pivot`, a drill-down** | Not registered. `dice` and `pivot` exist as kernels; only `cube_rollup`, `cube_consolidate` and `cube_slice` reach SQL. §7 |
 | **A vector or matrix column *type*** | Not built. No DDL, no parser, no logical type; the width is enforced on the publish path only; there is no refusal for cross-width equality or for `ORDER BY embedding`; no vector index exists. [ADR-0021](adr/0021-vectors-matrices-across-the-tiers.md) decides all of it and §8 says which parts are code |
 | **Compensated accumulation in the decompositions and the special functions** | Not built. They are reproducible and uncompensated; §9 is the list and the evidence |
 | **A declared shape reaching the linear-algebra family** | Not built. Six functions take the square root of the array's length unconditionally, and two of them force a rectangular algorithm into a square shape. §8 |
