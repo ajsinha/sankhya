@@ -187,6 +187,27 @@ pub enum Lifetime {
     Maintained,
 }
 
+/// The fact source's tables, then every dimension table, each named once.
+///
+/// Order is stable --- the source's list as it was given, then the dimensions in declaration
+/// order --- because this feeds a fingerprint, and a fingerprint that depends on iteration
+/// order is one that changes when nothing did.
+///
+/// Deduplicated because a dimension over the fact table itself is an ordinary thing to
+/// declare (`DIMENSION region FROM orders ON region`), and listing a table twice folds its
+/// scope into the authorization digest twice --- which decides whether two principals share a
+/// cache entry.
+fn reads_of(source: &[String], dimensions: &[Dimension]) -> Vec<String> {
+    let mut reads: Vec<String> = source.to_vec();
+    for dimension in dimensions {
+        let table = dimension.table.trim();
+        if !table.is_empty() && !reads.iter().any(|held| held == table) {
+            reads.push(table.to_string());
+        }
+    }
+    reads
+}
+
 impl Definition {
     /// A definition. Nothing is checked here; call [`Definition::validate`].
     pub fn new(
@@ -197,8 +218,16 @@ impl Definition {
     ) -> Self {
         let fact_table = fact_table.into();
         Self {
-            // A name reads exactly itself. The list is never empty, which is what lets every
-            // reader iterate it rather than ask which kind of source this is.
+            // What the fact **source** reads. A name reads exactly itself; a declared query
+            // reads whatever the caller resolved. The list is never empty, which is what lets
+            // every reader iterate it rather than ask which kind of source this is.
+            //
+            // The **dimension tables are not here**, and that is deliberate rather than an
+            // omission: they are folded in by [`Definition::validate`], where the dimensions
+            // are final. Computing them at construction cached an answer that goes stale the
+            // moment a caller edits `dimensions` afterwards --- which every fixture in this
+            // repository does, and which is how the first version of this shipped a `reads`
+            // still naming the table a dimension had been moved off.
             reads: vec![fact_table.clone()],
             name: name.into(),
             fact_table,
@@ -217,6 +246,10 @@ impl Definition {
     /// definition is refused by [`validate`](crate::validate) rather than accepted with an
     /// empty dependency list --- a cube that cannot say what it reads cannot be authorized,
     /// keyed, or invalidated, and is the exact artefact `ADR-0012` refuses.
+    ///
+    /// The dimension tables are folded in by [`Definition::validate`], not here: the query is
+    /// only half of what this cube opens, and a cube over a query joined to `sales.regions`
+    /// reads `sales.regions` whether or not any `FROM` clause mentions it.
     #[must_use]
     pub fn over_query(mut self, query: impl Into<String>, reads: Vec<String>) -> Self {
         self.fact_table = query.into();
@@ -294,11 +327,29 @@ impl Definition {
     ///
     /// # Errors
     /// Returns the rejections. The list is non-empty and ordered for a stable diff.
-    pub fn validate(self) -> Result<Cube, Vec<Rejection>> {
+    pub fn validate(mut self) -> Result<Cube, Vec<Rejection>> {
         let rejections = validate::inspect(&self);
         if !rejections.is_empty() {
             return Err(rejections);
         }
+        // **Every dimension table, folded in here and nowhere earlier.**
+        //
+        // `reads` is what a principal must be allowed to read before this cube is registered
+        // for them, what the snapshot is taken across, and part of the fingerprint that
+        // decides whether a materialised cuboid still answers. A table missing from it is a
+        // table outside all three --- and until `M24b` the dimension tables were missing,
+        // while `GUIDE.md` said a cube whose *dimension tables* you cannot read is refused.
+        //
+        // Unreachable before `M23`, which is the honest part: until hydration opened them, a
+        // cube genuinely did read only its facts.
+        //
+        // Here rather than in `new` because this is the last moment the definition changes.
+        // Callers build a definition and then edit its dimensions --- a fixture moving a
+        // dimension onto another table, `into_definition` restoring a stored `reads` over the
+        // computed one --- and a list cached at construction is a list that goes quietly
+        // stale. A `Cube` can be made no other way, so folding here makes it an invariant of
+        // the type rather than a step somebody has to remember.
+        self.reads = reads_of(&self.reads, &self.dimensions);
         let version = fingerprint(&self);
         Ok(Cube { definition: self, version })
     }

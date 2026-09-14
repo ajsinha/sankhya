@@ -804,6 +804,11 @@ caller may not see. Each tells the caller something about rows they may not see.
   keeps the names for everybody and shows the **source** only where `server.user_functions` is on,
   which is the switch that decides who could have created one.
 
+  > **One of the five was not actually filtered, and stayed that way for five days.** The cube
+  > listing goes through `describe::register`, which was handed the whole cube list while the
+  > filter went into the two call sites beside it. Closed on 2026-09-14 (`M24b`); see
+  > [`AUDIT_REPORT.md`](AUDIT_REPORT.md) for why the test that should have caught it did not.
+
 **`SHOW FEEDS` took two attempts and the wrong one is instructive.** Filtering its rows by the
 same rule removed a feed whose target table does not exist --- and a feed that halted *because its
 table is missing* is exactly what an operator opens the statement to find. A control that hides
@@ -1548,7 +1553,7 @@ entries were passing on that, and **both survive their real suite**. This is `R3
 report green when they measure nothing* — inside the mechanism built to detect exactly that. A
 verdict now requires libtest to print `test result: FAILED`; `--check` validates that a named
 target exists and that no two entries name one site; a hang is its own verdict rather than an
-exception thirty minutes in. The catalogue is **938 distinct defects**.
+exception thirty minutes in. The catalogue is **940 distinct defects**.
 
 Writing the tests those two entries needed, the first fixture used `- image:` where the parser
 requires `image:` at the start of the line — so both rejecting tests passed *vacuously*, through

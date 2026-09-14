@@ -345,6 +345,21 @@ and the tables it reads; `SHOW AGGREGATIONS` publishes every user function's Pyt
 `SHOW FEEDS` emits filesystem paths. `register_derived` **does** gate on scope four lines away in
 the same file.
 
+> **Reported fixed on 2026-09-09 and still open on the cube listing until 2026-09-14 (`M24b`).**
+> The filter went into `register_derived` and into the navigation catalogue beside it, and
+> `describe::register` went on being handed `self.cubes()` --- **every cube on the server** ---
+> so `cubes()`, `derived()`, `cube_dimensions()` and `cube_measures()` still emitted each
+> cube's name, its fact table, the tables it reads, and its dimension and measure counts to
+> anybody who could open a session.
+>
+> The test written to pin it passed throughout, for a reason worth recording: it asks a
+> principal holding **no role at all**, who is refused the session outright, and it accepts
+> either a refusal or an empty listing --- so it took the refusal branch every time and the
+> filter it names was never reached. A caller granted *some* table and not the cube's is the
+> ordinary case and the only one that tells them apart;
+> `a_cube_is_hidden_from_a_caller_who_holds_a_grant_but_not_this_one` is that case, and a
+> catalogue entry now proves the filter is what does the work.
+
 ---
 
 # Tier 2 — Wrong answers that look right

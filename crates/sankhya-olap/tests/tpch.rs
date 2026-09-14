@@ -1078,8 +1078,8 @@ async fn measure_a_needle_lookup() {
 ///   Q5 is a six-way join, and it is measured and published by
 ///   `measure_tpch_under_concurrency` — but it is not gated here, because it does not
 ///   satisfy the objective's stated precondition that a partition predicate be present.
-///   Partitioning is not built, so no query can currently satisfy it. That is recorded
-///   as an open item in `docs/STATUS.md`, not hidden by a passing test.
+///   These tables are not partitioned, so no query over *them* can name one. That is
+///   recorded as an open item in `docs/STATUS.md`, not hidden by a passing test.
 ///
 ///   And until `M24a`, on 2026-09-14, Q3 did not prune **either** — no `Date32` column had
 ///   bounds, so `o_orderdate < …`, the predicate that makes this the *pruned* shape, skipped
@@ -1089,9 +1089,14 @@ async fn measure_a_needle_lookup() {
 ///   On this fixture it is **zero of twenty-three**: the bounds exist now and exclude
 ///   nothing, because TPC-H generates `orders` in orderkey order and every file's dates span
 ///   the whole range. The mechanism is real — `pruning_types.rs` prunes nine files of ten,
-///   and `NFR-PERF-02` is met by statistics pruning on the ordered `l_orderkey` — and this
-///   query has no layout to use it on. Clustering the fixture, and the partition predicate
-///   the objective actually names, are both `M24b`.
+///   `partition_pruning.rs` prunes four partitions of five, and `NFR-PERF-02` is met by
+///   statistics pruning on the ordered `l_orderkey` — and this query has no layout to use it
+///   on.
+///
+///   **The fixture is deliberately not re-sorted to make the number look better.** A TPC-H
+///   table laid out in an order the specification's generator does not produce makes every
+///   figure taken from it incomparable with every other system's TPC-H numbers, and that is
+///   a worse loss than a zero in a column that is telling the truth.
 /// - **`NFR-PERF-04`** says *wide scan, warm, local cache*. Q1 is that shape.
 ///
 /// The margins are wide enough that this should not be flaky. If it starts failing

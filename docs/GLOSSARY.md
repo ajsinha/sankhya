@@ -238,11 +238,16 @@ One guaranteed column is what lets partitioning, retention and tiering be writte
 rather than per table, and it is written in the Hive convention
 (`sank_data_date=2024-03-01`) that external readers already parse.
 
-> **Not built:** the declaration exists and directory partitioning does not — the streaming
-> arrival path writes flat, and the read path discards partition values on the way into the
-> scan. This is why `NFR-PERF-03`'s partition-predicate precondition cannot be satisfied by
-> any query today. Pruning by **file statistics** is a different mechanism and does work —
-> since `M24a` it works for dates, instants and decimals too. See [`STATUS.md`](STATUS.md).
+> **Half built:** the batch publish path partitions, the **streaming arrival path writes
+> flat**, so a table fed by continuous capture has one partition and nothing to prune.
+>
+> A partition predicate does prune, as of `M24a` — four partitions of five in
+> `partition_pruning.rs`. It did not before, and the reason was not the one this note used to
+> give: `sank_data_date` is a `Date32` carried in the data, and `Date32` was a type the
+> statistics did not recognise, so the column was declared, written into the directory name,
+> supplied per file in the log, and had no bounds. Pruning by file statistics *is* the
+> mechanism; a partition column is a column like any other to it. See
+> [`STATUS.md`](STATUS.md).
 
 ### shape
 

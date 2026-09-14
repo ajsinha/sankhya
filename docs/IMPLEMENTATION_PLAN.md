@@ -2040,21 +2040,63 @@ because TPC-H generates `orders` in orderkey order so every file's dates span th
 The mechanism is not in doubt: `pruning_types.rs` prunes nine files of ten, and `NFR-PERF-02`
 is met by statistics pruning on the ordered `l_orderkey`. What Q3 lacks is a **layout**.
 
-> **`M24b` remains**, and the measurement sharpened what is in it:
+> **`M24b`, 2026-09-14 — and it turned out to be a correction rather than plumbing.**
 >
-> - **Partition values** are recorded in the log and discarded on the way into the scan —
->   `LoggedFile` has no partition field and `table_partition_cols` is never set — so
->   `NFR-PERF-03`'s stated precondition is still unsatisfiable by any query.
-> - **Clustering the fixture.** This system has clustering and measured it at 7.8× on a range
->   scan; `orders` clustered by `o_orderdate` is what would turn 0 of 23 into a real figure.
->   That is a change to the benchmark's data layout, not to the engine, and it belongs with
->   the partition work rather than smuggled into a claims edit.
-> - `column_statistics` makes a whole column unknown when any one file lacks bounds, which is
->   conservative in the right direction and throws away the null and distinct counts with it.
-> - `Definition::reads` holds only a cube's fact table, so **dimension tables are outside a
->   cube's authorization and snapshot set** while `GUIDE.md` says a cube whose dimension tables
->   you cannot read is refused. Found during `M23`; it is the same family of defect — a claim
->   the code does not make good — and it is small.
+> The premise above is wrong, and measuring it is what showed that. **A partition predicate
+> prunes.** `partition_pruning.rs` publishes five daily partitions through the product's own
+> writer and proves four of five irrelevant from the catalogue, without opening a footer.
+>
+> It did not before `M24a`, and the reason every document gave — *the read path prunes by file
+> statistics rather than by partition value* — was true and not the operative half.
+> `sank_data_date` is a `Date32`, stamped into the data so an external reader sees it natively
+> (`FR-STORE-20`), and `Date32` was one of the types `stats.rs` did not recognise. The column
+> was declared, written into the directory name, supplied per file in the log, and had **no
+> bounds**. Naming it did nothing. Statistics pruning *is* the mechanism, and a partition
+> column is a column like any other to it.
+>
+> **`table_partition_cols` is not set and should not be.** DataFusion reconstructs a partition
+> column from the path and requires it to be **absent** from the file; this system carries it
+> in the data on purpose. Setting it would declare the column twice. The catalogue prunes
+> before the engine is given a file list at all, which is earlier and strictly better — a file
+> proved irrelevant is never named in the plan, so its footer is never read. `LoggedFile`
+> needs no partition field for the same reason.
+>
+> **The TPC-H fixture is deliberately not re-sorted.** Clustering `orders` by `o_orderdate`
+> would turn Q3's *0 of 23* into a real figure, and it would also make every number taken from
+> these tables incomparable with every other system's TPC-H. A zero that is telling the truth
+> is the smaller loss.
+>
+> **`column_statistics` making a whole column unknown is correct, not a gap.** Checked rather
+> than assumed: `with_column` always records a null count, so every column this system writes
+> has an entry and the fallback fires only for a file whose log carries no statistics document
+> at all. Merging the files that happen to have bounds would produce bounds describing part of
+> a table and claiming to describe all of it.
+>
+> **`Definition::reads` now holds the dimension tables**, which closes the gap `M23` opened.
+> `GUIDE.md` has said for months that *"a cube named in a `CREATE` whose fact table **or
+> dimension tables** you cannot read is refused"*, and the code made good on the first half
+> only: a principal barred from the dimension table got the cube anyway, with a hierarchy that
+> silently failed to load and a snapshot that did not span the table it read members from.
+>
+> Folded in at `validate` rather than at `new`, and the first attempt showed why. A list
+> computed at construction goes stale the moment a caller edits `dimensions` afterwards —
+> which every fixture here does, and which `into_definition` does on every load by restoring
+> the stored `reads` over the computed one. A `Cube` can be built no other way, so folding at
+> `validate` makes it an invariant of the type, and every catalogue already on disk gains its
+> dimension tables on load without a migration or a format change.
+>
+> **And it uncovered `SEC-18` still open.** Testing that gap meant asking whether a caller who
+> may not read the dimension table is shown the cube — and the answer was yes, for *any*
+> table: `describe::register` was handed `self.cubes()`, every cube on the server, so
+> `cubes()`, `derived()`, `cube_dimensions()` and `cube_measures()` emitted each cube's name,
+> fact table, the tables it reads and its counts to anybody who could open a session. The fix
+> reported on 2026-09-09 reached the two call sites beside that one. The test that should have
+> caught it asks a principal holding **no role at all**, who is refused the session, and
+> accepts a refusal *or* an empty listing — so it took the refusal branch every time and never
+> reached the filter.
+>
+> **Still carried:** the streaming arrival path writes flat, so a table fed by continuous
+> capture has one partition and nothing to prune — `M26`'s territory, not this one.
 
 ### M25 — The graph engine answers
 

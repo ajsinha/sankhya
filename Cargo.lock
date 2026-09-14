@@ -4093,6 +4093,7 @@ dependencies = [
  "async-trait",
  "datafusion",
  "futures",
+ "parquet",
  "sankhya-cdc-model",
  "sankhya-clone",
  "sankhya-governor",

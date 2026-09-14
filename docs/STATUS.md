@@ -31,7 +31,7 @@ preserved in full and in place. Nothing below this point has been rewritten.
 |---|---|---|---|
 | `NFR-PERF-01` | Primary-key point lookup, warm, 64 concurrent | p99 < 5 ms | **Unmeasured.** Nothing exercises a point lookup at concurrency; the needle-lookup measurement below is a different shape and a different budget |
 | `NFR-PERF-02` | Selective needle lookup, warm, 8 concurrent | p95 < 250 ms | **Met at 7 ms**, by statistics pruning alone — `l_orderkey` is written in order, so its bounds separate the files |
-| `NFR-PERF-03` | Multi-dimensional pivot, warm, pruned | p95 < 1 s | **Met at 781 ms, pruning nothing.** The gate now reports the figure: the date predicate proves **0 of 23** `orders` files irrelevant. Since `M24a` the mechanism exists and is proven elsewhere; it does nothing here because TPC-H generates `orders` in orderkey order, so every file spans the whole date range. The objective's own precondition names a *partition* predicate, which no query can satisfy at all |
+| `NFR-PERF-03` | Multi-dimensional pivot, warm, pruned | p95 < 1 s | **Met at 781 ms, pruning nothing on this query.** The gate reports the figure: Q3's date predicate proves **0 of 23** `orders` files irrelevant, because TPC-H generates `orders` in orderkey order and every file spans the whole date range. The mechanism itself works — a **partition predicate prunes four of five partitions** since `M24a`, and `partition_pruning.rs` measures it. What the objective's precondition asks for is now satisfiable; TPC-H's own layout is what Q3 cannot use |
 | `NFR-PERF-04` | Wide scan, warm, local cache | p95 < 3 s | **Met at 594 ms** |
 | `NFR-PERF-05` | Cold scan from object storage | p95 < 15 s | **Unmeasured**, and explicitly *not* sub-second. There is no object-storage arm in the gate: every measurement here is local |
 | `NFR-PERF-06` | Aggregation over fixed-size numeric vectors with exact order statistics | p95 < 2 s | **Unmeasured.** This is the function catalogue's own requirement and the workload its performance claims are about, and it was the objective most conspicuously absent from this table |
@@ -136,7 +136,15 @@ door. They are listed separately from §1 because the work remaining is *wiring*
 
 ### 3. Storage, format and read path
 
-- **Partitioning is written but never read, and the streaming path does not write it.** Three separate facts, and running the fixture makes all three visible. The batch publish path **is** partitioned — a published table writes `sank_data_date=YYYY-MM-DD/` directories and the log's add paths carry them, which you can see under `sales/orders/` after `make_warehouse` runs. The **streaming arrival path is not**: the ingest crate creates tables with no partition columns and writes flat, so partitioning is met on the path used for bulk loading and missed on the path where data lands during continuous capture. And the **read path prunes by file statistics rather than by partition value** — `crates/sankhya-readpath/src/provider.rs` uses "partition" throughout in DataFusion's execution sense, meaning parallelism, not Hive pruning. That last one is why `NFR-PERF-03`'s partition-predicate precondition cannot be satisfied by any query today, and it is unchanged by `M24a`: statistics pruning on a date column is a different mechanism, and it got *better* on 2026-09-14 rather than becoming the one the objective names.
+- **Partitioning is written but never read, and the streaming path does not write it.** Three separate facts, and running the fixture makes all three visible. The batch publish path **is** partitioned — a published table writes `sank_data_date=YYYY-MM-DD/` directories and the log's add paths carry them, which you can see under `sales/orders/` after `make_warehouse` runs. The **streaming arrival path is not**: the ingest crate creates tables with no partition columns and writes flat, so partitioning is met on the path used for bulk loading and missed on the path where data lands during continuous capture. And the **read path prunes by file statistics rather than by partition value** — `crates/sankhya-readpath/src/provider.rs` uses "partition" throughout in DataFusion's execution sense, meaning parallelism, not Hive pruning.
+
+> **Corrected 2026-09-14 (`M24b`): that last sentence used to end "…which is why `NFR-PERF-03`'s partition-predicate precondition cannot be satisfied by any query today", and it is no longer true.** A partition predicate prunes. `partition_pruning.rs` publishes five daily partitions through the product's own writer and proves four of five irrelevant from the catalogue, without opening a footer.
+>
+> The reason it did not before was never the one this paragraph gave. `sank_data_date` is a `Date32`, stamped into the data so an external reader sees it natively — and `Date32` was one of the types `stats.rs` did not recognise. The column was declared, written into the directory name, supplied per file in the log, and had **no bounds**, so naming it in a predicate did nothing. `M24a` records the bounds; the predicate now prunes. Statistics pruning *is* the mechanism, and the partition column is a column like any other to it.
+>
+> `table_partition_cols` is still not set, and should not be: DataFusion's partition columns are reconstructed from the path and must be **absent** from the file, while `FR-STORE-20` deliberately carries this one in the data. Setting it would declare the column twice. The catalogue prunes before the engine sees a file list anyway, which is earlier and strictly better — a file the catalogue proves irrelevant is never named in the plan.
+>
+> The first two facts in this paragraph are unchanged: the streaming arrival path still writes flat, so a table fed by continuous capture has one partition and nothing to prune.
 - **There is no timestamp on an ingested row to derive a date from.** A system column is declared on every ingested table and written as the literal `0` for every row. Its comment says the value is recorded for human reading, which it is not — it is recorded for nothing. This is the gap behind the one above, and the sharper of the two.
 - **No deletion vectors, column mapping or partition values in the table log.** Row counts, bounds, null counts and checkpoints are written; everything else the protocol permits is not. A reader requiring any of them refuses these tables — which is the correct outcome, because refusing is visible and a partially-implemented protocol feature is not.
 - **No multi-part or V2 checkpoints, and no log cleanup.** A checkpoint is one file, which is fine into the millions of live files and not beyond; nothing deletes the commits a checkpoint subsumes, so the log directory grows without bound.
@@ -3481,13 +3489,19 @@ can satisfy that precondition today. So Q5 is measured and published, and delibe
 > The number is **0 of 23**.
 >
 > The mechanism is not missing: `pruning_types.rs` prunes nine files of ten on a date
-> predicate, and `NFR-PERF-02` is met by statistics pruning on `l_orderkey`. What is missing
-> is a **layout** that lets a date predicate exclude anything. TPC-H generates `orders` in
-> orderkey order and `o_orderdate` is scattered through it, so every file's date bounds span
-> the whole range and no bound excludes anything. Clustering is the fix — this system has it,
-> and [measured it at 7.8× on a range scan](#clustering-worth-78-on-a-range-scan) — and
-> applying it to the fixture is `M24b`, alongside the partition predicate the objective
-> actually names. Neither is a documentation edit, which is why neither was made as one.
+> predicate, `partition_pruning.rs` prunes four partitions of five, and `NFR-PERF-02` is met
+> by statistics pruning on `l_orderkey`. What is missing is a **layout** that lets a date
+> predicate exclude anything. TPC-H generates `orders` in orderkey order and `o_orderdate` is
+> scattered through it, so every file's date bounds span the whole range and no bound excludes
+> anything.
+>
+> **The fixture is deliberately not re-sorted to fix this.** Clustering would work — this
+> system has it and [measured it at 7.8× on a range scan](#clustering-worth-78-on-a-range-scan)
+> — and a TPC-H table laid out in an order the specification's generator does not produce
+> makes every number taken from it incomparable with every other system's TPC-H figures. A
+> zero in a pruning column is a smaller loss than that, and it is a true statement about what
+> this query does. The pruning mechanism is measured where it can be measured honestly, on
+> tables shaped the way a warehouse actually shapes them.
 >
 > Re-measured 2026-09-14 on twelve cores: 7 ms, 781 ms and 594 ms against 250 ms, 1 s and 3 s.
 > The pivot is not distinguishable from the 796 ms measured before the change, which is what
@@ -3883,7 +3897,7 @@ been done. Nothing yet consults the check.
 | The provider skips files the catalogue proves irrelevant | Nine of ten files pruned on a point lookup, five of ten on a range, and none at all on a disjunction, a predicate over an uncatalogued column, or no predicate. The same query returns the same answer with and without the catalogue |
 | Planning does no file I/O | 800 files plan in 1.37 ms against 10.33 ms for a directory listing — **7.5×**, widening with file count |
 | A dependency declared test-only actually is | `cargo xtask check-features` reads the manifests; proven to fail when the oracle is moved into `[dependencies]` |
-| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 938 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
+| The tests guarding each core invariant are verified against the defect they claim to catch | `tools/mutation-audit.py` — 940 specific defects applied one at a time, each required to fail the suite. Thirty-one did not when first run; five catalogue entries turned out to be equivalent mutants no test could ever have caught, six entries were inert until corrected — two did not compile, and one was an equivalent mutant deleted rather than repaired, four more survived because the tests naming them exercised a different guard or lived in another crate, — one was anchored on a guard that appears twice so it patched the harmless copy, and one named the crate the *code* lives in rather than the crate whose tests notice — four revealed tests that did not test what their names claimed --- two of them in the tiering encoding, where the type-tag test compared two widths whose encodings already differ in length, and the length-prefix test used a key the tag bytes separate on their own, and chasing two others produced documentation corrections rather than new tests. Three mutations exposed defects in *tests* rather than in code, and all three were the same defect: an unbounded wait, so that removing a deadline hung the build rather than failing it. The five-minute journey read the server's banner with no timeout; both drain tests awaited the server task with none. A hang is strictly worse than a failure — it takes the build with it and reports nothing — so every wait now goes through one bounded helper rather than a timeout somebody has to remember at each call site. The catalogue also checks that each entry still *matches* its source before applying it: a refactor moved four of them, and a mutation that no longer applies passes silently, which is the failure this tool exists to prevent |
 
 ---
 
@@ -4565,9 +4579,9 @@ cargo xtask check-all            # every repository invariant: layers, file leng
                                  # links, version claims, feature pins, clippy with the
                                  # workspace's denied lints across every target, and that
                                  # no mutation is still applied to the source
-cargo test --workspace           # 2885 tests, none of which needs a database
+cargo test --workspace           # 2896 tests, none of which needs a database
 cargo xtask check-performance    # the NFR-PERF objectives, as a gate that can fail
-python3 tools/mutation-audit.py  # 938 specific defects, applied one at a time
+python3 tools/mutation-audit.py  # 940 specific defects, applied one at a time
 crates/sankhya-cdc-apply/tests/run_e2e.sh   # capture against a live database
 ```
 
