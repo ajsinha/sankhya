@@ -50,12 +50,14 @@ fn every_path_gives_the_same_answer() {
 
     // Python is one of the paths under test. Absent, this cannot report a pass: a run that
     // compared two paths and called it parity would be the claim this file exists to check.
+    let interpreter = sankhya_testkit::python(&root);
     assert!(
-        std::process::Command::new("python3")
+        std::process::Command::new(&interpreter)
             .arg("--version")
             .output()
             .is_ok_and(|out| out.status.success()),
-        "`python3` is not available, so the binding path cannot be compared"
+        "`{}` is not available, so the binding path cannot be compared",
+        interpreter.display()
     );
 
     let dir = tempfile::tempdir().expect("a directory");
@@ -64,7 +66,7 @@ fn every_path_gives_the_same_answer() {
     let server = start(&warehouse, &dir.path().join("data"));
 
     let minutes = std::env::var("SANKHYA_PARITY_MINUTES").unwrap_or_else(|_| "0.2".to_owned());
-    let outcome = std::process::Command::new("python3")
+    let outcome = std::process::Command::new(&interpreter)
         .arg(root.join("sdk").join("python").join("soak").join("parity.py"))
         .current_dir(&root)
         .env("SANKHYA_PORT", server.port.to_string())

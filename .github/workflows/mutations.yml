@@ -48,17 +48,27 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # The interpreter this repository pins, not whatever the runner image ships. The audit
+      # itself imports only the standard library, so any Python would run it --- but a version
+      # that is a property of the runner is the thing `.python-version` exists to stop.
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      - name: The environment this repository describes
+        run: cargo run --locked -p xtask -- venv
+
       # Staleness first. A catalogue entry whose text has moved proves nothing, and it costs a
       # second to find out rather than six hours.
       - name: The catalogue matches the source
-        run: python3 tools/mutation-audit.py --check
+        run: .venv/bin/python tools/mutation-audit.py --check
 
       # Warm, so the per-mutation builds are incremental rather than from scratch.
       - name: Build the test targets once
         run: cargo test --locked --workspace --no-run
 
       - name: Apply every catalogued defect
-        run: python3 tools/mutation-audit.py
+        run: .venv/bin/python tools/mutation-audit.py
 
       # The audit restores the tree itself, including on SIGTERM. This is the backstop: if a
       # mutation is still applied here, the run's verdict cannot be trusted and the diff is the

@@ -22,3 +22,4 @@ sankhya-sandbox = { path = "../sankhya-sandbox" }
 tempfile = { workspace = true }
 
 [dev-dependencies]
+sankhya-testkit = { path = "../sankhya-testkit" }

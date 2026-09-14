@@ -297,6 +297,31 @@ closed, a data-file name is used once, one server per warehouse is enforced. Pha
 — wrong answers, security, operability, and closing the gap between what is claimed and what is
 true — have each partly landed; this rewrite is an item in Phase 6.
 
+**Then it was audited again, harder.** On 2026-09-07 fourteen specialist reviews — OLTP, OLAP,
+cubing, storage, concurrency, security, quantitative numerics, the function catalogue,
+operability, data engineering, architecture, documentation and test integrity — read the system
+that the first twelve audits had already improved. Four remediation waves followed, each gated
+and merged. What they repaired, in one line each:
+
+- A materialised cuboid was folded under the rule of whichever dimension was **declared
+  first**, so one query at one snapshot returned different numbers with materialisation on and
+  off — and a user-supplied aggregation served from a cuboid was fed one pre-summed number per
+  cell instead of the facts.
+- **Every** standard error, t-statistic and p-value the system reports was wrong: the diagonal
+  of `(X'X)⁻¹` needs the squared norm of a *row* of `R⁻¹` and the code took a *column*. The
+  trace of the two is identical, so nothing summing them noticed — and the test written to pin
+  the quantity asserted the defective value.
+- A directory is a write too, and nothing was syncing the one that names it.
+- Three gates that could not fail, including `check-durability`, which passed with the
+  file-bytes `fsync` deleted. Demonstrated, then fixed.
+- And the mutation catalogue — 921 entries that **no automation had ever run**, because
+  `check-all` invoked only its string-matching `--check`, and a mutation that failed to compile
+  was scored as *caught*.
+
+The open remainder is sequenced in
+[`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) §13k and listed, with file and
+line, in [`docs/QA-BRIEF.md`](docs/QA-BRIEF.md) §3.
+
 The verdict paragraph is worth reading in full, because it is the most useful sentence in this
 repository: *the reason is not the defect count — it is that a green gate did not see any of
 this.* 2,807 tests, 741 mutations and twenty checks, against silent data loss on three <!-- figures-as-measured-then -->
@@ -308,7 +333,7 @@ production calls it.
 
 ## Start here
 
-Thirteen documents. There is no separate book; it was deleted in September 2026 because it
+Fourteen documents. There is no separate book; it was deleted in September 2026 because it
 duplicated these and was the stale copy wherever the two disagreed.
 
 | Document | What it covers |
@@ -325,9 +350,13 @@ duplicated these and was the stale copy wherever the two disagreed.
 | [`docs/DEVELOPING.md`](docs/DEVELOPING.md) | Working in the repository: layout, gates, and the rules the build enforces |
 | [`docs/AUDIT_REPORT.md`](docs/AUDIT_REPORT.md) | Twelve production-readiness audits, 129 findings |
 | [`docs/REMEDIATION.md`](docs/REMEDIATION.md) | The sequenced plan that closes them, and what has landed |
+| [`docs/QA-BRIEF.md`](docs/QA-BRIEF.md) | For somebody about to test this by hand: what runs, what is accepted and silently ignored, and what a green gate does not prove |
 | [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) | Every third-party package, its licence, and the upstream `NOTICE` files |
 
-Reference material, generated from the code and checked against it on every build:
+Reference material. The first four are **generated** from the code and byte-compared on every
+build; the rest are written by hand and checked only for the things a gate can check --- a link
+that resolves, a source path that exists, a figure that matches. The heading here used to say
+all of them were generated, which is the kind of claim this repository exists to stop making:
 
 | Document | What it covers |
 |---|---|
@@ -335,10 +364,10 @@ Reference material, generated from the code and checked against it on every buil
 | [`docs/ERRORS.md`](docs/ERRORS.md) | Every error code, its class, and what to do about it |
 | [`docs/PLATFORMS.md`](docs/PLATFORMS.md) | Where the server runs, what a build must satisfy, and where only a client does |
 | [`docs/VERSIONS.md`](docs/VERSIONS.md) | The four version axes, every on-disk format, and whether an upgrade can be undone |
-| [`docs/FUNCTIONS.md`](docs/GUIDE.md) | Every built-in function, where each is reachable from, and what is still planned |
+| [`docs/GUIDE.md` §14](docs/GUIDE.md) | Every built-in function, where each is reachable from, and what is still planned. There is no `FUNCTIONS.md`; this row named one for months |
 | [`docs/POSTGRES.md`](docs/POSTGRES.md) | Exactly what SANKHYA changes about PostgreSQL, and what it will never do to it |
 | [`docs/SOAK.md`](docs/SOAK.md) | The long-run method, its results, and four attempts' worth of what it taught |
-| [`docs/INVARIANTS.md`](docs/TESTING.md) | What the build gate enforces, and §6: what it only *intends* |
+| [`docs/TESTING.md` §6](docs/TESTING.md) | What the build gate enforces, and what it only *intends*. There is no `INVARIANTS.md` either |
 | [`docs/runbooks/`](docs/runbooks/) | One per alert that can page — enforced, not aspirational |
 | [`docs/adr/`](docs/adr/) | Architecture decision records, including what each one deliberately leaves open |
 | [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) | Milestones, work breakdown, sizing and acceptance gates |

@@ -200,6 +200,18 @@ fn settings() -> Result<Settings, String> {
         .boolean("server.user_functions")
         .map_err(|error| error.to_string())?
         .unwrap_or(false);
+    // The interpreter a user-supplied aggregation runs behind the boundary.
+    //
+    // The environment variable wins over the configuration file deliberately, and only here:
+    // this is the one setting whose right answer is a property of the *machine* rather than of
+    // the deployment, and a developer running the suite on a host whose Python is somewhere
+    // unusual must be able to say so without editing a file the repository tracks.
+    let python = std::env::var("SANKHYA_PYTHON_INTERPRETER")
+        .ok()
+        .filter(|named| !named.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| config.get("server.python").map(std::path::PathBuf::from))
+        .unwrap_or_else(|| std::path::PathBuf::from("/usr/bin/python3"));
     // Off unless an operator says otherwise, for the same reason `user_functions` is: the
     // per-table gauge's label is a table's name and `/metrics` is unauthenticated, so the
     // breakdown enumerates the warehouse to whoever can reach the port. The figure that pages
@@ -304,6 +316,7 @@ fn settings() -> Result<Settings, String> {
         tenant,
         require_password,
         user_functions,
+        python,
         metrics_detail,
         policy,
         flight_listen,

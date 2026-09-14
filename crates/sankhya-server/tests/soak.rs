@@ -175,6 +175,7 @@ async fn a_short_run_under_concurrent_load_is_judged() {
             maintenance: None,
             require_password: false,
             user_functions: false,
+            python: std::path::PathBuf::from("/usr/bin/python3"),
             metrics_detail: false,
             policy: None,
             metrics_listen: None,

@@ -23,7 +23,7 @@ use common::{start, start_with, write_warehouse};
 
 /// Run a snippet of Python against the binding, returning its output.
 fn python(root: &std::path::Path, script: &str) -> Result<String, String> {
-    let outcome = std::process::Command::new("python3")
+    let outcome = std::process::Command::new(sankhya_testkit::python(root))
         .args(["-c", script])
         .current_dir(root)
         .env("PYTHONPATH", root.join("sdk").join("python"))

@@ -228,6 +228,7 @@ async fn an_error_does_not_disclose_that_the_other_tenants_table_exists() {
         maintenance: None,
         require_password: true,
         user_functions: false,
+        python: std::path::PathBuf::from("/usr/bin/python3"),
         metrics_detail: false,
         policy: None,
         metrics_listen: None,

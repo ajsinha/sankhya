@@ -6,6 +6,7 @@
 //! to unwind, and invisible in review.
 
 mod catalogues;
+mod venv;
 mod logging;
 mod atomicwrites;
 mod lockorder;
@@ -290,6 +291,9 @@ fn main() -> ExitCode {
     if run_all || task == "check-package" {
         failed |= !package::check(&root);
     }
+    if task == "venv" {
+        failed |= !venv::make(&root);
+    }
     if task == "sync-doc-numbers" {
         let mut docs = Vec::new();
         collect_figures(&root, &mut docs);
@@ -345,6 +349,7 @@ fn main() -> ExitCode {
                 | "check-atomic-writes"
                 | "check-lock-order"
                 | "sweep"
+                | "venv"
                 | "sync-doc-numbers"
                 | "sweep-dry-run"
                 | "check-catalogues"
@@ -357,7 +362,7 @@ fn main() -> ExitCode {
             "usage: cargo xtask \
              [check-all|check-tests|check-concurrency|check-invariants|check-writers|check-layers|check-loc|check-vocabulary|check-dupes|check-docs\
              |check-features|check-lints|check-unsafety|check-attribution|check-fast|check-mutation-coverage|check-benchmarks|check-objectives|gate-table|check-durability|write-attribution|check-mutations|check-doc-numbers\
-             |check-catalogues|write-catalogues|check-logging|check-package|check-build-tree|check-surfaces|check-atomic-writes|check-lock-order|sweep|sweep-dry-run|sync-doc-numbers|check-performance]"
+             |check-catalogues|write-catalogues|check-logging|check-package|check-build-tree|check-surfaces|check-atomic-writes|check-lock-order|sweep|sweep-dry-run|sync-doc-numbers|venv|check-performance]"
         );
         return ExitCode::from(2);
     }
@@ -926,7 +931,16 @@ fn collect_markdown(dir: &Path, out: &mut Vec<PathBuf>) {
         let p = e.path();
         let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
         if p.is_dir() {
-            if matches!(name, "target" | ".git" | ".build" | "vendor" | "spikes") {
+            // `.venv` among them: `python-pptx` ships markdown inside `site-packages`, and
+            // scanning it made `check-docs` report sixty-six documents where the repository
+            // has sixty-two. It passed --- those two files happen to break no rule --- which
+            // is the worst way for it to be wrong: the day a dependency ships a README with a
+            // relative link, this gate fails for a reason that has nothing to do with this
+            // project, and the person reading the failure has no way to know that.
+            if matches!(
+                name,
+                "target" | ".git" | ".build" | "vendor" | "spikes" | ".venv"
+            ) {
                 continue;
             }
             collect_markdown(&p, out);
@@ -1335,7 +1349,7 @@ pub(crate) fn list_tests(root: &Path, ignored_only: bool) -> Option<usize> {
 /// working tree and neither announces itself.
 fn check_mutations(root: &Path) -> bool {
     println!("== check-mutations");
-    let output = Command::new("python3")
+    let output = Command::new(venv::python(root))
         .current_dir(root)
         .args(["tools/mutation-audit.py", "--check"])
         .output();

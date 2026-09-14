@@ -74,6 +74,25 @@ impl Hierarchy {
             .collect()
     }
 
+    /// The members `member` rolls up into.
+    ///
+    /// **Plural**, because a shared member has more than one: a product that belongs to two
+    /// categories rolls into both, and a hierarchy that could not say so would force the
+    /// definition to pick one and lose the other.
+    ///
+    /// That plurality is also what a *consolidation* has to reckon with. Adding the member's
+    /// facts once per parent double-counts it in any total that spans both, so a caller that
+    /// can only carry one parent --- [`crate::super`]'s `consolidate_along` takes exactly one
+    /// --- has to refuse rather than choose. Returning the set is what lets it see that it
+    /// must.
+    #[must_use]
+    pub fn parents_of(&self, member: &str) -> BTreeSet<&str> {
+        self.parents
+            .get(member)
+            .map(|parents| parents.iter().map(String::as_str).collect())
+            .unwrap_or_default()
+    }
+
     /// The members directly under `member`.
     #[must_use]
     pub fn children_of(&self, member: &str) -> BTreeSet<&str> {

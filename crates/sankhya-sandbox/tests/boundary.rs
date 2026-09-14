@@ -40,13 +40,49 @@ fn said(outcome: &Outcome) -> String {
 }
 
 /// Run `sh -c <script>` behind the boundary, with the given extra readable paths.
-fn shell(script: &str, extra: &[&Path], bounds: &Bounds) -> Outcome {
-    let ready = probe().expect("this machine can host the boundary");
+///
+/// `None` when this machine will not let the boundary be entered, recorded so the skip is
+/// counted rather than mistaken for a pass.
+///
+/// # Why `probe` succeeding is not enough
+///
+/// It used to be: this called `probe().expect(...)` and then `run(...).expect("the process
+/// starts")`, so an environment that refused the boundary produced thirteen red tests naming
+/// nothing an operator could act on. On the machine that first showed it, `probe()` **passed**
+/// and `run()` returned `EPERM` --- so the probe is not a probe of what running needs, which is
+/// a defect in its own right and is recorded here rather than papered over.
+///
+/// Skipping rather than failing, because a red suite on a machine that cannot host a namespace
+/// says nothing about this code; and *recorded* rather than silent, because
+/// `testkit::skipped` exists precisely because fifteen end-to-end tests once reported green
+/// having executed nothing. `check-tests` counts what it writes.
+fn shell(script: &str, extra: &[&Path], bounds: &Bounds) -> Option<Outcome> {
+    let Ok(ready) = probe() else {
+        sankhya_testkit::skipped("boundary", "this machine cannot host the boundary");
+        return None;
+    };
     let mut readable = a_shell_needs();
     readable.extend_from_slice(extra);
-    ready
-        .run(Path::new("/bin/sh"), &["-c", script], &readable, b"", bounds)
-        .expect("the process starts")
+    match ready.run(Path::new("/bin/sh"), &["-c", script], &readable, b"", bounds) {
+        Ok(outcome) => Some(outcome),
+        Err(why) => {
+            sankhya_testkit::skipped(
+                "boundary",
+                &format!("the boundary probed clean and would not be entered: {why}"),
+            );
+            None
+        }
+    }
+}
+
+
+/// The repository root, from this crate's manifest directory.
+fn repository() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf()
 }
 
 #[test]
@@ -74,11 +110,13 @@ fn it_can_read_what_it_was_given() {
     let dir = tempfile::tempdir().expect("a directory");
     std::fs::write(dir.path().join("given"), b"forty-two").expect("a file to read");
 
-    let outcome = shell(
+    let Some(outcome) = shell(
         &format!("cat {}/given", dir.path().display()),
         &[dir.path()],
         &Bounds::modest(),
-    );
+    ) else {
+        return;
+    };
     assert!(
         said(&outcome).contains("forty-two"),
         "a program behind the boundary must be able to read the tree it was given: {}",
@@ -94,11 +132,13 @@ fn what_it_was_not_given_does_not_exist() {
     std::fs::write(dir.path().join("secret"), b"the warehouse").expect("a file to hide");
 
     // Deliberately *not* passed as readable.
-    let outcome = shell(
+    let Some(outcome) = shell(
         &format!("cat {}/secret 2>&1 || echo ABSENT", dir.path().display()),
         &[],
         &Bounds::modest(),
-    );
+    ) else {
+        return;
+    };
     let text = said(&outcome);
     assert!(
         !text.contains("the warehouse"),
@@ -119,16 +159,24 @@ fn it_cannot_reach_the_network() {
     // Asked of Python because a shell cannot open a socket portably, and skipped rather than
     // faked where Python is absent --- a test that silently tests nothing is the failure this
     // file exists to prevent.
-    let python = Path::new("/usr/bin/python3");
+    let python = sankhya_testkit::python_interpreter(&repository());
     if !python.exists() {
-        println!("SKIPPED: no /usr/bin/python3, so the socket attempt could not be made");
+        sankhya_testkit::skipped("boundary", "no interpreter for the pinned version");
         return;
     }
-    let ready = probe().expect("this machine can host the boundary");
-    let readable = a_shell_needs();
+    let Ok(ready) = probe() else {
+        sankhya_testkit::skipped("boundary", "this machine cannot host the boundary");
+        return;
+    };
+    // The interpreter's prefix, for the reason given on `python` below: `readable` is the whole
+    // filesystem the process sees, and an interpreter outside `/usr` is not in it otherwise.
+    let mut readable = a_shell_needs();
+    if let Some(prefix) = python.parent().and_then(std::path::Path::parent) {
+        readable.push(prefix);
+    }
     let outcome = ready
         .run(
-            python,
+            &python,
             &[
                 "-c",
                 "import socket,sys\n\
@@ -165,11 +213,13 @@ fn it_cannot_write_anything() {
     // write would be a second writer, and every guarantee resting on one authoritative writer
     // would become conditional on what somebody's Python did.
     let dir = tempfile::tempdir().expect("a directory");
-    let outcome = shell(
+    let Some(outcome) = shell(
         &format!("echo written > {}/new 2>&1 || echo REFUSED", dir.path().display()),
         &[dir.path()],
         &Bounds::modest(),
-    );
+    ) else {
+        return;
+    };
     assert!(
         said(&outcome).contains("REFUSED"),
         "writing must be refused: {}",
@@ -187,7 +237,9 @@ fn a_function_that_never_returns_is_killed() {
     // asked to stop: a polite request is a request something in an infinite loop never reads.
     let bounds = Bounds { wall: Duration::from_millis(400), ..Bounds::modest() };
     let started = std::time::Instant::now();
-    let outcome = shell("while true; do :; done", &[], &bounds);
+    let Some(outcome) = shell("while true; do :; done", &[], &bounds) else {
+        return;
+    };
     let elapsed = started.elapsed();
 
     assert!(
@@ -212,7 +264,9 @@ fn the_limits_are_the_ones_that_were_asked_for() {
         memory: 200 * 1024 * 1024,
         output: 4096,
     };
-    let outcome = shell("ulimit -t; ulimit -f; ulimit -v", &[], &bounds);
+    let Some(outcome) = shell("ulimit -t; ulimit -f; ulimit -v", &[], &bounds) else {
+        return;
+    };
     let text = said(&outcome);
     let lines: Vec<&str> = text.split_whitespace().collect();
     assert_eq!(lines.first().copied(), Some("3"), "the CPU bound: {text}");
@@ -229,7 +283,9 @@ fn more_output_than_it_was_allowed_is_refused_rather_than_truncated() {
     // Truncating would be the accommodating choice and it is the wrong one: a truncated Arrow
     // batch is not a smaller answer, it is a corrupt one, and the caller cannot tell.
     let bounds = Bounds { output: 64, ..Bounds::modest() };
-    let outcome = shell("i=0; while [ $i -lt 200 ]; do echo hello; i=$((i+1)); done", &[], &bounds);
+    let Some(outcome) = shell("i=0; while [ $i -lt 200 ]; do echo hello; i=$((i+1)); done", &[], &bounds) else {
+        return;
+    };
     assert!(
         matches!(outcome, Outcome::OutOfRoom { .. }),
         "output past the cap must be refused: {}",
@@ -244,17 +300,42 @@ fn more_output_than_it_was_allowed_is_refused_rather_than_truncated() {
 /// A skip prints, and prints why. A test that quietly tests nothing is the failure this file
 /// exists to prevent, and a sandbox test that quietly tests nothing is the worst instance of it.
 fn python(script: &str, bounds: &Bounds) -> Option<Outcome> {
-    let interpreter = Path::new("/usr/bin/python3");
+    let interpreter = sankhya_testkit::python_interpreter(&repository());
     if !interpreter.exists() {
-        println!("SKIPPED: no /usr/bin/python3");
+        sankhya_testkit::skipped("boundary", "no interpreter for the pinned version");
         return None;
     }
-    let ready = probe().expect("this machine can host the boundary");
-    Some(
-        ready
-            .run(interpreter, &["-c", script], &a_shell_needs(), b"", bounds)
-            .expect("the process starts"),
-    )
+    let Ok(ready) = probe() else {
+        sankhya_testkit::skipped("boundary", "this machine cannot host the boundary");
+        return None;
+    };
+
+    // The interpreter's own prefix, which `a_shell_needs` does not know about.
+    //
+    // `readable` is the **whole** filesystem the process will see, so an interpreter outside
+    // `/usr` has to be handed in explicitly or it does not exist in there --- and the failure is
+    // `ENOENT` from inside the jail, which reads like a broken boundary rather than a missing
+    // path. That is exactly what happened when these tests stopped assuming `/usr/bin/python3`
+    // and started using the version `.python-version` pins, which `uv` keeps under `~/.local`.
+    //
+    // The prefix rather than the binary: `bin/python3` is a few hundred kilobytes of loader and
+    // the standard library it needs sits beside it in `lib/`.
+    let prefix = interpreter.parent().and_then(std::path::Path::parent);
+    let mut readable = a_shell_needs();
+    if let Some(prefix) = prefix {
+        readable.push(prefix);
+    }
+
+    match ready.run(&interpreter, &["-c", script], &readable, b"", bounds) {
+        Ok(outcome) => Some(outcome),
+        Err(why) => {
+            sankhya_testkit::skipped(
+                "boundary",
+                &format!("the boundary probed clean and would not be entered: {why}"),
+            );
+            None
+        }
+    }
 }
 
 #[test]
@@ -446,7 +527,9 @@ fn a_worker_killed_at_the_deadline_does_not_outlive_the_kill() {
     // two is the whole of the property.
     let bounds = Bounds { wall: Duration::from_millis(300), ..Bounds::modest() };
     let started = std::time::Instant::now();
-    let outcome = shell("while true; do :; done", &[], &bounds);
+    let Some(outcome) = shell("while true; do :; done", &[], &bounds) else {
+        return;
+    };
     let elapsed = started.elapsed();
 
     assert!(

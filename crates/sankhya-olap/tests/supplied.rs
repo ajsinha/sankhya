@@ -56,19 +56,40 @@ fn table() -> RecordBatch {
 
 /// A session with the aggregation registered, or `None` where the boundary cannot be built.
 async fn session() -> Option<SessionContext> {
-    let python = Path::new("/usr/bin/python3");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .unwrap_or(Path::new("."))
+        .to_path_buf();
+    let python = sankhya_testkit::python_interpreter(&root);
     if !python.exists() {
-        println!("SKIPPED: no /usr/bin/python3");
+        sankhya_testkit::skipped("supplied", &format!("no interpreter at {}", python.display()));
         return None;
     }
-    let worker = match Worker::start(python) {
+    let worker = match Worker::start(&python) {
         Ok(worker) => Arc::new(worker),
         Err(refused) => {
-            println!("SKIPPED: {refused}");
+            // Recorded rather than printed. `cargo test --quiet` discards stdout for a passing
+            // test, so a machine that cannot host the boundary used to report these as green
+            // having executed nothing --- and `testkit::skipped` exists because fifteen
+            // end-to-end tests once did exactly that. `check-tests` counts what this writes.
+            sankhya_testkit::skipped("supplied", &format!("{refused}"));
             return None;
         }
     };
-    let declared = worker.declare("weighted_mean", WEIGHTED).expect("it is deterministic");
+    // `Worker::start` does not fork, so a machine that cannot host the boundary says so here
+    // rather than above. The two failures are different answers and are treated differently:
+    // `NoBoundary` is a statement about the machine and is recorded as a skip, while any other
+    // refusal is a statement about the *function* --- that it is not deterministic, that its
+    // merge does not compose --- and must fail, because that is what this test is for.
+    let declared = match worker.declare("weighted_mean", WEIGHTED) {
+        Ok(declared) => declared,
+        Err(sankhya_udf::Refused::NoBoundary(why)) => {
+            sankhya_testkit::skipped("supplied", &format!("no sandbox on this machine: {why}"));
+            return None;
+        }
+        Err(refused) => panic!("the fixture aggregation was refused: {refused}"),
+    };
 
     let context = SessionContext::new();
     context.register_udaf(Supplied::new(Arc::new(declared), worker));

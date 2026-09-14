@@ -64,6 +64,42 @@ impl Binaries {
         complete.then_some(Self(directory))
     }
 
+    /// Whether these programs will actually run on this machine.
+    ///
+    /// # Why presence is not enough
+    ///
+    /// [`Binaries::at`] asks whether four files exist, which is the right question for a
+    /// constructor and the wrong one for a precondition. A vendored PostgreSQL is linked
+    /// against the ICU that was installed when it was built, and a machine that has since
+    /// moved from ICU 74 to 78 keeps every one of those files and can load none of them.
+    ///
+    /// The difference matters because of *where* the failure lands. Presence-only, the four
+    /// files pass the check and `initdb` then fails with
+    /// `libicuuc.so.74: cannot open shared object file` --- an error naming a shared library
+    /// rather than the situation, arriving from inside a supervisor several layers from the
+    /// operator who could rebuild it.
+    ///
+    /// `--version` is the cheapest question that exercises the loader, which is the part that
+    /// breaks.
+    ///
+    /// # Errors
+    ///
+    /// [`ClusterError::Refused`] naming `initdb` and what the loader said.
+    pub fn usable(&self) -> Result<(), ClusterError> {
+        let program = self.program("initdb");
+        match std::process::Command::new(&program).arg("--version").output() {
+            Ok(output) if output.status.success() => Ok(()),
+            Ok(output) => Err(ClusterError::Refused {
+                program: "initdb".to_string(),
+                detail: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            }),
+            Err(why) => Err(ClusterError::Refused {
+                program: "initdb".to_string(),
+                detail: format!("{} could not be run: {why}", program.display()),
+            }),
+        }
+    }
+
     /// The path to one program.
     #[must_use]
     pub fn program(&self, name: &str) -> PathBuf {

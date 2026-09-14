@@ -51,12 +51,12 @@ def finish(state):
 "#;
 
 fn worker() -> Option<Worker> {
-    let python = Path::new("/usr/bin/python3");
+    let python = sankhya_testkit::python_interpreter(&repository());
     if !python.exists() {
-        println!("SKIPPED: no /usr/bin/python3");
+        sankhya_testkit::skipped("aggregations", "no interpreter for the pinned version");
         return None;
     }
-    match Worker::start(python) {
+    match Worker::start(&python) {
         Ok(worker) => Some(worker),
         Err(Refused::NoBoundary(said)) => {
             // A machine that cannot host the boundary is a legitimate outcome and is reported
@@ -66,6 +66,16 @@ fn worker() -> Option<Worker> {
         }
         Err(other) => panic!("{other}"),
     }
+}
+
+
+/// The repository root, from this crate's manifest directory.
+fn repository() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf()
 }
 
 #[test]
@@ -332,24 +342,31 @@ fn there_is_no_shell_in_the_jail() {
     // This asks for the set the *worker* asks for, which is the thing under test --- the
     // fixture above deliberately binds `/bin` so it can run a shell, and using that here would
     // assert the opposite of the property.
-    let interpreter = Path::new("/usr/bin/python3");
+    let interpreter = sankhya_testkit::python_interpreter(&repository());
     if !interpreter.exists() {
-        println!("SKIPPED: no /usr/bin/python3");
+        sankhya_testkit::skipped("aggregations", "no interpreter for the pinned version");
         return;
     }
     let ready = sankhya_sandbox::probe().expect("this machine can host the boundary");
-    let needs = sankhya_udf::interpreter_needs(interpreter);
+    let needs = sankhya_udf::interpreter_needs(&interpreter);
     let readable: Vec<&Path> = needs.iter().map(std::path::PathBuf::as_path).collect();
     let outcome = ready
         .run(
-            interpreter,
+            &interpreter,
             &[
                 "-c",
-                "import os,subprocess\n\
+                // `os.path.dirname(sys.executable)` rather than a hardcoded `/usr/bin`.
+                //
+                // The property is *the interpreter's directory holds the interpreter and
+                // nothing else*, and naming `/usr/bin` asserted it only of an interpreter that
+                // happens to live there. Against one under `~/.local` it read an empty
+                // `/usr/bin` and failed --- which looks like the boundary leaking and is the
+                // test asking about the wrong directory.
+                "import os,subprocess,sys\n\
                  for d in ('/bin','/sbin','/usr/sbin'):\n    \
                  print(d, 'PRESENT' if os.path.isdir(d) else 'ABSENT')\n\
-                 print('HOLDS', sorted(os.listdir('/usr/bin')) if os.path.isdir('/usr/bin') \
-                 else [])\n\
+                 here = os.path.dirname(os.path.realpath(sys.executable))\n\
+                 print('HOLDS', sorted(os.listdir(here)) if os.path.isdir(here) else [])\n\
                  try:\n    subprocess.run(['/bin/sh','-c','echo ESCAPED'],check=True)\n\
                  except Exception as e:\n    print('REFUSED', type(e).__name__)",
             ],

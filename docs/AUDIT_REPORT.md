@@ -737,6 +737,13 @@ capability. `M4` is marked *"Complete. Every exit criterion met."*
 and `FR-CUBE-08`, both mandatory, and ragged hierarchies are the marketing's headline example of
 what native cubing gives you.
 
+> **Half closed, 2026-09-09 (`M22a`).** A declared `ROLLUP` now consolidates from SQL through
+> `cube_consolidate`, and a shared member is refused by name rather than added under both
+> parents. `FR-CUBE-06` is met for strict hierarchies. **`FR-CUBE-08` is not**: ragged and
+> shared hierarchies need the set-valued walk (`M22b`), which needs the dimension-table join
+> (`M23`), because member keys still come from the fact table. The sentence above stays as it
+> was written --- it was true of the system that was audited.
+
 ### `FEA-05` QR, SVD and eigendecomposition shipped while six documents say they are deliberately absent
 Including the maths crate's own header, which argues that *"a subtly wrong SVD produces plausible
 singular values"* as the reason not to have one. `mat_singular_values` forms the Gram matrix,

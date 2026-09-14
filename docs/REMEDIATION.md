@@ -1508,7 +1508,8 @@ is no write path from SQL; there is no change-capture runtime, so the CDC crate 
 client dependency and cannot open a connection; the graph is registered against a freshly
 constructed empty catalogue on every session and can never answer; the pack loader is not wired,
 and the two "flagship packs" the README described never existed — `packs/` holds telemetry,
-logistics and an adversarial fixture. Cube hierarchies are validated and ignored.
+logistics and an adversarial fixture. Cube hierarchies were validated and ignored; `M22a`
+closed the strict half on 2026-09-09 and `IMPLEMENTATION_PLAN.md` §13k sequences the rest.
 
 ### The adversarial review
 
@@ -1545,7 +1546,7 @@ entries were passing on that, and **both survive their real suite**. This is `R3
 report green when they measure nothing* — inside the mechanism built to detect exactly that. A
 verdict now requires libtest to print `test result: FAILED`; `--check` validates that a named
 target exists and that no two entries name one site; a hang is its own verdict rather than an
-exception thirty minutes in. The catalogue is **921 distinct defects**.
+exception thirty minutes in. The catalogue is **923 distinct defects**.
 
 Writing the tests those two entries needed, the first fixture used `- image:` where the parser
 requires `image:` at the start of the line — so both rejecting tests passed *vacuously*, through

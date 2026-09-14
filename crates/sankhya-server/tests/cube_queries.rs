@@ -185,6 +185,7 @@ fn settings(warehouse: &std::path::Path) -> Settings {
         maintenance: None,
         require_password: false,
         user_functions: false,
+        python: std::path::PathBuf::from("/usr/bin/python3"),
         metrics_detail: false,
         policy: None,
         metrics_listen: None,
@@ -1693,4 +1694,155 @@ async fn a_cube_is_not_listed_to_somebody_who_may_not_read_its_fact_table() {
             answer.rows
         ),
     }
+}
+
+// --- consolidating along a declared hierarchy ------------------------------------------
+
+/// `sales()`, with `region` given the hierarchy the DDL has always been able to declare.
+fn sales_rolling_up(edges: &[(&str, &str)]) -> Definition {
+    let mut hierarchy = sankhya_cube_algo::hierarchy::Hierarchy::new();
+    for (child, parent) in edges {
+        hierarchy.rolls_up(*child, *parent);
+    }
+    let mut definition = sales();
+    if let Some(region) = definition.dimensions.iter_mut().find(|d| d.name == "region") {
+        region.rollups = Some(hierarchy);
+    }
+    definition
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_declared_hierarchy_consolidates_its_members_into_their_parent() {
+    // `FEA-04` was that `ROLLUP` is "declared, validated, and ignored": the edges were parsed,
+    // checked for cycles and fingerprinted, and then read by nothing but `describe` --- which
+    // reported `parent_child: true` to clients while the engine answered only at leaf grain.
+    //
+    // The invariant asserted here is the one that makes a consolidation a consolidation: for an
+    // additive measure it **moves** facts between members and changes no total. A step that
+    // altered the total would be arithmetic, not navigation.
+    let dir = warehouse_with_a_fact_table();
+    catalogue::save(dir.path(), &sales_rolling_up(&[("north", "west"), ("south", "west")]))
+        .expect("a cube whose region dimension declares a hierarchy");
+
+    let server = server_over(&dir, policy("reader", None));
+    connect(&server, "ana");
+
+    let leaves = server
+        .query("SELECT * FROM cube_rollup('sales', 'amount', 'by=region')", &Caller::new(&anyone()))
+        .expect("the cube answers at leaf grain");
+    let consolidated = server
+        .query(
+            "SELECT * FROM cube_consolidate('sales', 'amount', 'along=region')",
+            &Caller::new(&anyone()),
+        )
+        .expect("and along the hierarchy it declares");
+
+    assert_eq!(
+        total_from(&consolidated),
+        total_from(&leaves),
+        "consolidation moved facts between members and must not have changed the total"
+    );
+    let members = first_column(&consolidated, "region");
+    assert!(
+        members.iter().all(|member| member == "west"),
+        "every member rolled into `west` and the result should say so: {members:?}"
+    );
+    // **Distinct members**, not row counts. A consolidation keeps every axis --- it replaces
+    // members along one of them --- so it answers at the base grain, `region x period`, while
+    // `by=region` has already rolled `period` away. Comparing the two row counts compares two
+    // different shapes, and the first version of this assertion did exactly that: it failed
+    // while the consolidation was working, which is a test wrong in the direction that wastes
+    // an afternoon.
+    let distinct = |rows: Vec<String>| -> std::collections::BTreeSet<String> {
+        rows.into_iter().collect()
+    };
+    let before = distinct(first_column(&leaves, "region"));
+    let after = distinct(members);
+    assert!(
+        after.len() < before.len(),
+        "the whole point is that there are fewer members afterwards: {before:?} -> {after:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_consolidation_says_whether_it_was_served_from_a_cuboid() {
+    // **What happened, not a constant.** `cube_slice` shipped this column as a literal `false`
+    // and the test that should have caught it compared that constant against itself; making it
+    // honest is what exposed the assertion. A third navigation is a third chance to repeat the
+    // same defect, so it is pinned here rather than left to be noticed later.
+    let dir = warehouse_with_a_fact_table();
+    catalogue::save(
+        dir.path(),
+        &sales_rolling_up(&[("north", "west"), ("south", "west")]).maintained_within(5),
+    )
+    .expect("a maintained cube with a hierarchy");
+
+    let server = server_over(&dir, policy("reader", None));
+    server.refresh_maintained_cubes();
+    connect(&server, "ana");
+
+    let consolidated = server
+        .query(
+            "SELECT * FROM cube_consolidate('sales', 'amount', 'along=region')",
+            &Caller::new(&anyone()),
+        )
+        .expect("the cube answers");
+
+    let said = first_column(&consolidated, "materialised");
+    assert!(!said.is_empty(), "the result carries a provenance column");
+    assert!(
+        said.iter().all(|value| value == "t"),
+        "the base cuboid was built and can express this, so the column must say so: {said:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_that_rolls_up_two_ways_is_refused_by_name() {
+    // A shared member is the normal case in a real chart of accounts, and it is exactly what a
+    // single-parent walk cannot carry: adding its facts under both parents double-counts it in
+    // any total spanning them. `Hierarchy::parents_of` returns a set so this is visible, and
+    // the refusal names the member and both parents --- a caller told only "the hierarchy is
+    // non-strict" has to go and find which of thousands.
+    let dir = warehouse_with_a_fact_table();
+    catalogue::save(
+        dir.path(),
+        &sales_rolling_up(&[("north", "west"), ("north", "coastal"), ("south", "west")]),
+    )
+    .expect("a cube whose hierarchy shares a member");
+
+    let server = server_over(&dir, policy("reader", None));
+    connect(&server, "ana");
+
+    let refused = server
+        .query(
+            "SELECT * FROM cube_consolidate('sales', 'amount', 'along=region')",
+            &Caller::new(&anyone()),
+        )
+        .expect_err("a shared member cannot be consolidated one parent at a time");
+    let said = format!("{}", refused.message);
+    assert!(said.contains("north"), "the refusal names the member: {said}");
+    assert!(said.contains("coastal") && said.contains("west"), "and both parents: {said}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn consolidating_a_dimension_that_declares_no_hierarchy_is_refused() {
+    // Rather than answering with the cells unchanged, which is a result that looks like a
+    // consolidation and is not one.
+    let dir = warehouse_with_a_fact_table();
+    catalogue::save(dir.path(), &sales()).expect("a cube with no hierarchy declared");
+
+    let server = server_over(&dir, policy("reader", None));
+    connect(&server, "ana");
+
+    let refused = server
+        .query(
+            "SELECT * FROM cube_consolidate('sales', 'amount', 'along=region')",
+            &Caller::new(&anyone()),
+        )
+        .expect_err("there is nothing to consolidate into");
+    assert!(
+        format!("{}", refused.message).contains("no hierarchy is declared"),
+        "the refusal says what is missing: {}",
+        refused.message
+    );
 }
