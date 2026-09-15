@@ -2155,6 +2155,45 @@ tests.
 No estimate is offered here. This is the milestone the product rests on, and a number invented
 for it would be the kind of claim two days of remediation have been spent removing.
 
+> **`M26a`, 2026-09-14 — merge-on-read reaches the read path.** The first slice, and deliberately
+> the *correctness* one rather than a feature: everything else in `M26` adds a capability, and this
+> removes a wrong number.
+>
+> Capture records inserts, updates and deletes as **rows**. A table whose source mutates in place
+> therefore holds several versions of one row, and unioning its files returns all of them:
+> `COUNT(*)` says two where the answer is one, and `SUM` adds the old value to the new one.
+> `ResolvedTable` resolves exactly that and **nothing outside its own tests ever constructed one**
+> — the key columns were declared by the publisher and written into the table's own log where they
+> cannot be forgotten, and the read path never read them.
+>
+> Discovery reads them now; a table that declares a key is served resolved, one that declares none
+> is scanned exactly as before. The pinned-snapshot path rebuilds providers at another version and
+> resolves them too, which it would otherwise have skipped — the same defect in a second place, and
+> worse there, because somebody pins a version precisely because they want one answer.
+>
+> **Two things the slice found.**
+>
+> `ResolvedTable::scan` **refused**, on the reasoning that the planner inlines the resolution and
+> never calls `scan`, so reaching it meant serving raw rows. Right about the cost, wrong about the
+> premise: inlining happens only where the planner sees that provider, and every served table is
+> wrapped in a `SecuredTable` whose own `scan` calls `scan` on what it holds. The fold could not be
+> served at all. It plans itself now. Forwarding the inner plan from the wrapper was the other fix
+> and is the wrong one — inlining discards the wrapper's filter, so a row restriction would vanish
+> at exactly the moment the table became resolvable.
+>
+> And it declared the **table's** schema while producing the resolution's. `distinct_on` lowers to
+> an aggregate and an aggregate's outputs are nullable, so every aggregate over a resolved table
+> failed with a nullability mismatch reported as an internal DataFusion error — for a disagreement
+> this type introduced. Widening is the safe direction and the honest one: after a distinct and a
+> filter a column *can* be absent.
+>
+> **The rest of `M26` is untouched**, and the order the architecture already fixes is not in doubt:
+> `DEC-07` makes the landing zone append-only and `DEC-08` publishes the change log as a sibling
+> table, so writes reach the warehouse through capture, never through the analytical connection.
+> The `0A000` refusal on `INSERT` is correct and stays. What remains is the capture **runtime** —
+> `sankhya-ingest::pipeline` is built and nothing drives it — the `__changes` sibling, and the
+> compaction that folds a change log into a base table.
+
 ### Carried, and not scheduled
 
 Named so they are not mistaken for oversights: the `ReadyForQuery` transaction state,

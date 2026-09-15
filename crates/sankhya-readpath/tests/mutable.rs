@@ -315,11 +315,18 @@ async fn a_table_that_did_not_come_through_capture_is_refused() {
 }
 
 #[tokio::test]
-async fn scanning_a_resolved_table_directly_refuses_rather_than_serving_history() {
-    // The planner inlines the resolution and never calls `scan`, so nothing above
-    // exercises this path — which is exactly why it is worth a test. If a future planner
-    // stopped inlining, a fallback that quietly scanned the raw table would serve every
-    // version of every row again, and the only symptom would be the numbers being wrong.
+async fn scanning_a_resolved_table_directly_serves_the_resolution_and_not_history() {
+    // **This test used to assert a refusal, and the refusal was the defect.**
+    //
+    // The reasoning was that the planner inlines the resolution and never calls `scan`, so
+    // reaching here meant it had not, and serving raw rows would be the very failure this
+    // type exists to fix. Right about the cost, wrong about the premise: inlining happens
+    // only where the planner sees *this* provider, and every table the server serves is
+    // wrapped in a `SecuredTable` whose own `scan` calls `scan` on what it holds. So the
+    // refusal fired on every real query and a resolved table could not be served at all.
+    //
+    // What must hold is unchanged, and it is what is asserted: a direct scan returns the
+    // **resolved** rows. One version of the key, the later one.
     use datafusion::catalog::TableProvider;
 
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -330,15 +337,20 @@ async fn scanning_a_resolved_table_directly_refuses_rather_than_serving_history(
     let resolved = resolved(raw);
 
     let ctx = SessionContext::new();
-    let err = resolved
+    let plan = resolved
         .scan(&ctx.state(), None, &[], None)
         .await
-        .expect_err("a resolved table must not serve a raw scan");
+        .expect("a resolved table plans its own resolution");
+    let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx())
+        .await
+        .expect("executing");
+    let rows: usize = batches.iter().map(arrow_array::RecordBatch::num_rows).sum();
+    assert_eq!(rows, 1, "two versions of one key resolve to one row");
 
-    assert!(
-        format!("{err}").contains("every version of every row"),
-        "the refusal must say what serving a raw scan would cost: {err}"
-    );
+    let balances = batches[0]
+        .column_by_name("balance")
+        .and_then(|c| c.as_any().downcast_ref::<arrow_array::Int64Array>().map(|a| a.value(0)));
+    assert_eq!(balances, Some(250), "and it is the later version");
 }
 
 #[test]

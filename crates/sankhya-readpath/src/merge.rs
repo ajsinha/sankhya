@@ -230,7 +230,26 @@ impl ResolvedTable {
             .filter(col(COMMIT_OP).not_eq(lit(DELETED)))?
             .build()?;
 
-        Ok(Self { raw, schema, plan })
+        // **Every column nullable, which is what the resolution actually produces.**
+        //
+        // `distinct_on` lowers to an aggregate, and an aggregate's outputs are nullable even
+        // where its input was not. Declaring the table's own schema here says non-null, and
+        // DataFusion validates a scan's declared schema against the plan it is handed --- so
+        // an aggregate over a resolved table failed with a nullability mismatch reported as
+        // an internal error naming DataFusion, for a disagreement introduced here.
+        //
+        // Widening is the safe direction and the honest one: after a distinct and a filter,
+        // a column *can* be absent, and saying otherwise claims a guarantee the plan does not
+        // give. The only cost is an optimisation DataFusion declines to make.
+        let resolved: SchemaRef = Arc::new(arrow_schema::Schema::new_with_metadata(
+            schema
+                .fields()
+                .iter()
+                .map(|field| field.as_ref().clone().with_nullable(true))
+                .collect::<Vec<arrow_schema::Field>>(),
+            schema.metadata().clone(),
+        ));
+        Ok(Self { raw, schema: resolved, plan })
     }
 
     /// The unresolved rows, for a caller that wants the history rather than the state.
@@ -265,23 +284,59 @@ impl TableProvider for ResolvedTable {
         Ok(vec![TableProviderFilterPushDown::Inexact; filters.len()])
     }
 
+    /// The resolution, planned and returned — **not** a raw scan.
+    ///
+    /// # Why this exists, having once been an error
+    ///
+    /// This used to refuse, on the reasoning that the planner inlines `get_logical_plan`
+    /// instead of calling `scan`, so reaching here meant it had not, and serving raw rows
+    /// would be the defect this type exists to fix. The refusal was right and the premise
+    /// was wrong: inlining happens only where the planner sees **this** provider. Wrapped in
+    /// anything — and every table the server serves is wrapped in a `SecuredTable`, which
+    /// applies row filtering and column masking in its own `scan` — the wrapper is what the
+    /// planner sees, and the wrapper calls `scan` on what it holds.
+    ///
+    /// So a resolved table could not be served at all. It was built, tested, and reachable
+    /// only by registering it directly, which nothing outside its own tests did.
+    ///
+    /// Teaching the wrapper to forward `get_logical_plan` would have been the other fix and
+    /// is the wrong one: inlining the inner plan discards the wrapper's own filter, so a
+    /// principal's row restriction would vanish at exactly the moment the table became
+    /// resolvable. The resolution plans itself instead, and the wrapper keeps applying its
+    /// security **above** it — which is also the only correct order. Filtering first and
+    /// resolving afterwards lets a policy hide the newest version of a row and promote the
+    /// one before it, presenting a superseded value as current.
+    ///
+    /// `filters` and `limit` are deliberately ignored. Filters are declared `Inexact`, so
+    /// the engine applies them again above; a limit applied here would stop before the
+    /// distinct chose a winner, which is the same trap in a different shape.
     async fn scan(
         &self,
-        _state: &dyn Session,
-        _projection: Option<&Vec<usize>>,
+        state: &dyn Session,
+        projection: Option<&Vec<usize>>,
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> DfResult<Arc<dyn ExecutionPlan>> {
-        // Unreachable in practice: the planner inlines `get_logical_plan` instead of
-        // calling this. Returning an error rather than a raw scan matters — a raw scan
-        // here would silently serve unresolved rows, which is the defect this type
-        // exists to fix.
-        Err(DataFusionError::Internal(
-            "a resolved table is planned through its logical plan; reaching scan() means \
-             the planner did not inline it, and serving a raw scan here would return \
-             every version of every row"
-                .to_string(),
-        ))
+        let plan = match projection {
+            None => self.plan.clone(),
+            Some(indices) => {
+                let fields = self.schema.fields();
+                let mut picked = Vec::with_capacity(indices.len());
+                for index in indices {
+                    let field = fields.get(*index).ok_or_else(|| {
+                        DataFusionError::Internal(format!(
+                            "the projection names column {index}, which this table does not \
+                             have"
+                        ))
+                    })?;
+                    picked.push(col(field.name()));
+                }
+                LogicalPlanBuilder::from(self.plan.clone())
+                    .project(picked)?
+                    .build()?
+            }
+        };
+        state.create_physical_plan(&plan).await
     }
 }
 

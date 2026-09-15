@@ -103,6 +103,15 @@ will reproduce them; that is expected.
     alternative tells a filtered principal which members exist — and it is a refusal rather
     than a wrong number. What would be a defect is a member you may **not** see appearing in
     one.
+- A table that declares **key columns** is served through merge-on-read as of 2026-09-14
+  (`M26a`): one version of each key, the latest, and a key whose latest version is a deletion is
+  absent. Before that a table receiving updates returned its whole history to `SELECT *`. Worth
+  attacking hard, because the failure is silent: compare `COUNT(*)` and `SUM` against the change
+  rows the fixture wrote. A table that declares **no** key must be untouched — five change rows
+  stay five rows.
+  - The resolution sits **under** row-level security, so a policy filters the resolved state. A
+    policy that hid the newest version of a row and promoted the one before it would be a wrong
+    number produced by a security control; that is the thing to try to provoke.
 - A cube is described only to a caller who may read **every** table it is built on — its
   facts *and* its dimension tables — as of 2026-09-14 (`M24b`). Both halves were wrong before:
   dimension tables were outside a cube's authorization, and the listing functions were handed

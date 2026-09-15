@@ -733,12 +733,23 @@ pub(crate) fn as_of(
                 ),
             )
         })?;
+        // Resolved on the way in, like every other provider. A pinned read of a mutable
+        // table that skipped this would answer with every version of every row --- at a
+        // position somebody chose precisely because they wanted one answer.
+        let mut complaints = Vec::new();
+        let provider = crate::warehouse::served(
+            resolved,
+            &table.key_columns,
+            &table.root,
+            &mut complaints,
+        );
         pinned.push(crate::execute::ServableTable {
             reference: table.reference.clone(),
             authorize_as: table.authorize_as.clone(),
             inherited: table.inherited.clone(),
             root: table.root.clone(),
-            provider: std::sync::Arc::new(resolved),
+            key_columns: table.key_columns.clone(),
+            provider,
             schema: std::sync::Arc::clone(&table.schema),
             resolved_at: at.version,
         });
@@ -1148,12 +1159,23 @@ fn at_versions(
                 &format!("`{qualified}` could not be read at version {asked}: {error}"),
             )
         })?;
+        // Resolved on the way in, like every other provider. A pinned read of a mutable
+        // table that skipped this would answer with every version of every row --- at a
+        // position somebody chose precisely because they wanted one answer.
+        let mut complaints = Vec::new();
+        let provider = crate::warehouse::served(
+            resolved,
+            &table.key_columns,
+            &table.root,
+            &mut complaints,
+        );
         pinned.push(crate::execute::ServableTable {
             reference: table.reference.clone(),
             authorize_as: table.authorize_as.clone(),
             inherited: table.inherited.clone(),
             root: table.root.clone(),
-            provider: std::sync::Arc::new(resolved),
+            key_columns: table.key_columns.clone(),
+            provider,
             schema: std::sync::Arc::clone(&table.schema),
             resolved_at: asked,
         });

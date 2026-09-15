@@ -2354,11 +2354,14 @@ CATALOGUE = [
      "            if false {",
      "sankhya-readpath"),
 
-    ("merge: serve a raw scan when the planner does not inline the resolution",
+    # This used to mutate a refusal. `M26a` replaced the refusal with the resolution itself
+    # --- see `merge.rs` on why the refusal was the defect --- so the entry now removes the
+    # resolution and serves the raw table, which is the same wrong answer in the new shape.
+    ("merge: serve a raw scan instead of the resolution",
      "crates/sankhya-readpath/src/merge.rs",
-     "        Err(DataFusionError::Internal(",
-     "        return self.raw.scan(_state, _projection, _filters, _limit).await;\n        #[allow(unreachable_code)]\n        Err(DataFusionError::Internal(",
-     "sankhya-readpath"),
+     "        state.create_physical_plan(&plan).await",
+     "        self.raw.scan(state, projection, _filters, _limit).await",
+     "sankhya-readpath", 1, "mutable"),
 
     ("merge: treat a relation with no row identity as mutable",
      "crates/sankhya-readpath/src/merge.rs",
@@ -6862,6 +6865,36 @@ CATALOGUE = [
      "                spec.weight_column = stored.weight_column;\n",
      "",
      "sankhya-server", 1, "graph_queries"),
+
+    # ------------------------------------------------------------------------------------
+    # `M26a` --- merge-on-read reaches the read path. Each entry removes one link between a
+    # key the publisher declared and a query that sees one version of each row.
+
+    # The wrapping itself. Without it a table whose source updates in place is served as a
+    # union of its change rows: `COUNT(*)` says two where the answer is one, and `SUM` adds
+    # the old value to the new one. Not an error, not a crash, and not obviously wrong.
+    ("server: serve a table unresolved although it declares a key",
+     "crates/sankhya-server/src/warehouse.rs",
+     "    match sankhya_readpath::ResolvedTable::new(Arc::clone(&raw), key) {",
+     "    match Err::<sankhya_readpath::ResolvedTable, _>(\n        datafusion::error::DataFusionError::Internal(String::new()),\n    ) {",
+     "sankhya-server", 1, "mutable_tables"),
+
+    # And reading the key at all. The publisher writes it into the table's own log where it
+    # cannot be forgotten, and the read path ignored it for the whole life of the feature.
+    ("server: ignore the key columns a table's own log declares",
+     "crates/sankhya-server/src/warehouse.rs",
+     "        .map(|metadata| sankhya_publish::key_columns(&metadata.configuration))",
+     "        .map(|_| Vec::new())",
+     "sankhya-server", 1, "mutable_tables"),
+
+    # The tombstone filter runs **after** the resolution. Before it, the delete is removed
+    # and the version preceding it wins --- so a row the source says does not exist comes
+    # back as whatever it last was, which is worse than a stale row.
+    ("readpath: drop deletions before resolving, so a deleted row returns at its last value",
+     "crates/sankhya-readpath/src/merge.rs",
+     "            .filter(col(COMMIT_OP).not_eq(lit(DELETED)))?\n",
+     "",
+     "sankhya-server", 1, "mutable_tables"),
 
 ]
 

@@ -55,6 +55,13 @@ pub struct ServableTable {
     /// registration, so a clone becomes queryable the moment it exists rather than at the next
     /// restart --- which is what it did, and what made cloning unusable.
     pub authorize_as: Option<TableRef>,
+    /// The columns that identify a row, where the table declares them.
+    ///
+    /// Carried so that **re-resolving** a table keeps its merge. A pinned snapshot rebuilds
+    /// the provider at another version, and rebuilding it without the key serves a mutable
+    /// table unresolved --- every version of every row, at a position somebody chose
+    /// precisely because they wanted one answer. Empty for an append-only table.
+    pub key_columns: Vec<String>,
     /// What it inherits from the table it was cloned from, if it is a clone.
     ///
     /// Carried so that **re-resolving** a clone keeps the splice. Refreshing it through the
