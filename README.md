@@ -257,11 +257,13 @@ thirty-two-core reference node:
 | `NFR-PERF-04` wide scan, 4 clients | 3,000 ms | 594 ms |
 
 `NFR-PERF-03`'s own text says *pruned*, and the gate now reports how much: **0 of 23 files.**
-Until 2026-09-14 no date column had bounds, so the predicate that makes the pivot the pruned
-shape could skip nothing. Date bounds are recorded now and do prune — nine files of ten in the
-read path's own tests — and they still prune nothing *here*, because TPC-H generates `orders`
-in orderkey order and every file's dates span the whole range. The objective is met at 781 ms
-with its own adjective doing no work, and saying so is the point of printing the number.
+Until 2026-09-14 no date column had bounds at all, so the predicate that makes the pivot the
+pruned shape could skip nothing. Date bounds are recorded now and do prune — nine files of ten
+on a date range, four partitions of five on a partition predicate — and they still prune
+nothing *here*, because TPC-H generates `orders` in orderkey order and every file's dates span
+the whole range. Re-sorting the fixture would fix the number and make it incomparable with
+every other system's TPC-H, so the number stays and says what it means. The objective is met
+at 781 ms with its own adjective doing no work, and printing the figure is how you can tell.
 
 The budgets are asserted in `crates/sankhya-olap/tests/tpch.rs`, in a test named
 *the performance objectives are met*, and driven by `cargo xtask check-performance`. **The

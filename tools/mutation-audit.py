@@ -5169,11 +5169,14 @@ CATALOGUE = [
 
     # `SEC-18`. `cubes()` and `derived()` listed every cube to every caller, and `derived()`
     # emits the SQL text of each definition and the tables it reads.
-    ("server: declare every cube to every caller",
-     "crates/sankhya-server/src/wiring.rs",
-     "            if self.scope_across(principal, cube.reads()).is_none() {\n                continue;\n            }\n            catalog.declare(cube.name());",
-     "            catalog.declare(cube.name());",
-     "sankhya-server"),
+    # The rule itself, which `M24b` gave a name so the two surfaces that need it --- the
+    # navigation catalogue and the description functions --- cannot drift apart. Drifting
+    # apart is exactly how `SEC-18` stayed open on one of them after being closed on the other.
+    ("server: declare and describe every cube to every caller",
+     "crates/sankhya-server/src/cubes.rs",
+     "        .filter(|cube| server.scope_across(principal, cube.reads()).is_some())\n",
+     "",
+     "sankhya-server", 1, "cube_queries"),
 
     # A snapshot row names the qualified tables it pins, so an unfiltered listing hands out the
     # shape of a warehouse.
@@ -6787,6 +6790,28 @@ CATALOGUE = [
      "        Some(Bound::Float(v)) if v.is_finite() => match data_type {\n            DataType::Float64 => Precision::Exact(ScalarValue::Float64(Some(*v))),",
      "        Some(Bound::Float(v)) if v.is_finite() => match DataType::Float64 {\n            DataType::Float64 => Precision::Exact(ScalarValue::Float64(Some(*v))),",
      "sankhya-readpath", 1, "pruning"),
+
+    # ------------------------------------------------------------------------------------
+    # `M24b` --- what a cube reads, and who may be told it exists.
+
+    # Fold the dimension tables into `reads`. Without it a cube's authorization and its
+    # snapshot cover its facts and not its members, while `GUIDE.md` says a cube whose
+    # dimension tables you cannot read is refused.
+    ("cube: authorize a cube against its facts and not the tables its members come from",
+     "crates/sankhya-cube/src/model.rs",
+     "        self.reads = reads_of(&self.reads, &self.dimensions);",
+     "",
+     "sankhya-cube", 1, "definition_reads"),
+
+    # And the listing surface. `describe::register` was handed `self.cubes()` --- every cube
+    # on the server --- so `SELECT * FROM cubes()` emitted each one's name, fact table, the
+    # tables it reads and its dimension and measure counts to anybody who could open a
+    # session. `SEC-18`, still open on this surface after the fix went into the two beside it.
+    ("server: describe every cube on the server to whoever opened a session",
+     "crates/sankhya-server/src/wiring.rs",
+     "        sankhya_cube_sql::describe::register(context, Arc::new(visible), catalog);",
+     "        sankhya_cube_sql::describe::register(context, self.cubes(), catalog);",
+     "sankhya-server", 1, "cube_queries"),
 
 ]
 

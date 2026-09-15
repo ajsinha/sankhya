@@ -65,6 +65,29 @@ pub(crate) fn run_ddl(
 /// A derived result whose query no longer plans --- a table dropped underneath it --- is
 /// **skipped and left unregistered**, so naming it fails to resolve. Registering a broken one
 /// would turn a missing table into a planning error inside somebody else's statement.
+/// The cubes this caller may be told exist.
+///
+/// A cube is described only to somebody who may read **every** table it is built on --- its
+/// facts and, since `M24b`, its dimension tables. `SEC-18` is the finding, and it was reported
+/// closed while `describe::register` was still handed the whole list: `cubes()`, `derived()`,
+/// `cube_dimensions()` and `cube_measures()` emitted each cube's name, its fact table, the
+/// tables it reads and its counts to anybody who could open a session.
+///
+/// Here rather than inline at the call site so the rule has a name, and so the two places that
+/// need it --- the description surface and the navigation catalogue --- cannot drift apart,
+/// which is exactly how the finding stayed open.
+pub(crate) fn visible_to(
+    server: &Server,
+    principal: &Principal,
+    cubes: &[sankhya_cube::model::Cube],
+) -> Vec<sankhya_cube::model::Cube> {
+    cubes
+        .iter()
+        .filter(|cube| server.scope_across(principal, cube.reads()).is_some())
+        .cloned()
+        .collect()
+}
+
 pub(crate) fn register_derived(
     server: &Server,
     context: &datafusion::prelude::SessionContext,

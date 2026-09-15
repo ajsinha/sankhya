@@ -140,7 +140,7 @@ rather than in a footnote, because it is the largest hole in this document.
 
 ## 3. The mutation catalogue
 
-`tools/mutation-audit.py` holds **938** specific defects. Each is applied to the source, the
+`tools/mutation-audit.py` holds **940** specific defects. Each is applied to the source, the
 suite is run, and the entry passes only if the suite **fails**. A mutation that survives is a
 hole in the tests, named and located.
 
@@ -227,7 +227,7 @@ This is the section to read if you are deciding how much to trust the rest.
 
 ```bash
 cargo run -p xtask -- check-all       # every gate above
-cargo test --workspace                # 2,885 tests
+cargo test --workspace                # 2,896 tests
 python3 tools/mutation-audit.py       # 921 defects, one at a time --- hours
 python3 tools/mutation-audit.py --check   # every entry still matches its source, in seconds
 cargo bench -p sankhya-math           # and -p sankhya-functions

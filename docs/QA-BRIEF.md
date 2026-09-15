@@ -103,6 +103,11 @@ will reproduce them; that is expected.
     alternative tells a filtered principal which members exist — and it is a refusal rather
     than a wrong number. What would be a defect is a member you may **not** see appearing in
     one.
+- A cube is described only to a caller who may read **every** table it is built on — its
+  facts *and* its dimension tables — as of 2026-09-14 (`M24b`). Both halves were wrong before:
+  dimension tables were outside a cube's authorization, and the listing functions were handed
+  every cube on the server regardless. Worth attacking with a principal who holds a grant on
+  *some* table and not the cube's, which is the case the original test could not reach.
 - File pruning reaches **dates, instants and decimals** as of 2026-09-14 (`M24a`), and did not
   before: those types had no bounds at all, so a date-ranged query — most of them — read every
   file. The single property worth attacking is the one the whole mechanism rests on: **a skip

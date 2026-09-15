@@ -1159,7 +1159,12 @@ impl Server {
             &grain_needed(sql).iter().map(String::as_str).collect::<Vec<&str>>(),
         );
         let catalog = Arc::new(sankhya_cube_sql::catalog::CubeCatalog::new());
-        for cube in cubes.iter() {
+        // **What this caller may be told exists**, handed to the description surface in place
+        // of every cube on the server. `SEC-18`, which was reported closed while
+        // `describe::register` still took the whole list --- see `AUDIT_REPORT.md` for why the
+        // test that should have caught that could not.
+        let visible = crate::cubes::visible_to(self, principal, &cubes);
+        for cube in &visible {
             // Declared only to a caller who may read what it is built on. `cubes()` and
             // `derived()` used to list every cube on the server to everybody, and `derived()`
             // emits the **SQL text** of each definition and the tables it reads --- so a
@@ -1169,9 +1174,6 @@ impl Server {
             // The same rule the fact table itself follows, four lines down and four lines away
             // in `register_derived`, which was already doing this. Saying "you may not read
             // that" confirms it exists, so it is simply not there.
-            if self.scope_across(principal, cube.reads()).is_none() {
-                continue;
-            }
             catalog.declare(cube.name());
             if !navigating || !sql.contains(cube.name()) {
                 continue;
@@ -1348,7 +1350,7 @@ impl Server {
         // Description alongside navigation, always. A surface a client can use only by
         // already knowing the model is a surface only its author can use, and a picker that
         // hardcodes a cube's dimensions is a picker that drifts from the cube.
-        sankhya_cube_sql::describe::register(context, self.cubes(), catalog);
+        sankhya_cube_sql::describe::register(context, Arc::new(visible), catalog);
     }
 
     /// Build the cuboids maintained cubes are missing, and report what was built.

@@ -34,5 +34,6 @@ sankhya-cdc-model = { path = "../sankhya-cdc-model" }
 sankhya-testkit   = { path = "../sankhya-testkit" }
 arrow         = { workspace = true }
 sankhya-table = { path = "../sankhya-table" }
+parquet       = { workspace = true }
 tokio         = { workspace = true }
 tempfile      = { workspace = true }
