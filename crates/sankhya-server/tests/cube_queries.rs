@@ -214,16 +214,16 @@ fn server_with(policy: PolicySet) -> (Server, tempfile::TempDir) {
 
 /// A policy letting `role` read orders, optionally only some rows.
 fn policy(role: &str, rows: Option<&str>) -> PolicySet {
-    let mut rule = Rule::grant(
-        tenant(),
-        Role::new(role),
-        TableRef::new("sales", "orders"),
-        Action::Read,
-    );
+    let mut rule = grant(role, "orders");
     if let Some(rows) = rows {
         rule = rule.where_rows(rows);
     }
     PolicySet::new().with(rule)
+}
+
+/// A read grant for one role on one table of the `sales` schema.
+fn grant(role: &str, table: &str) -> Rule {
+    Rule::grant(tenant(), Role::new(role), TableRef::new("sales", table), Action::Read)
 }
 
 fn connect(server: &Server, user: &str) {
@@ -1624,22 +1624,31 @@ async fn a_pinned_session_is_not_served_an_unpinned_session_cache_entry() {
 /// Its own helper because `settings` leaves `roles` empty, and an empty map is the switch that
 /// makes **every** user a reader. A test about what somebody without a grant can see has to say
 /// who has one.
-fn server_with_roles(
+fn server_over_warehouse(
+    dir: &tempfile::TempDir,
     policy: PolicySet,
     roles: std::collections::BTreeMap<String, Vec<String>>,
-) -> (Server, tempfile::TempDir) {
-    let dir = warehouse_with_a_fact_table();
+) -> Server {
     let (found, refused) = warehouse::discover(dir.path());
     assert!(refused.is_empty(), "the fixture must open: {refused:?}");
     let cache = sankhya_table_delta::LogCache::new();
     let (servable, unreadable) = warehouse::servable(&found, Lsn::new(u64::MAX), &cache);
     assert!(unreadable.is_empty(), "the fixture must read: {unreadable:?}");
-    let tables = warehouse::describe(&found);
     let mut settings = settings(dir.path());
     settings.roles = roles;
     let (server, complaints) =
-        Server::with_tables(settings, policy, tables, servable).adopting_cubes(dir.path());
+        Server::with_tables(settings, policy, warehouse::describe(&found), servable)
+            .adopting_cubes(dir.path());
     assert!(complaints.is_empty(), "the cube must adopt: {complaints:?}");
+    server
+}
+
+fn server_with_roles(
+    policy: PolicySet,
+    roles: std::collections::BTreeMap<String, Vec<String>>,
+) -> (Server, tempfile::TempDir) {
+    let dir = warehouse_with_a_fact_table();
+    let server = server_over_warehouse(&dir, policy, roles);
     (server, dir)
 }
 
@@ -1699,47 +1708,25 @@ async fn a_cube_is_not_listed_to_somebody_who_may_not_read_its_fact_table() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_cube_is_hidden_from_a_caller_who_holds_a_grant_but_not_this_one() {
     // **The case the test above cannot reach**, and the reason `SEC-18` was still open on the
-    // listing surface for five days after it was reported fixed.
-    //
-    // That test asks a principal holding **no role at all**. Such a caller is refused the
-    // session outright, so the assertion takes its `Err` branch every time and the filter it
-    // names is never exercised --- which is how `describe::register` went on being handed
-    // `self.cubes()`, the whole list, while the fix went into the navigation catalogue beside
-    // it. `SELECT * FROM cubes()` emitted every cube's name, its fact table, **the tables it
-    // reads** and its dimension and measure counts to anybody who could open a session.
-    //
-    // A caller granted *something* and not the cube's table is the ordinary case and the only
-    // one that tells the two apart.
+    // listing surface for five days after it was reported fixed. That test asks a principal
+    // holding no role at all, who is refused the session outright, so it takes its `Err`
+    // branch every time and never reaches the filter. A caller granted *something* and not the
+    // cube's table is the ordinary case and the only one that tells the two apart.
+    // `AUDIT_REPORT.md` carries the rest.
     // `ana` reads the fact table; `mallory` reads a **different, real** table, so their
     // session opens and the listing is actually reached.
     let dir = warehouse_with_a_fact_table();
     with_a_regions_table(&dir);
-    let (found, refused) = warehouse::discover(dir.path());
-    assert!(refused.is_empty(), "the fixture must open: {refused:?}");
-    let cache = sankhya_table_delta::LogCache::new();
-    let (servable, unreadable) = warehouse::servable(&found, Lsn::new(u64::MAX), &cache);
-    assert!(unreadable.is_empty(), "the fixture must read: {unreadable:?}");
-
-    let mut settings = settings(dir.path());
-    settings.roles = [
-        ("ana".to_string(), vec!["reader".to_string()]),
-        ("mallory".to_string(), vec!["outsider".to_string()]),
-    ]
-    .into_iter()
-    .collect();
-    let (server, complaints) = Server::with_tables(
-        settings,
-        policy("reader", None).with(Rule::grant(
-            tenant(),
-            Role::new("outsider"),
-            TableRef::new("sales", "regions"),
-            Action::Read,
-        )),
-        warehouse::describe(&found),
-        servable,
-    )
-    .adopting_cubes(dir.path());
-    assert!(complaints.is_empty(), "the cube must adopt: {complaints:?}");
+    let server = server_over_warehouse(
+        &dir,
+        policy("reader", None).with(grant("outsider", "regions")),
+        [
+            ("ana".to_string(), vec!["reader".to_string()]),
+            ("mallory".to_string(), vec!["outsider".to_string()]),
+        ]
+        .into_iter()
+        .collect(),
+    );
     connect(&server, "ana");
     connect(&server, "mallory");
 
@@ -1787,8 +1774,8 @@ async fn a_cube_is_hidden_from_a_caller_who_holds_a_grant_but_not_this_one() {
 ///
 /// Two tests need a **second real table**: one to point a dimension at, and one to grant a
 /// caller so their session opens while the cube's own table stays out of reach. A grant on a
-/// table that does not exist gives neither --- the session is refused with *"this principal
-/// may not read any table"*, which is the refusal branch all over again.
+/// table that does not exist gives neither --- the session is refused outright, which is the
+/// refusal branch all over again.
 fn with_a_regions_table(dir: &tempfile::TempDir) {
     let members = Arc::new(Schema::new(vec![
         Field::new("region", DataType::Utf8, false),
@@ -1812,8 +1799,7 @@ fn with_a_regions_table(dir: &tempfile::TempDir) {
 /// takes its members from it.
 ///
 /// The fixture cube's dimensions both point at `orders`, which is why nothing noticed that
-/// dimension tables were outside a cube's authorization: the fact table and the dimension
-/// table were the same table, so the check could not tell them apart.
+/// dimension tables were outside a cube's authorization: the two were the same table.
 fn warehouse_with_a_dimension_table() -> tempfile::TempDir {
     let dir = warehouse_with_a_fact_table();
     with_a_regions_table(&dir);
@@ -1829,56 +1815,27 @@ fn warehouse_with_a_dimension_table() -> tempfile::TempDir {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_cube_is_not_listed_to_somebody_who_may_not_read_its_dimension_table() {
-    // `GUIDE.md` has said for months that *"a cube named in a `CREATE` whose fact table **or
-    // dimension tables** you cannot read is refused with the same sentence as one whose tables
-    // do not exist"*, and until `M24b` the code made good on only the first half:
+    // `GUIDE.md` has said for months that a cube whose fact table **or dimension tables** you
+    // cannot read is refused, and until `M24b` the code made good on the first half only:
     // `Definition::reads` held the fact table alone, so a principal barred from the dimension
-    // table got the cube anyway — with a hierarchy that silently failed to load and a snapshot
-    // that did not span the table it read its members from.
-    //
-    // Unreachable until `M23`, which is the honest part of it. Before the dimension table was
-    // opened, a cube genuinely did read only its facts.
+    // table got the cube anyway. Unreachable until `M23` opened those tables, which is the
+    // honest part of it.
+    // `ana` is granted the **facts only**; the members are a table they may not read.
     let dir = warehouse_with_a_dimension_table();
-    let (found, refused) = warehouse::discover(dir.path());
-    assert!(refused.is_empty(), "the fixture must open: {refused:?}");
-    let cache = sankhya_table_delta::LogCache::new();
-    let (servable, unreadable) = warehouse::servable(&found, Lsn::new(u64::MAX), &cache);
-    assert!(unreadable.is_empty(), "the fixture must read: {unreadable:?}");
-
-    // A role granted the **facts only**. The members are a table they may not read.
-    let facts_only = PolicySet::new().with(Rule::grant(
-        tenant(),
-        Role::new("reader"),
-        TableRef::new("sales", "orders"),
-        Action::Read,
-    ));
-    let mut settings = settings(dir.path());
-    settings.roles = [
-        ("ana".to_string(), vec!["reader".to_string()]),
-        ("bo".to_string(), vec!["reader".to_string(), "members".to_string()]),
-    ]
-    .into_iter()
-    .collect();
-    let both = facts_only.clone().with(Rule::grant(
-        tenant(),
-        Role::new("members"),
-        TableRef::new("sales", "regions"),
-        Action::Read,
-    ));
-
-    let (server, complaints) = Server::with_tables(
-        settings,
-        both,
-        warehouse::describe(&found),
-        servable,
-    )
-    .adopting_cubes(dir.path());
-    assert!(complaints.is_empty(), "the cube must adopt: {complaints:?}");
+    let server = server_over_warehouse(
+        &dir,
+        policy("reader", None).with(grant("members", "regions")),
+        [
+            ("ana".to_string(), vec!["reader".to_string()]),
+            ("bo".to_string(), vec!["reader".to_string(), "members".to_string()]),
+        ]
+        .into_iter()
+        .collect(),
+    );
     connect(&server, "ana");
     connect(&server, "bo");
 
-    // The control: somebody who may read both sees the cube. Without this the assertion
-    // below passes for a fixture that never registered a cube at all.
+    // The control: without it the assertion below passes for a fixture with no cube at all.
     let permitted: Vec<(String, String)> = vec![("user".to_string(), "bo".to_string())];
     let listed = server
         .query("SELECT * FROM cubes()", &Caller::new(&permitted))

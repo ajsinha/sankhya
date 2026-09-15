@@ -1159,22 +1159,12 @@ impl Server {
             &grain_needed(sql).iter().map(String::as_str).collect::<Vec<&str>>(),
         );
         let catalog = Arc::new(sankhya_cube_sql::catalog::CubeCatalog::new());
-        // **What this caller may be told exists**, which is what the description surface is
-        // given rather than every cube on the server.
-        //
-        // `SEC-18` said `cubes()` and `derived()` listed every cube to every caller. The fix
-        // reached `register_derived` and the navigation catalogue below, and **not the listing
-        // functions**: `describe::register` was handed `self.cubes()` --- the whole list ---
-        // so `SELECT * FROM cubes()` still emitted every cube's name, fact table, the tables
-        // it reads and its dimension and measure counts, to anybody who could open a session.
-        //
-        // The test that should have caught it passed for the wrong reason. It asks a
-        // principal holding **no role at all**, who is refused the session outright, and it
-        // accepts either a refusal or an empty listing --- so it took the refusal branch every
-        // time and the filter it names was never exercised. A caller granted *some* table and
-        // not the cube's is the case that distinguishes them, and it is the ordinary case.
-        let mut visible: Vec<sankhya_cube::model::Cube> = Vec::with_capacity(cubes.len());
-        for cube in cubes.iter() {
+        // **What this caller may be told exists**, handed to the description surface in place
+        // of every cube on the server. `SEC-18`, which was reported closed while
+        // `describe::register` still took the whole list --- see `AUDIT_REPORT.md` for why the
+        // test that should have caught that could not.
+        let visible = crate::cubes::visible_to(self, principal, &cubes);
+        for cube in &visible {
             // Declared only to a caller who may read what it is built on. `cubes()` and
             // `derived()` used to list every cube on the server to everybody, and `derived()`
             // emits the **SQL text** of each definition and the tables it reads --- so a
@@ -1184,10 +1174,6 @@ impl Server {
             // The same rule the fact table itself follows, four lines down and four lines away
             // in `register_derived`, which was already doing this. Saying "you may not read
             // that" confirms it exists, so it is simply not there.
-            if self.scope_across(principal, cube.reads()).is_none() {
-                continue;
-            }
-            visible.push(cube.clone());
             catalog.declare(cube.name());
             if !navigating || !sql.contains(cube.name()) {
                 continue;

@@ -5169,10 +5169,13 @@ CATALOGUE = [
 
     # `SEC-18`. `cubes()` and `derived()` listed every cube to every caller, and `derived()`
     # emits the SQL text of each definition and the tables it reads.
-    ("server: declare every cube to every caller",
-     "crates/sankhya-server/src/wiring.rs",
-     "            if self.scope_across(principal, cube.reads()).is_none() {\n                continue;\n            }\n            visible.push(cube.clone());\n            catalog.declare(cube.name());",
-     "            visible.push(cube.clone());\n            catalog.declare(cube.name());",
+    # The rule itself, which `M24b` gave a name so the two surfaces that need it --- the
+    # navigation catalogue and the description functions --- cannot drift apart. Drifting
+    # apart is exactly how `SEC-18` stayed open on one of them after being closed on the other.
+    ("server: declare and describe every cube to every caller",
+     "crates/sankhya-server/src/cubes.rs",
+     "        .filter(|cube| server.scope_across(principal, cube.reads()).is_some())\n",
+     "",
      "sankhya-server", 1, "cube_queries"),
 
     # A snapshot row names the qualified tables it pins, so an unfiltered listing hands out the
