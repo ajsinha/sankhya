@@ -290,12 +290,13 @@ pub fn session_reaching(
     // thing it exists to describe.
     sankhya_functions::describe::register(&context, sankhya_functions::catalogue::everything());
 
-    // The graph functions, against an empty catalogue.
+    // The graph functions, against an empty catalogue --- **a floor, not the answer**.
     //
-    // This process builds no graph epochs, so every call answers "no graph named that; this
-    // session knows none". That is the **truthful** error and it points at the real gap ---
-    // nothing hydrates a graph here --- whereas the previous answer, `Invalid function`,
-    // pointed at a function the guide documents and implied it did not exist.
+    // A `Server` replaces this immediately afterwards with the graphs the caller may
+    // traverse, and since `M25` that is usually a populated one. This registration is what a
+    // caller who builds a session *without* a server gets, and it exists so they get "no graph
+    // named that; this session knows none" rather than `Invalid function` --- the truthful
+    // error, pointing at an empty catalogue rather than at a function the guide documents.
     //
     // Registering a surface whose catalogue is empty is not pretending. A cube does the same
     // thing: declared and unhydrated is a state worth being able to report, and collapsing it

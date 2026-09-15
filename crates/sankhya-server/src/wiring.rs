@@ -348,6 +348,24 @@ pub struct Server {
     /// Writers are DDL and therefore rare; readers are every statement. That asymmetry is why
     /// this is an `RwLock` and not a `Mutex`.
     pub(crate) cubes: std::sync::RwLock<Arc<Vec<sankhya_cube::model::Cube>>>,
+    /// The graphs this warehouse declares, and the epoch published for each.
+    ///
+    /// **Bound to the server**, which is the whole of `M25`. `GraphCatalog` was constructed as
+    /// a temporary inside the session builder: the `Arc` was not bound, not stored, and the
+    /// function runs per session --- so every session got a fresh empty map with no handle by
+    /// which anything could populate it, `register` and `publish` had zero call sites
+    /// anywhere, and every `graph_*` call on every startable server answered *"no graph named
+    /// '…'; known graphs are []"* under every configuration. One of the three engines in the
+    /// product's name did not run.
+    ///
+    /// One catalogue for the server rather than one per session, because an epoch is
+    /// expensive to build and immutable once built --- which is what makes sharing it sound.
+    /// What is *not* shared is who may traverse it: `crate::graphs::visible_to` hands each
+    /// session only the graphs that caller may read every table of.
+    pub(crate) graphs: Arc<sankhya_graph_sql::catalog::GraphCatalog>,
+    /// The declarations behind them, so a session can ask what a graph reads before deciding
+    /// whether to offer it.
+    pub(crate) declared_graphs: std::sync::RwLock<Arc<Vec<sankhya_graph::catalogue::Graph>>>,
     /// Aggregations somebody declared, and the worker that runs them.
     ///
     /// The worker is built **once** and only if this machine can host the boundary they must
@@ -730,6 +748,8 @@ impl Server {
             leases: Arc::new(sankhya_leases::Leases::new()),
             log_cache: sankhya_table_delta::LogCache::new(),
             cubes: std::sync::RwLock::new(Arc::new(Vec::new())),
+            graphs: Arc::new(sankhya_graph_sql::catalog::GraphCatalog::new()),
+            declared_graphs: std::sync::RwLock::new(Arc::new(Vec::new())),
             hydrated: Arc::new(sankhya_cube_sql::hydrated::Hydrated::default()),
             query_log: Arc::new(sankhya_cube::querylog::QueryLog::new()),
             connections: AtomicUsize::new(0),
@@ -1568,48 +1588,6 @@ impl Server {
         }
     }
 
-    /// Hydrate a cube over every row, with no policy applied.
-    ///
-    /// The providers are registered **unsecured**, which is what makes this the unrestricted
-    /// scope rather than one principal's. It is only ever used to build a cuboid keyed as
-    /// unrestricted, and such a cuboid may only serve a caller who is themselves
-    /// unrestricted --- so the widest cells never reach a narrower reader.
-    fn hydrate_unrestricted(
-        &self,
-        cube: &sankhya_cube::model::Cube,
-        measure: &sankhya_cube::algo::Measure,
-    ) -> Option<(sankhya_cube::cells::Cells, sankhya_cube::complete::Completeness)> {
-        let context = SessionContext::new();
-        for table in self.servable.read().iter() {
-            context
-                .register_table(table.reference.table.as_str(), Arc::clone(&table.provider))
-                .ok()?;
-        }
-        let catalog = Arc::new(sankhya_cube_sql::catalog::CubeCatalog::new());
-        let hydrated = tokio::task::block_in_place(|| {
-            self.runtime
-                .block_on(sankhya_cube_sql::publish::publish_from_fact_table(
-                    &context,
-                    &catalog,
-                    cube.name(),
-                    Arc::new(cube.clone()),
-                    measure,
-                    self.snapshot_across(cube.reads()),
-                    // Nothing is read from this `Published` but its cells and completeness,
-                    // so no dimension table is opened for it. Stated rather than assumed: an
-                    // empty map means "not checked", and a cuboid built here inherits the
-                    // referential check of whoever serves it, not of this hydration.
-                    Arc::default(),
-                ))
-        });
-        hydrated.ok()?;
-        let published = catalog.resolve(cube.name(), &measure.name).ok()?;
-        // The completeness travels with the cells from here to the stored cuboid. Dropping it
-        // would leave the cuboid able to claim only that it was complete, which is the one
-        // claim nothing may make on its own behalf.
-        Some(((*published.cells).clone(), published.completeness))
-    }
-
     /// Where a materialised cuboid lives under this warehouse.
     ///
     /// Under `_cubes`, which discovery skips: a materialised cuboid is a published table on
@@ -1759,7 +1737,7 @@ impl Server {
     /// Whether this principal's guard on `table` removes nothing.
     ///
     /// `false` when there is no guard at all: no access is not unrestricted access.
-    fn withholds_nothing(&self, principal: &Principal, table: &str) -> bool {
+    pub(crate) fn withholds_nothing(&self, principal: &Principal, table: &str) -> bool {
         // Both spellings, for the reason given on `snapshot_of`.
         //
         // A cube names its tables as its author typed them. Matching only the bare half meant a
@@ -2012,7 +1990,7 @@ impl Server {
     /// stale the moment **any** of its inputs moves, so keying on the newest is what makes a
     /// commit to either side a cache miss. Keying on one of them would serve an answer built
     /// from the other's previous version, and nothing about that answer would look wrong.
-    fn snapshot_across(&self, tables: &[String]) -> u64 {
+    pub(crate) fn snapshot_across(&self, tables: &[String]) -> u64 {
         tables.iter().map(|table| self.snapshot_of(table)).max().unwrap_or(0)
     }
 
@@ -2695,6 +2673,15 @@ impl Server {
         // authorization story for cubes: there is no second implementation of the rule, and
         // therefore no second implementation to disagree with the first.
         self.register_cubes(&context, &principal, sql, caller.position_digest());
+        // **The graphs this caller may traverse**, replacing the empty catalogue
+        // `session_reaching` registered as a floor. Until `M25` there was no second
+        // registration: the catalogue built there was a temporary bound to nothing, so every
+        // session held a fresh empty map and every `graph_*` call on every startable server
+        // answered "no graph named that".
+        sankhya_graph_sql::functions::register(
+            &context,
+            crate::graphs::visible_to(self, &principal),
+        );
         crate::aggregations::register(self, &context);
         crate::cubes::register_derived(self, &context, &principal);
 
@@ -2917,10 +2904,20 @@ pub async fn start(
     let warehouse = settings.warehouse.clone();
     let (server, cube_complaints) = Server::with_tables(settings, policy, tables, servable)
         .adopting_cubes(&warehouse);
+    // And the graphs, from the same directory tree and at the same moment. Hydrating here
+    // rather than lazily because an epoch is a scan: a graph built on its first traversal
+    // makes that traversal pay for every row in the table, and the caller has no way to tell
+    // that from a slow query.
+    let (server, graph_complaints) = server.adopting_graphs(&warehouse);
     let server = server.serving_encrypted(encryption);
-    // Cube complaints join the table ones rather than getting a channel of their own. They
-    // are the same kind of news --- something in this warehouse could not be served --- and
-    // an operator scanning startup output should not have to know there are two lists.
-    let complaints: Vec<String> = complaints.into_iter().chain(cube_complaints).collect();
+    // Cube and graph complaints join the table ones rather than getting channels of their
+    // own. They are the same kind of news --- something in this warehouse could not be served
+    // --- and an operator scanning startup output should not have to know there are three
+    // lists.
+    let complaints: Vec<String> = complaints
+        .into_iter()
+        .chain(cube_complaints)
+        .chain(graph_complaints)
+        .collect();
     Ok((Arc::new(server), listener, complaints))
 }

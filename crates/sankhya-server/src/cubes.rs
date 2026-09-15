@@ -65,6 +65,50 @@ pub(crate) fn run_ddl(
 /// A derived result whose query no longer plans --- a table dropped underneath it --- is
 /// **skipped and left unregistered**, so naming it fails to resolve. Registering a broken one
 /// would turn a missing table into a planning error inside somebody else's statement.
+impl Server {
+    /// Hydrate a cube over every row, with no policy applied.
+    ///
+    /// The providers are registered **unsecured**, which is what makes this the unrestricted
+    /// scope rather than one principal's. It is only ever used to build a cuboid keyed as
+    /// unrestricted, and such a cuboid may only serve a caller who is themselves
+    /// unrestricted --- so the widest cells never reach a narrower reader.
+    pub(crate) fn hydrate_unrestricted(
+        &self,
+        cube: &sankhya_cube::model::Cube,
+        measure: &sankhya_cube::algo::Measure,
+    ) -> Option<(sankhya_cube::cells::Cells, sankhya_cube::complete::Completeness)> {
+        let context = datafusion::prelude::SessionContext::new();
+        for table in self.servable.read().iter() {
+            context
+                .register_table(table.reference.table.as_str(), Arc::clone(&table.provider))
+                .ok()?;
+        }
+        let catalog = Arc::new(sankhya_cube_sql::catalog::CubeCatalog::new());
+        let hydrated = tokio::task::block_in_place(|| {
+            self.runtime
+                .block_on(sankhya_cube_sql::publish::publish_from_fact_table(
+                    &context,
+                    &catalog,
+                    cube.name(),
+                    Arc::new(cube.clone()),
+                    measure,
+                    self.snapshot_across(cube.reads()),
+                    // Nothing is read from this `Published` but its cells and completeness,
+                    // so no dimension table is opened for it. Stated rather than assumed: an
+                    // empty map means "not checked", and a cuboid built here inherits the
+                    // referential check of whoever serves it, not of this hydration.
+                    Arc::default(),
+                ))
+        });
+        hydrated.ok()?;
+        let published = catalog.resolve(cube.name(), &measure.name).ok()?;
+        // The completeness travels with the cells from here to the stored cuboid. Dropping it
+        // would leave the cuboid able to claim only that it was complete, which is the one
+        // claim nothing may make on its own behalf.
+        Some(((*published.cells).clone(), published.completeness))
+    }
+}
+
 /// The cubes this caller may be told exist.
 ///
 /// A cube is described only to somebody who may read **every** table it is built on --- its

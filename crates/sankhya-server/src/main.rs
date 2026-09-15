@@ -64,6 +64,7 @@ mod clones;
 mod cubes;
 mod driver;
 mod feeds;
+mod graphs;
 mod snapshots;
 mod flight;
 // What a read puts in the audit, beside the read path rather than in the composition root.

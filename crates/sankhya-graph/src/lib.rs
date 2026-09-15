@@ -21,11 +21,13 @@
 
 #![doc(html_root_url = "https://docs.rs/sankhya-graph")]
 
+pub mod catalogue;
 pub mod epoch;
 pub mod hydrate;
 pub mod overlay;
 pub mod spec;
 
+pub use catalogue::{DeclaredEdge, Declaration, Graph};
 pub use epoch::{Epoch, EpochId, EpochRef, EpochSlot, Footprint, NotHydrated};
 pub use hydrate::{Hydration, HydrationError, MemoryBudget};
 pub use overlay::{Overlay, RebuildThreshold};

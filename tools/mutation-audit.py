@@ -6813,6 +6813,56 @@ CATALOGUE = [
      "        sankhya_cube_sql::describe::register(context, self.cubes(), catalog);",
      "sankhya-server", 1, "cube_queries"),
 
+    # ------------------------------------------------------------------------------------
+    # `M25` --- the graph engine answers. Every entry removes one link between a declaration
+    # on disk and a traversal that finds something.
+
+    # The population path itself. Without the hydration call the catalogue holds empty slots
+    # and every traversal is told to wait --- which is the state the whole milestone existed
+    # to leave, and it looks like a server that is merely still starting.
+    ("server: adopt graph declarations and never publish an epoch for any of them",
+     "crates/sankhya-server/src/graphs.rs",
+     "    server.graphs.publish(graph.name(), Arc::new(epoch));",
+     "",
+     "sankhya-server", 1, "graph_queries"),
+
+    # And the binding. Handing each session a fresh empty catalogue is verbatim the defect
+    # `M25` closed: the `Arc` bound to nothing, every `graph_*` call answering "no graph named
+    # that" on every startable server under every configuration.
+    ("server: give every session a fresh empty graph catalogue",
+     "crates/sankhya-server/src/wiring.rs",
+     "            crate::graphs::visible_to(self, &principal),",
+     "            Arc::new(sankhya_graph_sql::catalog::GraphCatalog::new()),",
+     "sankhya-server", 1, "graph_queries"),
+
+    # The epoch holds every row, because it is built once and shared. A caller a policy
+    # filters must not be handed it: a traversal over edges they may not see is a disclosure
+    # through reachability, and an invisible one, because every vertex it returns is real.
+    ("server: offer a shared graph epoch to a caller whose policy filters its rows",
+     "crates/sankhya-server/src/graphs.rs",
+     "        let permitted = server.scope_across(principal, &reads).is_some()\n            && reads.iter().all(|table| server.withholds_nothing(principal, table));",
+     "        let permitted = true;",
+     "sankhya-server", 1, "graph_queries"),
+
+    # A declaration naming a column that exists nowhere hydrates **empty and succeeds**,
+    # because `absorb` treats a batch it does not recognise as contributing nothing. The graph
+    # then answers every traversal with no rows, which reads exactly like one that found
+    # nothing --- the failure this tier is arranged against, arriving where the reading loop
+    # cannot see it.
+    ("server: hydrate a graph from columns the table does not have, and find no edges",
+     "crates/sankhya-server/src/graphs.rs",
+     "            if schema.field_with_unqualified_name(column).is_err() {",
+     "            if false {",
+     "sankhya-server", 1, "graph_queries"),
+
+    # The weight column. Dropped, every edge weighs one and the cheapest route is the one
+    # with fewest hops --- a plausible answer to a different question.
+    ("graph: drop the weight column a declaration names",
+     "crates/sankhya-graph/src/catalogue.rs",
+     "                spec.weight_column = stored.weight_column;\n",
+     "",
+     "sankhya-server", 1, "graph_queries"),
+
 ]
 
 

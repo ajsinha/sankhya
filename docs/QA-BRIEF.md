@@ -37,7 +37,7 @@ What does **not** run, whatever the documentation elsewhere may suggest:
 | | State |
 |---|---|
 | Writes over SQL | `INSERT`/`UPDATE`/`DELETE`/`COPY`/DDL are refused with `0A000` and a clear sentence. This is correct behaviour, not a defect |
-| The graph engine | No running process builds a graph epoch. Every `graph_*` call returns *"no graph named '…' is registered; known graphs are []"*. There is no configuration that changes this |
+| The graph engine | **Answers since 2026-09-14.** Declare a graph as JSON under `_graphs/` and it is hydrated at startup. Worth attacking: an epoch is built **once**, over every row, and never rebuilt — so it goes stale against a table that keeps arriving, and it is offered only to callers whose policy filters none of their rows. A filtered caller should be told the graph does not exist; a member you may not see appearing anywhere would be the defect |
 | Change capture | There is no replication client. `sankhya-cdc-pg` has no dependents |
 | The transactional tier | Not wired into the server |
 | Cube functions over Flight | Registered on the PostgreSQL path only. `cube_rollup` over Flight fails to resolve |
