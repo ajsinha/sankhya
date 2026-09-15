@@ -28,6 +28,25 @@ use sankhya_types::Lsn;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// The key columns a table's own log declares, or none.
+///
+/// Read from the table rather than from any server's configuration, which is where
+/// `sankhya-publish` writes it and for the reason that module gives: two nodes reading one
+/// warehouse cannot then disagree, and a restart cannot forget.
+///
+/// A log that cannot be read yields **no key**, which serves the table unmerged. That is the
+/// wrong direction and it is chosen deliberately: the alternative is refusing to serve a
+/// table whose metadata is momentarily unreadable, and a table that disappears is worse than
+/// one that over-reports. `open` has already read the same log a line earlier, so a failure
+/// here means the table is being written to underneath us rather than that it is broken.
+fn declared_key(root: &Path) -> Vec<String> {
+    sankhya_table_delta::latest_metadata(root)
+        .ok()
+        .flatten()
+        .map(|metadata| sankhya_publish::key_columns(&metadata.configuration))
+        .unwrap_or_default()
+}
+
 /// A table found on disk, before it is opened.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct FoundTable {
@@ -37,6 +56,25 @@ pub struct FoundTable {
     pub root: PathBuf,
     /// Its columns, read from its own log.
     pub schema: Arc<Schema>,
+    /// The columns that identify a row, where the table declares them.
+    ///
+    /// # What this decides, and what it cost to be absent
+    ///
+    /// Capture records inserts, updates and deletes as **rows**. A table whose source updates
+    /// in place therefore holds several versions of one row, and unioning its files returns
+    /// all of them: `COUNT(*)` says two where the answer is one, and `SUM` adds the old value
+    /// to the new one. Nothing about the result says so.
+    ///
+    /// `sankhya_readpath::ResolvedTable` resolves that --- latest version per key, with a
+    /// tombstone suppressing the row --- and until `M26a` **nothing outside its own tests ever
+    /// constructed one**. The key columns were declared by the publisher, written into the
+    /// table's own log where they cannot be forgotten, and read by `sankhya-publish`'s
+    /// verifier and by nothing on the read path.
+    ///
+    /// Empty for an append-only table, which is most of them, and such a table is scanned
+    /// exactly as it was before this field existed. That is deliberate: the merge has to cost
+    /// nothing at all where it is not needed, not "a cheap check".
+    pub key_columns: Vec<String>,
     /// What it inherits from the table it was cloned from, if it is a clone.
     ///
     /// # Why reading a clone needs this
@@ -236,10 +274,12 @@ pub fn discover(warehouse: &Path) -> (Vec<FoundTable>, Vec<(PathBuf, String)>) {
             match open(&table_dir) {
                 Ok(schema) => {
                     let inherited = inherited_by(warehouse, &table_dir);
+                    let key_columns = declared_key(&table_dir);
                     found.push(FoundTable {
                         reference: TableRef::new(schema_name, table_name),
                         root: table_dir,
                         schema,
+                        key_columns,
                         inherited,
                     });
                 }
@@ -608,7 +648,8 @@ pub fn servable(
                 authorize_as: None,
                 inherited: table.inherited.clone(),
                 root: table.root.clone(),
-                provider: Arc::new(provider),
+                provider: served(provider, &table.key_columns, &table.root, &mut refused),
+                key_columns: table.key_columns.clone(),
                 schema: Arc::clone(&table.schema),
                 // What the log stood at when this file list was read. A provider whose table
                 // has moved past it is stale --- and once the warehouse maintains itself,
@@ -622,6 +663,47 @@ pub fn servable(
         }
     }
     (open, refused)
+}
+
+/// The provider a query should see: resolved where the table declares a key, raw otherwise.
+///
+/// # Why the fallback is the raw table and not a refusal
+///
+/// Wrapping fails for a table that declares a key and did not come through capture --- no
+/// `_sankhya_commit_lsn`, no operation column, nothing to resolve versions **against**. Such
+/// a table has one version of each row by construction, so serving it raw is correct, and
+/// refusing it would take a perfectly readable table out of the warehouse over metadata that
+/// describes a pipeline it is not on.
+///
+/// The failure is still **reported**, into the same list a table that would not open goes
+/// into, because a key declared on a table that cannot use it is a declaration somebody wrote
+/// for a reason that has stopped being true.
+pub(crate) fn served(
+    provider: sankhya_readpath::SankhyaTable,
+    key: &[String],
+    root: &Path,
+    refused: &mut Vec<(PathBuf, String)>,
+) -> Arc<dyn datafusion::catalog::TableProvider> {
+    let raw = Arc::new(provider);
+    if key.is_empty() {
+        // **Append-only pays nothing.** Not a cheap check --- nothing. Most high-volume
+        // tables are append-only, so most queries take this path.
+        return raw;
+    }
+    match sankhya_readpath::ResolvedTable::new(Arc::clone(&raw), key) {
+        Ok(resolved) => Arc::new(resolved),
+        Err(why) => {
+            refused.push((
+                root.to_path_buf(),
+                format!(
+                    "it declares the key {key:?} and cannot be resolved on it: {why}. Served \
+                     unresolved, which is correct for a table that never came through \
+                     capture and wrong for one that did"
+                ),
+            ));
+            raw
+        }
+    }
 }
 
 /// The catalogue description of a discovered table, for a schema browser.

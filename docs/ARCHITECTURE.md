@@ -360,10 +360,31 @@ nothing maps a table *name* to one automatically, so the caller assembles the tw
 does not exist — **its key does**, because key correctness is a security property and the right time
 to fix it is before anything caches (§6.6).
 
-**And no served table folds a change log.** This is the boundary a reader is most likely to walk
-into. The write path appends every mutation with an `_sankhya_op` of `I`, `U` or `D`, so a table
-that receives updates holds every historical version of every row plus a tombstone per delete, and
-a plain scan returns all of them.
+**A served table folds its change log, as of 2026-09-14 (`M26a`) and not before.** This was the
+boundary a reader was most likely to walk into. The write path appends every mutation with an
+`_sankhya_op` of `I`, `U` or `D`, so a table that receives updates holds every historical version
+of every row plus a tombstone per delete — and a plain scan returned all of them.
+
+The publisher declares the key columns and writes them into the table's own log, where they cannot
+be forgotten. `warehouse::discover` now reads them, and a table that declares a key is served
+through `ResolvedTable` rather than raw. A table that declares none is scanned exactly as it was:
+append-only pays nothing, which matters because most high-volume tables are append-only and most
+queries take that path.
+
+**The resolution sits under the security wrapper, not over it**, and the order is load-bearing in
+both directions. Resolving first and filtering afterwards gives a principal the true current row
+or nothing. Filtering first would let a policy hide the newest version of a row and promote the
+one before it, presenting a superseded value as current — a wrong number produced by a security
+control, which is the worst place to find one.
+
+One thing had to change in the fold itself. `ResolvedTable::scan` used to **refuse**, on the
+reasoning that the planner inlines its logical plan and never calls `scan`, so reaching it meant
+serving raw rows. The reasoning was right about the cost and wrong about the premise: inlining
+happens only where the planner sees that provider directly, and every served table is wrapped in a
+`SecuredTable` whose own `scan` calls `scan` on what it holds. The refusal fired on every real
+query, so the fold could not be served at all. It plans itself now. Teaching the wrapper to forward
+the inner plan was the other available fix and is the wrong one — inlining discards the wrapper's
+filter, so a row restriction would vanish at exactly the moment the table became resolvable.
 
 The fold itself **exists and is correct**: `ResolvedTable` in `crates/sankhya-readpath/src/merge.rs`
 wraps a raw scan as `DISTINCT ON (key) … ORDER BY key, position DESC`, then filters keys whose
@@ -383,6 +404,9 @@ than a typed one and it is the one that exists; this paragraph named a `Capabili
 constructor, and there is none. Its own doc comment used to say the
 value *"lets the storage layer skip merge machinery it will never need"*, which reads as though the
 other branch selects some. Neither branch selects anything.
+
+The paragraph below described the state before `M26a` and is kept because its last sentence is
+why the wiring happened when it did rather than after a capture runtime existed.
 
 This costs nothing today, because nothing captures (`ING-00`) so no table receives updates through
 this path — the fold is unreached rather than missing, and the work to close it is one wiring

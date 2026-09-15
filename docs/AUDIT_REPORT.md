@@ -1076,6 +1076,15 @@ captured row.
 > shape as `SNK-S0001`: not missing, unreached. The remaining work is one wiring decision rather
 > than an algorithm, and it belongs with the capture runtime that would make a table need it.
 >
+> **Wired, 2026-09-14 (`M26a`), and not left for the capture runtime.** A table that declares key
+> columns in its own log is served through the fold; one that declares none is scanned exactly as
+> before. Doing it now rather than alongside capture was the right call for a reason the work
+> itself supplied: `ResolvedTable::scan` **refused**, on the reasoning that the planner inlines the
+> resolution and never calls it. Every served table is wrapped in a `SecuredTable` whose own `scan`
+> calls `scan` on what it holds, so the refusal fired on every real query and the fold could not be
+> served at all. Wiring it the day capture landed would have found that with a live pipeline
+> attached.
+>
 > **The rest of the finding stands.**
 > [`ARCHITECTURE.md`](ARCHITECTURE.md) §3.8 now says it where a reader looks, rather than only
 > here --- and says it in the corrected form, which this sentence did not: **no served table**
