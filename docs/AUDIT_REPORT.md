@@ -740,6 +740,25 @@ The comment above the registration argues, correctly, that registering an empty 
 pretending. It is right about the mechanism and wrong about this instance: a cube's catalogue can
 be populated, and this one cannot.
 
+> **Closed, 2026-09-14 (`M25`).** It can be populated now. A graph is declared as a file under
+> `_graphs/`, adopted and hydrated at startup, and held in a `GraphCatalog` bound to `Server`;
+> `sankhya-graph` is a runtime dependency. `graph_queries.rs` goes through the front door — a
+> declaration in a warehouse, a server started over it, and a `SELECT` that has to find what
+> the server built.
+>
+> Three things the finding did not ask for came with it. The **weight column** a declaration
+> names reaches the adjacency, pinned by a cost rather than a hop count, because unweighted is
+> a plausible answer to a different question. A graph declared over a **column the table does
+> not have** is refused by name: hydration applies each edge kind only to batches whose schema
+> satisfies it, so a mistyped column would otherwise build an empty graph that resolves and
+> answers every traversal with no rows. And an epoch is built **over every row**, once, so it
+> is offered only to a caller whose policy filters none of theirs — a traversal over edges
+> somebody may not see is a disclosure through reachability, and an invisible one.
+>
+> The sentence above stays as it was written. It was true of the system that was audited, and
+> "the test harness excludes the GUIDE's graph examples, so they have never run" is still the
+> sharpest half of it.
+
 ### `FEA-03` Packs cannot be loaded
 `crates/sankhya-server/Cargo.toml`
 

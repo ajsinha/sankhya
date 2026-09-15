@@ -53,6 +53,11 @@ sankhya-functions = { path = "../sankhya-functions" }
 sankhya-olap        = { path = "../sankhya-olap" }
 sankhya-udf         = { path = "../sankhya-udf" }
 sankhya-graph-sql   = { path = "../sankhya-graph-sql" }
+# A runtime dependency since `M25`, and a **dev**-dependency before it --- which is the whole
+# finding in one line. The traversal engine was built, tested, and not linked into the thing
+# that serves queries, so every `graph_*` call on every startable server answered "no graph
+# named that" and nothing could ever have made it answer otherwise.
+sankhya-graph       = { path = "../sankhya-graph" }
 sankhya-plan     = { path = "../sankhya-plan" }
 datafusion       = { workspace = true }
 arrow-array      = { workspace = true }
@@ -81,7 +86,6 @@ sankhya-publish = { path = "../sankhya-publish" }
 # than skipping silently. A dev-dependency: nothing in the server wires it yet.
 sankhya-oltp-pg = { path = "../sankhya-oltp-pg" }
 sankhya-functions = { path = "../sankhya-functions" }
-sankhya-graph = { path = "../sankhya-graph" }
 sankhya-api-pg = { path = "../sankhya-api-pg" }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }

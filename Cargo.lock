@@ -3901,8 +3901,11 @@ dependencies = [
  "arrow-schema",
  "parking_lot",
  "proptest",
+ "sankhya-atomicfs",
  "sankhya-error",
  "sankhya-graph-algo",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

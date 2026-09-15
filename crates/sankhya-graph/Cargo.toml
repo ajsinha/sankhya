@@ -16,6 +16,9 @@ workspace = true
 [dependencies]
 sankhya-graph-algo = { path = "../sankhya-graph-algo" }
 sankhya-error      = { path = "../sankhya-error" }
+sankhya-atomicfs   = { path = "../sankhya-atomicfs" }
+serde              = { workspace = true, features = ["derive"] }
+serde_json         = { workspace = true }
 arrow-array        = { workspace = true }
 arrow-schema       = { workspace = true }
 parking_lot        = { workspace = true }

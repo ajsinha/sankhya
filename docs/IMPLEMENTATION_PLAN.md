@@ -2113,6 +2113,38 @@ name does not run.
 The smallest honest step is one graph hydrated from a published table at startup, with the
 catalogue bound to `Server` — not the algorithms, which are built and tested.
 
+> **Complete, 2026-09-14.** That is what was built. A graph is declared as a file under
+> `_graphs/`, beside the cubes and for the same reason — a catalogue read at startup, before
+> any session exists and before the query path is available to read a table with. It is
+> validated, hydrated by scanning the tables it names, and published into a `GraphCatalog`
+> bound to `Server`. `sankhya-graph` moved from a **dev**-dependency to a real one, which is
+> the finding in one line: the traversal engine was built, tested, and not linked into the
+> thing that serves queries.
+>
+> **An epoch is built once, over every row, and shared.** That is what makes it affordable and
+> it decides who may traverse it: a graph is offered only to a caller who may read every table
+> it is built from *and* whose policy filters none of their rows. A traversal over edges
+> somebody may not see is a disclosure through reachability, and an invisible one — every
+> vertex it returns is real, and nothing in the answer says it came from rows they are
+> filtered out of. A filtered caller is told the graph does not exist, because saying anything
+> else confirms it does.
+>
+> One defect found on the way, and it is the failure this tier is arranged against arriving
+> where the reading loop cannot see it. `Hydration::absorb` applies each edge kind only to
+> batches whose schema satisfies it and treats the rest as contributing nothing — right,
+> because one scan may deliver several tables. It also means a declaration naming a column
+> that exists nowhere hydrates **empty and succeeds**: the graph registers, resolves, and
+> answers every traversal with no rows, which reads exactly like a traversal that found
+> nothing. The columns are now checked against the schema before a row is read, named in full
+> and listed against what the table does have.
+>
+> **Carried, and named so it is not mistaken for done:** an epoch is never **rebuilt**. A
+> graph over a table that keeps arriving goes stale and nothing says so. `Overlay` and
+> `RebuildThreshold` in `sankhya-graph` are the built and unwired half of that, and a
+> maintenance tick is where it belongs — which is also what `NFR-PERF-18` needs before a
+> freshness figure means anything. There is no `CREATE GRAPH`: a declaration is a file, which
+> is where cubes began too.
+
 ### M26 — The write path
 
 The largest, and everything above is independent of it. `INSERT`, `UPDATE`, `DELETE`, `COPY`

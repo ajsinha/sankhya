@@ -1660,54 +1660,80 @@ is found by somebody reconciling to four decimal places at a month-end.
 
 ## 11. Graph traversal from SQL
 
-**The graph cannot answer on any server you can start.** That is the first thing to say about
-it, and it used to be said nine hundred lines later.
+Declare a graph, and the server builds it before it accepts a connection.
 
-`crates/sankhya-server/src/execute.rs:303-306` registers the five graph table functions against
-an `Arc<GraphCatalog>` constructed **inline as a temporary argument**:
+> **This section used to open by saying the graph could not answer on any server you could
+> start, and that was true until 2026-09-14.** `GraphCatalog` was constructed as a temporary
+> inside `session_reaching` — no binding, no field, no handle surviving the call — so every
+> session got a fresh empty map that nothing could ever populate, `register` and `publish` had
+> zero call sites anywhere, and `sankhya-graph` was not a runtime dependency of the server at
+> all. Every traversal on every startable server answered *"no graph named '…'; known graphs
+> are []"*.
+>
+> What was missing was never an algorithm. It was a way to say **this table's rows are edges**.
+> `M25` is that: a declaration in the warehouse, hydrated at startup, held in a catalogue bound
+> to the server.
 
-```rust
-sankhya_graph_sql::functions::register(
-    &context,
-    Arc::new(sankhya_graph_sql::catalog::GraphCatalog::new()),
-);
+### Declaring one
+
+A declaration lives beside the cubes, under `_graphs/`, as JSON:
+
+```json
+{
+  "format": 1,
+  "name": "payments",
+  "edges": [
+    {
+      "table": "transfers",
+      "source_column": "payer",
+      "target_column": "payee",
+      "edge_type": "paid",
+      "source_type": "account",
+      "target_type": "account",
+      "weight_column": "amount"
+    }
+  ]
+}
 ```
 
-No binding, field or handle to that catalogue survives the call, so nothing outside
-`session_reaching` can reach it to hydrate an epoch. `session_reaching` runs per session, so
-every session gets a brand-new empty map. The only two mentions of `GraphCatalog` in the entire
-server crate are those two lines — no publish site, no hydration path, no shared `Arc` on the
-wiring struct, in deliberate contrast to the cube path, which threads a real
-`Arc<CubeCatalog>` from `crates/sankhya-server/src/wiring.rs:1170` through `wiring.rs:1311`.
+Read it as: every row of `transfers` is an edge of kind `paid`, from the account in `payer` to
+the account in `payee`, weighing whatever `amount` says. Several edge kinds may be declared,
+and they may read from different tables.
 
-So every traversal resolves at planning and fails at execution:
+`valid_from_column` and `valid_until_column` are what make a traversal **time-respecting**.
+Their absence is a deliberate risk rather than a convenience: an untimed edge is always valid,
+so a graph mixing timed and untimed edges answers a time-respecting query using the untimed
+ones freely.
 
-```console
-$ psql … -c "SELECT * FROM graph_reachable('payments','acct-1','max_depth=3');"
-ERROR:  [SNK-C0001] Error during planning: no graph named 'payments' is registered; known
-        graphs are []. Refusing rather than returning no rows: an empty traversal over a graph
-        that does not exist reads exactly like one that found nothing
-```
+`budget_bytes` bounds the hydration. Leave it out for the default rather than setting it to
+zero — a budget of zero refuses its own first batch. A hydration that will not fit fails while
+it is still a build job, with a message saying how large it was getting, and the graph is
+reported at startup rather than silently absent.
 
-That refusal is the right behaviour, and the reason for registering an empty surface rather
-than leaving the names unresolvable is sound: `Invalid function 'graph_reachable'` points at a
-function this document describes and implies it does not exist, where the message above points
-at the real gap. But the surface is **non-functional by construction, not merely unhydrated** —
-`GraphCatalog`'s sibling `NotHydrated` state
-(`crates/sankhya-graph-sql/src/catalog.rs:105-110`) is unreachable here, because no slot is
-ever created.
+**A column the table does not have is refused**, naming the column and listing what the table
+holds. It has to be: hydration applies each edge kind only to batches whose schema satisfies
+it — right, because one scan may deliver several tables — so a mistyped column would otherwise
+build an empty graph that resolves, answers every traversal with no rows, and reads exactly
+like a traversal that found nothing.
 
-This disclosure sits at the top of the section because of where it used to sit. The old text
-taught traversal with worked SQL for forty-odd lines and disclosed the gap in a table nine
-hundred lines further down. A reader following a worked example is not reading the appendix;
-they are typing. **A caveat that arrives after the example is a caveat the reader meets as a
-failure**, and the failure is the one thing this system spends its effort on not being.
+### Who may traverse it
 
-The engine underneath is built and tested — traversal, weighted and *k*-shortest loopless
-paths, simple cycles, components, centrality, communities and multiplicative influence, each
-bounded and each reporting its own truncation. The population path is `M4`'s carried remainder.
+An epoch is immutable and expensive, so one is built per server, **over every row**. A graph is
+therefore offered only to a caller who may read every table it is built from *and* whose policy
+filters none of their rows. A traversal over edges somebody may not see is a disclosure through
+reachability, and an invisible one: every vertex it returns is real, and nothing in the answer
+says it came from rows they are filtered out of.
 
-With that said, this is the surface, and it is what a hydration path would light up.
+A filtered caller is told the graph does not exist, not that they may not see it — saying so
+confirms it exists. Per-principal epochs would let them traverse their own subgraph, and that
+is a different milestone: an epoch per scope is an epoch per policy shape, and the cost has to
+be measured before it is chosen.
+
+### Traversing it
+
+The engine underneath — traversal, weighted and *k*-shortest loopless paths, simple cycles,
+components, centrality, communities and multiplicative influence, each bounded and each
+reporting its own truncation.
 
 The graph tier holds **no durable state**. An epoch is built by scanning published tables,
 carries the snapshot it came from, and is dropped on shutdown. There is no graph write path, so
@@ -1720,7 +1746,8 @@ JOIN parties AS p ON p.key = r.vertex
 WHERE NOT r.truncated;
 ```
 
-Five functions, registered at `crates/sankhya-graph-sql/src/functions.rs:37-47`:
+Five functions, registered together in `crates/sankhya-graph-sql/src/functions.rs` — one
+call, so a session either has the whole surface or none of it:
 
 | Function | What it gives |
 |---|---|
@@ -2435,7 +2462,7 @@ less. [`STATUS.md`](STATUS.md) is the authoritative version.
 
 | | |
 |---|---|
-| **The graph's population path** | Not built, and the surface is unreachable rather than merely unhydrated — §11 has the two lines of code that make it so |
+| **A graph declared in SQL** | `CREATE GRAPH` does not exist. A graph is declared as a file under `_graphs/` and adopted at startup, which is where cubes began too. The population path itself was built on 2026-09-14; §11 |
 | **The gRPC transport, and every write path on the control plane** | Not built. The gateway's route table and the size decision `FR-API-06` turns on both exist and are tested; wiring them to tonic and to an audited write path is the remainder. Jobs and archive operations are absent on purpose — with no scheduler, a jobs endpoint would list nothing forever and a client could not tell that from a system with nothing to list |
 | **A REST/JSON surface** | Refused by design rather than pending. §1 |
 | **`cube_dice`, `cube_pivot`, a drill-down** | Not registered. `dice` and `pivot` exist as kernels; only `cube_rollup`, `cube_consolidate` and `cube_slice` reach SQL. §7 |
