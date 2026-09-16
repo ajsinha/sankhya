@@ -1,0 +1,116 @@
+SANKHYA — how to resume
+=======================
+Written 2026-09-15, at commit 843d78f ("M26a: a row updated twice is one row").
+
+
+1. WHERE THINGS ARE
+-------------------
+Nothing is in flight. The branch tip IS the state:
+
+    working tree     clean
+    develop, main    843d78f  (identical)
+    origin/develop   843d78f
+    origin/main      843d78f
+    stashes          none
+
+`cargo xtask check-all` was green at that commit: 27 checks, 2,907 tests,
+948 mutations.
+
+The authoritative state lives in the repository, not in this file:
+
+    docs/STATUS.md                  what is built, measured and open
+    docs/IMPLEMENTATION_PLAN.md     the roadmap; section 13k is current work
+                                    and ends with "Where 13k stopped, 2026-09-15"
+    docs/QA-BRIEF.md                what a tester should attack next
+    docs/AUDIT_REPORT.md            findings, each with its resolution appended
+
+If this file and those disagree, THEY are right and this one is stale.
+
+
+2. TO PICK UP WHERE WE LEFT OFF
+-------------------------------
+    cd /home/ashutosh/RustroverProjects/sankhya
+    git status                       # expect clean
+    git log --oneline -5
+    sed -n '/Where .13k. stopped/,/^---$/p' docs/IMPLEMENTATION_PLAN.md
+
+Then say to Claude:  "continue with M26"
+
+The first build after a reboot is a full rebuild and takes a while. target/
+holds ~133 GB of cached artefacts; leave it alone unless the disk is tight.
+`cargo xtask check-all` fails the build above 150 GB, and `cargo clean`
+reclaims all of it at the cost of that rebuild.
+
+
+3. WHAT IS NEXT, IN ORDER
+-------------------------
+M22 - M25 are complete. M26 (the write path) is one slice in: M26a wired
+merge-on-read into the read path, so a table whose source updates in place is
+served as one version per key instead of its whole history.
+
+The rest of M26, in order:
+
+  (a) THE CAPTURE RUNTIME.  crates/sankhya-ingest/src/pipeline.rs decodes
+      replication messages, batches mutations and publishes -- and nothing
+      drives it. It is a PostgreSQL replication client. PostgreSQL now builds
+      on this machine (vendor/postgresql, configured --without-icu).
+
+  (b) THE __changes SIBLING.  DEC-08 in docs/REQUIREMENTS.md publishes the
+      un-merged change log as a table of its own. Nothing writes one yet;
+      M26a wired the reading half.
+
+  (c) COMPACTION of a change log into a base table -- DEC-07's second stage,
+      bulk whole-partition rewrite.
+
+Writes do NOT go through the analytical SQL connection. DEC-07 and DEC-08
+decide that: writes reach the warehouse through capture. The 0A000 refusal on
+INSERT is correct and stays. Do not "add INSERT support".
+
+
+4. ONE DECISION WAITING ON YOU
+------------------------------
+`check-tests` reports "16 test(s) passed without running" -- the PostgreSQL
+end-to-end suite, skipped because SANKHYA_PG_BIN and SANKHYA_E2E_SOCKET are
+unset.
+
+Setting SANKHYA_REQUIRE_E2E=1 turns a skipped e2e test into a BUILD FAILURE.
+That is the right pressure to have before building a capture runtime against
+that suite -- and it will go red immediately, because the runtime it tests
+does not exist yet. Your call, not mine.
+
+
+5. THE WORKING RULES THAT STILL APPLY
+-------------------------------------
+  * Documentation ships in the SAME COMMIT as the code.
+  * Every milestone goes through the full git drill:
+        verified -> develop -> push -> merge --no-ff into main -> push
+        -> develop --ff-only -> push, then check all four refs.
+  * `cargo xtask check-all` must be green before merging to main.
+  * Nothing is created or deleted outside this project root. Ever.
+  * A claim needs a measurement. If a number cannot be re-run, it does not
+    get written down.
+
+
+6. USEFUL COMMANDS
+------------------
+    cargo xtask check-all            the whole gate (~25 min, needs a quiet box)
+    cargo xtask check-fast           the quick subset
+    cargo xtask check-loc            file length limits -- counts CODE, not comments
+    cargo xtask sync-doc-numbers     fix stale test/mutation counts in the docs
+    cargo xtask check-performance    the objectives, against TPC-H
+    python3 tools/mutation-audit.py --check      catalogue matches the source
+    python3 tools/mutation-audit.py "<label>"    run one mutation
+    .venv/bin/python tools/deck/slides.py        rebuild the evidence deck
+
+Python is pinned: .venv, built from 3.13.15 under ~/.local/share/uv/python/.
+Rebuild it with `cargo xtask venv` if the virtualenv is missing.
+
+
+7. TWO BUILD GOTCHAS THAT COST TIME TODAY
+-----------------------------------------
+  * Adding a module under crates/sankhya-server/src/ is NOT enough. Fourteen
+    test binaries include wiring.rs through `#[path]`, and each needs its own
+    `#[path = "../src/<new>.rs"] mod <new>;` or they all fail to compile.
+
+  * `check-loc` counts CODE lines, so trimming comments to get under the
+    1500-line limit does nothing. Extract functions instead.

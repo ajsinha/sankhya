@@ -2201,6 +2201,35 @@ Named so they are not mistaken for oversights: the `ReadyForQuery` transaction s
 parity — no lease pin, no metrics, no audit record — the Kubernetes manifest that mounts no
 configuration, and the storage findings recorded in [`QA-BRIEF.md`](QA-BRIEF.md) §3.
 
+### Where §13k stopped, 2026-09-15
+
+`M22` through `M25` are complete and `M26` is one slice in. Every one of them merged to `main`
+through the full drill, so the branch tip is the state — there is nothing in flight, nothing
+stashed, and no uncommitted work. `cargo xtask check-all` was green at the last merge.
+
+**The next piece of work is the rest of `M26`**, in this order:
+
+1. **The capture runtime.** `sankhya-ingest::pipeline` decodes replication messages, batches
+   mutations and publishes, and **nothing drives it**. `ING-00` names this as the reason behind
+   eleven other findings. It is a PostgreSQL replication client, and PostgreSQL now builds on
+   this machine (`vendor/postgresql`, `--without-icu`).
+2. **The `__changes` sibling.** `DEC-08` publishes the un-merged change log as a table of its
+   own, so an external reader gets a correct answer from either path. Nothing writes one today;
+   `M26a` wired the *reading* half, which resolves a change log in place.
+3. **Compaction of a change log into a base table.** `DEC-07`'s second stage, bulk
+   whole-partition rewrite.
+
+**One decision is the owner's and is open.** `check-tests` reports a count of tests that pass
+*without running* — the PostgreSQL end-to-end suite, skipped for want of `SANKHYA_PG_BIN` and
+`SANKHYA_E2E_SOCKET`. Setting `SANKHYA_REQUIRE_E2E=1` makes a skipped e2e test a **build
+failure**, which is the right pressure to have before building a capture runtime against that
+suite — and it will go red immediately, because the runtime it tests does not exist.
+
+**Two smaller things are decided and unbuilt**, both named where they belong rather than here: a
+graph epoch is never *rebuilt* (`M25`, and `NFR-PERF-18` needs it), and the streaming arrival
+path still writes flat so a table fed by continuous capture has one partition and nothing to
+prune (`M24b`).
+
 ---
 
 ## 14. Parallelisation and critical path
